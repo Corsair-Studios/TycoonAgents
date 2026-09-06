@@ -306,6 +306,51 @@ test("saveRoutingProfile: propagates a nonzero real-write exit code as ok:false 
 });
 
 // ---------------------------------------------------------------------------
+// saveRoutingProfile: effectiveHarness orchestrator guard (p20-t1)
+// ---------------------------------------------------------------------------
+
+test("saveRoutingProfile: a CHANGED orchestrator slot under harness claude is rejected with the guidance error, nothing written", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = { version: 1, orchestrator: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" }, agents: {} };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "claude" });
+
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.errors.some((e) => /Orchestrator routing applies only when OpenCode runs your agents/.test(e)),
+    JSON.stringify(result.errors),
+  );
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+});
+
+test("saveRoutingProfile: an UNCHANGED orchestrator slot carried through under harness claude is allowed", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const orchestrator = { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" };
+  writeRouting(root, { version: 1, orchestrator, agents: {} });
+
+  const profile = { version: 1, orchestrator, agents: { foo: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } } };
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "claude" });
+
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const written = JSON.parse(fs.readFileSync(path.join(root, ".claude", "tycoon", "routing.json"), "utf8"));
+  assert.deepEqual(written.orchestrator, orchestrator);
+});
+
+test("saveRoutingProfile: a CHANGED orchestrator slot under harness opencode is allowed", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = { version: 1, orchestrator: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" }, agents: {} };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "opencode" });
+
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const written = JSON.parse(fs.readFileSync(path.join(root, ".claude", "tycoon", "routing.json"), "utf8"));
+  assert.deepEqual(written.orchestrator, profile.orchestrator);
+});
+
+// ---------------------------------------------------------------------------
 // clearRoutingProfile
 // ---------------------------------------------------------------------------
 

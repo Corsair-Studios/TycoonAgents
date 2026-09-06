@@ -99,6 +99,9 @@ export const MSG = {
   // p18-t1: persists execution.json's `useMultipleLlms` boolean, then the
   // host re-posts SETTINGS (routing.visible flips accordingly).
   SET_USE_MULTIPLE_LLMS: "setUseMultipleLlms",
+  // p20-t1: removes one agent's explicit routing.json entry (falls back to
+  // defaults/frontmatter/alias), then the host re-posts SETTINGS + ROUTING.
+  CLEAR_AGENT_ROUTE: "clearAgentRoute",
   SET_DELEGATION_MODE: "setDelegationMode",
   // Sibling of SET_DELEGATION_MODE: the optional "Review pass" toggle
   // composes with either delegation_mode rather than being a third mode.
@@ -393,6 +396,9 @@ export const MSG_SCHEMAS = {
 
   // p18-t1: { value: boolean } — toggles the "Use multiple LLMs" setting.
   SET_USE_MULTIPLE_LLMS: z.object({ value: z.boolean() }).passthrough(),
+
+  // p20-t1: { agentId: string } — clears one agent's explicit routing.json entry.
+  CLEAR_AGENT_ROUTE: z.object({ agentId: z.string().min(1) }).passthrough(),
 
   SET_AGENT_KEYWORDS: z
     .object({ id: z.string().min(1), pattern: z.string() })

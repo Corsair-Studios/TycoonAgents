@@ -236,6 +236,12 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   await flush();
   assertNoErrors('open routing modal');
 
+  // p20-t2: full density is now keyed on harness.effective === 'opencode',
+  // not the old routing.visible toggle -- these fixtures exercise the full
+  // (OpenCode) editable routing table, so declare that harness.
+  dispatch({ type: 'settings', payload: { harness: { effective: 'opencode' } } });
+  await flush();
+
   const getRoutingPosted = posted.find((m) => m && m.type === 'getRouting');
   assert.ok(getRoutingPosted, 'opening Routing should post {type: "getRouting"}');
 
@@ -509,6 +515,10 @@ test('Routing panel: fallback chip, Totals block, and state-update preserves an 
     menuRoutingBtn.click();
     await flush();
     assertNoErrors('open routing modal');
+
+    // p20-t2: full density is keyed on harness.effective === 'opencode'.
+    dispatch({ type: 'settings', payload: { harness: { effective: 'opencode' } } });
+    await flush();
 
     const payload = buildRoutingPayload();
     dispatch({ type: 'routing', payload });
@@ -810,6 +820,10 @@ test('Routing panel: real buildRoutingView payload — every agent row select eq
     menuRoutingBtn.click();
     await flush();
 
+    // p20-t2: full density is keyed on harness.effective === 'opencode'.
+    dispatch({ type: 'settings', payload: { harness: { effective: 'opencode' } } });
+    await flush();
+
     // Real payload straight from the host implementation, against this
     // repo's own .claude/agents — the same shape panel.ts/server.mjs post.
     const payload: any = buildRoutingView({ root: process.cwd(), env: process.env as any });
@@ -914,6 +928,10 @@ async function bootRoutingModal() {
   menuRoutingBtn.click();
   await flush();
   assertNoErrors('open routing modal');
+
+  // p20-t2: full density is keyed on harness.effective === 'opencode'.
+  dispatch({ type: 'settings', payload: { harness: { effective: 'opencode' } } });
+  await flush();
 
   return { win, doc, posted, dispatch, flush, assertNoErrors };
 }

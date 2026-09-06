@@ -6327,6 +6327,21 @@ button.theme-review-preview:focus-visible::after {
   }
 }
 
+/* Classic (Claude Code) density: the "Use another provider" checkbox's
+   inline slot/fallback editor (p20-t2) — single-column card, not the
+   full-density Agent/Slot grid, so it never inherits that layout's
+   indent. */
+.provider-toggle-row {
+  margin-top: 8px;
+}
+
+.classic-provider-editor {
+  padding-left: 0;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle, var(--border));
+}
+
 .routing-agent-desc {
   font-size: 11px;
   color: var(--muted);

@@ -107,11 +107,15 @@ export function describeAgentRoutes(root: string): Record<string, AgentRouteInfo
   return out;
 }
 
-export type RoutingVisibilityReason = "harness-opencode" | "toggle" | "hidden";
+export type RoutingVisibilityReason = "harness-opencode" | "per-agent" | "hidden";
 
 export interface RoutingVisibility {
   visible: boolean;
   reason: RoutingVisibilityReason;
+  /** Kept for wire/API compatibility (the Settings screen's "Use multiple
+   *  LLMs" checkbox still reads this) — no longer factors into `visible`.
+   *  See p20-t1: visibility is now driven by harness + actual per-agent
+   *  routes, not this toggle. */
   useMultipleLlms: boolean;
   profileActive: boolean;
   routedAgentCount: number;
@@ -127,8 +131,6 @@ export interface RoutingVisibility {
 export function describeRoutingVisibility(root: string, effectiveHarness: string): RoutingVisibility {
   const useMultipleLlms = readUseMultipleLlms(root);
   const harnessOpencode = effectiveHarness === "opencode";
-  const visible = harnessOpencode || useMultipleLlms;
-  const reason: RoutingVisibilityReason = harnessOpencode ? "harness-opencode" : useMultipleLlms ? "toggle" : "hidden";
 
   const view = buildRoutingView({ root, env: process.env });
   const profileActive =
@@ -136,6 +138,9 @@ export function describeRoutingVisibility(root: string, effectiveHarness: string
     Boolean(view.defaults?.model && view.defaults.model.trim() !== "");
   const routes = describeAgentRoutes(root);
   const routedAgentCount = view.agents.filter((a) => routes[a.id]?.routeSource !== "frontmatter").length;
+
+  const visible = harnessOpencode || routedAgentCount > 0;
+  const reason: RoutingVisibilityReason = harnessOpencode ? "harness-opencode" : routedAgentCount > 0 ? "per-agent" : "hidden";
 
   return { visible, reason, useMultipleLlms, profileActive, routedAgentCount };
 }
@@ -194,6 +199,49 @@ export async function overrideAgentToClaudeTier(
     version: 1,
     agents: { ...base.agents, [agentId]: nextSlot },
   };
+
+  const scriptsDir = options.scriptsDir ?? root;
+  const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir });
+  return { handled: true, ok: result.ok, errors: result.errors };
+}
+
+export interface ClearAgentRouteOptions {
+  /** See OverrideAgentToClaudeTierOptions.scriptsDir — defaults to `root`. */
+  scriptsDir?: string;
+}
+
+export interface ClearAgentRouteResult {
+  /** false when there was nothing to clear (no profile, or no agents[agentId]
+   *  entry) — no write happened. */
+  handled: boolean;
+  ok: boolean;
+  errors: string[];
+}
+
+/**
+ * Remove `agentId`'s explicit entry from routing.json's `agents` map (p20-t1),
+ * letting it fall back to `defaults`/frontmatter/alias, then re-run the
+ * generators via saveRoutingProfile so the managed backend block is
+ * stripped (or the hand-written backup restored) the same way
+ * apply-routing-profile.mjs's existing unapply path already does for any
+ * profile save. Only that one agent's slot is touched — `defaults`,
+ * `orchestrator`, and every other agent entry are preserved verbatim. If
+ * removing the last agent leaves an empty `agents` map, the (now-empty)
+ * profile is still saved rather than deleting routing.json outright.
+ */
+export async function clearAgentRoute(
+  root: string,
+  agentId: string,
+  options: ClearAgentRouteOptions = {},
+): Promise<ClearAgentRouteResult> {
+  const { profile: existing } = loadRoutingProfile(root);
+  if (!existing || !existing.agents || !(agentId in existing.agents)) {
+    return { handled: false, ok: true, errors: [] };
+  }
+
+  const nextAgents = { ...existing.agents };
+  delete nextAgents[agentId];
+  const nextProfile: RoutingProfile = { ...existing, version: existing.version, agents: nextAgents };
 
   const scriptsDir = options.scriptsDir ?? root;
   const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir });

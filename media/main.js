@@ -12534,9 +12534,9 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
-      // p19-t1: a new settings payload can flip lastSettings.routing.visible
-      // (harness switch, Use-multiple-LLMs toggle) while the Agents screen
-      // is open — re-render it too so density switches live. Guarded like
+      // p20-t2: a new settings payload can flip lastSettings.harness.effective
+      // while the Agents screen is open — re-render it too so density
+      // switches live. Guarded like
       // updateRoutingViewLive: only while the modal actually exists and is
       // visible, and only once lastRoutingPayload/routingDraft exist (a
       // "settings" push can arrive before the first "routing" reply).
@@ -17711,6 +17711,62 @@
   }
 
   /**
+   * Shared harness dropdown builder (p20-t2). Renders the "Which tool runs
+   * your agents?" select + hint from `lastSettings.harness` — used both by
+   * the Settings screen's "Agent harness" section and by the Agents screen
+   * header. `idPrefix` keeps the two <select> ids unique when both are
+   * mounted at once. Returns null when lastSettings.harness isn't loaded
+   * yet (caller decides whether to render a section around it).
+   */
+  function buildHarnessControl(idPrefix) {
+    if (!lastSettings || !lastSettings.harness) return null;
+    const harness = lastSettings.harness;
+    const harnessRow = document.createElement("div");
+    harnessRow.className = "settings-row feedback-field";
+    harnessRow.dataset.agentRow = "harness";
+    const harnessLabel = document.createElement("label");
+    harnessLabel.textContent = "Which tool runs your agents?";
+    harnessLabel.setAttribute("for", idPrefix + "-harness-select");
+    harnessRow.appendChild(harnessLabel);
+    const harnessSelect = document.createElement("select");
+    harnessSelect.id = idPrefix + "-harness-select";
+    const harnessOptions = Array.isArray(harness.options)
+      ? harness.options
+      : [
+          { id: "claude-code", label: "Claude Code" },
+          { id: "opencode", label: "OpenCode" },
+        ];
+    harnessOptions.forEach((opt) => {
+      const optEl = document.createElement("option");
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      if (opt.id === harness.effective) optEl.selected = true;
+      harnessSelect.appendChild(optEl);
+    });
+    const overridden = harness.source === "env" || harness.source === "setting";
+    harnessSelect.disabled = overridden;
+    harnessSelect.addEventListener("change", () => {
+      harnessSelect.disabled = true;
+      vscode.postMessage({ type: "setHarness", provider: harnessSelect.value });
+    });
+    harnessRow.appendChild(harnessSelect);
+    const harnessHint = document.createElement("p");
+    harnessHint.className = "delegation-mode-footnote";
+    if (overridden) {
+      harnessHint.textContent =
+        harness.source === "env"
+          ? "Overridden by TYCOON_PROVIDER"
+          : "Overridden by the tycoonagents.provider VS Code setting";
+    } else if (harness.mismatch || harness.requiresRestart) {
+      harnessHint.textContent = "Restart to apply";
+    } else {
+      harnessHint.textContent = "Applies immediately.";
+    }
+    harnessRow.appendChild(harnessHint);
+    return harnessRow;
+  }
+
+  /**
    * Read-only "Session model" card for the orchestrator, rendered at the top
    * of the Agents screen in both densities (p19-t1). Ported verbatim from
    * the old Settings agents-loop orchestrator branch — keeps the
@@ -17759,7 +17815,7 @@
     return stats;
   }
 
-  function buildOrchestratorSimpleCard(agent) {
+  function buildOrchestratorSimpleCard(agent, isClaudeHarness) {
     const m = metricsFor(agent.id);
     const row = document.createElement("div");
     row.className = "settings-row agent-row";
@@ -17792,6 +17848,9 @@
     roHelp.textContent = observedFamily
       ? "Read from Claude Code's session model — set via /model, VS Code chat settings, or ANTHROPIC_MODEL. Not a TycoonAgents setting, so there's no picker here."
       : "Read from Claude Code's session model (set via /model, VS Code chat settings, or ANTHROPIC_MODEL) once observed from activity — not a TycoonAgents setting. Run a task to populate this.";
+    if (isClaudeHarness) {
+      roHelp.textContent += " Routing the orchestrator applies only when OpenCode runs your agents.";
+    }
     row.appendChild(roHelp);
 
     if (observedFamily === "Sonnet" || observedFamily === "Haiku") {
@@ -17878,8 +17937,6 @@
       return group;
     };
 
-    const routingVisibleNow = !lastSettings || !lastSettings.routing || lastSettings.routing.visible !== false;
-
     if (a.claudeTier) {
       head.appendChild(buildModelRadioGroup());
     } else {
@@ -17901,22 +17958,21 @@
         head.appendChild(backendLine);
         head.appendChild(buildUseClaudeDisclosure());
       } else {
-        const routedRow = document.createElement("span");
-        routedRow.className = "stat-chip agent-routed-chip";
-        const routedModel = a.resolvedModel || a.model || "unknown model";
-        routedRow.textContent = `Routed to ${vendorLabelFor(a.vendor || "unknown")}/${routedModel}`;
-        head.appendChild(routedRow);
-        if (routingVisibleNow && density !== "full") {
-          const editLink = document.createElement("button");
-          editLink.type = "button";
-          editLink.className = "link-button";
-          editLink.textContent = "Edit in Routing";
-          editLink.addEventListener("click", () => {
-            routingExpandedAgents[a.id] = true;
-            renderRoutingModal();
-          });
-          head.appendChild(editLink);
+        if (density === "full") {
+          // OpenCode (full density): unchanged — routed chip + Edit-in-Routing
+          // link live in the head.
+          const routedRow = document.createElement("span");
+          routedRow.className = "stat-chip agent-routed-chip";
+          const routedModel = a.resolvedModel || a.model || "unknown model";
+          routedRow.textContent = `Routed to ${vendorLabelFor(a.vendor || "unknown")}/${routedModel}`;
+          head.appendChild(routedRow);
         }
+        // Classic (Claude Code) density, non-handwritten, non-claudeTier: the
+        // routed chip moves inside the per-card "Use another provider"
+        // expansion below (p20-t2) instead of living in the head — but the
+        // "Use Claude tier…" disclosure (and its radio group, which
+        // setAgentModel/justSetAgentModelId suppression depends on) still
+        // renders on every classic card, expanded or not.
         head.appendChild(buildUseClaudeDisclosure());
       }
     }
@@ -17992,7 +18048,86 @@
     kwRow.appendChild(kwInputWrap);
     card.appendChild(kwRow);
 
-    if (density !== "full" || !routingAgent) {
+    if (density !== "full") {
+      // ── Classic (Claude Code) density: "Use another provider" checkbox
+      // (p20-t2). No routing controls render until it's checked. ──
+      if (!routingAgent) return card;
+      const routeSource = routingAgent.routeSource || routingAgent.provenance || "frontmatter";
+      const isRouted = routeSource !== "frontmatter";
+      const expanded = Object.prototype.hasOwnProperty.call(routingExpandedAgents, a.id)
+        ? !!routingExpandedAgents[a.id]
+        : isRouted;
+
+      const providerRow = document.createElement("div");
+      providerRow.className = "settings-row provider-toggle-row";
+      providerRow.setAttribute("data-agent-id", a.id);
+      const providerLabel = document.createElement("label");
+      providerLabel.className = "delegation-mode-option";
+      const providerCheckbox = document.createElement("input");
+      providerCheckbox.type = "checkbox";
+      providerCheckbox.className = "agent-provider-checkbox";
+      providerCheckbox.checked = !!a.handWrittenBackend || expanded;
+      providerCheckbox.disabled = !!a.handWrittenBackend;
+      const providerBody = document.createElement("span");
+      providerBody.className = "delegation-mode-option-body";
+      const providerLabelSpan = document.createElement("span");
+      providerLabelSpan.className = "delegation-mode-option-label";
+      providerLabelSpan.textContent = "Use another provider for this agent";
+      const providerHelpSpan = document.createElement("span");
+      providerHelpSpan.className = "delegation-mode-option-help";
+      providerHelpSpan.textContent = a.handWrittenBackend
+        ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`
+        : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
+      providerBody.appendChild(providerLabelSpan);
+      providerBody.appendChild(providerHelpSpan);
+      providerLabel.appendChild(providerCheckbox);
+      providerLabel.appendChild(providerBody);
+      providerRow.appendChild(providerLabel);
+      card.appendChild(providerRow);
+
+      providerCheckbox.addEventListener("change", () => {
+        if (a.handWrittenBackend) return;
+        if (providerCheckbox.checked) {
+          routingExpandedAgents[a.id] = true;
+          if (!slotHasContent(routingDraft.agents[a.id])) {
+            routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
+          }
+        } else {
+          delete routingExpandedAgents[a.id];
+          routingDraft.agents[a.id] = {};
+          if (isRouted) {
+            vscode.postMessage({ type: "clearAgentRoute", agentId: a.id });
+          }
+        }
+        renderRoutingModal();
+      });
+
+      if (expanded && !a.handWrittenBackend) {
+        if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
+        if (isRouted && !slotHasContent(routingDraft.agents[a.id])) {
+          routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
+        }
+        const slot = routingDraft.agents[a.id];
+        const editorWrap = document.createElement("div");
+        editorWrap.className = "routing-agent-fallback-row classic-provider-editor";
+        editorWrap.setAttribute("data-agent-id", a.id);
+        if (isRouted) {
+          const chipLine = document.createElement("div");
+          chipLine.className = "routing-agent-source-line";
+          chipLine.appendChild(routingSourceChip(routingAgent.source || routeSource));
+          const routedChip = document.createElement("span");
+          routedChip.className = "stat-chip agent-routed-chip";
+          const routedVendor = a.vendor || (routingAgent.backend && routingAgent.backend.vendor) || "unknown";
+          const routedModel = a.resolvedModel || a.model || "unknown model";
+          routedChip.textContent = `Routed to ${vendorLabelFor(routedVendor)}/${routedModel}`;
+          chipLine.appendChild(routedChip);
+          editorWrap.appendChild(chipLine);
+        }
+        editorWrap.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
+        editorWrap.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
+        card.appendChild(editorWrap);
+      }
+
       return card;
     }
 
@@ -18116,12 +18251,21 @@
     if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
 
     var payload = lastRoutingPayload;
-    // Density (p19-t1): full when the routing view is meant to be visible
-    // (OpenCode harness or the "Use multiple LLMs" toggle — see
-    // describeRoutingVisibility), else simple — the pre-routing Settings
-    // agent cards with no vendor/transport/endpoint/fallback controls.
-    var routingInfoNow = (lastSettings && lastSettings.routing) || { visible: true };
-    var density = routingInfoNow.visible === false ? "simple" : "full";
+    // Density (p20-t2): keyed on the harness itself, not the old
+    // routing.visible toggle — full (OpenCode's editable routing table) when
+    // the effective harness is opencode, classic (the plain agent cards)
+    // otherwise.
+    var harnessEffective = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    var isClaudeHarness = harnessEffective !== "opencode";
+    var density = isClaudeHarness ? "simple" : "full";
+
+    // Harness dropdown atop the Agents screen (p20-t2) — same control/options
+    // as Settings, via the shared builder.
+    var agentsHarnessRow = buildHarnessControl("agents-modal");
+    if (agentsHarnessRow) {
+      routingContentEl.appendChild(agentsHarnessRow);
+    }
+
     var rawPresets = payload.presets || { vendors: [], models: [] };
     // Every vendor present in presets.models, plus any vendor already on the
     // current payload's orchestrator/agents — so a saved profile's vendor
@@ -18153,7 +18297,7 @@
     // densities; full-only slot/fallback editor appended below it) ──
     var orchestratorAgent = ((lastSettings && lastSettings.agents) || []).find(function (ag) { return ag.isOrchestrator; });
     var orchSection = buildSection("Orchestrator");
-    if (orchestratorAgent) orchSection.appendChild(buildOrchestratorSimpleCard(orchestratorAgent));
+    if (orchestratorAgent) orchSection.appendChild(buildOrchestratorSimpleCard(orchestratorAgent, isClaudeHarness));
     if (density === "full") {
       if (!routingDraft.orchestrator) routingDraft.orchestrator = {};
       var orchMeta = document.createElement("div");
@@ -18255,16 +18399,21 @@
     }
 
     // ── Fixed footer button state (buttons themselves live outside the
-    // scroll container — created once in ensureRoutingModal). Simple
-    // density has no Save/Revert/Clear (tier/keyword/remove actions already
-    // post immediately) — only the Close button shows.
+    // scroll container — created once in ensureRoutingModal). Classic
+    // density shows Save/Revert only once a card's "Use another provider"
+    // checkbox has expanded its editor (p20-t2); Clear profile stays
+    // full-density-only. With nothing expanded, only Close shows.
+    var classicAnyExpanded = density !== "full" && Object.keys(routingExpandedAgents).some(function (id) {
+      return routingExpandedAgents[id];
+    });
+    var showSaveRevert = density === "full" || classicAnyExpanded;
     if (routingSaveBtnEl) {
-      routingSaveBtnEl.hidden = density !== "full";
+      routingSaveBtnEl.hidden = !showSaveRevert;
       routingSaveBtnEl.textContent = routingSaving ? "Saving…" : "Save";
       routingSaveBtnEl.disabled = routingSaving;
     }
     if (routingRevertBtnEl) {
-      routingRevertBtnEl.hidden = density !== "full";
+      routingRevertBtnEl.hidden = !showSaveRevert;
       routingRevertBtnEl.disabled = routingSaving;
     }
     if (routingClearBtnEl) {
@@ -18272,7 +18421,7 @@
       routingClearBtnEl.disabled = routingSaving;
     }
     if (routingFooterCloseBtnEl) {
-      routingFooterCloseBtnEl.hidden = density === "full";
+      routingFooterCloseBtnEl.hidden = showSaveRevert;
     }
 
     if (routingLastResult && routingLastResult.ok === false) {
@@ -18600,60 +18749,30 @@
       setupConfigEl.appendChild(uefnHealthRow);
     }
 
-    // ── 1.4b. Harness selection (p13-t7) ──
-    // "Which tool runs your agents?" dropdown. lastSettings.harness is
-    // `{ effective, source, fileValue, options, requiresRestart }` — see
-    // panel.ts's _buildHarnessSettings / server.mjs's
-    // buildStandaloneHarnessSettings. Disabled (with a hint) when a
-    // higher-precedence layer (env var or the VS Code setting) already
-    // decides it, since picking a different value here would silently do
-    // nothing.
+    // ── 1.4b. Harness selection (p13-t7, refactored p20-t2) ──
+    // "Which tool runs your agents?" dropdown, built by the same shared
+    // helper the Agents screen header uses (buildHarnessControl) so both
+    // copies stay in lockstep. Settings adds an "Open Agents" link plus the
+    // OpenCode default-route nudge; the Use-multiple-LLMs toggle and
+    // hidden-profile disclosure are gone — visibility of the routing editor
+    // is now purely a function of the harness (see renderRoutingModal).
     if (lastSettings.harness) {
       const harness = lastSettings.harness;
       const harnessSection = buildSection("Agent harness");
-      const harnessRow = document.createElement("div");
-      harnessRow.className = "settings-row feedback-field";
-      harnessRow.dataset.agentRow = "harness";
-      const harnessLabel = document.createElement("label");
-      harnessLabel.textContent = "Which tool runs your agents?";
-      harnessLabel.setAttribute("for", "settings-harness-select");
-      harnessRow.appendChild(harnessLabel);
-      const harnessSelect = document.createElement("select");
-      harnessSelect.id = "settings-harness-select";
-      const harnessOptions = Array.isArray(harness.options)
-        ? harness.options
-        : [
-            { id: "claude-code", label: "Claude Code" },
-            { id: "opencode", label: "OpenCode" },
-          ];
-      harnessOptions.forEach((opt) => {
-        const optEl = document.createElement("option");
-        optEl.value = opt.id;
-        optEl.textContent = opt.label;
-        if (opt.id === harness.effective) optEl.selected = true;
-        harnessSelect.appendChild(optEl);
+      const harnessRow = buildHarnessControl("settings");
+      if (harnessRow) harnessSection.appendChild(harnessRow);
+
+      const openAgentsRow = document.createElement("p");
+      openAgentsRow.className = "delegation-mode-footnote";
+      const openAgentsLink = document.createElement("button");
+      openAgentsLink.type = "button";
+      openAgentsLink.className = "link-button";
+      openAgentsLink.textContent = "Open Agents";
+      openAgentsLink.addEventListener("click", () => {
+        openRoutingModal();
       });
-      const overridden = harness.source === "env" || harness.source === "setting";
-      harnessSelect.disabled = overridden;
-      harnessSelect.addEventListener("change", () => {
-        harnessSelect.disabled = true;
-        vscode.postMessage({ type: "setHarness", provider: harnessSelect.value });
-      });
-      harnessRow.appendChild(harnessSelect);
-      const harnessHint = document.createElement("p");
-      harnessHint.className = "delegation-mode-footnote";
-      if (overridden) {
-        harnessHint.textContent =
-          harness.source === "env"
-            ? "Overridden by TYCOON_PROVIDER"
-            : "Overridden by the tycoonagents.provider VS Code setting";
-      } else if (harness.mismatch || harness.requiresRestart) {
-        harnessHint.textContent = "Restart to apply";
-      } else {
-        harnessHint.textContent = "Applies immediately.";
-      }
-      harnessRow.appendChild(harnessHint);
-      harnessSection.appendChild(harnessRow);
+      openAgentsRow.appendChild(openAgentsLink);
+      harnessSection.appendChild(openAgentsRow);
 
       // p17-t4: nudge toward the Routing view's "Default for all agents"
       // card when running OpenCode with no default model set and at least
@@ -18661,8 +18780,7 @@
       // src/core/routingHostOps.ts (shared by both host settings builders).
       // Recomputed on every settings payload, so it disappears on its own
       // once a default is saved (handleRoutingSaved refetches settings).
-      const routingVisibleForHint = !lastSettings.routing || lastSettings.routing.visible !== false;
-      if (harness.needsDefaultRoute && routingVisibleForHint) {
+      if (harness.needsDefaultRoute && harness.effective === "opencode") {
         const defaultRouteHint = document.createElement("p");
         defaultRouteHint.className = "delegation-mode-footnote settings-harness-default-route-hint";
         defaultRouteHint.textContent =
@@ -18681,80 +18799,11 @@
       setupConfigEl.appendChild(harnessSection);
     }
 
-    // ── 1.4c. Use multiple LLMs toggle + hidden-profile disclosure (p18-t2) ──
-    // lastSettings.routing is `{ visible, reason, useMultipleLlms, profileActive,
-    // routedAgentCount }` — see describeRoutingVisibility in
-    // src/core/agentSettingsRoute.ts. Missing field (older host) defaults to
-    // visible:true, so the toggle/disclosure below always show for that case.
-    const routingInfo = lastSettings.routing || { visible: true, reason: "toggle", useMultipleLlms: false, profileActive: false, routedAgentCount: 0 };
-    const multiLlmSection = buildSection("Multiple LLMs");
-    const multiLlmRow = document.createElement("div");
-    multiLlmRow.className = "settings-row";
-    multiLlmRow.dataset.agentRow = "use-multiple-llms";
-    const multiLlmGroup = document.createElement("div");
-    multiLlmGroup.className = "delegation-mode-group";
-    const multiLlmOptLabel = document.createElement("label");
-    multiLlmOptLabel.className = "delegation-mode-option";
-    const multiLlmCheckbox = document.createElement("input");
-    multiLlmCheckbox.type = "checkbox";
-    multiLlmCheckbox.id = "use-multiple-llms-checkbox";
-    multiLlmCheckbox.checked = Boolean(routingInfo.useMultipleLlms);
-    const harnessIsOpencode = routingInfo.reason === "harness-opencode";
-    multiLlmCheckbox.disabled = harnessIsOpencode;
-    multiLlmCheckbox.addEventListener("change", () => {
-      multiLlmCheckbox.disabled = true;
-      vscode.postMessage({ type: "setUseMultipleLlms", value: multiLlmCheckbox.checked });
-    });
-    const multiLlmBody = document.createElement("span");
-    multiLlmBody.className = "delegation-mode-option-body";
-    const multiLlmLabelSpan = document.createElement("span");
-    multiLlmLabelSpan.className = "delegation-mode-option-label";
-    multiLlmLabelSpan.textContent = "Use multiple LLMs";
-    const multiLlmHelpSpan = document.createElement("span");
-    multiLlmHelpSpan.className = "delegation-mode-option-help";
-    multiLlmHelpSpan.textContent = harnessIsOpencode
-      ? "Routing is always available when OpenCode runs your agents. "
-      : "Shows the full routing editor on the Agents screen to run agents on other vendors, local models, or custom endpoints. ";
-    const multiLlmOpenLink = document.createElement("button");
-    multiLlmOpenLink.type = "button";
-    multiLlmOpenLink.className = "link-button";
-    multiLlmOpenLink.textContent = "Open Agents";
-    multiLlmOpenLink.addEventListener("click", () => {
-      openRoutingModal();
-    });
-    multiLlmHelpSpan.appendChild(multiLlmOpenLink);
-    multiLlmBody.appendChild(multiLlmLabelSpan);
-    multiLlmBody.appendChild(multiLlmHelpSpan);
-    multiLlmOptLabel.appendChild(multiLlmCheckbox);
-    multiLlmOptLabel.appendChild(multiLlmBody);
-    multiLlmGroup.appendChild(multiLlmOptLabel);
-    multiLlmRow.appendChild(multiLlmGroup);
-    multiLlmSection.appendChild(multiLlmRow);
-
-    if (!routingInfo.visible && routingInfo.profileActive) {
-      const disclosureRow = document.createElement("div");
-      disclosureRow.className = "settings-row";
-      const disclosureText = document.createElement("span");
-      disclosureText.textContent = `Routing profile active · ${routingInfo.routedAgentCount} agents routed`;
-      const showBtn = document.createElement("button");
-      showBtn.type = "button";
-      showBtn.className = "skill-btn settings-btn";
-      showBtn.textContent = "Show";
-      showBtn.addEventListener("click", () => {
-        showBtn.disabled = true;
-        vscode.postMessage({ type: "setUseMultipleLlms", value: true });
-      });
-      disclosureRow.appendChild(disclosureText);
-      disclosureRow.appendChild(showBtn);
-      multiLlmSection.appendChild(disclosureRow);
-    }
-    setupConfigEl.appendChild(multiLlmSection);
-
     // ── 1.4d. Menu "Agents" entry (p19-t1) ──
     // #menu-routing (label now "Agents") is static markup (both hosts' HTML
-    // template) and is always visible — the Agents screen itself picks
-    // simple vs. full density from routingInfo.visible, so there is no
-    // gating to apply here any more.
+    // template) and is always visible — the Agents screen itself picks its
+    // density from lastSettings.harness (p20-t2), so there is no gating to
+    // apply here any more.
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
     // Same radio block + exact copy as the pre-install setup-view picker

@@ -532,6 +532,13 @@ export interface SaveRoutingProfileOptions {
   profile: unknown;
   scriptsDir: string;
   nodeBin?: string;
+  /** p20-t1: the caller's already-resolved effective harness (e.g. from
+   *  describeProviderSelection). When it is anything other than "opencode",
+   *  a profile carrying an `orchestrator` slot is rejected outright — the
+   *  orchestrator is OpenCode's concept, and under Claude Code that slot
+   *  would silently do nothing. Omitted (undefined) means "unknown" and
+   *  skips this check, preserving existing callers that don't yet pass it. */
+  effectiveHarness?: string;
 }
 
 /**
@@ -562,6 +569,34 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
       check: EMPTY_SAVE_RESULT_SCRIPTS,
       write: EMPTY_SAVE_RESULT_SCRIPTS,
     };
+  }
+
+  // p20-t1 (review fix): reject an `orchestrator` slot under a non-OpenCode
+  // harness only when it actually CHANGES the on-disk slot — the webview's
+  // sparse profile assembly carries an existing orchestrator slot through
+  // unmodified on every save, so an unchanged carry-through (or no incoming
+  // slot at all) must never block an unrelated per-agent save under Claude
+  // Code. Compared by JSON-normalized deep-equality so key order never
+  // causes a false mismatch.
+  const incomingOrchestrator = (profile as Record<string, unknown>)["orchestrator"];
+  if (
+    opts.effectiveHarness !== undefined &&
+    opts.effectiveHarness !== "opencode" &&
+    incomingOrchestrator !== undefined &&
+    incomingOrchestrator !== null
+  ) {
+    const existingOrchestrator = loadRoutingProfile(root).profile?.orchestrator ?? null;
+    const changed = JSON.stringify(incomingOrchestrator) !== JSON.stringify(existingOrchestrator ?? null);
+    if (changed) {
+      return {
+        ok: false,
+        errors: [
+          "Orchestrator routing applies only when OpenCode runs your agents; set the Claude Code session model with /model.",
+        ],
+        check: EMPTY_SAVE_RESULT_SCRIPTS,
+        write: EMPTY_SAVE_RESULT_SCRIPTS,
+      };
+    }
   }
 
   const json = (() => {

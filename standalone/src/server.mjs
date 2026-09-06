@@ -749,7 +749,8 @@ function handleBrowserMessage(msg) {
       try {
         const { saveRoutingProfile, buildRoutingView } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
-        const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT });
+        const effectiveHarness = resolveEffectiveHarness(root);
+        const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT, effectiveHarness });
         broadcast('message', { type: 'routingSaved', ...result });
         broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
       } catch (err) {
@@ -896,6 +897,41 @@ function handleBrowserMessage(msg) {
           broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
         } catch (err) {
           broadcast('message', { type: 'settingsUpdated', ok: false, id, field: 'model', error: String(err) });
+        }
+      })();
+      break;
+    }
+    case 'clearAgentRoute': {
+      // Standalone analog of panel.ts's _handleClearAgentRoute (p20-t1):
+      // removes one agent's explicit routing.json entry, then re-posts
+      // settings + routing like setAgentModel does.
+      const root = primaryProjectRoot;
+      const id = String(msg.agentId || '');
+      if (!root) {
+        console.error('[tycoonagents-standalone] clearAgentRoute: no project root resolved');
+        break;
+      }
+      (async () => {
+        const { isSafeAgentId } = agentConfigModule();
+        if (!isSafeAgentId(id)) {
+          console.error(`[tycoonagents-standalone] clearAgentRoute rejected unsafe agent id "${id}".`);
+          return;
+        }
+        try {
+          const { clearAgentRoute } = agentSettingsRouteModule();
+          const result = await clearAgentRoute(root, id, { scriptsDir: REPO_ROOT });
+          if (result.handled && !result.ok) {
+            console.error('[tycoonagents-standalone] clearAgentRoute failed:', result.errors.join('; '));
+          }
+        } catch (err) {
+          console.error('[tycoonagents-standalone] clearAgentRoute failed:', err instanceof Error ? err.message : err);
+        }
+        broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+        try {
+          const { buildRoutingView } = routingHostOpsModule();
+          broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+        } catch (err) {
+          console.error('[tycoonagents-standalone] clearAgentRoute routing re-post failed:', err instanceof Error ? err.message : err);
         }
       })();
       break;
@@ -1928,13 +1964,26 @@ function buildStandaloneRoutingVisibility() {
   const fallback = { visible: false, reason: 'hidden', useMultipleLlms: false, profileActive: false, routedAgentCount: 0 };
   if (!primaryProjectRoot) return fallback;
   try {
-    const { describeProviderSelection } = providerSelectionModule();
     const { describeRoutingVisibility } = agentSettingsRouteModule();
-    const effectiveHarness = describeProviderSelection({ cwd }).effective;
-    return describeRoutingVisibility(cwd, effectiveHarness);
+    return describeRoutingVisibility(cwd, resolveEffectiveHarness(cwd));
   } catch (err) {
     console.error('[tycoonagents-standalone] buildStandaloneRoutingVisibility failed:', err instanceof Error ? err.message : err);
     return fallback;
+  }
+}
+
+/**
+ * Shared effective-harness resolution for saveRoutingProfile callers
+ * (p20-t1) — mirrors panel.ts's _resolveEffectiveHarness. Falls back to
+ * 'claude-code' on any error so a save is never blocked by an unrelated
+ * failure here.
+ */
+function resolveEffectiveHarness(cwd) {
+  try {
+    const { describeProviderSelection } = providerSelectionModule();
+    return describeProviderSelection({ cwd }).effective;
+  } catch {
+    return 'claude-code';
   }
 }
 

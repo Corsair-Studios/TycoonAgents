@@ -17,10 +17,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   claudeTierFromModel,
+  clearAgentRoute,
   describeAgentRoutes,
   describeRoutingVisibility,
   overrideAgentToClaudeTier,
 } from "../src/core/agentSettingsRoute";
+import { saveRoutingProfile } from "../src/core/routingHostOps";
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agent-settings-route-"));
@@ -192,24 +194,52 @@ test("describeRoutingVisibility: harness opencode is always visible regardless o
   assert.equal(vFalse.reason, "harness-opencode");
 });
 
-test("describeRoutingVisibility: harness claude, toggle off -> hidden", () => {
+test("describeRoutingVisibility: harness claude, no routed agents -> hidden", () => {
   const root = tmpRoot();
+  writeAgent(root, "coding-specialist.md", ["name: coding-specialist", "model: sonnet"]);
   const v = describeRoutingVisibility(root, "claude");
   assert.equal(v.visible, false);
   assert.equal(v.reason, "hidden");
-  assert.equal(v.useMultipleLlms, false);
 });
 
-test("describeRoutingVisibility: harness claude, toggle on -> visible via toggle", () => {
+test("describeRoutingVisibility: harness claude, the useMultipleLlms toggle no longer affects visibility", () => {
   const root = tmpRoot();
   const execDir = path.join(root, ".claude", "tycoon");
   fs.mkdirSync(execDir, { recursive: true });
   fs.writeFileSync(path.join(execDir, "execution.json"), JSON.stringify({ useMultipleLlms: true }), "utf8");
 
   const v = describeRoutingVisibility(root, "claude");
-  assert.equal(v.visible, true);
-  assert.equal(v.reason, "toggle");
+  // p20-t1: visibility is now driven by harness + actual per-agent routes,
+  // not this toggle -- the toggle value is still reported (wire
+  // compatibility) but no longer flips `visible`/`reason`.
+  assert.equal(v.visible, false);
+  assert.equal(v.reason, "hidden");
   assert.equal(v.useMultipleLlms, true);
+});
+
+test("describeRoutingVisibility: harness claude, an explicit routing.json entry -> visible via per-agent", () => {
+  const root = tmpRoot();
+  writeAgent(root, "coding-specialist.md", ["name: coding-specialist", "model: sonnet"]);
+  writeRouting(root, {
+    version: 1,
+    agents: {
+      "coding-specialist": { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+    },
+  });
+
+  const v = describeRoutingVisibility(root, "claude");
+  assert.equal(v.visible, true);
+  assert.equal(v.reason, "per-agent");
+  assert.equal(v.routedAgentCount, 1);
+});
+
+test("describeRoutingVisibility: harness opencode is always visible with reason harness-opencode, even with zero routed agents", () => {
+  const root = tmpRoot();
+  writeAgent(root, "coding-specialist.md", ["name: coding-specialist", "model: sonnet"]);
+  const v = describeRoutingVisibility(root, "opencode");
+  assert.equal(v.visible, true);
+  assert.equal(v.reason, "harness-opencode");
+  assert.equal(v.routedAgentCount, 0);
 });
 
 test("describeRoutingVisibility: profileActive/routedAgentCount for no profile at all", () => {
@@ -293,5 +323,126 @@ test("overrideAgentToClaudeTier: frontmatter-only agent -> handled:false, routin
     const result = await overrideAgentToClaudeTier(root, "frontmatter-only", "opus", { scriptsDir });
     assert.equal(result.handled, false, JSON.stringify(result));
     assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearAgentRoute (p20-t3)
+// ---------------------------------------------------------------------------
+
+test("clearAgentRoute: removes the explicit entry, preserves defaults/orchestrator/other agents", async () => {
+  await withIsolatedStoreDirs(async () => {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    writeAgent(root, "coding-specialist.md", ["name: coding-specialist"]);
+    writeAgent(root, "other.md", ["name: other"]);
+    writeRouting(root, {
+      version: 1,
+      orchestrator: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      defaults: { vendor: "ollama-windows", transport: "openai-compatible", model: "ollama-windows/qwen3.8:27b", costModelClass: "local" },
+      agents: {
+        "coding-specialist": { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+        other: { vendor: "google", transport: "mcp", mcpServer: "gemini", model: "google/gemini-2.5-pro", costModelClass: "metered" },
+      },
+    });
+
+    const result = await clearAgentRoute(root, "coding-specialist", { scriptsDir });
+    assert.equal(result.handled, true, JSON.stringify(result));
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+
+    const routing = readRouting(root) as {
+      orchestrator?: unknown;
+      defaults?: unknown;
+      agents?: Record<string, unknown>;
+    };
+    assert.ok(routing, "routing.json should still exist after clearing one agent");
+    assert.deepEqual(routing.orchestrator, { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" });
+    assert.deepEqual(routing.defaults, { vendor: "ollama-windows", transport: "openai-compatible", model: "ollama-windows/qwen3.8:27b", costModelClass: "local" });
+    assert.ok(routing.agents && !("coding-specialist" in routing.agents), "coding-specialist entry should be removed");
+    assert.ok(routing.agents && "other" in routing.agents, "other agent entry should be preserved");
+  });
+});
+
+test("clearAgentRoute: handled:false when there is no profile at all", async () => {
+  await withIsolatedStoreDirs(async () => {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    writeAgent(root, "coding-specialist.md", ["name: coding-specialist"]);
+
+    const result = await clearAgentRoute(root, "coding-specialist", { scriptsDir });
+    assert.equal(result.handled, false, JSON.stringify(result));
+    assert.equal(result.ok, true);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+  });
+});
+
+test("clearAgentRoute: handled:false when a profile exists but has no entry for this agent", async () => {
+  await withIsolatedStoreDirs(async () => {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    writeAgent(root, "coding-specialist.md", ["name: coding-specialist"]);
+    writeAgent(root, "other.md", ["name: other"]);
+    writeRouting(root, {
+      version: 1,
+      agents: {
+        other: { vendor: "google", transport: "mcp", mcpServer: "gemini", model: "google/gemini-2.5-pro", costModelClass: "metered" },
+      },
+    });
+
+    const result = await clearAgentRoute(root, "coding-specialist", { scriptsDir });
+    assert.equal(result.handled, false, JSON.stringify(result));
+    assert.equal(result.ok, true);
+
+    const routing = readRouting(root) as { agents?: Record<string, unknown> };
+    assert.ok(routing.agents && "other" in routing.agents, "unrelated agent entry must be untouched");
+  });
+});
+
+test("clearAgentRoute: emptying the only agents entry saves an empty profile, does not delete routing.json", async () => {
+  await withIsolatedStoreDirs(async () => {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    writeAgent(root, "coding-specialist.md", ["name: coding-specialist"]);
+    writeRouting(root, {
+      version: 1,
+      agents: {
+        "coding-specialist": { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      },
+    });
+
+    const result = await clearAgentRoute(root, "coding-specialist", { scriptsDir });
+    assert.equal(result.handled, true, JSON.stringify(result));
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), true, "routing.json must not be deleted when emptied");
+    const routing = readRouting(root) as { agents?: Record<string, unknown> };
+    assert.deepEqual(routing.agents, {});
+  });
+});
+
+test("clearAgentRoute (real scripts): strips the managed backend block, or restores the hand-written backup", async () => {
+  const REPO_ROOT = path.resolve(__dirname, "..", "..");
+  await withIsolatedStoreDirs(async () => {
+    const root = tmpRoot();
+    writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
+
+    const saved = saveRoutingProfile({
+      root,
+      scriptsDir: REPO_ROOT,
+      profile: {
+        version: 1,
+        agents: { worker: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } },
+      },
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    const appliedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");
+    assert.match(appliedContent, /managed-by: tycoon-routing/);
+
+    const result = await clearAgentRoute(root, "worker", { scriptsDir: REPO_ROOT });
+    assert.equal(result.handled, true, JSON.stringify(result));
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+
+    const clearedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");
+    assert.doesNotMatch(clearedContent, /managed-by: tycoon-routing/, "clearAgentRoute must re-run apply-routing-profile.mjs to strip the managed block");
   });
 });

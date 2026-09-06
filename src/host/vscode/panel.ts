@@ -55,7 +55,7 @@ import {
   type ProviderId,
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
-import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
+import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1176,6 +1176,13 @@ export class TycoonPanel {
             this._handleSetUseMultipleLlms(parsedSetUseMultipleLlms.data.value);
           } else {
             console.error("TycoonAgents: setUseMultipleLlms payload rejected:", parsedSetUseMultipleLlms.error.message);
+          }
+        } else if (message.type === MSG.CLEAR_AGENT_ROUTE) {
+          const parsedClearAgentRoute = MSG_SCHEMAS.CLEAR_AGENT_ROUTE.safeParse(message);
+          if (parsedClearAgentRoute.success) {
+            void this._handleClearAgentRoute(parsedClearAgentRoute.data.agentId);
+          } else {
+            console.error("TycoonAgents: clearAgentRoute payload rejected:", parsedClearAgentRoute.error.message);
           }
         } else if (message.type === MSG.SET_DELEGATION_MODE) {
           const parsedSetDelegationMode = MSG_SCHEMAS.SET_DELEGATION_MODE.safeParse(message);
@@ -6891,8 +6898,44 @@ export class TycoonPanel {
    */
   private _handleSaveRouting(profile: unknown): void {
     const root = this._projectRoot();
-    const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath });
+    const effectiveHarness = this._resolveEffectiveHarness(root);
+    const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath, effectiveHarness });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    this._handleGetRouting();
+  }
+
+  /** Shared effective-harness resolution for saveRoutingProfile callers
+   *  (p20-t1) — same describeProviderSelection call _buildRoutingVisibility
+   *  and _buildHarnessSettings already make, falling back to "claude-code"
+   *  on any error so a save is never blocked by an unrelated failure here. */
+  private _resolveEffectiveHarness(root: string): string {
+    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
+    try {
+      return describeProviderSelection({ settingValue, cwd: root }).effective;
+    } catch {
+      return "claude-code";
+    }
+  }
+
+  /** Handles MSG.CLEAR_AGENT_ROUTE (p20-t1): removes one agent's explicit
+   *  routing.json entry, then re-posts SETTINGS + ROUTING like
+   *  _handleSetAgentModel does. */
+  private async _handleClearAgentRoute(agentId: string): Promise<void> {
+    if (!isSafeAgentId(agentId)) {
+      console.error(`TycoonAgents: clearAgentRoute rejected unsafe agent id "${agentId}".`);
+      return;
+    }
+    const root = this._projectRoot();
+    try {
+      const result = await clearAgentRoute(root, agentId, { scriptsDir: this._extensionUri.fsPath });
+      if (result.handled && !result.ok) {
+        console.error("TycoonAgents: clearAgentRoute failed:", result.errors.join("; "));
+      }
+      this._rosterModelCache = undefined;
+    } catch (err) {
+      console.error("TycoonAgents: clearAgentRoute failed:", err instanceof Error ? err.message : err);
+    }
+    this._handleGetSettings();
     this._handleGetRouting();
   }
 
@@ -7087,13 +7130,7 @@ export class TycoonPanel {
    * describeProviderSelection call `_buildHarnessSettings` already makes to
    * find the effective harness, so the two slices never disagree. */
   private _buildRoutingVisibility(root: string): RoutingVisibility {
-    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
-    let effectiveHarness: string;
-    try {
-      effectiveHarness = describeProviderSelection({ settingValue, cwd: root }).effective;
-    } catch {
-      effectiveHarness = "claude-code";
-    }
+    const effectiveHarness = this._resolveEffectiveHarness(root);
     try {
       return describeRoutingVisibility(root, effectiveHarness);
     } catch {

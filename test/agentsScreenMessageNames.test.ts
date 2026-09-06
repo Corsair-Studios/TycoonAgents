@@ -4,20 +4,24 @@
  * Attribution header - optional; end users may remove it.
  */
 
-// p19-t3: the Settings "Agents" and "Keyword routing" sections moved into
-// the Agents modal (formerly Routing; #menu-routing id kept, label now
-// "Agents" — see renderRoutingModal, media/main.js ~18087-18260). This is a
-// source-text (grep-based) drift guard, not a DOM-driven one: some of these
-// wire strings are posted from the Agents modal itself (setAgentModel,
-// setAgentKeywords, removeAgent, saveRouting, getRouting), while
-// setUseMultipleLlms is posted from the "Multiple LLMs" toggle that stayed
-// on the plain Settings screen (media/main.js ~18687-18690) — a DOM-driven
-// "posted from the Agents screen" assertion would be false for that one.
-// The shared, honestly-testable property across all six is simpler and more
-// durable: the literal wire string must still exist as an argument to a
-// `vscode.postMessage(...)` call somewhere in media/main.js, so the host's
-// message.ts handlers (src/host/vscode/messages.ts) keep matching. A rename
-// on either side (webview or host) would otherwise regress silently.
+// p19-t3 / p20-t2: the Settings "Agents" and "Keyword routing" sections moved
+// into the Agents modal (formerly Routing; #menu-routing id kept, label now
+// "Agents" — see renderRoutingModal, media/main.js ~18250-18260). This is a
+// source-text (grep-based) drift guard, not a DOM-driven one: these wire
+// strings are posted from the Agents modal itself (setAgentModel,
+// setAgentKeywords, removeAgent, clearAgentRoute, saveRouting, getRouting).
+// setUseMultipleLlms is NOT checked here any more: p20-t2 removed the
+// Settings screen's "Use multiple LLMs" checkbox entirely, and media/main.js
+// no longer posts that message at all (grepped: zero occurrences) — its MSG
+// constant stays declared in src/host/vscode/messages.ts for backward wire
+// compatibility, but nothing in the webview sends it, so asserting it's
+// still posted would be testing a message the UI can no longer produce.
+// The shared, honestly-testable property across the remaining wire strings
+// is simpler and more durable: the literal wire string must still exist as
+// an argument to a `vscode.postMessage(...)` call somewhere in media/main.js,
+// so the host's message.ts handlers (src/host/vscode/messages.ts) keep
+// matching. A rename on either side (webview or host) would otherwise
+// regress silently.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -53,8 +57,16 @@ test("Agents/Settings screens: removeAgent is still posted with its unchanged wi
   assert.ok(postsLiteralType("removeAgent"), 'expected a `vscode.postMessage({ type: "removeAgent", ... })` call in media/main.js');
 });
 
-test("Multiple LLMs toggle (plain Settings screen): setUseMultipleLlms is still posted with its unchanged wire string", () => {
-  assert.ok(postsLiteralType("setUseMultipleLlms"), 'expected a `vscode.postMessage({ type: "setUseMultipleLlms", ... })` call in media/main.js');
+test("p20-t2: setUseMultipleLlms is no longer posted anywhere in media/main.js (the checkbox was removed)", () => {
+  assert.equal(
+    postsLiteralType("setUseMultipleLlms"),
+    false,
+    'the "Use multiple LLMs" checkbox was removed from Settings (p20-t2) — media/main.js should no longer post { type: "setUseMultipleLlms", ... }',
+  );
+});
+
+test("Agents modal (classic density): clearAgentRoute is posted with its unchanged wire string", () => {
+  assert.ok(postsLiteralType("clearAgentRoute"), 'expected a `vscode.postMessage({ type: "clearAgentRoute", ... })` call in media/main.js');
 });
 
 // getRouting/saveRouting are posted via the ROUTING_MSG constant object
@@ -84,7 +96,7 @@ test("Agents modal: saveRouting is still the ROUTING_MSG.SAVE wire value, posted
 // silent drift this file exists to catch.
 test("DRIFT GUARD: every message name checked here also exists as a wire value in src/host/vscode/messages.ts's MSG object", () => {
   const messagesSrc = readFileSync(MESSAGES_TS_PATH, "utf8");
-  for (const wire of ["setAgentModel", "setAgentKeywords", "removeAgent", "setUseMultipleLlms", "getRouting", "saveRouting"]) {
+  for (const wire of ["setAgentModel", "setAgentKeywords", "removeAgent", "clearAgentRoute", "setUseMultipleLlms", "getRouting", "saveRouting"]) {
     assert.match(
       messagesSrc,
       new RegExp(`:\\s*"${wire}"`),

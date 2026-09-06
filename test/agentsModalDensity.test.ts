@@ -4,16 +4,17 @@
  * Attribution header - optional; end users may remove it.
  */
 
-// p19-t3: density selection for the Agents modal (formerly Routing; the
-// menu id #menu-routing is kept, its visible label is now "Agents" — see
-// renderRoutingModal, media/main.js ~18087-18260). Density is computed from
-// `lastSettings.routing.visible`:
-//   - `visible: false` -> "simple" density: no "Default for all agents"
-//     section, no per-agent slot/fallback editor, and the fixed footer
-//     shows ONLY the Close button (Save/Revert/Clear stay hidden).
-//   - `visible: true` (or the field absent, media/main.js:18106) -> "full"
-//     density: the "Default for all agents" section appears, and the
-//     footer shows Save (Revert/Clear too; Close stays hidden).
+// p19-t3 / p20-t2: density selection for the Agents modal (formerly Routing;
+// the menu id #menu-routing is kept, its visible label is now "Agents" — see
+// renderRoutingModal, media/main.js ~18250-18260). Density is now keyed on
+// `lastSettings.harness.effective`, not the old `routing.visible` toggle:
+//   - harness.effective !== "opencode" (or harness absent) -> "simple"
+//     density: no "Default for all agents" section, no per-agent slot/
+//     fallback editor, and the fixed footer shows ONLY the Close button
+//     (Save/Revert/Clear stay hidden).
+//   - harness.effective === "opencode" -> "full" density: the "Default for
+//     all agents" section appears, and the footer shows Save (Revert/Clear
+//     too; Close stays hidden).
 //
 // This boots the REAL media/main.js via readFileSync + node:vm, the same
 // technique test/routingView.test.ts and test/resolveOrchestratorPrice.test.ts
@@ -153,8 +154,9 @@ function bootMainJs() {
   stage.height = 760;
 
   let stateStore: any = {};
+  const posted: any[] = [];
   win.acquireVsCodeApi = () => ({
-    postMessage: () => {},
+    postMessage: (m: any) => posted.push(m),
     getState: () => stateStore,
     setState: (s: any) => {
       stateStore = s;
@@ -195,10 +197,10 @@ function bootMainJs() {
     win.dispatchEvent(new win.MessageEvent("message", { data }));
   }
 
-  return { win, doc, dispatch, errors };
+  return { win, doc, dispatch, errors, posted };
 }
 
-function agentsPayload(routingVisible: boolean) {
+function agentsPayload(harnessEffective: string) {
   return {
     hook: { installed: true, lastActivityAt: null },
     agents: [
@@ -209,7 +211,14 @@ function agentsPayload(routingVisible: boolean) {
     delegationHealth: {},
     hookHealth: { healthy: true, issueCount: 0 },
     contextBudget: null,
-    routing: { visible: routingVisible, reason: routingVisible ? "toggle" : "hidden", useMultipleLlms: routingVisible, profileActive: false, routedAgentCount: 0 },
+    harness: { effective: harnessEffective },
+    routing: {
+      visible: harnessEffective === "opencode",
+      reason: harnessEffective === "opencode" ? "harness-opencode" : "hidden",
+      useMultipleLlms: false,
+      profileActive: false,
+      routedAgentCount: 0,
+    },
   };
 }
 
@@ -237,18 +246,18 @@ function routingPayloadFixture() {
   };
 }
 
-/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents") via a settings + routing payload pair, at the given routing.visible density. */
-function openAgentsModalAtDensity(doc: any, dispatch: (d: any) => void, routingVisible: boolean) {
+/** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents") via a settings + routing payload pair, at the density implied by the given effective harness. */
+function openAgentsModalAtDensity(doc: any, dispatch: (d: any) => void, harnessEffective: string) {
   const menuRoutingBtn = doc.getElementById("menu-routing");
   assert.ok(menuRoutingBtn, "the DOM fixture should carry a static #menu-routing element");
   menuRoutingBtn.click();
-  dispatch({ type: "settings", payload: agentsPayload(routingVisible) });
+  dispatch({ type: "settings", payload: agentsPayload(harnessEffective) });
   dispatch({ type: "routing", payload: routingPayloadFixture() });
 }
 
-test("Agents modal density: routing.visible === false renders simple density (no defaults section, no slot editor, footer shows only Close)", () => {
+test("Agents modal density: harness.effective !== 'opencode' renders simple density (no defaults section, no slot editor, footer shows only Close)", () => {
   const { doc, dispatch, errors } = bootMainJs();
-  openAgentsModalAtDensity(doc, dispatch, false);
+  openAgentsModalAtDensity(doc, dispatch, "claude");
 
   const modal = doc.getElementById("routing-modal");
   assert.ok(modal, "Agents modal should render");
@@ -279,9 +288,9 @@ test("Agents modal density: routing.visible === false renders simple density (no
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("Agents modal density: routing.visible === true renders full density (defaults section present, Save present)", () => {
+test("Agents modal density: harness.effective === 'opencode' renders full density (defaults section present, Save present)", () => {
   const { doc, dispatch, errors } = bootMainJs();
-  openAgentsModalAtDensity(doc, dispatch, true);
+  openAgentsModalAtDensity(doc, dispatch, "opencode");
 
   const modal = doc.getElementById("routing-modal");
   assert.ok(modal, "Agents modal should render");
@@ -311,9 +320,207 @@ test("Agents modal density: routing.visible === true renders full density (defau
 
 test('Agents modal: the menu entry that opens it (#menu-routing) is present, and the modal title reads "Agents"', () => {
   const { doc, dispatch, errors } = bootMainJs();
-  openAgentsModalAtDensity(doc, dispatch, true);
+  openAgentsModalAtDensity(doc, dispatch, "opencode");
   const title = doc.getElementById("routing-modal-title");
   assert.ok(title, "#routing-modal-title should render");
   assert.equal(title.textContent, "Agents", '#menu-routing kept its id but the modal it opens must be titled "Agents"');
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Agents modal density: no harness field at all also renders simple density", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  const payload = agentsPayload("claude");
+  delete (payload as any).harness;
+  dispatch({ type: "settings", payload });
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+
+  const saveBtn = doc.getElementById("routing-save-btn");
+  const closeBtn = doc.getElementById("routing-footer-close-btn");
+  assert.equal(saveBtn.hidden, true, "absent harness should fall back to simple density (Save hidden)");
+  assert.equal(closeBtn.hidden, false, "absent harness should fall back to simple density (Close visible)");
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+// ---------------------------------------------------------------------------
+// Classic (simple) density: p20-t2's "Use another provider for this agent"
+// checkbox — unchecked/frontmatter, checked+expanded/routed,
+// checked+disabled/hand-written, and the orchestrator's read-only text.
+// ---------------------------------------------------------------------------
+
+function classicRoutingPayloadFixture() {
+  return {
+    profile: null,
+    path: ".claude/tycoon/routing.json",
+    errors: [],
+    orchestrator: {
+      id: "orchestrator",
+      backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+      source: "default",
+    },
+    agents: [
+      {
+        id: "frontmatter-agent",
+        name: "frontmatter-agent",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" },
+        source: "frontmatter",
+        routeSource: "frontmatter",
+        handWrittenBackend: false,
+      },
+      {
+        id: "routed-agent",
+        name: "routed-agent",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+        source: "explicit",
+        routeSource: "explicit",
+        handWrittenBackend: false,
+      },
+      {
+        id: "handwritten-agent",
+        name: "handwritten-agent",
+        backend: { vendor: "google", transport: "mcp", mcpServer: "gemini", model: "google/gemini-2.5-pro", costModelClass: "metered" },
+        source: "frontmatter",
+        routeSource: "frontmatter",
+        handWrittenBackend: true,
+      },
+    ],
+    envProbe: {},
+    presets: { vendors: ["anthropic", "google"], models: [] },
+    lastApplied: {},
+  };
+}
+
+function classicSettingsPayload() {
+  return {
+    hook: { installed: true, lastActivityAt: null },
+    agents: [
+      { id: "orchestrator", name: "Orchestrator", model: null, isOrchestrator: true, keywords: "" },
+      { id: "frontmatter-agent", name: "Frontmatter Agent", model: "sonnet", isOrchestrator: false, keywords: "" },
+      { id: "routed-agent", name: "Routed Agent", model: "opus", isOrchestrator: false, keywords: "" },
+      { id: "handwritten-agent", name: "Handwritten Agent", model: "google/gemini-2.5-pro", isOrchestrator: false, keywords: "", vendor: "google", handWrittenBackend: true },
+    ],
+    delegation_mode: "direct",
+    delegationHealth: {},
+    hookHealth: { healthy: true, issueCount: 0 },
+    contextBudget: null,
+    harness: { effective: "claude" },
+    routing: { visible: true, reason: "per-agent", useMultipleLlms: false, profileActive: true, routedAgentCount: 1 },
+  };
+}
+
+function openClassicAgentsModal(doc: any, dispatch: (d: any) => void) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  assert.ok(menuRoutingBtn, "the DOM fixture should carry a static #menu-routing element");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: classicSettingsPayload() });
+  dispatch({ type: "routing", payload: classicRoutingPayloadFixture() });
+}
+
+test("Classic density: frontmatter agent's provider checkbox renders unchecked, no editor", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="frontmatter-agent"]');
+  assert.ok(row, "frontmatter-agent provider-toggle-row should render");
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  assert.ok(checkbox, "checkbox should render");
+  assert.equal(checkbox.checked, false, "frontmatter agent's checkbox must start unchecked");
+  assert.equal(checkbox.disabled, false);
+
+  const editor = doc.querySelector('.classic-provider-editor[data-agent-id="frontmatter-agent"]');
+  assert.equal(editor, null, "no slot/fallback editor should render for an unchecked frontmatter agent");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: routed agent's provider checkbox renders checked and expanded with the slot editor visible", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="routed-agent"]');
+  assert.ok(row, "routed-agent provider-toggle-row should render");
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  assert.equal(checkbox.checked, true, "a routed (non-frontmatter) agent's checkbox must start checked");
+  assert.equal(checkbox.disabled, false);
+
+  const editor = doc.querySelector('.classic-provider-editor[data-agent-id="routed-agent"]');
+  assert.ok(editor, "the slot/fallback editor should render for an expanded routed agent");
+  assert.ok(editor.querySelector(".routing-slot-fields"), "slot editor fields should render inside it");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: hand-written-backend agent's checkbox renders checked and disabled with the MCP help text", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="handwritten-agent"]');
+  assert.ok(row, "handwritten-agent provider-toggle-row should render");
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  assert.equal(checkbox.checked, true, "a hand-written-backend agent's checkbox must render checked");
+  assert.equal(checkbox.disabled, true, "a hand-written-backend agent's checkbox must be disabled");
+
+  const helpText = row.querySelector(".delegation-mode-option-help");
+  assert.ok(helpText, "help text should render");
+  assert.match(helpText.textContent, /via MCP \(hand-written\)/, `expected hand-written MCP help text, got: "${helpText.textContent}"`);
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: checking the frontmatter agent's checkbox reveals the editor and Save/Revert become visible", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="frontmatter-agent"]');
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  checkbox.checked = true;
+  checkbox.dispatchEvent(new (doc.defaultView as any).Event("change", { bubbles: true }));
+
+  const editor = doc.querySelector('.classic-provider-editor[data-agent-id="frontmatter-agent"]');
+  assert.ok(editor, "checking the box should reveal the slot/fallback editor");
+
+  const saveBtn = doc.getElementById("routing-save-btn");
+  assert.equal(saveBtn.hidden, false, "Save must become visible once a classic-density card is expanded");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: unchecking a routed agent's checkbox posts clearAgentRoute with its id", () => {
+  const { doc, dispatch, errors, posted } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="routed-agent"]');
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  assert.equal(checkbox.checked, true);
+  checkbox.checked = false;
+  checkbox.dispatchEvent(new (doc.defaultView as any).Event("change", { bubbles: true }));
+
+  // Note: the card re-renders expanded again on this same tick, because
+  // `routingAgent.routeSource` still reads "explicit" until a fresh
+  // "routing" payload round-trips from the host after clearAgentRoute is
+  // handled server-side — expansion falls back to `isRouted` once the local
+  // routingExpandedAgents override is deleted (media/main.js's classic
+  // checkbox change handler). The externally-observable effect of the
+  // uncheck in THIS render pass is the posted message, asserted below.
+  const clearMsg = posted.find((m) => m && m.type === "clearAgentRoute");
+  assert.ok(clearMsg, `expected a clearAgentRoute message to be posted, got: ${JSON.stringify(posted)}`);
+  assert.equal(clearMsg.agentId, "routed-agent");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: orchestrator card shows the OpenCode-only routing note", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const orchestratorHelp = doc.querySelector(".orchestrator-model-help");
+  assert.ok(orchestratorHelp, "orchestrator help text should render");
+  assert.match(
+    orchestratorHelp.textContent,
+    /Routing the orchestrator applies only when OpenCode runs your agents\./,
+    `expected the OpenCode-only routing note, got: "${orchestratorHelp.textContent}"`,
+  );
+
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

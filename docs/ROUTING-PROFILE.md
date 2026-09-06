@@ -685,24 +685,50 @@ untouched.
 
 ### Agents screen visibility
 
-The Agents screen (menu entry "Agents", always visible) switches to full
-density — the routing slot editor, provenance labels, Override/Use default,
-and the Default for all agents card — when the effective harness is
-OpenCode, or **Use multiple LLMs** is turned on in Settings under Claude
-Code (`describeRoutingVisibility`); otherwise it renders the simple density
-(name, Claude tier radios, keyword chips/editor, stats, Remove). That
-toggle persists as `useMultipleLlms` in `.claude/tycoon/execution.json`,
-alongside the `provider` key
-(`readUseMultipleLlms`/`writeUseMultipleLlms`, `src/core/providerSelection.ts`).
+The Agents screen (menu entry "Agents", always visible) starts with a
+harness dropdown (Claude Code default, OpenCode) at the top; Settings keeps
+a copy of the same dropdown plus an "Open Agents" link. The dropdown's
+value alone decides density (`describeRoutingVisibility`: visible when the
+effective harness is `opencode`, or when `routedAgentCount > 0` under
+Claude Code) — there is no separate profile-visibility toggle.
 
-Switching back to simple density never deletes `routing.json` — it only
-hides the routing controls. If a profile is still active (a non-empty
-`agents` map or a set `defaults` model) while density is simple, Settings
-shows `Routing profile active · N agents routed` with a **Show** action
-that flips `useMultipleLlms` back
-on.
+Under the **Claude Code** harness, Agents shows classic cards: name, Claude
+tier radios, keyword chips/editor, stats, and Remove, plus a checkbox "Use
+another provider for this agent" on each card. The checkbox starts
+unchecked for an agent whose `routeSource` is `frontmatter`, and checked
+(with its editor expanded) for one that already has an explicit or
+default-derived route. Checking it expands that card's routing slot editor
+(vendor, custom endpoint with provider name, model, cost class,
+endpoint/API key set/unset, fallback) inline, with Save/Revert in the
+card's footer; Save writes a sparse entry into `.claude/tycoon/routing.json`
+via `saveRoutingProfile`. Unchecking it posts `clearAgentRoute` for that
+agent id, which removes it from `routing.json` (preserving `defaults` and
+every other agent), reruns apply/unapply so the managed `backend:` block is
+stripped, and restores the agent's prior frontmatter or hand-written block.
+Agents with a hand-written `backend:` block — the MCP-bridged reviewers
+(`codex-reviewer`, `gemini-reviewer`, `kimi-reviewer`) — show the checkbox
+checked and locked, labeled "Backend: <vendor> via MCP (hand-written)".
 
-Under Claude Code, Task subagents always run Claude models regardless of
-`routing.json` — routing only matters there for the MCP-bridged reviewer
-agents (which read their own hand-written `backend:` block, untouched by
-routing) and as prep for switching the harness to OpenCode later.
+The orchestrator card is read-only under Claude Code in every case: "Session
+model: <model> — set with /model in Claude Code. Routing the orchestrator
+applies only when OpenCode runs your agents." Saving a changed orchestrator
+route while the effective harness is `claude` is rejected with an error
+message rather than silently dropped; under OpenCode it saves as before.
+
+Under the **OpenCode** harness, Agents renders full density as before: the
+"Default for all agents" card, an editable orchestrator card, and the
+routing/fallback editor on every agent card.
+
+Switching the harness back to Claude Code, or unchecking an agent's
+checkbox, never deletes `routing.json` beyond the specific agent cleared —
+it only changes what's shown or which entries remain.
+
+#### Using another provider for one agent under Claude Code
+
+Checking "Use another provider for this agent" under the Claude Code
+harness writes a real route, but it only takes effect immediately for
+MCP-bridged agents (the hand-written reviewers above, which already call
+out to their vendor over MCP) — under Claude Code, Task subagents always
+run Claude models regardless of `routing.json`, so a route saved on any
+other agent there is prep, not live effect, until the harness is switched
+to OpenCode, at which point every routed agent's route applies.
