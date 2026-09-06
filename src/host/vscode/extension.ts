@@ -7,7 +7,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { Runtime } from "./runtime";
-import { TycoonPanel } from "./panel";
+import { TycoonPanel, readExplicitProviderSetting } from "./panel";
 import { runDemo } from "./demo";
 import type { Provider } from "../../core/provider";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
@@ -153,7 +153,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const providerId = resolveProviderId({
-        settingValue: cfg.get<string>("provider"),
+        settingValue: readExplicitProviderSetting(cfg),
         projectDir: projectRoot,
       });
       log(`TycoonAgents: using provider "${providerId}".`);

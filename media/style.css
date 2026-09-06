@@ -554,12 +554,26 @@ body {
 }
 
 /* The settings sections are the internal scroll region so the card never
-   exceeds the viewport and the Back button (last child) stays pinned. */
+   exceeds the viewport and the Back button (last child) stays pinned.
+   #setup-card carries 26px horizontal padding for its other (non-scrolling,
+   auto-width, centered) children, which insets any scrollbar drawn on a
+   100%-width child by that same 26px — pushing it well inside the content
+   and overlapping the right edge of full-width buttons (e.g. "Troubleshoot
+   & Fix", "UEFN / Verse details"). margin-right cancels exactly that
+   reserved padding so this scroll container's right edge — and its
+   scrollbar — reaches the card's true right edge, while padding-right puts
+   back an 8-12px gutter between the content and the scrollbar. Left side is
+   untouched so content stays aligned with the card's other children. */
 #setup-config {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
   width: 100%;
+  margin-right: -26px;
+  padding-right: 12px;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 10px;

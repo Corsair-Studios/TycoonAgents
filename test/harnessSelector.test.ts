@@ -30,7 +30,16 @@ function makeVscodeStub(): unknown {
     __esModule: true,
     workspace: {
       getConfiguration: () => ({
-        get: (key: string) => (key === "provider" ? configuredProviderSetting : undefined),
+        // Real VS Code's `.get()` always returns the package.json default
+        // ("claude-code") once the setting is declared, even when the user
+        // never touched it — that's what caused the original bug. `.inspect()`
+        // is the only way to tell "explicitly set" from "still default", so
+        // it reports `globalValue` only when a test has actually set one.
+        get: (key: string) => (key === "provider" ? (configuredProviderSetting ?? "claude-code") : undefined),
+        inspect: (key: string) =>
+          key === "provider"
+            ? { key: "tycoonagents.provider", defaultValue: "claude-code", globalValue: configuredProviderSetting }
+            : undefined,
       }),
     },
   };
@@ -90,6 +99,30 @@ test("_buildHarnessSettings: reflects the VS Code setting as source 'setting'", 
   assert.equal(result.effective, "opencode");
   assert.equal(result.source, "setting");
   assert.equal(result.mismatch, false);
+  configuredProviderSetting = undefined;
+});
+
+test("_buildHarnessSettings: setting left at its package.json default (never explicitly set) is not source 'setting' and doesn't mask execution.json (audit fix: inspect() vs get())", () => {
+  configuredProviderSetting = undefined; // inspect() reports no globalValue -> only defaultValue exists
+  const root = tmpRoot();
+  fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "opencode" }));
+  const fake = makeFakePanel(root);
+  const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+  assert.notEqual(result.source, "setting");
+  assert.equal(result.source, "execution");
+  assert.equal(result.effective, "opencode");
+});
+
+test("_buildHarnessSettings: setting explicitly set overrides execution.json as source 'setting'", () => {
+  configuredProviderSetting = "opencode"; // simulates inspect().globalValue actually set by the user
+  const root = tmpRoot();
+  fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "claude-code" }));
+  const fake = makeFakePanel(root);
+  const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+  assert.equal(result.source, "setting");
+  assert.equal(result.effective, "opencode");
   configuredProviderSetting = undefined;
 });
 

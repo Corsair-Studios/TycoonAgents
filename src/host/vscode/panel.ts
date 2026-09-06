@@ -558,6 +558,25 @@ function enumerateFixedDrives(): string[] {
   return drives;
 }
 
+/**
+ * Reads the `tycoonagents.provider` VS Code setting, but only when it has
+ * been EXPLICITLY set (global, workspace, or workspace-folder scope) —
+ * never the package.json-declared default. `getConfiguration().get()`
+ * always returns a value once package.json declares a default (here,
+ * "claude-code"), which made describeProviderSelection/resolveProviderId
+ * believe the setting had been overridden on every install, permanently
+ * masking execution.json and disabling the harness dropdown. `inspect()`
+ * separates the default from an actual user-set value, so this returns
+ * undefined unless someone actually set it.
+ */
+export function readExplicitProviderSetting(
+  cfg: Pick<ReturnType<typeof vscode.workspace.getConfiguration>, "inspect">,
+): string | undefined {
+  const inspected = cfg.inspect<string>("provider");
+  if (!inspected) return undefined;
+  return inspected.workspaceFolderValue ?? inspected.workspaceValue ?? inspected.globalValue;
+}
+
 /** Singleton webview panel that renders the TycoonAgents visualization. */
 // The bounded seed wait lives in themeReady.ts so src/extension/main.ts (the
 // Theater sidebar) can share it without importing this module. Re-exported
@@ -6909,7 +6928,7 @@ export class TycoonPanel {
    *  and _buildHarnessSettings already make, falling back to "claude-code"
    *  on any error so a save is never blocked by an unrelated failure here. */
   private _resolveEffectiveHarness(root: string): string {
-    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
+    const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
     try {
       return describeProviderSelection({ settingValue, cwd: root }).effective;
     } catch {
@@ -7151,7 +7170,7 @@ export class TycoonPanel {
     requiresRestart: boolean;
     needsDefaultRoute: boolean;
   } {
-    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
+    const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
     const description = describeProviderSelection({ settingValue, cwd: root });
     // Undefined only before any provider has ever started in this window
     // (no _getRunningProviderId wired yet) — treat that as "matches", since
