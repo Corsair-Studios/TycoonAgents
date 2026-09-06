@@ -86,40 +86,10 @@ These settings were configured during installation:
 - **Parallel agent limit**: 2 — run at most 2 heavyweight (sonnet) workers concurrently. Lightweight Explore/haiku agents are exempt, and the tycoon-ready-test skill may exceed the limit by design.
 - **Handoff verbosity**: structured — pass structured context between agents
 
-
-## Teams Coordination
-
-This project has experimental multi-agent teams enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`).
-
-When working in a team session:
-- Teammate idle hooks log activity to `agent-activity.json` for visualization
-- Task completed hooks broadcast completion events to teammates
-- Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in your environment before starting
-
-## Session Journal
-
-A rolling journal of recent prompts and summaries is maintained at `.claude/session-journal.json`.
-
-**At the start of each session:** Read it to recover context from the previous session.
-
-**At the end of each response:** Find the last entry where `summary` is `null` and set it to 1–2 compact sentences describing what was accomplished. Keep summaries under 150 characters. Example:
-```json
-{ "timestamp": "...", "prompt": "Add dark mode", "summary": "Added DarkModeToggle to Settings.tsx, wired to ThemeContext." }
-```
-The hook handles trimming to the configured window automatically.
-
-
-## Auto Memory
-
-Save: user preferences/corrections that should persist across sessions, project decisions/deadlines not in code, external references (dashboards, docs, Slack). Do NOT save: code patterns, file paths, git history, or anything already in CLAUDE.md. Check for existing memories before adding new ones.
-
-## TycoonAgents Ready Test
-
-When the user says "ready test", "tycoon agents ready test", or "test the agents", invoke the `tycoon-ready-test` skill (`.claude/skills/tycoon-ready-test/SKILL.md`). It discovers all agents by scanning `.claude/agents/*.md`, spawns every non-coordinator agent in parallel via the task tool (`@agent-name`), and reports pass/fail per agent.
-
 ## Project-Specific Instructions
 
 <!-- tycoon:delegation -->
+
 ## Delegation
 
 Delegate implementation work to specialist agents via the task tool (`@agent-name`) rather
@@ -351,15 +321,14 @@ work. The user is the final reviewer — the orchestrator surfaces the
 reviewed change for the user to approve and never treats the `uefn-auditor` agent's
 pass as final acceptance.
 
-## Session Journal
+### Review model tiering (added 2026-09-06)
 
-A rolling journal of the last 3 prompts is maintained at `.claude/session-journal.json`.
+The review pass above is unchanged. This subsection only fixes which model the orchestrator uses for each review call:
 
-**At the start of each session:** read it to recover context from previous sessions.
-
-**At the end of each response:** find the last entry whose `summary` is `null` and set it to 1-2 sentences (under 150 characters) describing what was accomplished.
-
-The hook appends entries and trims to the last 3 automatically.
+- First-pass review of a change that touches src/core, hosts (panel.ts, standalone/src/server.mjs), hooks/, scripts/, secrets or routing files, or anything security-relevant → the review agent on Sonnet.
+- First-pass review of a change limited to CSS, labels, copy, docs, or tests → the review agent on Haiku.
+- The single re-check after the one permitted round of fixes → a read-only Haiku pass (Explore) verifying the specific findings landed; it does not re-review the whole change.
+- The orchestrator never skips the review pass because a change looks small; tiering changes the model, not whether the pass runs.
 
 ## Project Plan routing (feature enabled)
 
@@ -387,50 +356,7 @@ unless the user explicitly asks to re-plan.
 <!-- /tycoon:delegation -->
 
 <!-- tycoon:coderules -->
-## Coding standards by path
 
-These are starting defaults, not fixed law — tune the path patterns and
-standards below to fit this project's actual layout and conventions.
-
-| Area | Path patterns | Standards |
-| --- | --- | --- |
-| Gameplay / systems logic | `src/game/**`, `src/systems/**` | No hardcoded tuning values — read them from data/config; keep simulation logic deterministic and covered by tests. |
-| UI / HUD | `src/ui/**`, `**/*.tsx`, `**/*.css` | Keep layout, state, and styling changes reviewable together; prefer the UI/design specialist for canvas, animation, and CSS work. |
-| Networking / multiplayer | `src/net/**`, `src/server/**` | Validate all client input server-side; never trust client-reported state; keep message schemas versioned. |
-| Assets / data | `assets/**`, `data/**`, `**/*.json` | No secrets or absolute filesystem paths baked into shipped data; keep generated assets reproducible from their source config. |
-| Config / build | `*.config.*`, `package.json`, `tsconfig*.json` | No secrets or machine-specific absolute paths; changes here should not silently alter another area's behavior. |
-| Tests | `test/**`, `**/*.spec.*`, `**/*.test.*` | Tests cover the stated acceptance criteria, stay deterministic (no real timers/network), and are verified by someone other than the author of the change under test. |
-| Engine scripts (GDScript / C# / Verse / Python) | `**/*.gd`, `**/*.cs`, `**/*.verse`, `**/*.py` | Keep editor-bridge imports side-effect-free; match the host engine's idioms rather than porting patterns from another language verbatim. |
-<!-- /tycoon:coderules -->
-
-## Path & Environment Discovery (core principle)
-
-This project is open source and installs on machines we will never see —
-different usernames, drives, IDEs, and folder layouts. **Any shipped tool
-must DISCOVER locations at runtime; it must never assume one machine's
-username, drive, IDE, install location, or folder layout.**
-
-Discovery ladder, in order: (1) an explicit environment-variable override,
-which always wins; (2) multiple independent signals, tried in order and
-de-duplicated — never one guess; (3) content-based matching over
-name-based matching wherever possible (e.g. parse a project manifest and
-compare its declared source path, never select by matching a folder
-name); (4) platform-appropriate probes where they exist (e.g. the Windows
-registry), always fail-open — a missing key or wrong platform must never
-raise.
-
-On failure: exit with an explicit error that lists every location tried
-and names the override variable to set — never return a
-clean/empty/success-looking result. This repo has a documented history of
-tools swallowing failures and returning success shapes.
-
-Known override variables — reuse these, don't invent competing names:
-`VERSE_LSP_PATH`, `UEFN_VERSE_PROJECT_DIR`, `UEFN_BRIDGE_DIR`.
-
-Full ladder detail, the testing rule (why a multi-project test on one
-machine proves nothing), and the reference exemplar
-(`media/uefn-bridge/init_unreal.py`, project-root discovery ~lines
-79-132) live in [`docs/PATH-DISCOVERY.md`](docs/PATH-DISCOVERY.md).
 
 ## OpenCode enforcement doctrine
 

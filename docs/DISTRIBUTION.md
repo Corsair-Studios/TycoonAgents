@@ -15,6 +15,12 @@
 ## 3a. VSIX output location
 - `npm run package` builds the VSIX into `dist/` (via `vsce package -o dist/`), never at the repo root. `dist/` is excluded by both `.gitignore` and `.vscodeignore`. Release artifacts are never committed — `npm run release` uploads the built VSIX as a GitHub Release asset (`gh release create`).
 
+## 3b. Scripted local release: `npm run release:patch` / `release:minor`
+- `node scripts/release-local.mjs patch|minor [--dry-run] [--message "<subject>"] [--allow a,b]` automates the local version-bump-and-package sequence: preflight (refuses a dirty tree outside `--allow`'s paths, and refuses if HEAD is already `chore(release): <version>` for the current version) → `npm version <bump> --no-git-tag-version` → commit `package.json`+`package-lock.json` as `chore(release): <version>` (trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`, overridable via `TYCOON_RELEASE_TRAILER`) → `npm run package` (build, full test suite, `verify:vsix-contents`) → reports the VSIX's size and file count.
+- `--dry-run` runs preflight only and prints the plan; nothing is changed.
+- It never pushes, tags, or creates a GitHub Release — that remains `npm run release` (see 3a). If packaging fails after the commit already landed, it prints the exact `git reset --soft HEAD~1` recovery line instead of rolling back automatically.
+- `release:patch`/`release:minor` (`scripts/release-local.mjs`) are local-only: commit + VSIX, nothing more. `npm run release` (`scripts/release.mjs`) additionally tags, pushes, and creates the GitHub Release.
+
 ## 4. Install robustness checklist
 Each item answers a real failure:
 - **Doctor / verify command (first-class).** Prints the *actual resolved paths* the system loads from — never assume. (Hooks can load from an unexpected dir — e.g. a Fortnite install's Content/Python — so never assume.)

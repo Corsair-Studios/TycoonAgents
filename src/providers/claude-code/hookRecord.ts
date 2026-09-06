@@ -36,9 +36,15 @@ export interface HookRecord {
   fallbackDepth?: number;    // 1-based index into the fallback chain for this dispatch. Present iff fallbackOf is.
   report?: string;           // SubagentStop only: the subagent's final assistant-message text, extracted
                               // from its transcript (lastAssistantTextFromTranscript in the hook script).
-                              // Capped at ~2000 chars with an explicit "… [truncated]" suffix when longer;
-                              // OPTIONAL and absent (never an empty string) when the transcript was
-                              // missing/unreadable or had no assistant prose to extract. Absent on records
-                              // from hook versions predating this field.
+                              // p21-t8: capped at 600 chars (capReportText in the hook script) at a
+                              // codepoint-safe boundary, with an appended " …[truncated N chars]" suffix
+                              // when longer. This IS what the panel/standalone UI shows — there is no
+                              // separate transient full-text path, the UI reads this field straight off
+                              // the persisted record. OPTIONAL and absent (never an empty string) when the
+                              // transcript was missing/unreadable or had no assistant prose to extract.
+                              // Absent on records from hook versions predating this field.
+  reportChars?: number;      // SubagentStop only: the ORIGINAL (pre-truncation) character length of the
+                              // extracted report text, so a genuinely short report can be distinguished
+                              // from one truncated to fit the 600-char cap. Present iff `report` is.
   at: number;                // epoch ms
 }

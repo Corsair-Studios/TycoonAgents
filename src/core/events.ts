@@ -53,7 +53,9 @@ export type NormalizedEvent =
   // HookRecord.report in providers/claude-code/hookRecord.ts for the exact
   // truncation/fail-open contract). Undefined on legacy records or when the
   // transcript was unavailable — never an empty string standing in for that.
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string }
+  // reportChars: the report's ORIGINAL (pre-truncation) length, present iff
+  // report is — lets consumers tell a short report from a truncated one.
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

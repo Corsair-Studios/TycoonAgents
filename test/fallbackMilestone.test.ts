@@ -299,6 +299,7 @@ test("PRD M2 (3): computeStateFromRecords for a no-fallbackOf fixture matches th
     modelBreakdown: undefined,
     cacheReadModelBreakdown: undefined,
     lastReport: undefined,
+    lastReportChars: undefined,
   });
 
   // Same fixture's rollup and per-agent cost path must show no diff from a

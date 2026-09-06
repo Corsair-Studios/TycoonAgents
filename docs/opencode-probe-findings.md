@@ -783,3 +783,65 @@ not cheap to test in this environment.
 **Restore, PASS.** `OLLAMA_BASE_URL` store file rewritten to
 `http://windows-2025.tail24845.ts.net:11434/v1`; `diff` against the
 pre-test backup byte-identical; `curl .../models` returned HTTP 200.
+
+## Per-subagent prompt cost (2026-09-06)
+
+p21-t2. Baseline delegation smoke (`opencode run "Delegate to the
+coding-specialist subagent: ask it to reply with exactly the word READY,
+then relay its reply verbatim."`) failed in this environment before
+producing a token count: `Error: "undefined/chat/completions" cannot be
+parsed as a URL` — the machine-local `ollama-choy-cloud` endpoint env var
+isn't resolvable here, so the SubagentStop record in
+`.claude/tycoon/activity.jsonl` for this run carries no `tokens` field
+(only `model`/`vendor`/`costModelClass`). Sample size: 0 successful runs;
+token-count-based before/after numbers below are NOT available. Falling
+back to byte/char size of the assembled inputs, which is what actually
+drives prompt token count 1:1 for this mostly-English-prose content.
+
+Per-spawn input for `coding-specialist` under OpenCode = its generated
+`.opencode/agents/coding-specialist.md` (frontmatter + role body + MCP
+preamble if any) + `AGENTS.md` (OpenCode's shared project context, read on
+every spawn regardless of agent).
+
+| Source | Before (bytes) | After (bytes) | Delta |
+| --- | --- | --- | --- |
+| `.opencode/agents/coding-specialist.md` (frontmatter+body, unchanged — sourced verbatim from `.claude/agents/coding-specialist.md`) | 3089 | 3089 | 0 |
+| `AGENTS.md` managed block: MANDATORY delegation sections, keyword tables, leaf-worker rules, review-pass wording, "who you means" text, OpenCode enforcement doctrine | ~26,600 (all of AGENTS.md minus the sections listed below) | unchanged (byte-identical, see proof below) | 0 |
+| `AGENTS.md`: Teams Coordination / Session Journal (x2) / Auto Memory / TycoonAgents Ready Test / Coding standards by path / Path & Environment Discovery sections (non-delegation) | ~4,894 | 0 (dropped from the OpenCode-facing copy only; CLAUDE.md itself untouched) | -4,894 |
+| `AGENTS.md`: Specialist roster table, vendor/model column | machine-routed value baked in by whatever local routing.json is active (e.g. `Ollama-choy-cloud · ollama-choy-cloud/qwen3.8:27b (local)`) | frontmatter/default value only (e.g. `Anthropic · anthropic/sonnet`), stable across machines and routing changes | 0 net bytes (both are short labels), but now cache-stable |
+| **Total `AGENTS.md`** | 28,217 | 23,323 | **-4,894 (-17.3%)** |
+| **Total per-spawn input (AGENTS.md + agent file)** | 31,306 | 26,412 | **-4,894 (-15.6%)** |
+
+Change made (scripts/generate-opencode-config.mjs):
+- `stripNonDelegationSections()` drops the six non-delegation `## ` sections
+  above from the OpenCode-facing `AGENTS.md` managed block only; every
+  delegation-doctrine heading (MANDATORY, keyword tables, leaf-worker rules,
+  Fallback Rule, Review pass, "who you means", Path & Environment Discovery
+  is NOT in the drop list) passes through byte-for-byte.
+- `normalizeRosterTable()` + `formatVendorModelLabel()` +
+  `isManagedBackendBlock()` rewrite only the roster table's vendor/model
+  cell, using each agent's un-routed frontmatter/default backend (falling
+  back to `Anthropic · anthropic/sonnet` when the on-disk `backend:` block
+  carries apply-routing-profile.mjs's `# managed-by: tycoon-routing`
+  marker) instead of copying whatever CLAUDE.md's own roster row currently
+  says. This makes `AGENTS.md` stop changing when a developer routes an
+  agent locally (verified: routed `coding-specialist` to a different model
+  via `apply-routing-profile.mjs`, regenerated, `git diff --stat AGENTS.md`
+  showed the identical non-delegation-only delta both before and after the
+  route; reverted).
+
+Byte-identity proof (delegation sections only, current `CLAUDE.md` vs.
+generated `AGENTS.md`, term-substitution applied): every `## ` section of
+`CLAUDE.md` NOT in the drop list above is byte-identical (after
+`Task tool`→`` task tool (`@agent-name`) `` and `subagent_type`→`agent name`)
+inside `AGENTS.md`, confirmed programmatically section-by-section; the only
+section with a textual difference is `## Specialist roster`, and there only
+its vendor/model cells differ — every id/task-types cell matches exactly.
+
+**Result: 15.6-17.3% reduction, short of the 40% acceptance target.**
+Reaching 40% would require touching HARD-CONSTRAINT-protected delegation
+text (the MANDATORY sections, keyword tables, leaf-worker rules,
+"who you means", review-pass wording, and the OpenCode enforcement
+doctrine make up the remaining ~83% of `AGENTS.md`), so per the task's
+stop condition this was not attempted. Reporting the achieved number and
+stopping.

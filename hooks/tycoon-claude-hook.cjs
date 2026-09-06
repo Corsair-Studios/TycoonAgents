@@ -520,13 +520,50 @@ function firstUserTextFromTranscript(transcriptPath) {
   return "";
 }
 
-// Hard cap on the captured worker report. The delegation doctrine caps
-// worker reports at ~250 words; ~2000 chars is a generous ceiling above that
-// while still bounding activity.jsonl growth (62k+ records already) against
-// a worker that ignores the cap or a transcript with an unusually long final
-// message.
-const REPORT_MAX_CHARS = 2000;
-const REPORT_TRUNCATION_MARKER = "… [truncated]";
+// Hard cap on the captured worker report (p21-t8: tightened from 2000 to 600
+// — the delegation doctrine caps worker reports at ~250 words, and
+// activity.jsonl growth (62k+ records already) is bounded far tighter at 600
+// chars against a worker that ignores the cap or a transcript with an
+// unusually long final message). The panel/standalone UI reads `report`
+// straight off this persisted record (see src/providers/claude-code/
+// mapHookRecord.ts and src/core/state.ts's lastReport) — there is no
+// separate transient full-text path, so this cap IS what the UI shows.
+// `reportChars` preserves the original (pre-truncation) length so the UI/
+// diagnostics can tell a genuinely short report from a truncated one.
+const REPORT_MAX_CHARS = 600;
+
+// Cut `text` to at most REPORT_MAX_CHARS UTF-16 code units, backing off one
+// more position if that would split a surrogate pair (a UTF-8-safe/
+// codepoint-safe boundary), then appends " …[truncated N chars]" where N is
+// the number of chars removed. Returns { text, reportChars } where
+// reportChars is always the ORIGINAL (pre-truncation) length so callers can
+// distinguish "short report" from "truncated report" even after the text is
+// cut.
+const TRUNCATION_PREFIX = " …[truncated ";
+const TRUNCATION_SUFFIX = " chars]";
+
+function capReportText(text) {
+  const reportChars = text.length;
+  if (reportChars <= REPORT_MAX_CHARS) return { text, reportChars };
+  // Reserve room for the marker BEFORE cutting, so the final stored string
+  // (truncated text + marker) never exceeds REPORT_MAX_CHARS. `removed`
+  // (reportChars - cut) is always < reportChars, so reportChars's own digit
+  // count is a safe upper bound on the marker's digit count regardless of
+  // exactly where `cut` lands.
+  const maxRemovedDigits = String(reportChars).length;
+  const reservedSuffixLen = TRUNCATION_PREFIX.length + maxRemovedDigits + TRUNCATION_SUFFIX.length;
+  let cut = Math.max(0, REPORT_MAX_CHARS - reservedSuffixLen);
+  // Back off if `cut` lands inside a surrogate pair (i.e. text[cut - 1] is a
+  // high surrogate that pairs with text[cut]) — a UTF-8/codepoint-safe
+  // boundary.
+  if (cut > 0) {
+    const prev = text.charCodeAt(cut - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1;
+  }
+  const truncated = text.slice(0, cut);
+  const removed = reportChars - cut;
+  return { text: truncated + TRUNCATION_PREFIX + removed + TRUNCATION_SUFFIX, reportChars };
+}
 
 // Extract the subagent's FINAL assistant-message text from its transcript —
 // the symmetric counterpart to firstUserTextFromTranscript above, used to
@@ -538,6 +575,8 @@ const REPORT_TRUNCATION_MARKER = "… [truncated]";
 // missing file, malformed JSON, non-string path — returning "" exactly like
 // firstUserTextFromTranscript, NEVER throwing. Caller treats "" as "no
 // report available" and must omit the field entirely, never store "".
+// Returns the RAW, uncapped text — caller runs it through capReportText()
+// before storing so reportChars reflects the true original length.
 function lastAssistantTextFromTranscript(transcriptPath) {
   try {
     if (!transcriptPath || typeof transcriptPath !== "string") return "";
@@ -562,9 +601,6 @@ function lastAssistantTextFromTranscript(transcriptPath) {
             .trim();
         }
         if (text) {
-          if (text.length > REPORT_MAX_CHARS) {
-            return text.slice(0, REPORT_MAX_CHARS - REPORT_TRUNCATION_MARKER.length) + REPORT_TRUNCATION_MARKER;
-          }
           return text;
         }
         // Assistant turn found but it was tool-calls-only (no prose) — keep
@@ -1216,8 +1252,15 @@ function main(raw) {
     // extracted from the same transcript already resolved above. Optional —
     // omitted entirely (never an empty string) when the transcript is
     // missing/unreadable or its final assistant turn had no prose text.
-    const report = lastAssistantTextFromTranscript(transcriptPath);
-    if (report) record.report = report;
+    // p21-t8: capped at REPORT_MAX_CHARS (600) via capReportText — reportChars
+    // carries the original (pre-truncation) length so the UI/diagnostics can
+    // tell a short report from a truncated one.
+    const rawReport = lastAssistantTextFromTranscript(transcriptPath);
+    if (rawReport) {
+      const capped = capReportText(rawReport);
+      record.report = capped.text;
+      record.reportChars = capped.reportChars;
+    }
 
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");

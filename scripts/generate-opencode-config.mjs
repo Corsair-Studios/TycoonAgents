@@ -177,8 +177,18 @@ function loadCoreModules() {
   const routingProfilePath = path.join(REPO_ROOT, "out", "src", "core", "routingProfile.js");
   const { readAgentFrontmatter, parseAgentBackend } = require(agentBackendPath);
   const { resolveModelAlias } = require(modelAliasesPath);
-  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend } = require(routingProfilePath);
-  return { readAgentFrontmatter, parseAgentBackend, resolveModelAlias, loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend };
+  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend, hasHandWrittenBackendBlock } =
+    require(routingProfilePath);
+  return {
+    readAgentFrontmatter,
+    parseAgentBackend,
+    resolveModelAlias,
+    loadRoutingProfile,
+    resolveAgentSlot,
+    resolveOrchestratorSlot,
+    routingSlotToBackend,
+    hasHandWrittenBackendBlock,
+  };
 }
 
 // Resolve a RoutingSlot's `model` field (provider/model or bare alias) to
@@ -406,14 +416,149 @@ of whether you (the orchestrator model) recall the delegation rules above.
    will fail the same way every time.
 `;
 
-function buildAgentsMd(root) {
+// Headings whose ENTIRE section (heading line through, but not including,
+// the next top-level "## " heading) carries no delegation doctrine at all —
+// confirmed by name against the HARD CONSTRAINT list (MANDATORY delegation
+// sections, keyword routing tables, leaf-worker rules, "who you means" text,
+// review-pass wording are NOT in this list and must never be added to it).
+// Dropped ONLY from the OpenCode-facing AGENTS.md managed block; CLAUDE.md
+// itself is never touched (out of this script's ownership and untouched on
+// disk). p21-t2.
+const AGENTS_MD_DROPPED_HEADINGS = [
+  "## Teams Coordination",
+  "## Session Journal",
+  "## Auto Memory",
+  "## TycoonAgents Ready Test",
+  "## Coding standards by path",
+  "## Path & Environment Discovery (core principle)",
+];
+
+// Remove every top-level ("## ") section whose heading line matches one of
+// `droppedHeadings` (exact prefix match up to end-of-line, so "## Session
+// Journal" matches both of CLAUDE.md's two same-named sections). A section
+// runs from its heading line through, but excluding, the next "## " heading
+// or end of string. Sections NOT named here — including every delegation
+// heading — pass through byte-for-byte.
+function stripNonDelegationSections(content, droppedHeadings) {
+  const lines = content.split("\n");
+  const headingIdxs = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) headingIdxs.push(i);
+  }
+  headingIdxs.push(lines.length);
+
+  const keptRanges = [];
+  let cursor = 0;
+  for (let k = 0; k < headingIdxs.length - 1; k++) {
+    const start = headingIdxs[k];
+    const end = headingIdxs[k + 1];
+    const headingLine = lines[start];
+    const drop = droppedHeadings.some((h) => headingLine === h || headingLine.startsWith(h + " "));
+    if (drop) {
+      // Flush everything kept so far up to this section's start, skip the
+      // section itself, and resume the cursor after it.
+      keptRanges.push([cursor, start]);
+      cursor = end;
+    }
+  }
+  keptRanges.push([cursor, lines.length]);
+
+  let result = keptRanges.map(([s, e]) => lines.slice(s, e).join("\n")).join("\n");
+  // Stripping a section removes the blank line that separated the preceding
+  // kept section from it. Normalize: collapse runs of 3+ newlines down to a
+  // single blank line (2 newlines), then ensure exactly one blank line
+  // precedes every "## " heading that follows other content.
+  result = result.replace(/\n{3,}/g, "\n\n");
+  result = result.replace(/([^\n])\n(## )/g, "$1\n\n$2");
+  return result;
+}
+
+// Rewrite the "## Specialist roster" table's "Vendor / model" column (the
+// third `|`-delimited cell) using each agent's UNROUTED frontmatter default
+// (`agentDefaultLabels`, keyed by agent id) instead of whatever CLAUDE.md's
+// text says — CLAUDE.md's own roster table can carry a machine-local routed
+// value (written by the panel when a developer routes an agent), and that
+// value must never leak into the tracked AGENTS.md file (p21-t2 / follow-up
+// on p17-t1). Only rows whose first cell is a known agent id are touched;
+// every other line (including the header/separator rows and every row for
+// an id not in the map) passes through unchanged.
+function normalizeRosterTable(content, agentDefaultLabels) {
+  if (!(agentDefaultLabels instanceof Map) || agentDefaultLabels.size === 0) return content;
+  return content
+    .split("\n")
+    .map((line) => {
+      const m = /^(\|\s*)([^|]+?)(\s*\|\s*)([^|]*?)(\s*\|\s*)([^|]*?)(\s*\|)$/.exec(line);
+      if (!m) return line;
+      const id = m[2].trim();
+      if (!agentDefaultLabels.has(id)) return line;
+      const label = agentDefaultLabels.get(id);
+      return `${m[1]}${m[2]}${m[3]}${m[4]}${m[5]}${label}${m[7]}`;
+    })
+    .join("\n");
+}
+
+// True when `mdText`'s frontmatter has a top-level `backend:` block whose
+// first indented child line is the `# managed-by: tycoon-routing` marker
+// scripts/apply-routing-profile.mjs writes — i.e. this agent's on-disk
+// backend was rewritten by a local routing.json, so its `model`/`vendor`
+// reflects THIS machine's routing, not a project default. Mirrors
+// hasHandWrittenBackendBlock's own block-detection regex (see
+// src/core/routingProfile.ts) but asks the opposite question: that helper
+// treats "no block" and "managed block" both as "not hand-written" (false),
+// which conflates two states normalizeRosterTable must tell apart.
+function isManagedBackendBlock(mdText) {
+  const normalized = mdText.replace(/\r\n?/g, "\n");
+  const match = normalized.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return false;
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
+      return lines[i + 1] !== undefined && lines[i + 1].trim() === "# managed-by: tycoon-routing";
+    }
+  }
+  return false;
+}
+
+// The roster-table fallback used when an agent's on-disk backend is
+// machine-routed (see isManagedBackendBlock) and so cannot supply a
+// project-stable default. Mirrors delegationDoctrine.ts's own
+// DEFAULT_VENDOR_LABEL fallback for the common (Claude-native, metered)
+// case.
+const DEFAULT_VENDOR_LABEL = "Anthropic · anthropic/sonnet";
+
+function vendorDisplayName(vendor) {
+  switch (String(vendor).toLowerCase()) {
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    default:
+      return vendor.length > 0 ? vendor[0].toUpperCase() + vendor.slice(1) : vendor;
+  }
+}
+
+// Mirrors src/host/vscode/delegationDoctrine.ts's formatVendorModelLabel
+// exactly (same vendor casing + cost-class suffix rule), applied here to an
+// UNROUTED `backend` (parseAgentBackend(frontmatter), before any routing.json
+// slot is applied) so the emitted label is stable across machines/routing.
+function formatVendorModelLabel(backend) {
+  const vendor = vendorDisplayName(backend.vendor);
+  const suffix = backend.costModelClass === "metered" ? "" : ` (${backend.costModelClass})`;
+  return `${vendor} · ${backend.model}${suffix}`;
+}
+
+function buildAgentsMd(root, agentDefaultLabels) {
   const claudeMdPath = path.join(root, "CLAUDE.md");
   let claudeContent = "";
   if (fs.existsSync(claudeMdPath)) {
     claudeContent = fs.readFileSync(claudeMdPath, "utf8");
   }
 
-  let managedContent = claudeContent
+  let managedContent = stripNonDelegationSections(claudeContent, AGENTS_MD_DROPPED_HEADINGS);
+  managedContent = normalizeRosterTable(managedContent, agentDefaultLabels);
+  managedContent = managedContent
     .split("Task tool")
     .join("task tool (`@agent-name`)")
     .split("subagent_type")
@@ -453,30 +598,9 @@ function buildAgentsMd(root) {
   return existing + sep + managedBlock + "\n";
 }
 
-// True when `mdText` (a full .claude/agents/<id>.md file's text) has a
-// top-level `backend:` frontmatter block with no
-// `# managed-by: tycoon-routing` marker as its first indented child line —
-// i.e. a hand-written block, which `defaults` must never override (p17-t1).
-// Duplicates src/core/routingProfile.ts's hasHandWrittenBackendBlock()
-// (also used by scripts/apply-routing-profile.mjs, which already has its
-// own fmLines-based variant) rather than importing across scripts.
-function hasHandWrittenBackendBlock(mdText) {
-  const normalized = mdText.replace(/\r\n?/g, "\n");
-  const match = normalized.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return false;
-  const lines = match[1].split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const topMatch = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
-    if (topMatch && !/^\s/.test(line) && topMatch[1] === "backend") {
-      let j = i + 1;
-      while (j < lines.length && /^\s+\S/.test(lines[j])) j++;
-      const firstChild = i + 1 < j ? lines[i + 1].trim() : undefined;
-      return firstChild !== "# managed-by: tycoon-routing";
-    }
-  }
-  return false;
-}
+// hasHandWrittenBackendBlock (full .md file text -> boolean) is loaded from
+// out/src/core/routingProfile.js via loadCoreModules() above — this script
+// must not keep its own duplicate of that detection.
 
 const OPENAI_COMPATIBLE_NPM_PACKAGE = "@ai-sdk/openai-compatible";
 
@@ -794,6 +918,7 @@ function main() {
     resolveAgentSlot,
     resolveOrchestratorSlot,
     routingSlotToBackend,
+    hasHandWrittenBackendBlock,
   } = loadCoreModules();
 
   const agentsDir = path.join(root, ".claude", "agents");
@@ -823,6 +948,7 @@ function main() {
   const writes = [];
   const generatedRouting = { agents: {} };
   const agentHandWritten = new Map();
+  const agentDefaultLabels = new Map();
 
   if (fs.existsSync(agentsDir)) {
     const files = fs
@@ -850,6 +976,12 @@ function main() {
 
       const handWritten = hasHandWrittenBackendBlock(mdText);
       agentHandWritten.set(agentName, handWritten);
+      if (backend) {
+        agentDefaultLabels.set(
+          agentName,
+          isManagedBackendBlock(mdText) ? DEFAULT_VENDOR_LABEL : formatVendorModelLabel(backend)
+        );
+      }
       const slot = resolveAgentSlot(routingProfile, agentName, { hasHandWrittenBackend: handWritten });
       const slotModel = resolveSlotModel(slot, resolveModelAlias);
 
@@ -887,7 +1019,7 @@ function main() {
 
   // AGENTS.md
   const agentsMdPath = path.join(root, "AGENTS.md");
-  const agentsMdContent = buildAgentsMd(root);
+  const agentsMdContent = buildAgentsMd(root, agentDefaultLabels);
   writes.push({ destPath: agentsMdPath, content: agentsMdContent });
 
   // tycoon-routing.generated.json: written whenever the routing profile

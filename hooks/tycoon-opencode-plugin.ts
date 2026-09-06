@@ -219,6 +219,15 @@ interface OpenCodeHookRecord {
   /** p15-t2: set on a Task PreToolUse/SubagentStop pair only when this dispatch is a fallback re-dispatch. */
   fallbackOf?: string;
   fallbackDepth?: number;
+  /** p21-t8: type parity with hooks/tycoon-claude-hook.cjs's HookRecord.report/
+   *  reportChars (src/providers/claude-code/hookRecord.ts). This plugin does
+   *  NOT currently capture worker report text on any SubagentStop record —
+   *  OpenCode's task tool exposes no equivalent to Claude Code's transcript
+   *  read. If report capture is ever added here, it MUST apply the same
+   *  600-char cap (see capReportText in the Claude hook) so records stay
+   *  consistent across providers. */
+  report?: string;
+  reportChars?: number;
 }
 
 interface ActiveAgentEntry {

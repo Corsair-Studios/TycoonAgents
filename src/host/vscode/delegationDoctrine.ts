@@ -560,7 +560,16 @@ ${reviewAgentPhraseCap} pass is a quality assist, not a sign-off: it catches bug
 regressions BEFORE the change reaches the user, so the human reviews cleaner
 work. The user is the final reviewer — the orchestrator surfaces the
 reviewed change for the user to approve and never treats ${reviewAgentPossessive}
-pass as final acceptance.`;
+pass as final acceptance.
+
+### Review model tiering (added 2026-09-06)
+
+The review pass above is unchanged. This subsection only fixes which model the orchestrator uses for each review call:
+
+- First-pass review of a change that touches src/core, hosts (panel.ts, standalone/src/server.mjs), hooks/, scripts/, secrets or routing files, or anything security-relevant → the review agent on Sonnet.
+- First-pass review of a change limited to CSS, labels, copy, docs, or tests → the review agent on Haiku.
+- The single re-check after the one permitted round of fixes → a read-only Haiku pass (Explore) verifying the specific findings landed; it does not re-review the whole change.
+- The orchestrator never skips the review pass because a change looks small; tiering changes the model, not whether the pass runs.`;
 }
 
 /**

@@ -139,13 +139,19 @@ export interface AgentMetric {
   cacheReadModelBreakdown?: Record<string, number>;
   /**
    * The most recent worker report (final assistant-message text from its
-   * transcript, capped ~2000 chars — see HookRecord.report) attributed to
+   * transcript, capped 600 chars — see HookRecord.report) attributed to
    * this agent. Overwritten on each WorkerStopped, not accumulated — only
    * the latest report is kept, matching the panel's "what did this agent
    * just do" use case rather than a full history. Undefined when no
    * SubagentStop for this agent has ever carried a report.
    */
   lastReport?: string;
+  /**
+   * The original (pre-truncation) character length of lastReport, so a
+   * genuinely short report can be distinguished from one truncated to fit
+   * the 600-char cap. Overwritten in lockstep with lastReport.
+   */
+  lastReportChars?: number;
 }
 
 /** Internal tracking record (kept as an alias now that workStartAt is public). */
@@ -566,6 +572,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           // had no report to extract) must NOT clobber a previously captured
           // report — only overwrite when this event actually carries one.
           lastReport: event.report !== undefined ? event.report : m.lastReport,
+          lastReportChars: event.report !== undefined ? event.reportChars : m.lastReportChars,
         }),
       );
       return {

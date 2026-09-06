@@ -136,11 +136,13 @@
     "copy:hookruntime": "node scripts/copy-hook-runtime.mjs",
     "opencode:config": "node scripts/generate-opencode-config.mjs",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
-    "check:webview": "node scripts/check-webview.mjs",
+    "build:webview": "node scripts/build-webview.mjs",
+    "check:webview-sync": "node scripts/check-webview-sync.mjs",
+    "check:webview": "node scripts/check-webview-sync.mjs && node scripts/check-webview.mjs",
     "test:python": "node scripts/test-python.mjs",
     "test:standalone": "npm --prefix standalone test",
     "lint": "eslint .",
-    "build": "tsc -p . && npm run copy:hookruntime",
+    "build": "npm run build:webview && tsc -p . && npm run copy:hookruntime",
     "build-ext": "tsc -p . && npm run copy:hookruntime && npm run bundle:host",
     "typecheck": "tsc -p . --noEmit",
     "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
@@ -150,7 +152,9 @@
     "bundle:host": "esbuild src/host/vscode/extension.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=out/extension.js",
     "package": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npx --yes @vscode/vsce package --no-dependencies -o dist/ && npm run verify:vsix-contents",
     "verify:vsix-contents": "tsc -p . && node --test \"out/test/packagingManifest.check.js\"",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "release:patch": "node scripts/release-local.mjs patch",
+    "release:minor": "node scripts/release-local.mjs minor"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

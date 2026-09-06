@@ -384,6 +384,34 @@ test("clearRoutingProfile: no routing.json present is a no-op on disk, still rer
 // script-relative core-module resolution.
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
+// apply-routing-profile.mjs deliberately requires the shared, real
+// out/src/core/{routingProfile,agentBackend}.js from REPO_ROOT for every
+// invocation rather than an isolated copy (see that script's own "Resolve
+// compiled core modules relative to the script's own location" comment).
+// On a dev machine where some other process rebuilds `out/` at the same
+// moment this test's spawned child requires it, that require can observe a
+// half-written file and throw a transient "X is not a function" from deep
+// inside out/src/core/*.js. That is an external race over a shared
+// repo-root build artifact, not a bug in saveRoutingProfile/
+// clearRoutingProfile or in this fixture's isolation (root/dataDir/
+// opencodeConfigDir below are already unique per test) — retry once past it.
+function isTransientCoreModuleRace(result: unknown): boolean {
+  const text = JSON.stringify(result ?? {});
+  return /is not a function/.test(text) && /out[\\/]src[\\/]core/.test(text);
+}
+
+function saveRoutingProfileRetrying(opts: Parameters<typeof saveRoutingProfile>[0]): ReturnType<typeof saveRoutingProfile> {
+  const first = saveRoutingProfile(opts);
+  if (!first.ok && isTransientCoreModuleRace(first)) return saveRoutingProfile(opts);
+  return first;
+}
+
+function clearRoutingProfileRetrying(opts: Parameters<typeof clearRoutingProfile>[0]): ReturnType<typeof clearRoutingProfile> {
+  const first = clearRoutingProfile(opts);
+  if (!first.ok && isTransientCoreModuleRace(first)) return clearRoutingProfile(opts);
+  return first;
+}
+
 test("clearRoutingProfile (real scripts): strips the managed backend block and regenerates opencode.json without the managed provider", () => {
   const root = tmpRoot();
   writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
@@ -406,7 +434,7 @@ test("clearRoutingProfile (real scripts): strips the managed backend block and r
   process.env.TYCOON_STANDALONE_DATA_DIR = dataDir;
   process.env.OPENCODE_CONFIG_DIR = opencodeConfigDir;
   try {
-    const saved = saveRoutingProfile({
+    const saved = saveRoutingProfileRetrying({
       root,
       scriptsDir: REPO_ROOT,
       profile: { version: 1, agents: { worker: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } } },
@@ -416,7 +444,7 @@ test("clearRoutingProfile (real scripts): strips the managed backend block and r
     assert.match(appliedContent, /managed-by: tycoon-routing/);
     assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.resolved.json")), true);
 
-    const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT });
+    const result = clearRoutingProfileRetrying({ root, scriptsDir: REPO_ROOT });
     assert.equal(result.ok, true, JSON.stringify(result));
 
     const clearedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");

@@ -40,6 +40,7 @@ interface ActivityRecord {
   workerId?: string;
   tool?: string;
   report?: string;
+  reportChars?: number;
   reason?: string;
   ageMs?: number;
   [key: string]: unknown;
@@ -368,7 +369,7 @@ test("SubagentStop captures the final assistant message as an optional report fi
   }
 });
 
-test("a report longer than the cap is truncated with an explicit marker", () => {
+test("a report longer than the cap is truncated with an explicit marker and carries reportChars", () => {
   const root = setupProject();
   try {
     const longText = "x".repeat(2500);
@@ -385,8 +386,56 @@ test("a report longer than the cap is truncated with an explicit marker", () => 
 
     const stopRecord = readActivity(root).find((r) => r.event === "SubagentStop");
     assert.ok(stopRecord?.report);
-    assert.ok(stopRecord!.report!.length <= 2000, `expected capped length, got ${stopRecord!.report!.length}`);
-    assert.ok(stopRecord!.report!.endsWith("[truncated]"), "expected an explicit truncation marker");
+    assert.ok(stopRecord!.report!.length <= 600, `expected capped length, got ${stopRecord!.report!.length}`);
+    assert.match(stopRecord!.report!, /…\[truncated \d+ chars\]$/, "expected an explicit truncation marker");
+    assert.equal(stopRecord!.reportChars, 2500, "reportChars must carry the ORIGINAL pre-truncation length");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a 5,000-char report is stored as <= 600 chars + marker with reportChars 5000", () => {
+  const root = setupProject();
+  try {
+    const longText = "y".repeat(5000);
+    const transcriptPath = writeTranscript(root, [
+      { role: "assistant", message: { role: "assistant", content: longText } },
+    ]);
+
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      agent_transcript_path: transcriptPath,
+      agent_type: "codex-reviewer",
+      session_id: "s1",
+    });
+
+    const stopRecord = readActivity(root).find((r) => r.event === "SubagentStop");
+    assert.ok(stopRecord?.report);
+    assert.ok(stopRecord!.report!.length <= 600, `expected capped length, got ${stopRecord!.report!.length}`);
+    assert.equal(stopRecord!.reportChars, 5000);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a short report is stored unchanged with reportChars matching its own length", () => {
+  const root = setupProject();
+  try {
+    const shortText = "All good, verified with tsc.";
+    const transcriptPath = writeTranscript(root, [
+      { role: "assistant", message: { role: "assistant", content: shortText } },
+    ]);
+
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      agent_transcript_path: transcriptPath,
+      agent_type: "codex-reviewer",
+      session_id: "s1",
+    });
+
+    const stopRecord = readActivity(root).find((r) => r.event === "SubagentStop");
+    assert.equal(stopRecord!.report, shortText);
+    assert.equal(stopRecord!.reportChars, shortText.length);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

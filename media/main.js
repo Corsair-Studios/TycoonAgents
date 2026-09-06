@@ -1,3 +1,6 @@
+// GENERATED from media/src/main/*.js — edit the parts, then run npm run build:webview
+// Part: 00-boot-and-state
+// Boot loader progress/reveal, metrics tab/scope state, project plan section rendering, menu/modal open-close helpers.
 /*
  * TycoonAgents - https://x.com/thetrashbyrd
  * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
@@ -1734,6 +1737,8 @@
   /** Theme id still actually loaded — restored on cancel. */
   let themeSwitchConfirmPreviousId = "";
 
+// Part: 10-modals-badges-rebirth
+// Theme switch/reset confirm modals, badge HUD persistence, trophy/badge rendering, rebirth flow and panel.
   function closeThemeSwitchConfirmModal() {
     if (themeSwitchConfirmModalEl) themeSwitchConfirmModalEl.setAttribute("hidden", "");
   }
@@ -3499,6 +3504,8 @@
    * @param {HTMLElement} container
    * @returns {{names: string[], descriptions: string[], attackStyles: (string|undefined)[]}}
    */
+// Part: 20-theme-plan-editor
+// Theme plan slot collection/rendering, theme generation stop/retry, theme health result, theme image review capture and rows.
   function collectPlanSlotsWithDesc(container) {
     const names = [];
     const descriptions = [];
@@ -5316,6 +5323,8 @@
     if (themesScrollEl) themesScrollEl.scrollTop = reviewUiState.scrollTop;
   }
 
+// Part: 30-theme-picker-list
+// Theme picker list rendering and related theme review section builders.
   function renderThemesList(themes) {
     if (!themePickerGrid) return;
     themePickerGrid.innerHTML = "";
@@ -6867,6 +6876,8 @@
    * single danceOffConfettiActive boolean check — no allocation either way.
    * @param {number} delta seconds
    */
+// Part: 40-danceoff-confetti-misc
+// Dance-off confetti updates and other mid-file screen helpers.
   function updateDanceOffConfetti(delta) {
     if (!danceOffConfettiActive) return;
     let anyAlive = false;
@@ -8725,6 +8736,8 @@
     stageEditEls.save.addEventListener("click", saveStageTuning);
     stageEditEls.done.addEventListener("click", exitEditStage);
   }
+// Part: 50-theme-char-overrides
+// Theme character scale override slider sync and related settings.
   function syncOverrideSlider() {
     const ov = themeCharScaleOverrides[editSelectedCharId];
     stageEditEls.co.value = String(typeof ov === "number" && ov > 0 ? ov : themeCharacterScale);
@@ -10310,6 +10323,8 @@
    * Preload all character sprite images from raw frames data.
    * @param {Record<string, string[]>} rawFrames
    */
+// Part: 60-theme-image-review
+// Theme image preloading and review UI.
   function preloadThemeImages(rawFrames) {
     themeImages = {};
     themeBackgroundImg = null;
@@ -12874,6 +12889,8 @@
    * @param {"third-party"|"local"} kind
    * @returns {HTMLElement}
    */
+// Part: 70-catalog-notices
+// Catalog notice building and packs catalog UI.
   function buildCatalogNotice(kind) {
     const el = document.createElement("p");
     if (kind === "local") {
@@ -13790,6 +13807,8 @@
    * @param {string|undefined} error
    * @param {boolean|undefined} cancelled
    */
+// Part: 80-packs-events
+// Pack install/remove event handlers.
   function handlePackRemoved(id, ok, _results, error, cancelled) {
     if (!packsListEl) return;
     const btn = /** @type {HTMLElement|null} */ (
@@ -15779,6 +15798,8 @@
    * @param {number|null|undefined} ts
    * @returns {string}
    */
+// Part: 90-metrics-time-utils
+// Relative time formatting and metrics/delegation panel helpers.
   function relativeTime(ts) {
     if (!ts) return "—";
     const diff = Date.now() - ts;
@@ -17211,6 +17232,8 @@
    * focus/selection across a full rebuild (see the focus-preservation note
    * on renderRoutingModal).
    */
+// Part: 100-slot-editor-settings
+// Slot editor field builders and settings screen wiring.
   function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix) {
     var keyPrefix = fieldKeyPrefix || "";
     var frag = document.createElement("div");
@@ -18226,54 +18249,97 @@
       // (p20-t2). No routing controls render until it's checked. ──
       if (!routingAgent) return card;
       const routeSource = routingAgent.routeSource || routingAgent.provenance || "frontmatter";
-      const isRouted = routeSource !== "frontmatter";
+      // "default" (inherited from the Default-for-all-agents route) has no
+      // explicit per-agent entry, so it must not auto-expand like a real
+      // explicit route would — it starts collapsed behind the "Override for
+      // this agent" link (p21-t7 Part B) until the user opts in.
+      const isRouted = routeSource !== "frontmatter" && routeSource !== "default";
       const expanded = Object.prototype.hasOwnProperty.call(routingExpandedAgents, a.id)
         ? !!routingExpandedAgents[a.id]
         : isRouted;
 
-      const providerRow = document.createElement("div");
-      providerRow.className = "settings-row provider-toggle-row";
-      providerRow.setAttribute("data-agent-id", a.id);
-      const providerLabel = document.createElement("label");
-      providerLabel.className = "delegation-mode-option";
-      const providerCheckbox = document.createElement("input");
-      providerCheckbox.type = "checkbox";
-      providerCheckbox.className = "agent-provider-checkbox";
-      providerCheckbox.checked = !!a.handWrittenBackend || expanded;
-      providerCheckbox.disabled = !!a.handWrittenBackend;
-      const providerBody = document.createElement("span");
-      providerBody.className = "delegation-mode-option-body";
-      const providerLabelSpan = document.createElement("span");
-      providerLabelSpan.className = "delegation-mode-option-label";
-      providerLabelSpan.textContent = "Use another provider for this agent";
-      const providerHelpSpan = document.createElement("span");
-      providerHelpSpan.className = "delegation-mode-option-help";
-      providerHelpSpan.textContent = a.handWrittenBackend
-        ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`
-        : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
-      providerBody.appendChild(providerLabelSpan);
-      providerBody.appendChild(providerHelpSpan);
-      providerLabel.appendChild(providerCheckbox);
-      providerLabel.appendChild(providerBody);
-      providerRow.appendChild(providerLabel);
-      card.appendChild(providerRow);
-
-      providerCheckbox.addEventListener("change", () => {
-        if (a.handWrittenBackend) return;
-        if (providerCheckbox.checked) {
-          routingExpandedAgents[a.id] = true;
-          if (!slotHasContent(routingDraft.agents[a.id])) {
-            routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
-          }
-        } else {
-          delete routingExpandedAgents[a.id];
-          routingDraft.agents[a.id] = {};
-          if (isRouted) {
-            vscode.postMessage({ type: "clearAgentRoute", agentId: a.id });
-          }
+      if (routeSource === "default") {
+        // Inherited from the Default-for-all-agents route: there is no
+        // explicit per-agent entry to clear, so no checkbox — a checked box
+        // that "unchecks" into clearAgentRoute would have nothing to remove
+        // (p21-t7 Part B). Show an inherit note plus an override link that
+        // opens the same sparse-entry editor a checkbox check would have.
+        const inheritRow = document.createElement("div");
+        inheritRow.className = "settings-row provider-toggle-row";
+        inheritRow.setAttribute("data-agent-id", a.id);
+        const inheritLine = document.createElement("div");
+        inheritLine.className = "delegation-mode-option-body classic-inherit-line";
+        const inheritText = document.createElement("span");
+        inheritText.className = "delegation-mode-option-label";
+        const inheritVendor = (routingAgent.backend && routingAgent.backend.vendor) || a.vendor || "unknown";
+        const inheritModel = (routingAgent.backend && routingAgent.backend.model) || a.resolvedModel || a.model || "unknown model";
+        inheritText.textContent = `Inherits the Default for all agents route · ${vendorLabelFor(inheritVendor)}/${inheritModel}`;
+        inheritLine.appendChild(inheritText);
+        if (!expanded) {
+          const overrideBtn = document.createElement("button");
+          overrideBtn.type = "button";
+          overrideBtn.className = "routing-inline-link-btn routing-override-btn";
+          overrideBtn.textContent = "Override for this agent";
+          overrideBtn.addEventListener("click", () => {
+            routingExpandedAgents[a.id] = true;
+            if (!slotHasContent(routingDraft.agents[a.id])) {
+              routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
+            }
+            renderRoutingModal();
+          });
+          inheritLine.appendChild(overrideBtn);
         }
-        renderRoutingModal();
-      });
+        inheritRow.appendChild(inheritLine);
+        const inheritHint = document.createElement("span");
+        inheritHint.className = "delegation-mode-option-help";
+        inheritHint.textContent = "To stop inheriting, clear the Default card (available when OpenCode runs your agents).";
+        inheritRow.appendChild(inheritHint);
+        card.appendChild(inheritRow);
+      } else {
+        const providerRow = document.createElement("div");
+        providerRow.className = "settings-row provider-toggle-row";
+        providerRow.setAttribute("data-agent-id", a.id);
+        const providerLabel = document.createElement("label");
+        providerLabel.className = "delegation-mode-option";
+        const providerCheckbox = document.createElement("input");
+        providerCheckbox.type = "checkbox";
+        providerCheckbox.className = "agent-provider-checkbox";
+        providerCheckbox.checked = !!a.handWrittenBackend || expanded;
+        providerCheckbox.disabled = !!a.handWrittenBackend;
+        const providerBody = document.createElement("span");
+        providerBody.className = "delegation-mode-option-body";
+        const providerLabelSpan = document.createElement("span");
+        providerLabelSpan.className = "delegation-mode-option-label";
+        providerLabelSpan.textContent = "Use another provider for this agent";
+        const providerHelpSpan = document.createElement("span");
+        providerHelpSpan.className = "delegation-mode-option-help";
+        providerHelpSpan.textContent = a.handWrittenBackend
+          ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`
+          : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
+        providerBody.appendChild(providerLabelSpan);
+        providerBody.appendChild(providerHelpSpan);
+        providerLabel.appendChild(providerCheckbox);
+        providerLabel.appendChild(providerBody);
+        providerRow.appendChild(providerLabel);
+        card.appendChild(providerRow);
+
+        providerCheckbox.addEventListener("change", () => {
+          if (a.handWrittenBackend) return;
+          if (providerCheckbox.checked) {
+            routingExpandedAgents[a.id] = true;
+            if (!slotHasContent(routingDraft.agents[a.id])) {
+              routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
+            }
+          } else {
+            delete routingExpandedAgents[a.id];
+            routingDraft.agents[a.id] = {};
+            if (isRouted) {
+              vscode.postMessage({ type: "clearAgentRoute", agentId: a.id });
+            }
+          }
+          renderRoutingModal();
+        });
+      }
 
       if (expanded && !a.handWrittenBackend) {
         if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
@@ -19374,6 +19440,8 @@
   // cityscape) were removed: entities render only as real themed art, popping
   // in on their first decoded frame. See the sprite draw paths in render().
 
+// Part: 110-hud-canvas-draw
+// HUD drawing and canvas/stage draw routines.
   function drawHUD(w) {
     // Upper-left session/agents/built overlay removed — redundant + overlapped the UEFN chips.
     // Kept as a no-op so existing call sites stay valid.
@@ -20715,6 +20783,8 @@
    * idle-dance start). Shared by the idle festivity roll and the debug hotkey.
    * @param {object} charEntry an agentCharMap entry
    */
+// Part: 120-agent-dance-render-init
+// Agent dance/emote/expression drawing, projectile/enemy updates, main render loop, and init/IIFE close.
   function startAgentDance(charEntry) {
     if (!charEntry) return;
     freeAgentSeat(charEntry);

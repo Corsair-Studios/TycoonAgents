@@ -115,6 +115,17 @@ test("SubagentStop with a report propagates it verbatim to WorkerStopped", () =>
   }
 });
 
+test("SubagentStop with a report and reportChars propagates both to WorkerStopped", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "agent-4b", report: "…[truncated 4400 chars]", reportChars: 5000, at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.report, "…[truncated 4400 chars]");
+    assert.equal(ws.reportChars, 5000);
+  }
+});
+
 test("SubagentStop without a report emits WorkerStopped with no report field (never an empty string)", () => {
   const record: HookRecord = { event: "SubagentStop", workerId: "agent-5", at: T };
   const events = mapHookRecord(record);

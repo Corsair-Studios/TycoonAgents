@@ -24,6 +24,37 @@ import {
 } from "../src/core/agentSettingsRoute";
 import { saveRoutingProfile } from "../src/core/routingHostOps";
 
+// apply-routing-profile.mjs deliberately requires the shared, real
+// out/src/core/{routingProfile,agentBackend}.js from REPO_ROOT for every
+// invocation rather than an isolated copy (see that script's own "Resolve
+// compiled core modules relative to the script's own location" comment).
+// On a dev machine where some other process rebuilds `out/` at the same
+// moment this test's spawned child requires it, that require can observe a
+// half-written file and throw a transient "X is not a function" from deep
+// inside out/src/core/*.js. That is an external race over a shared
+// repo-root build artifact, not a bug in saveRoutingProfile/clearAgentRoute
+// or in this fixture's isolation (root/dataDir/opencodeConfigDir are
+// already unique per test, see withIsolatedStoreDirs below) — retry once
+// past it.
+function isTransientCoreModuleRace(result: unknown): boolean {
+  const text = JSON.stringify(result ?? {});
+  return /is not a function/.test(text) && /out[\\/]src[\\/]core/.test(text);
+}
+
+function saveRoutingProfileRetrying(opts: Parameters<typeof saveRoutingProfile>[0]): ReturnType<typeof saveRoutingProfile> {
+  const first = saveRoutingProfile(opts);
+  if (!first.ok && isTransientCoreModuleRace(first)) return saveRoutingProfile(opts);
+  return first;
+}
+
+async function clearAgentRouteRetrying(
+  ...args: Parameters<typeof clearAgentRoute>
+): Promise<Awaited<ReturnType<typeof clearAgentRoute>>> {
+  const first = await clearAgentRoute(...args);
+  if (!first.ok && isTransientCoreModuleRace(first)) return clearAgentRoute(...args);
+  return first;
+}
+
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agent-settings-route-"));
 }
@@ -426,7 +457,7 @@ test("clearAgentRoute (real scripts): strips the managed backend block, or resto
     const root = tmpRoot();
     writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
 
-    const saved = saveRoutingProfile({
+    const saved = saveRoutingProfileRetrying({
       root,
       scriptsDir: REPO_ROOT,
       profile: {
@@ -438,7 +469,7 @@ test("clearAgentRoute (real scripts): strips the managed backend block, or resto
     const appliedContent = fs.readFileSync(path.join(root, ".claude", "agents", "worker.md"), "utf8");
     assert.match(appliedContent, /managed-by: tycoon-routing/);
 
-    const result = await clearAgentRoute(root, "worker", { scriptsDir: REPO_ROOT });
+    const result = await clearAgentRouteRetrying(root, "worker", { scriptsDir: REPO_ROOT });
     assert.equal(result.handled, true, JSON.stringify(result));
     assert.equal(result.ok, true, JSON.stringify(result.errors));
 

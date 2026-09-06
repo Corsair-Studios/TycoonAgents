@@ -14,6 +14,7 @@ import {
   resolveAgentSlot,
   resolveOrchestratorSlot,
   routingSlotToBackend,
+  hasHandWrittenBackendBlock,
 } from "../src/core/routingProfile";
 import type { Backend } from "../src/core/agentBackend";
 
@@ -399,4 +400,62 @@ test("routingSlotToBackend: maps credentialEnv to apiKeyEnv and matches Backend 
   assert.equal(backend.apiKeyEnv, "OPENCODE_API_KEY");
   assert.deepEqual(backend.tools, ["Read", "Edit"]);
   assert.equal((backend as unknown as Record<string, unknown>).credentialEnv, undefined);
+});
+
+// Shared detector matrix (p21-t7 Part A): apply-routing-profile.mjs and
+// generate-opencode-config.mjs both load this exact function from
+// out/src/core/routingProfile.js — this is the single source of truth for
+// the "hand-written backend: block" detection they used to duplicate.
+test("hasHandWrittenBackendBlock: hand-written block (no managed marker) is true", () => {
+  const text = ["---", "name: foo", "backend:", "  vendor: acme", "  model: x", "---", "body"].join("\n");
+  assert.equal(hasHandWrittenBackendBlock(text), true);
+});
+
+test("hasHandWrittenBackendBlock: managed block (marker as first child) is false", () => {
+  const text = [
+    "---",
+    "name: foo",
+    "backend:",
+    "  # managed-by: tycoon-routing",
+    "  vendor: acme",
+    "  model: x",
+    "---",
+    "body",
+  ].join("\n");
+  assert.equal(hasHandWrittenBackendBlock(text), false);
+});
+
+test("hasHandWrittenBackendBlock: no backend block at all is false", () => {
+  const text = ["---", "name: foo", "role: worker", "---", "body"].join("\n");
+  assert.equal(hasHandWrittenBackendBlock(text), false);
+});
+
+test("hasHandWrittenBackendBlock: CRLF line endings are handled the same as LF", () => {
+  const text = ["---", "name: foo", "backend:", "  vendor: acme", "  model: x", "---", "body"].join("\r\n");
+  assert.equal(hasHandWrittenBackendBlock(text), true);
+});
+
+test("hasHandWrittenBackendBlock: CRLF managed block is still detected as managed", () => {
+  const text = [
+    "---",
+    "name: foo",
+    "backend:",
+    "  # managed-by: tycoon-routing",
+    "  vendor: acme",
+    "  model: x",
+    "---",
+    "body",
+  ].join("\r\n");
+  assert.equal(hasHandWrittenBackendBlock(text), false);
+});
+
+test("hasHandWrittenBackendBlock: 'backend' text in the body (outside frontmatter) is ignored", () => {
+  const text = [
+    "---",
+    "name: foo",
+    "role: worker",
+    "---",
+    "This agent talks about its backend: it uses acme under the hood.",
+  ].join("\n");
+  assert.equal(hasHandWrittenBackendBlock(text), false);
 });

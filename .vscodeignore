@@ -52,6 +52,10 @@ eslint.config.mjs
 # repopulated locally for dev/testing.
 media/uefn-bridge/**
 
+# Source parts for media/main.js (plan p21-t1) — the build step concatenates
+# these into the committed, tracked media/main.js, which is what ships.
+media/src/**
+
 # Throwaway OpenCode hook-probe spike (plan p3-t1) — never ship.
 standalone/spike/**
 .opencode/**

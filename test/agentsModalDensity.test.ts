@@ -402,6 +402,14 @@ function classicRoutingPayloadFixture() {
         routeSource: "frontmatter",
         handWrittenBackend: true,
       },
+      {
+        id: "default-agent",
+        name: "default-agent",
+        backend: { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2", costModelClass: "local" },
+        source: "default",
+        routeSource: "default",
+        handWrittenBackend: false,
+      },
     ],
     envProbe: {},
     presets: { vendors: ["anthropic", "google"], models: [] },
@@ -417,6 +425,7 @@ function classicSettingsPayload() {
       { id: "frontmatter-agent", name: "Frontmatter Agent", model: "sonnet", isOrchestrator: false, keywords: "" },
       { id: "routed-agent", name: "Routed Agent", model: "opus", isOrchestrator: false, keywords: "" },
       { id: "handwritten-agent", name: "Handwritten Agent", model: "google/gemini-2.5-pro", isOrchestrator: false, keywords: "", vendor: "google", handWrittenBackend: true },
+      { id: "default-agent", name: "Default Agent", model: "moonshot/kimi-k2", isOrchestrator: false, keywords: "", vendor: "moonshot" },
     ],
     delegation_mode: "direct",
     delegationHealth: {},
@@ -524,6 +533,59 @@ test("Classic density: unchecking a routed agent's checkbox posts clearAgentRout
   const clearMsg = posted.find((m) => m && m.type === "clearAgentRoute");
   assert.ok(clearMsg, `expected a clearAgentRoute message to be posted, got: ${JSON.stringify(posted)}`);
   assert.equal(clearMsg.agentId, "routed-agent");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: an inherited-default agent shows an inherit note instead of a checkbox, with an override link", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="default-agent"]');
+  assert.ok(row, "default-agent provider-toggle-row should render");
+
+  const checkbox = row.querySelector(".agent-provider-checkbox");
+  assert.equal(checkbox, null, "an inherited-default agent must render no checkbox");
+
+  assert.match(
+    row.textContent,
+    /Inherits the Default for all agents route/,
+    `expected inherit note, got: "${row.textContent}"`
+  );
+  assert.match(row.textContent, /moonshot\/moonshot\/kimi-k2|moonshot/, "inherit note should name the vendor/model");
+  assert.match(
+    row.textContent,
+    /clear the Default card/,
+    `expected the stop-inheriting hint, got: "${row.textContent}"`
+  );
+
+  const overrideBtn = row.querySelector(".routing-override-btn");
+  assert.ok(overrideBtn, "an 'Override for this agent' link should render");
+  assert.match(overrideBtn.textContent, /Override for this agent/);
+
+  const editor = doc.querySelector('.classic-provider-editor[data-agent-id="default-agent"]');
+  assert.equal(editor, null, "no editor should render before Override is clicked");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Classic density: clicking Override for an inherited-default agent expands the slot editor and posts no clearAgentRoute", () => {
+  const { doc, dispatch, errors, posted } = bootMainJs();
+  openClassicAgentsModal(doc, dispatch);
+
+  const row = doc.querySelector('.provider-toggle-row[data-agent-id="default-agent"]');
+  const overrideBtn = row.querySelector(".routing-override-btn") as any;
+  overrideBtn.click();
+
+  const editor = doc.querySelector('.classic-provider-editor[data-agent-id="default-agent"]');
+  assert.ok(editor, "clicking Override should reveal the slot/fallback editor");
+  assert.ok(editor.querySelector(".routing-slot-fields"), "slot editor fields should render inside it");
+
+  const clearMsg = posted.find((m) => m && m.type === "clearAgentRoute");
+  assert.equal(clearMsg, undefined, "overriding an inherited-default agent must never post clearAgentRoute");
+
+  const saveBtn = doc.getElementById("routing-save-btn");
+  assert.equal(saveBtn.hidden, false, "Save must become visible once the card is expanded");
 
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

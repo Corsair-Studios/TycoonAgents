@@ -85,3 +85,17 @@ test("packaged VSIX does not ship a local opencode.json", () => {
     );
   }
 });
+
+test("packaged VSIX does not ship media/src (source parts for media/main.js)", () => {
+  const vsixPath = findVsix();
+  const entries = listVsixEntries(vsixPath);
+
+  const leaked = entries.filter((e) => e.startsWith("extension/media/src/"));
+  assert.deepEqual(
+    leaked,
+    [],
+    `VSIX ${path.basename(vsixPath)} ships media/src/* source parts — these ` +
+      `are build-time-only inputs concatenated into media/main.js (plan ` +
+      `p21-t1) and must be excluded via .vscodeignore.`
+  );
+});

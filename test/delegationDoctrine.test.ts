@@ -212,6 +212,21 @@ test("the Review pass section describes a single review gate, not an unbounded l
   assert.ok(/not an open-ended loop|not.*unbounded/i.test(out), "must explicitly rule out an unbounded loop");
 });
 
+test("the Review pass section includes the Review model tiering subsection", () => {
+  const out = renderDelegationDoctrine("flat", true);
+  assert.ok(out.includes("### Review model tiering (added 2026-09-06)"), "tiering subsection heading must be present");
+  assert.ok(/review agent on Sonnet/i.test(out), "must state the Sonnet tier for security-relevant changes");
+  assert.ok(/review agent on Haiku/i.test(out), "must state the Haiku tier for CSS/labels/copy/docs/tests");
+  assert.ok(/read-only Haiku pass \(Explore\)/i.test(out), "must state the re-check uses a read-only Haiku pass");
+});
+
+test("renderDelegationDoctrine(mode, false) omits the Review model tiering subsection along with the Review pass section", () => {
+  for (const mode of DELEGATION_MODES) {
+    const out = renderDelegationDoctrine(mode, false);
+    assert.equal(out.includes("### Review model tiering"), false, `tiering subsection must be absent for mode=${mode}`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // renderDelegationDoctrine: roster-accurate Review-pass agent naming (mirrors
 // resolveEditId's coding-specialist/verse-expert pattern for the review

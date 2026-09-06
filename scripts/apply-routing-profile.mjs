@@ -83,9 +83,21 @@ function loadCoreModules() {
   const agentBackendPath = path.join(REPO_ROOT, "out", "src", "core", "agentBackend.js");
   const routingProfilePath = path.join(REPO_ROOT, "out", "src", "core", "routingProfile.js");
   const { readAgentFrontmatter } = require(agentBackendPath);
-  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend } =
-    require(routingProfilePath);
-  return { readAgentFrontmatter, loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend };
+  const {
+    loadRoutingProfile,
+    resolveAgentSlot,
+    resolveOrchestratorSlot,
+    routingSlotToBackend,
+    hasHandWrittenBackendBlock,
+  } = require(routingProfilePath);
+  return {
+    readAgentFrontmatter,
+    loadRoutingProfile,
+    resolveAgentSlot,
+    resolveOrchestratorSlot,
+    routingSlotToBackend,
+    hasHandWrittenBackendBlock,
+  };
 }
 
 function parseArgs(argv) {
@@ -329,18 +341,9 @@ function findManagedBackendBlockRange(fmLines) {
   return undefined;
 }
 
-// True when `fmLines` (a file's raw frontmatter lines) has a top-level
-// `backend:` block that was NOT written by this script — i.e. it has no
-// `# managed-by: tycoon-routing` marker as its first indented child line.
-// Reuses findAnyBackendBlockRange/MANAGED_MARKER, the same detection this
-// file already uses for the hand-written-block backup guard, so an agent
-// with a hand-written backend is excluded from `defaults` expansion below.
-function hasHandWrittenBackendBlock(fmLines) {
-  const range = findAnyBackendBlockRange(fmLines);
-  if (!range) return false;
-  const firstChild = range.start + 1 < range.end ? fmLines[range.start + 1].replace(/\r$/, "").trim() : undefined;
-  return firstChild !== MANAGED_MARKER;
-}
+// hasHandWrittenBackendBlock (raw file text -> boolean) is loaded from
+// out/src/core/routingProfile.js via loadCoreModules() — this script must
+// not keep its own duplicate of that detection.
 
 // Determine if the given frontmatter lines mark this agent as the
 // orchestrator (role: orchestrator or tier: orchestrator, flat key match).
@@ -359,7 +362,7 @@ function isOrchestratorFrontmatter(fmLines) {
 function main() {
   const { root, check } = parseArgs(process.argv.slice(2));
   const core = loadCoreModules();
-  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend } = core;
+  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend, hasHandWrittenBackendBlock } = core;
 
   const { profile, path: profilePath, errors } = loadRoutingProfile(root);
 
@@ -487,7 +490,7 @@ function main() {
       }
       const split = splitFrontmatter(raw);
       if (!split.hasFrontmatter) continue;
-      if (hasHandWrittenBackendBlock(split.fmLines)) continue;
+      if (hasHandWrittenBackendBlock(raw)) continue;
       agentIdsToProcess.add(id);
     }
   }
@@ -506,7 +509,7 @@ function main() {
       if (isExplicitAgent) untouched.push(filePath);
       continue;
     }
-    const slot = resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: hasHandWrittenBackendBlock(split.fmLines) });
+    const slot = resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: hasHandWrittenBackendBlock(raw) });
     if (!slot) continue;
     const backend = routingSlotToBackend(slot);
     const backupCountBefore = Object.keys(backupDoc.agents).length;
