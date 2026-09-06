@@ -824,21 +824,23 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       );
 
       // Positive assertion on the footer: buildTeamStatePayload's 4 agents
-      // all carry no `vendor` field, so buildMetricsRollup's byVendor bucket
-      // collapses them into a single "unknown" vendor total row — exactly
-      // one distinct vendor in this fixture, exactly one per-vendor footer
-      // row. Vendor rows are distinguished from per-cost-class footer rows
-      // (both can read "unknown total —" since the class bucket is ALSO
-      // "unknown" here) by their distinct `title` tooltip text set in
-      // appendFooterRow's per-vendor call (media/main.js renderMetricsTable).
+      // all carry no `vendor` field, so buildMetricsRollup infers one from
+      // `model` (inferVendorFromModel, media/main.js) — build-lead/coding-
+      // specialist/ux-ui-designer are "opus"/"sonnet" -> "anthropic", while
+      // the orchestrator has no model at all -> "unknown". That's 2 distinct
+      // vendor buckets, so 2 per-vendor rows. Vendor rows now render inside
+      // the collapsed "By vendor and billing" disclosure rather than as
+      // direct footer rows, but stay tagged "metrics-footer-row" and
+      // distinguished from per-cost-class rows by the same `title` tooltip
+      // text set in appendFooterRow's per-vendor call.
       const vendorFooterRows = footerRows.filter((r: any) => {
         const cell = r.querySelector('td');
         return cell && (cell.title || '').includes('belongs to this vendor');
       });
       assert.equal(
         vendorFooterRows.length,
-        1,
-        'exactly one per-vendor footer row for the single distinct vendor ("unknown") present in the fixture'
+        2,
+        'one per-vendor footer row per distinct inferred vendor ("anthropic" and "unknown") in the fixture'
       );
 
       // The lead's own row shows only ITS OWN tokens (800), never a rollup

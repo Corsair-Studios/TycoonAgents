@@ -14402,6 +14402,29 @@
     tbodyEl.appendChild(tr);
   }
 
+  /**
+   * Infer a vendor id from a model string when the record itself carries no
+   * `vendor` field. Reuses the same alias/family recognition as
+   * `resolvePriceKey`'s legacy-id branch (opus/sonnet/haiku/fable bare or
+   * "claude-*") and the "vendor/model" prefix convention used throughout
+   * this file (e.g. resolvePriceKey, isWellFormedClaudeModelId). Returns
+   * "unknown" when nothing matches — never fabricates a vendor.
+   * @param {string|null|undefined} model
+   * @returns {string}
+   */
+  function inferVendorFromModel(model) {
+    const s = String(model || "").trim().toLowerCase();
+    if (!s) return "unknown";
+    if (/^(opus|sonnet|haiku|fable)$/i.test(s)) return "anthropic";
+    if (/^claude-(opus|sonnet|haiku|fable)/i.test(s)) return "anthropic";
+    if (/(opus|sonnet|haiku|fable)/i.test(s) && s.indexOf("/") === -1) return "anthropic";
+    if (s.indexOf("/") >= 0) {
+      const provider = s.split("/")[0];
+      if (provider) return provider;
+    }
+    return "unknown";
+  }
+
   function buildMetricsRollup(agentMetrics) {
     const items = Array.isArray(agentMetrics) ? agentMetrics : [];
 
@@ -14409,13 +14432,16 @@
     const classMap = new Map(); // costModelClass -> { tokens, costUsd }
     let fallbackCount = 0;
     const localTimeRows = [];
+    let totalTokens = 0;
+    let totalCostUsd = null;
+    let totalAgents = 0;
 
     for (const item of items) {
       if (!item) continue;
 
       fallbackCount += item.fallbackCount > 0 ? item.fallbackCount : 0;
 
-      const vendor = item.vendor || "unknown";
+      const vendor = item.vendor || inferVendorFromModel(item.model);
       const model = item.model || "";
       const cls = costModelClass(model, item.costModelClass);
       const tokens = (item.tokens ?? 0) + (item.cacheReadTokens ?? 0);
@@ -14429,6 +14455,10 @@
       vEntry.tokens += tokens;
       vEntry.agents += 1;
       if (cost != null) vEntry.costUsd = (vEntry.costUsd ?? 0) + cost;
+
+      totalTokens += tokens;
+      totalAgents += 1;
+      if (cost != null) totalCostUsd = (totalCostUsd ?? 0) + cost;
 
       let cEntry = classMap.get(cls);
       if (!cEntry) {
@@ -14469,7 +14499,16 @@
       costLabel: costLabelFor(costModelClass, c.costUsd),
     }));
 
-    return { byVendor, byCostClass, fallbackCount, localTimeRows };
+    return {
+      byVendor,
+      byCostClass,
+      fallbackCount,
+      localTimeRows,
+      totalTokens,
+      totalCostUsd,
+      totalCostLabel: totalCostUsd != null ? fmtUSD(totalCostUsd) : null,
+      totalAgents,
+    };
   }
 
   /**
@@ -14920,45 +14959,113 @@
     const rollup = buildMetricsRollup(metrics);
     const FOOTER_COLSPAN = 6;
 
-    for (const v of rollup.byVendor) {
-      appendFooterRow(
-        tbodyEl,
-        FOOTER_COLSPAN,
-        `${v.vendor} total — `,
-        `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
-        "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
-      );
-    }
-
-    for (const c of rollup.byCostClass) {
-      appendFooterRow(
-        tbodyEl,
-        FOOTER_COLSPAN,
-        `${c.costModelClass} total — `,
-        `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
-        "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
-      );
-    }
-
+    // Single compact summary row: "Total — <tokens>, ~$<cost> · <N> agents ·
+    // <F> fallbacks" (cost omitted when unknown, fallbacks omitted when
+    // zero). The per-vendor / per-billing-class breakdown that used to
+    // render as up to 7 separate rows now lives behind a collapsed
+    // disclosure (see buildMetricsFooterBreakdownRows), toggled by
+    // #metrics-footer-disclosure-btn and persisted in localStorage.
+    const summaryParts = [`${fmtTokens(rollup.totalTokens)} tokens`];
+    if (rollup.totalCostLabel != null) summaryParts.push(rollup.totalCostLabel);
+    let summaryText = summaryParts.join(", ") + ` · ${rollup.totalAgents} agent${rollup.totalAgents === 1 ? "" : "s"}`;
     if (rollup.fallbackCount > 0) {
-      appendFooterRow(
-        tbodyEl,
-        FOOTER_COLSPAN,
-        "Fallbacks fired — ",
-        `${rollup.fallbackCount}`,
-        "Number of times a task was re-dispatched to a fallback model/provider after its originally assigned agent could not run it."
-      );
+      summaryText += ` · ${rollup.fallbackCount} fallback${rollup.fallbackCount === 1 ? "" : "s"}`;
+    }
+    appendFooterRow(
+      tbodyEl,
+      FOOTER_COLSPAN,
+      "Total — ",
+      summaryText,
+      "Sum of tokens and estimated cost across every agent. Open \"By vendor and billing\" below for the per-vendor and per-billing-class breakdown."
+    );
+
+    const disclosureTr = document.createElement("tr");
+    disclosureTr.className = "metrics-footer-row metrics-footer-disclosure-row";
+    const disclosureTd = document.createElement("td");
+    disclosureTd.colSpan = FOOTER_COLSPAN;
+    disclosureTd.style.whiteSpace = "normal";
+    disclosureTd.style.padding = "0";
+
+    let disclosureOpen = false;
+    try {
+      disclosureOpen = localStorage.getItem("metricsFooterBreakdownOpen") === "1";
+    } catch {
+      disclosureOpen = false;
     }
 
-    for (const row of rollup.localTimeRows) {
-      appendFooterRow(
-        tbodyEl,
-        FOOTER_COLSPAN,
-        `${row.agent} (local · time-based) — `,
-        `active ${fmtMs(row.activeMs)}`,
-        "This local model reported no token count, so cost/tokens can't be estimated — active time is shown instead of a fabricated token-equivalent."
-      );
+    const disclosureBtn = document.createElement("button");
+    disclosureBtn.id = "metrics-footer-disclosure-btn";
+    disclosureBtn.type = "button";
+    disclosureBtn.className = "metrics-footer-disclosure-btn";
+    disclosureBtn.style.background = "none";
+    disclosureBtn.style.border = "none";
+    disclosureBtn.style.color = "var(--muted)";
+    disclosureBtn.style.fontSize = "11px";
+    disclosureBtn.style.cursor = "pointer";
+    disclosureBtn.style.padding = "2px 0";
+    disclosureBtn.setAttribute("aria-expanded", disclosureOpen ? "true" : "false");
+    disclosureBtn.textContent = `By vendor and billing ${disclosureOpen ? "▾" : "▸"}`;
+
+    const breakdownWrap = document.createElement("div");
+    breakdownWrap.className = "metrics-footer-breakdown";
+    breakdownWrap.hidden = !disclosureOpen;
+
+    const breakdownTable = document.createElement("table");
+    breakdownTable.style.width = "100%";
+    const breakdownTbody = document.createElement("tbody");
+    breakdownTable.appendChild(breakdownTbody);
+    breakdownWrap.appendChild(breakdownTable);
+
+    function renderBreakdownRows() {
+      breakdownTbody.innerHTML = "";
+      for (const v of rollup.byVendor) {
+        appendFooterRow(
+          breakdownTbody,
+          FOOTER_COLSPAN,
+          `${vendorLabelFor(v.vendor)} total — `,
+          `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
+          "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
+        );
+      }
+
+      for (const c of rollup.byCostClass) {
+        appendFooterRow(
+          breakdownTbody,
+          FOOTER_COLSPAN,
+          `${c.costModelClass} total — `,
+          `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
+          "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
+        );
+      }
+
+      for (const row of rollup.localTimeRows) {
+        appendFooterRow(
+          breakdownTbody,
+          FOOTER_COLSPAN,
+          `${row.agent} (local · time-based) — `,
+          `active ${fmtMs(row.activeMs)}`,
+          "This local model reported no token count, so cost/tokens can't be estimated — active time is shown instead of a fabricated token-equivalent."
+        );
+      }
     }
+    renderBreakdownRows();
+
+    disclosureBtn.addEventListener("click", () => {
+      const nowOpen = breakdownWrap.hidden;
+      breakdownWrap.hidden = !nowOpen;
+      disclosureBtn.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+      disclosureBtn.textContent = `By vendor and billing ${nowOpen ? "▾" : "▸"}`;
+      try {
+        localStorage.setItem("metricsFooterBreakdownOpen", nowOpen ? "1" : "0");
+      } catch {
+        // localStorage unavailable — open state just won't persist.
+      }
+    });
+
+    disclosureTd.appendChild(disclosureBtn);
+    disclosureTd.appendChild(breakdownWrap);
+    disclosureTr.appendChild(disclosureTd);
+    tbodyEl.appendChild(disclosureTr);
 
     // Append the pricing disclaimer once, after the table. renderMetrics()
     // only rebuilds #metrics-tbody (not the whole #metrics-body container),
