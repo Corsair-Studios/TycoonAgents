@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// TycoonAgents standalone — CLI command dispatch (p3-t3, watch added p4-t1).
+// TycoonAgents™ standalone — CLI command dispatch (p3-t3, watch added p4-t1).
 //
 // Minimal command router: `install-hook <dir>` and `watch <dir> [<dir2> ...]`.
 // This file (via the package.json `bin` field) is what `npx

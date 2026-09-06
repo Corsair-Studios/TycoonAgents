@@ -5,7 +5,7 @@
   "description": "Enforces delegation of coding work to cheaper specialist AI models, with a live tycoon-style visualization of that work as it happens.",
   "displayName": "TycoonAgents",
   "publisher": "tycoonagents",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "FSL-1.1-ALv2",
   "engines": {
     "vscode": "^1.85.0"
   },

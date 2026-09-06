@@ -1,6 +1,6 @@
-# TycoonAgents
+# TycoonAgents™
 
-**TycoonAgents is an AI build harness first, and a visualization second.** It's built to make the most of your tokens: instead of running everything on one expensive model, it routes work to a fleet of sub-agents — each on the model that fits the job — so your project gets built in the most cost-effective way possible. A heavyweight model coordinates and makes the calls; cheaper, faster models pick up the work they're suited for.
+**TycoonAgents™ is an AI build harness first, and a visualization second.** It's built to make the most of your tokens: instead of running everything on one expensive model, it routes work to a fleet of sub-agents — each on the model that fits the job — so your project gets built in the most cost-effective way possible. A heavyweight model coordinates and makes the calls; cheaper, faster models pick up the work they're suited for.
 
 Sitting on top of that harness is a live, game-style visualization of your agent fleet — but the harness is the point.
 
@@ -150,6 +150,8 @@ Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.m
 
 ## License
 Free to use and share, including the bundled theme artwork — but not to be sold, repackaged into a paid product, or redistributed commercially, without the maintainer's express written approval. See [LICENSE](LICENSE) for the full terms.
+
+TycoonAgents™ is a trademark of Corsair Studios LLC. Licensed under the Functional Source License 1.1 (ALv2 future license); see LICENSE.
 
 ## Thanks
 Thanks to **IndieDevDan** for his tutorials.

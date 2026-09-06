@@ -8807,7 +8807,7 @@ export class TycoonPanel {
   <!-- Setup / onboarding overlay (styled + toggled by media/main.js) -->
   <div id="setup-view">
     <div id="setup-card">
-      <h1>TycoonAgents</h1>
+      <h1>TycoonAgents™</h1>
       <p id="setup-status">Checking installation&hellip;</p>
       <p id="setup-error" hidden></p>
       <!-- Pre-install delegation chooser: hidden by default; main.js reveals
@@ -8869,7 +8869,7 @@ export class TycoonPanel {
     <div id="about-backdrop"></div>
     <div id="about-dialog">
       <button id="modal-close" aria-label="Close dialog">&times;</button>
-      <h2 id="about-modal-title">TycoonAgents</h2>
+      <h2 id="about-modal-title">TycoonAgents™</h2>
       <p>Created by Scott McClellan</p>
       <p>
         <a href="https://x.com/thetrashbyrd" target="_blank" rel="noopener noreferrer">@thetrashbyrd</a>
