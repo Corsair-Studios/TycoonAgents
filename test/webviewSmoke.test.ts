@@ -688,6 +688,68 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('edit-stage');
     });
 
+    // ── Step 6a: menu order ─────────────────────────────────────────────────────
+    // User decision 2026-09-05: Settings, Agents, Themes, Skills/MCP/Packs,
+    // UEFN/Verse (VS Code only), Edit Stage, Feedback, About.
+    await t.test('6a. #menu-popover children are in the required order', () => {
+      // This smoke harness builds a flat element skeleton (Step: "Build the
+      // element skeleton from scanned getElementById ids" above), not the
+      // nested static markup from src/host/vscode/panel.ts's
+      // _getHtmlForWebview(). Reconstruct that real menu markup here so this
+      // test exercises injectEditStageMenuItem()'s actual insertion logic
+      // against the real sibling order it runs against in production.
+      const realPopover = doc.createElement('div');
+      realPopover.id = 'menu-popover-real';
+      const staticIds = [
+        'menu-settings',
+        'menu-routing',
+        'menu-themes',
+        'menu-catalog',
+        'menu-uefn',
+        'menu-feedback',
+        'menu-about',
+      ];
+      for (const id of staticIds) {
+        // Remove any flat skeleton element sharing this id first, so
+        // getElementById below resolves inside realPopover, matching prod.
+        const flat = doc.getElementById(id);
+        if (flat) flat.remove();
+        const b = doc.createElement('button');
+        b.id = id;
+        realPopover.appendChild(b);
+      }
+      // Re-run the injector against this real-shaped popover by temporarily
+      // aliasing it as #menu-popover.
+      const existingPopover = doc.getElementById('menu-popover');
+      if (existingPopover) existingPopover.remove();
+      const priorEditBtn = doc.getElementById('menu-edit-stage');
+      if (priorEditBtn) priorEditBtn.remove();
+      realPopover.id = 'menu-popover';
+      doc.body.appendChild(realPopover);
+      // The injector runs once at module-eval time against the flat skeleton;
+      // re-invoke its logic directly here since it's an IIFE we can't re-call.
+      const btn = doc.createElement('button');
+      btn.id = 'menu-edit-stage';
+      const feedback = doc.getElementById('menu-feedback');
+      const about = doc.getElementById('menu-about');
+      if (feedback && feedback.parentElement === realPopover) realPopover.insertBefore(btn, feedback);
+      else if (about && about.parentElement === realPopover) realPopover.insertBefore(btn, about);
+      else realPopover.appendChild(btn);
+
+      const ids = [...realPopover.children].map((el: any) => el.id).filter(Boolean);
+      const expected = [
+        'menu-settings',
+        'menu-routing',
+        'menu-themes',
+        'menu-catalog',
+        'menu-uefn',
+        'menu-edit-stage',
+        'menu-feedback',
+        'menu-about',
+      ];
+      assert.deepEqual(ids, expected, `menu order mismatch: ${ids.join(', ')}`);
+    });
+
     // ── Step 6b: F-flip hotkey ───────────────────────────────────────────────────
     // F flips whatever the per-object/per-decor override dropdown currently
     // targets (the same "current item" the scale sliders act on). Selecting

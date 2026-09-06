@@ -585,7 +585,7 @@ test('Routing panel: fallback chip, Totals block, and state-update preserves an 
     const totalsText = totalsRows.map((r) => r.textContent).join(' | ');
     assert.ok(totalsText.includes('openai total'), 'Totals block should list an openai vendor row');
     assert.ok(totalsText.includes('anthropic total'), 'Totals block should list an anthropic vendor row');
-    assert.ok(totalsText.includes('metered total'), 'Totals block should list a metered cost-class row');
+    assert.ok(totalsText.includes('metered (API) total'), 'Totals block should list a metered cost-class row');
     assert.ok(totalsText.includes('subscription total'), 'Totals block should list a subscription cost-class row');
     assert.ok(totalsText.includes('Fallbacks fired'), 'Totals block should list the fallbacks-fired line');
     assert.ok(totalsText.includes('4'), 'fallbacks-fired total should sum both agents\' fallbackCount (1 + 3 = 4)');

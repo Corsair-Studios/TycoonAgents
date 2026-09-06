@@ -8954,8 +8954,10 @@
     btn.id = "menu-edit-stage";
     btn.type = "button";
     btn.textContent = "Edit Stage";
+    const feedback = document.getElementById("menu-feedback");
     const about = document.getElementById("menu-about");
-    if (about && about.parentElement === menuPopoverEl) menuPopoverEl.insertBefore(btn, about);
+    if (feedback && feedback.parentElement === menuPopoverEl) menuPopoverEl.insertBefore(btn, feedback);
+    else if (about && about.parentElement === menuPopoverEl) menuPopoverEl.insertBefore(btn, about);
     else menuPopoverEl.appendChild(btn);
     btn.addEventListener("click", () => {
       if (typeof closeMenu === "function") closeMenu();
@@ -14313,6 +14315,20 @@
    * @param {string|null|undefined} model
    * @returns {"metered"|"subscription"|"local"|"unknown"}
    */
+  /**
+   * Human-readable label for a costModelClass value. Display-only: never
+   * feed this back into a stored/compared value — those stay the literal
+   * "metered"/"subscription"/"local"/"unknown".
+   * @param {string} cls
+   * @returns {string}
+   */
+  function costClassLabel(cls) {
+    if (cls === "metered") return "metered (API)";
+    if (cls === "subscription") return "subscription";
+    if (cls === "local") return "local";
+    return cls;
+  }
+
   function costModelClass(model, explicit) {
     if (explicit === "metered" || explicit === "subscription" || explicit === "local") return explicit;
     if (!model) return "unknown";
@@ -15037,7 +15053,7 @@
         appendFooterRow(
           breakdownTbody,
           FOOTER_COLSPAN,
-          `${c.costModelClass} total — `,
+          `${costClassLabel(c.costModelClass)} total — `,
           `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
           "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
         );
@@ -17381,7 +17397,7 @@
     ["metered", "subscription", "local"].forEach(function (c) {
       var opt = document.createElement("option");
       opt.value = c;
-      opt.textContent = c;
+      opt.textContent = costClassLabel(c);
       if (c === slot.costModelClass) opt.selected = true;
       costSel.appendChild(opt);
     });
@@ -17614,7 +17630,7 @@
       appendFooterRow(
         tbody,
         COLSPAN,
-        `${c.costModelClass} total — `,
+        `${costClassLabel(c.costModelClass)} total — `,
         `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
         "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
       );

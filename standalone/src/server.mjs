@@ -2946,12 +2946,12 @@ function buildHostHtml() {
          #stage-area. See #menu-btn/#menu-popover in media/style.css. -->
     <button id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">&#9776;</button>
     <div id="menu-popover" role="menu" hidden>
-      <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
-      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
       <button class="menu-item" role="menuitem" id="menu-routing">Agents</button>
-      <button class="menu-item" role="menuitem" id="menu-about">About</button>
+      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
+      <button class="menu-item" role="menuitem" id="menu-about">About</button>
       ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ''}
     </div>
 
@@ -3004,6 +3004,7 @@ function buildHostHtml() {
       <div id="metrics-tabs" class="metrics-tabs" role="tablist" hidden>
         <button id="metrics-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="true" aria-controls="metrics-body">Metrics</button>
         <button id="plan-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="project-plan-body">Project Plan</button>
+        <button id="delegation-tab-btn" class="metrics-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="delegation-stats">Delegation</button>
       </div>
       <div id="metrics-body">
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
@@ -3020,11 +3021,13 @@ function buildHostHtml() {
           </thead>
           <tbody id="metrics-tbody"></tbody>
         </table>
-        <!-- Delegation stats (Team Lead Mode Phase 4: measurement) — populated
-             by renderDelegationStats() in media/main.js from state.modeStats.
-             Hidden by default; shown only when at least one mode has data. -->
-        <div id="delegation-stats" hidden></div>
       </div>
+      <!-- Delegation tab (full-width sibling tab panel, promoted out of
+           #metrics-body): populated by renderDelegationStats() in
+           media/main.js from state.modeStats. Hidden unless it is the
+           active tab AND has data (see updateMetricsTabsUI()/
+           renderDelegationStats()). -->
+      <div id="delegation-stats" class="delegation-stats-body" hidden></div>
       <!-- Project Plan (optional feature, opt-in via Settings): tab content
            hosted next to Metrics inside the same panel. Hidden unless
            PLAN_STATE reports enabled:true; rebuilt by

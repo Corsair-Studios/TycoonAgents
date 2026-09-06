@@ -8664,11 +8664,11 @@ export class TycoonPanel {
          #stage-area. See #menu-btn/#menu-popover in media/style.css. -->
     <button id="menu-btn" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">&#9776;</button>
     <div id="menu-popover" role="menu" hidden>
-      <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
-      <button class="menu-item" role="menuitem" id="menu-uefn">UEFN / Verse</button>
-      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
       <button class="menu-item" role="menuitem" id="menu-routing">Agents</button>
+      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
+      <button class="menu-item" role="menuitem" id="menu-uefn">UEFN / Verse</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
       <button class="menu-item" role="menuitem" id="menu-about">About</button>
       ${version ? `<div class="menu-version" role="presentation">v${version}</div>` : ""}

@@ -180,3 +180,131 @@ test('parseMenuRoutingLabel: throws (does not silently return empty) when #menu-
   const fixtureWithoutButton = `<button id="menu-settings">Settings</button>`;
   assert.throws(() => parseMenuRoutingLabel(fixtureWithoutButton, 'fixture'), /Could not locate/);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-05: hamburger menu reorder — user-decided order is Settings,
+// Agents, Themes, Skills, MCP packs, Edit stage, Feedback, About. No item
+// exists per-label for "Skills"/"MCP packs" (both are the single combined
+// #menu-catalog "Skills / MCP / Packs" item) or "Edit stage" (mapped to
+// #menu-uefn "UEFN / Verse", VS Code only — server.mjs has no UEFN item).
+// This guard asserts the #menu-item id order matches that decision in both
+// templates (server.mjs's list is the VS Code list with menu-uefn removed).
+// ---------------------------------------------------------------------------
+
+const EXPECTED_MENU_ITEM_ORDER_VSCODE = [
+  'menu-settings',
+  'menu-routing',
+  'menu-themes',
+  'menu-catalog',
+  'menu-uefn',
+  'menu-feedback',
+  'menu-about',
+];
+
+const EXPECTED_MENU_ITEM_ORDER_STANDALONE = EXPECTED_MENU_ITEM_ORDER_VSCODE.filter((id) => id !== 'menu-uefn');
+
+/**
+ * Extracts the ordered ids of every `<button class="menu-item" ... id="...">`
+ * element from a template's source text.
+ *
+ * @param {string} sourceText raw template source text
+ * @param {string} label file label for error messages
+ * @returns {string[]} menu-item ids, in document order
+ * @throws {Error} if no menu-item elements are found — fail loudly, not silently.
+ */
+function parseMenuItemIds(sourceText, label) {
+  const re = /<button\s+class="menu-item"[^>]*\bid="([^"]+)"[^>]*>/g;
+  const ids = [];
+  let m;
+  while ((m = re.exec(sourceText)) !== null) {
+    ids.push(m[1]);
+  }
+  if (ids.length === 0) {
+    throw new Error(
+      `[templateParity.test.mjs] Found zero '<button class="menu-item" ... id="...">' elements in ${label}. ` +
+        'The markup shape may have changed. Update the regex in parseMenuItemIds().',
+    );
+  }
+  return ids;
+}
+
+test('menu-item id order matches the 2026-09-05 decided sequence in the VS Code template', () => {
+  const ids = parseMenuItemIds(fs.readFileSync(PANEL_TS_PATH, 'utf8'), 'src/host/vscode/panel.ts');
+  assert.deepEqual(ids, EXPECTED_MENU_ITEM_ORDER_VSCODE, `VS Code menu-item order drifted: ${JSON.stringify(ids)}`);
+});
+
+test('menu-item id order matches the 2026-09-05 decided sequence in the standalone template', () => {
+  const ids = parseMenuItemIds(fs.readFileSync(SERVER_MJS_PATH, 'utf8'), 'standalone/src/server.mjs');
+  assert.deepEqual(
+    ids,
+    EXPECTED_MENU_ITEM_ORDER_STANDALONE,
+    `standalone menu-item order drifted: ${JSON.stringify(ids)}`,
+  );
+});
+
+test('parseMenuItemIds: throws (does not silently return empty) when no menu-item elements are present', () => {
+  const fixtureWithoutMenuItems = `<button id="menu-btn">☰</button>`;
+  assert.throws(() => parseMenuItemIds(fixtureWithoutMenuItems, 'fixture'), /Found zero/);
+});
+
+// ---------------------------------------------------------------------------
+// Delegation tab drift guard: the standalone template silently omitted the
+// #delegation-tab-btn button (and #delegation-stats as a #metrics-body
+// sibling) even though media/main.js's updateMetricsTabsUI()/
+// renderDelegationStats() read for it — so the Delegation tab never showed
+// in the standalone host. Asserts the #metrics-tabs button strip (ids, in
+// order) matches between templates, and that #delegation-stats is a direct
+// sibling of #metrics-body (not nested inside it) in both.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the ordered ids of every `.metrics-tab-btn` button from a
+ * template's source text.
+ *
+ * @param {string} sourceText raw template source text
+ * @param {string} label file label for error messages
+ * @returns {string[]} metrics-tab-btn ids, in document order
+ * @throws {Error} if none are found — fail loudly, not silently.
+ */
+function parseMetricsTabBtnIds(sourceText, label) {
+  const re = /<button[^>]*\bclass="metrics-tab-btn"[^>]*\bid="([^"]+)"[^>]*>|<button[^>]*\bid="([^"]+)"[^>]*\bclass="metrics-tab-btn"[^>]*>/g;
+  const ids = [];
+  let m;
+  while ((m = re.exec(sourceText)) !== null) {
+    ids.push(m[1] || m[2]);
+  }
+  if (ids.length === 0) {
+    throw new Error(
+      `[templateParity.test.mjs] Found zero '.metrics-tab-btn' buttons in ${label}. The markup shape may have ` +
+        'changed. Update the regex in parseMetricsTabBtnIds().',
+    );
+  }
+  return ids;
+}
+
+test('metrics-tab-btn id order matches between standalone and VS Code templates', () => {
+  const standaloneIds = parseMetricsTabBtnIds(fs.readFileSync(SERVER_MJS_PATH, 'utf8'), 'standalone/src/server.mjs');
+  const vscodeIds = parseMetricsTabBtnIds(fs.readFileSync(PANEL_TS_PATH, 'utf8'), 'src/host/vscode/panel.ts');
+  assert.deepEqual(
+    standaloneIds,
+    vscodeIds,
+    `.metrics-tab-btn id order drifted between templates.\n  standalone: ${JSON.stringify(standaloneIds)}\n  vscode:     ${JSON.stringify(vscodeIds)}`,
+  );
+});
+
+test('#delegation-tab-btn is present among the standalone template\'s metrics-tab-btn buttons', () => {
+  const ids = parseMetricsTabBtnIds(fs.readFileSync(SERVER_MJS_PATH, 'utf8'), 'standalone/src/server.mjs');
+  assert.ok(ids.includes('delegation-tab-btn'), `#delegation-tab-btn missing from standalone .metrics-tab-btn strip: ${JSON.stringify(ids)}`);
+});
+
+test('#delegation-stats is present in both templates', () => {
+  const standaloneText = fs.readFileSync(SERVER_MJS_PATH, 'utf8');
+  const vscodeText = fs.readFileSync(PANEL_TS_PATH, 'utf8');
+  assert.ok(/id="delegation-stats"/.test(standaloneText), '#delegation-stats missing from standalone/src/server.mjs');
+  assert.ok(/id="delegation-stats"/.test(vscodeText), '#delegation-stats missing from src/host/vscode/panel.ts');
+});
+
+test('parseMetricsTabBtnIds: throws (does not silently return empty) when no metrics-tab-btn elements are present', () => {
+  const fixtureWithoutTabBtns = `<button id="menu-btn">☰</button>`;
+  assert.throws(() => parseMetricsTabBtnIds(fixtureWithoutTabBtns, 'fixture'), /Found zero/);
+});
