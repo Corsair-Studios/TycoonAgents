@@ -233,6 +233,16 @@ function agentBackendModule() {
   return _agentBackendModule;
 }
 
+// p18-t1: shared route-aware Settings helper (describeAgentRoutes/
+// describeRoutingVisibility/overrideAgentToClaudeTier) — same "pure, no
+// vscode import" posture as the modules above.
+const AGENT_SETTINGS_ROUTE_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'agentSettingsRoute.js');
+let _agentSettingsRouteModule;
+function agentSettingsRouteModule() {
+  if (!_agentSettingsRouteModule) _agentSettingsRouteModule = requireCompiledOrThrow(AGENT_SETTINGS_ROUTE_JS, 'agentSettingsRoute');
+  return _agentSettingsRouteModule;
+}
+
 // ── MIME map (media/ only ships a handful of extensions today) ─────────────
 const MIME_TYPES = {
   '.js': 'text/javascript; charset=utf-8',
@@ -816,6 +826,78 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] setHarness failed:', err instanceof Error ? err.message : err);
       }
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'setUseMultipleLlms': {
+      // Standalone analog of panel.ts's _handleSetUseMultipleLlms (p18-t1).
+      // Never touches routing.json — hiding the Routing screen again must
+      // never delete the saved profile.
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] setUseMultipleLlms: no project root resolved');
+        break;
+      }
+      try {
+        const { writeUseMultipleLlms } = providerSelectionModule();
+        writeUseMultipleLlms(root, Boolean(msg.value));
+      } catch (err) {
+        console.error('[tycoonagents-standalone] setUseMultipleLlms failed:', err instanceof Error ? err.message : err);
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'setAgentModel': {
+      // Standalone analog of panel.ts's _handleSetAgentModel (p18-t1): for
+      // an agent whose route is not pure frontmatter, overrideAgentToClaudeTier
+      // writes an explicit routing.json entry instead of frontmatter, so the
+      // click wins over routing.json's own default/explicit route. Falls
+      // back to the original setFrontmatterModel write when that returns
+      // handled:false (frontmatter-only agent, or unknown agent id).
+      const root = primaryProjectRoot;
+      const id = String(msg.id || '');
+      const model = String(msg.model || '');
+      if (!root) {
+        console.error('[tycoonagents-standalone] setAgentModel: no project root resolved');
+        break;
+      }
+      (async () => {
+        const { isSafeAgentId, modelIdFromShort, setFrontmatterModel } = agentConfigModule();
+        if (!isSafeAgentId(id)) {
+          broadcast('message', { type: 'settingsUpdated', ok: false, id, field: 'model', error: 'invalid agent id' });
+          return;
+        }
+        const fullId = modelIdFromShort(model);
+        if (fullId === undefined) {
+          broadcast('message', { type: 'settingsUpdated', ok: false, id, field: 'model', error: 'unknown model' });
+          return;
+        }
+        try {
+          const { overrideAgentToClaudeTier } = agentSettingsRouteModule();
+          const override = await overrideAgentToClaudeTier(root, id, model, { scriptsDir: REPO_ROOT });
+          if (override.handled) {
+            broadcast('message', {
+              type: 'settingsUpdated',
+              ok: override.ok,
+              id,
+              field: 'model',
+              ...(override.ok ? {} : { error: override.errors.join('; ') }),
+            });
+            broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+            return;
+          }
+        } catch (err) {
+          console.error('[tycoonagents-standalone] overrideAgentToClaudeTier failed, falling back to frontmatter:', err instanceof Error ? err.message : err);
+        }
+        try {
+          const filePath = path.join(root, '.claude', 'agents', `${id}.md`);
+          const content = fs.readFileSync(filePath, 'utf8');
+          fs.writeFileSync(filePath, setFrontmatterModel(content, fullId));
+          broadcast('message', { type: 'settingsUpdated', ok: true, id, field: 'model' });
+          broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+        } catch (err) {
+          broadcast('message', { type: 'settingsUpdated', ok: false, id, field: 'model', error: String(err) });
+        }
+      })();
       break;
     }
     case 'getSettings':
@@ -1776,15 +1858,34 @@ function buildStandaloneSettingsPayload() {
         keywordsConfig && typeof keywordsConfig.agents === 'object' && keywordsConfig.agents !== null
           ? keywordsConfig.agents
           : {};
+      // p18-t1: route-derived fields, keyed by agent id, from the SAME
+      // shared helper panel.ts uses so both hosts agree.
+      let agentRoutes = {};
+      try {
+        const { describeAgentRoutes } = agentSettingsRouteModule();
+        agentRoutes = describeAgentRoutes(primaryProjectRoot);
+      } catch (err) {
+        console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: describeAgentRoutes failed:', err);
+      }
       agents = loadAgentRoster(agentsDir).map((agent) => {
         const entry = keywordAgents[agent.id];
         const keywords = entry && typeof entry.pattern === 'string' ? entry.pattern : '';
+        const route = agentRoutes[agent.id];
         return {
           id: agent.id,
           name: agent.name,
-          model: shortFromModelId(agent.model) ?? null,
+          // `model` reflects the RESOLVED route's Claude tier, falling back
+          // to the roster's raw frontmatter when describeAgentRoutes didn't
+          // see this agent — mirrors panel.ts's _handleGetSettings.
+          model: route?.claudeTier ?? shortFromModelId(agent.model) ?? null,
           isOrchestrator: agent.id === 'orchestrator',
           keywords,
+          resolvedModel: route?.resolvedModel ?? null,
+          vendor: route?.vendor ?? null,
+          costModelClass: route?.costModelClass ?? null,
+          claudeTier: route?.claudeTier ?? null,
+          routeSource: route?.routeSource ?? 'frontmatter',
+          handWrittenBackend: route?.handWrittenBackend ?? false,
         };
       });
     } catch (err) {
@@ -1812,7 +1913,29 @@ function buildStandaloneSettingsPayload() {
     contextBudget: null,
     foreignManagedBlocks: [],
     harness: buildStandaloneHarnessSettings(),
+    routing: buildStandaloneRoutingVisibility(),
   };
+}
+
+/**
+ * Standalone analog of panel.ts's `_buildRoutingVisibility` (p18-t1): whether
+ * the Routing screen should surface itself, and why. Uses the same
+ * describeProviderSelection call buildStandaloneHarnessSettings already
+ * makes so the two slices never disagree.
+ */
+function buildStandaloneRoutingVisibility() {
+  const cwd = primaryProjectRoot || process.cwd();
+  const fallback = { visible: false, reason: 'hidden', useMultipleLlms: false, profileActive: false, routedAgentCount: 0 };
+  if (!primaryProjectRoot) return fallback;
+  try {
+    const { describeProviderSelection } = providerSelectionModule();
+    const { describeRoutingVisibility } = agentSettingsRouteModule();
+    const effectiveHarness = describeProviderSelection({ cwd }).effective;
+    return describeRoutingVisibility(cwd, effectiveHarness);
+  } catch (err) {
+    console.error('[tycoonagents-standalone] buildStandaloneRoutingVisibility failed:', err instanceof Error ? err.message : err);
+    return fallback;
+  }
 }
 
 /**

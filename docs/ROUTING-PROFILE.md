@@ -653,3 +653,53 @@ gets its original block restored in place of the managed one; an agent id
 with no backup entry (it never had a hand-written block) is stripped as
 before. `routing.backup.json` is included in `apply-routing-profile.mjs
 --check`'s diff set alongside `routing.resolved.json`.
+
+## One fact, two views: Settings vs Routing
+
+Settings › Agents and the Routing screen edit the same underlying fact —
+each agent's effective model — they just present it differently
+(`src/core/agentSettingsRoute.ts`).
+
+For each agent, Settings shows the **resolved** route:
+
+- A checked Claude tier radio (`fable`/`opus`/`sonnet`/`haiku`) when the
+  agent resolves to a Claude model, whether that came from the agent's own
+  frontmatter, the `defaults` slot, or an explicit `routing.json` entry
+  (`describeAgentRoutes`, `AgentRouteInfo.claudeTier`).
+- `Backend: <vendor> via MCP` for agents with a hand-written `backend:`
+  block (`handWrittenBackend: true`) — the MCP-bridged reviewers such as
+  `codex-reviewer`, `gemini-reviewer`, and `kimi-reviewer`.
+- `Routed to <vendor>/<model>` for any other non-Claude vendor, with an
+  "Edit in Routing" link and a "Use Claude tier…" disclosure that exposes
+  the tier radios inline.
+
+Clicking a tier radio on a routed agent (`routeSource` "explicit" or
+"default", per `overrideAgentToClaudeTier`) writes an explicit
+`{ vendor: "anthropic", model: <tier> }` entry for that agent into
+`.claude/tycoon/routing.json` via `saveRoutingProfile`, so the click wins
+outright over `defaults` or whatever non-Claude route was previously in
+force. Clicking a tier radio on an unrouted agent (`routeSource`
+"frontmatter") instead writes the agent's `.claude/agents/<id>.md`
+`model:` frontmatter directly, as it always has — `routing.json` is left
+untouched.
+
+### Routing visibility
+
+The Routing screen, its Settings menu entry, and the OpenCode hint (see
+`docs/OPENCODE-PROVIDER.md`) only appear when the effective harness is
+OpenCode, or **Use multiple LLMs** is turned on in Settings under Claude
+Code (`describeRoutingVisibility`). That toggle persists as
+`useMultipleLlms` in `.claude/tycoon/execution.json`, alongside the
+`provider` key (`readUseMultipleLlms`/`writeUseMultipleLlms`,
+`src/core/providerSelection.ts`).
+
+Hiding Routing never deletes `routing.json` — it only hides the screen. If
+a profile is still active (a non-empty `agents` map or a set `defaults`
+model) while Routing is hidden, Settings shows `Routing profile active ·
+N agents routed` with a **Show** action that flips `useMultipleLlms` back
+on.
+
+Under Claude Code, Task subagents always run Claude models regardless of
+`routing.json` — routing only matters there for the MCP-bridged reviewer
+agents (which read their own hand-written `backend:` block, untouched by
+routing) and as prep for switching the harness to OpenCode later.

@@ -96,6 +96,9 @@ export const MSG = {
   // host re-posts SETTINGS. Disabled client-side when settings.harness.source
   // is "env" or "setting" (a higher-precedence layer already decides it).
   SET_HARNESS: "setHarness",
+  // p18-t1: persists execution.json's `useMultipleLlms` boolean, then the
+  // host re-posts SETTINGS (routing.visible flips accordingly).
+  SET_USE_MULTIPLE_LLMS: "setUseMultipleLlms",
   SET_DELEGATION_MODE: "setDelegationMode",
   // Sibling of SET_DELEGATION_MODE: the optional "Review pass" toggle
   // composes with either delegation_mode rather than being a third mode.
@@ -387,6 +390,9 @@ export const MSG_SCHEMAS = {
 
   // p13-t7: { provider: "claude-code" | "opencode" }.
   SET_HARNESS: z.object({ provider: z.string().min(1) }).passthrough(),
+
+  // p18-t1: { value: boolean } — toggles the "Use multiple LLMs" setting.
+  SET_USE_MULTIPLE_LLMS: z.object({ value: z.boolean() }).passthrough(),
 
   SET_AGENT_KEYWORDS: z
     .object({ id: z.string().min(1), pattern: z.string() })

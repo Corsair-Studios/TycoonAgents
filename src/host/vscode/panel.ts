@@ -50,10 +50,12 @@ import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend
 import {
   describeProviderSelection,
   writeProviderSelection,
+  writeUseMultipleLlms,
   PROVIDER_IDS,
   type ProviderId,
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
+import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1157,7 +1159,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.SET_AGENT_MODEL) {
           const parsedSetAgentModel = MSG_SCHEMAS.SET_AGENT_MODEL.safeParse(message);
           if (parsedSetAgentModel.success) {
-            this._handleSetAgentModel(parsedSetAgentModel.data.id, parsedSetAgentModel.data.model);
+            void this._handleSetAgentModel(parsedSetAgentModel.data.id, parsedSetAgentModel.data.model);
           } else {
             console.error("TycoonAgents: setAgentModel payload rejected:", parsedSetAgentModel.error.message);
           }
@@ -1167,6 +1169,13 @@ export class TycoonPanel {
             this._handleSetHarness(parsedSetHarness.data.provider);
           } else {
             console.error("TycoonAgents: setHarness payload rejected:", parsedSetHarness.error.message);
+          }
+        } else if (message.type === MSG.SET_USE_MULTIPLE_LLMS) {
+          const parsedSetUseMultipleLlms = MSG_SCHEMAS.SET_USE_MULTIPLE_LLMS.safeParse(message);
+          if (parsedSetUseMultipleLlms.success) {
+            this._handleSetUseMultipleLlms(parsedSetUseMultipleLlms.data.value);
+          } else {
+            console.error("TycoonAgents: setUseMultipleLlms payload rejected:", parsedSetUseMultipleLlms.error.message);
           }
         } else if (message.type === MSG.SET_DELEGATION_MODE) {
           const parsedSetDelegationMode = MSG_SCHEMAS.SET_DELEGATION_MODE.safeParse(message);
@@ -6938,16 +6947,32 @@ export class TycoonPanel {
         ? keywordsConfig.agents
         : {};
 
+    // p18-t1: route-derived fields (resolvedModel/vendor/costModelClass/
+    // claudeTier/routeSource/handWrittenBackend), keyed by agent id, from the
+    // SAME shared helper the standalone server uses so both hosts agree.
+    const agentRoutes = describeAgentRoutes(root);
+
     const agents = loadAgentRoster(agentsDir).map((agent) => {
       const entry = keywordAgents[agent.id];
       const keywords =
         entry && typeof entry.pattern === "string" ? entry.pattern : "";
+      const route = agentRoutes[agent.id];
       return {
         id: agent.id,
         name: agent.name,
-        model: shortFromModelId(agent.model) ?? null,
+        // `model` reflects the RESOLVED route's Claude tier (falling back to
+        // the roster's raw frontmatter for an agent buildRoutingView didn't
+        // see) so the Settings radios track routing.json overrides, not just
+        // frontmatter.
+        model: route?.claudeTier ?? shortFromModelId(agent.model) ?? null,
         isOrchestrator: agent.id === "orchestrator",
         keywords,
+        resolvedModel: route?.resolvedModel ?? null,
+        vendor: route?.vendor ?? null,
+        costModelClass: route?.costModelClass ?? null,
+        claudeTier: route?.claudeTier ?? null,
+        routeSource: route?.routeSource ?? "frontmatter",
+        handWrittenBackend: route?.handWrittenBackend ?? false,
       };
     });
 
@@ -7052,8 +7077,28 @@ export class TycoonPanel {
         contextBudget,
         foreignManagedBlocks,
         harness: this._buildHarnessSettings(root),
+        routing: this._buildRoutingVisibility(root),
       },
     });
+  }
+
+  /** Builds the `routing` slice of the SETTINGS payload (p18-t1): whether
+   * the Routing screen should surface itself, and why. Uses the same
+   * describeProviderSelection call `_buildHarnessSettings` already makes to
+   * find the effective harness, so the two slices never disagree. */
+  private _buildRoutingVisibility(root: string): RoutingVisibility {
+    const settingValue = vscode.workspace.getConfiguration("tycoonagents").get<string>("provider");
+    let effectiveHarness: string;
+    try {
+      effectiveHarness = describeProviderSelection({ settingValue, cwd: root }).effective;
+    } catch {
+      effectiveHarness = "claude-code";
+    }
+    try {
+      return describeRoutingVisibility(root, effectiveHarness);
+    } catch {
+      return { visible: false, reason: "hidden", useMultipleLlms: false, profileActive: false, routedAgentCount: 0 };
+    }
   }
 
   /** Builds the `harness` slice of the SETTINGS payload (p13-t7): which
@@ -7131,8 +7176,29 @@ export class TycoonPanel {
     this._handleGetSettings();
   }
 
-  /** Write the chosen model into an agent's markdown frontmatter. */
-  private _handleSetAgentModel(id: string, model: string): void {
+  /** Handles MSG.SET_USE_MULTIPLE_LLMS (p18-t1): persists the toggle in
+   * execution.json, then re-posts SETTINGS so `routing.visible` reflects it
+   * immediately. Never touches routing.json — hiding the Routing screen
+   * again must never delete the saved profile. */
+  private _handleSetUseMultipleLlms(value: boolean): void {
+    const root = this._projectRoot();
+    try {
+      writeUseMultipleLlms(root, value);
+    } catch (err) {
+      console.error("TycoonAgents: writeUseMultipleLlms failed:", err instanceof Error ? err.message : err);
+    }
+    this._handleGetSettings();
+  }
+
+  /**
+   * Write the chosen model. p18-t1: for an agent whose route is not pure
+   * frontmatter (routing.json resolved it, explicitly or via defaults), the
+   * click must win over that route — overrideAgentToClaudeTier writes an
+   * explicit routing.json entry instead. Only when that returns
+   * handled:false (frontmatter-only agent, or unknown agent id) does this
+   * fall back to the original setFrontmatterModel write.
+   */
+  private async _handleSetAgentModel(id: string, model: string): Promise<void> {
     if (!isSafeAgentId(id)) {
       void this._panel.webview.postMessage({
         type: MSG.SETTINGS_UPDATED,
@@ -7153,6 +7219,24 @@ export class TycoonPanel {
         error: "unknown model",
       });
       return;
+    }
+    try {
+      const root = this._projectRoot();
+      const override = await overrideAgentToClaudeTier(root, id, model as ClaudeTier, { scriptsDir: this._extensionUri.fsPath });
+      if (override.handled) {
+        this._rosterModelCache = undefined;
+        void this._panel.webview.postMessage({
+          type: MSG.SETTINGS_UPDATED,
+          ok: override.ok,
+          id,
+          field: "model",
+          ...(override.ok ? {} : { error: override.errors.join("; ") }),
+        });
+        this._handleGetSettings();
+        return;
+      }
+    } catch (err) {
+      console.error("TycoonAgents: overrideAgentToClaudeTier failed, falling back to frontmatter:", err instanceof Error ? err.message : err);
     }
     try {
       const root = this._projectRoot();

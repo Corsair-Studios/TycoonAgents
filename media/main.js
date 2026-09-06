@@ -18351,7 +18351,8 @@
       // src/core/routingHostOps.ts (shared by both host settings builders).
       // Recomputed on every settings payload, so it disappears on its own
       // once a default is saved (handleRoutingSaved refetches settings).
-      if (harness.needsDefaultRoute) {
+      const routingVisibleForHint = !lastSettings.routing || lastSettings.routing.visible !== false;
+      if (harness.needsDefaultRoute && routingVisibleForHint) {
         const defaultRouteHint = document.createElement("p");
         defaultRouteHint.className = "delegation-mode-footnote settings-harness-default-route-hint";
         defaultRouteHint.textContent =
@@ -18368,6 +18369,76 @@
       }
 
       setupConfigEl.appendChild(harnessSection);
+    }
+
+    // ── 1.4c. Use multiple LLMs toggle + hidden-profile disclosure (p18-t2) ──
+    // lastSettings.routing is `{ visible, reason, useMultipleLlms, profileActive,
+    // routedAgentCount }` — see describeRoutingVisibility in
+    // src/core/agentSettingsRoute.ts. Missing field (older host) defaults to
+    // visible:true, so the toggle/disclosure below always show for that case.
+    const routingInfo = lastSettings.routing || { visible: true, reason: "toggle", useMultipleLlms: false, profileActive: false, routedAgentCount: 0 };
+    const multiLlmSection = buildSection("Multiple LLMs");
+    const multiLlmRow = document.createElement("div");
+    multiLlmRow.className = "settings-row";
+    multiLlmRow.dataset.agentRow = "use-multiple-llms";
+    const multiLlmGroup = document.createElement("div");
+    multiLlmGroup.className = "delegation-mode-group";
+    const multiLlmOptLabel = document.createElement("label");
+    multiLlmOptLabel.className = "delegation-mode-option";
+    const multiLlmCheckbox = document.createElement("input");
+    multiLlmCheckbox.type = "checkbox";
+    multiLlmCheckbox.id = "use-multiple-llms-checkbox";
+    multiLlmCheckbox.checked = Boolean(routingInfo.useMultipleLlms);
+    const harnessIsOpencode = routingInfo.reason === "harness-opencode";
+    multiLlmCheckbox.disabled = harnessIsOpencode;
+    multiLlmCheckbox.addEventListener("change", () => {
+      multiLlmCheckbox.disabled = true;
+      vscode.postMessage({ type: "setUseMultipleLlms", value: multiLlmCheckbox.checked });
+    });
+    const multiLlmBody = document.createElement("span");
+    multiLlmBody.className = "delegation-mode-option-body";
+    const multiLlmLabelSpan = document.createElement("span");
+    multiLlmLabelSpan.className = "delegation-mode-option-label";
+    multiLlmLabelSpan.textContent = "Use multiple LLMs";
+    const multiLlmHelpSpan = document.createElement("span");
+    multiLlmHelpSpan.className = "delegation-mode-option-help";
+    multiLlmHelpSpan.textContent = harnessIsOpencode
+      ? "Routing is always available when OpenCode runs your agents"
+      : "Show the Routing screen to run agents on other vendors, local models, or custom endpoints.";
+    multiLlmBody.appendChild(multiLlmLabelSpan);
+    multiLlmBody.appendChild(multiLlmHelpSpan);
+    multiLlmOptLabel.appendChild(multiLlmCheckbox);
+    multiLlmOptLabel.appendChild(multiLlmBody);
+    multiLlmGroup.appendChild(multiLlmOptLabel);
+    multiLlmRow.appendChild(multiLlmGroup);
+    multiLlmSection.appendChild(multiLlmRow);
+
+    if (!routingInfo.visible && routingInfo.profileActive) {
+      const disclosureRow = document.createElement("div");
+      disclosureRow.className = "settings-row";
+      const disclosureText = document.createElement("span");
+      disclosureText.textContent = `Routing profile active · ${routingInfo.routedAgentCount} agents routed`;
+      const showBtn = document.createElement("button");
+      showBtn.type = "button";
+      showBtn.className = "skill-btn settings-btn";
+      showBtn.textContent = "Show";
+      showBtn.addEventListener("click", () => {
+        showBtn.disabled = true;
+        vscode.postMessage({ type: "setUseMultipleLlms", value: true });
+      });
+      disclosureRow.appendChild(disclosureText);
+      disclosureRow.appendChild(showBtn);
+      multiLlmSection.appendChild(disclosureRow);
+    }
+    setupConfigEl.appendChild(multiLlmSection);
+
+    // ── 1.4d. Menu "Routing" entry gate ──
+    // #menu-routing is static markup (both hosts' HTML template); toggle its
+    // visibility here on every settings render since it lives outside this
+    // rebuilt tree.
+    const menuRoutingBtnEl = document.getElementById("menu-routing");
+    if (menuRoutingBtnEl) {
+      menuRoutingBtnEl.hidden = !routingInfo.visible;
     }
 
     // ── 1.5. Delegation style (Team Lead Mode, Phase 2) ──
@@ -18656,35 +18727,88 @@
 
         showOrchestratorModelBanner(observedFamily);
       } else {
-        const group = document.createElement("div");
-        group.className = "model-radio-group";
-        const groupName = `model-${agent.id}`;
-        // Most-advanced first, left to right: Fable > Opus > Sonnet > Haiku.
-        for (const model of ["fable", "opus", "sonnet", "haiku"]) {
-          const lbl = document.createElement("label");
-          lbl.className = "model-radio";
-          const input = document.createElement("input");
-          input.type = "radio";
-          input.name = groupName;
-          input.value = model;
-          if (agent.model === model) input.checked = true;
-          input.addEventListener("change", () => {
-            if (input.checked) {
-              // Suppress this agent's recommendation badge on the very next
-              // re-render so a "Could run on X" suggestion never appears in
-              // the same instant as, and right next to, the pick the user
-              // just made themselves. See justSetAgentModelId doc above.
-              justSetAgentModelId = agent.id;
-              vscode.postMessage({ type: "setAgentModel", id: agent.id, model });
+        // p18-t2: route-aware model row. Three shapes, mutually exclusive:
+        //  1. claudeTier set        -> the radios as before, that tier checked.
+        //  2. handWrittenBackend    -> a static "Backend: <vendor> via <transport>"
+        //     line (agent's own MCP/backend block; no Claude tier applies).
+        //  3. routed to a non-Claude vendor -> a "Routed to <vendor>/<model>"
+        //     chip + "Edit in Routing" link (only when routing.visible).
+        // Cases 2 and 3 both get a "Use Claude tier…" disclosure that reveals
+        // the same radio group, so switching back to Claude is always possible.
+        const buildModelRadioGroup = () => {
+          const group = document.createElement("div");
+          group.className = "model-radio-group";
+          const groupName = `model-${agent.id}`;
+          // Most-advanced first, left to right: Fable > Opus > Sonnet > Haiku.
+          for (const model of ["fable", "opus", "sonnet", "haiku"]) {
+            const lbl = document.createElement("label");
+            lbl.className = "model-radio";
+            const input = document.createElement("input");
+            input.type = "radio";
+            input.name = groupName;
+            input.value = model;
+            if (agent.claudeTier === model) input.checked = true;
+            input.addEventListener("change", () => {
+              if (input.checked) {
+                // Suppress this agent's recommendation badge on the very next
+                // re-render so a "Could run on X" suggestion never appears in
+                // the same instant as, and right next to, the pick the user
+                // just made themselves. See justSetAgentModelId doc above.
+                justSetAgentModelId = agent.id;
+                vscode.postMessage({ type: "setAgentModel", id: agent.id, model });
+              }
+            });
+            const span = document.createElement("span");
+            span.textContent = model.charAt(0).toUpperCase() + model.slice(1);
+            lbl.appendChild(input);
+            lbl.appendChild(span);
+            group.appendChild(lbl);
+          }
+          return group;
+        };
+
+        const routingVisible = !lastSettings.routing || lastSettings.routing.visible !== false;
+
+        if (agent.claudeTier) {
+          head.appendChild(buildModelRadioGroup());
+        } else {
+          const buildUseClaudeDisclosure = () => {
+            const details = document.createElement("details");
+            details.className = "use-claude-tier-disclosure";
+            const summary = document.createElement("summary");
+            summary.className = "link-button";
+            summary.textContent = "Use Claude tier…";
+            details.appendChild(summary);
+            details.appendChild(buildModelRadioGroup());
+            return details;
+          };
+
+          if (agent.handWrittenBackend) {
+            const backendLine = document.createElement("span");
+            backendLine.className = "agent-backend-line";
+            const transport = agent.vendor ? "MCP" : "MCP";
+            backendLine.textContent = `Backend: ${vendorLabelFor(agent.vendor || "unknown")} via ${transport}`;
+            head.appendChild(backendLine);
+            head.appendChild(buildUseClaudeDisclosure());
+          } else {
+            const routedRow = document.createElement("span");
+            routedRow.className = "stat-chip agent-routed-chip";
+            const routedModel = agent.resolvedModel || agent.model || "unknown model";
+            routedRow.textContent = `Routed to ${vendorLabelFor(agent.vendor || "unknown")}/${routedModel}`;
+            head.appendChild(routedRow);
+            if (routingVisible) {
+              const editLink = document.createElement("button");
+              editLink.type = "button";
+              editLink.className = "link-button";
+              editLink.textContent = "Edit in Routing";
+              editLink.addEventListener("click", () => {
+                openRoutingModal();
+              });
+              head.appendChild(editLink);
             }
-          });
-          const span = document.createElement("span");
-          span.textContent = model.charAt(0).toUpperCase() + model.slice(1);
-          lbl.appendChild(input);
-          lbl.appendChild(span);
-          group.appendChild(lbl);
+            head.appendChild(buildUseClaudeDisclosure());
+          }
         }
-        head.appendChild(group);
 
         // Per-agent RED Remove button. Non-orchestrator agents only (the
         // orchestrator is core and has no model radios / no remove). The host
@@ -18739,11 +18863,11 @@
       // Vendor / cost-class chips (label-only, reusing the same .stat-chip
       // style as the chips above) — guarded, since older records/agents
       // lacking these fields render exactly as before.
-      const cardVendor = (m && m.vendor) || agent.vendor || null;
+      const cardVendor = agent.vendor || (m && m.vendor) || null;
       if (cardVendor && cardVendor !== "anthropic") {
         stats.appendChild(chip("vendor", vendorLabelFor(cardVendor)));
       }
-      const cardCostClass = (m && m.costModelClass) || agent.costModelClass || null;
+      const cardCostClass = agent.costModelClass || (m && m.costModelClass) || null;
       if (cardCostClass === "subscription") {
         stats.appendChild(chip("billing", "quota"));
       } else if (cardCostClass === "local") {

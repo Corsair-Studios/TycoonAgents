@@ -146,6 +146,46 @@ export function describeProviderSelection(options: {
   return { effective: "claude-code", source: "default", fileValue };
 }
 
+/**
+ * Reads the `useMultipleLlms` boolean out of <cwd>/.claude/tycoon/execution.json
+ * (p18-t1). Defaults to false on a missing file, missing key, malformed
+ * JSON, or a non-boolean value — this setting is optional and its absence
+ * is never an error.
+ */
+export function readUseMultipleLlms(cwd: string): boolean {
+  const execPath = path.join(cwd, ".claude", "tycoon", "execution.json");
+  try {
+    const raw = fs.readFileSync(execPath, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && "useMultipleLlms" in (parsed as Record<string, unknown>)) {
+      const value = (parsed as Record<string, unknown>)["useMultipleLlms"];
+      return typeof value === "boolean" ? value : false;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Writes only the `useMultipleLlms` key into <cwd>/.claude/tycoon/execution.json,
+ * creating the file/directories if absent and preserving every other key
+ * already there (including `provider`). */
+export function writeUseMultipleLlms(cwd: string, value: boolean): void {
+  const dir = path.join(cwd, ".claude", "tycoon");
+  const execPath = path.join(dir, "execution.json");
+  let parsed: Record<string, unknown> = {};
+  try {
+    const raw = fs.readFileSync(execPath, "utf8");
+    const existing: unknown = JSON.parse(raw);
+    if (existing && typeof existing === "object") parsed = existing as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  parsed["useMultipleLlms"] = value;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(execPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+}
+
 /** Writes only the `provider` key into <cwd>/.claude/tycoon/execution.json,
  * creating the file/directories if absent and preserving every other key
  * already there. Throws on an unrecognized provider id. */

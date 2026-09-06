@@ -168,7 +168,11 @@ contract (the `harness` settings field, `SET_HARNESS` message) is in
 ### First run on OpenCode
 
 1. In Settings, pick **OpenCode** from the "Which tool runs your agents?"
-   dropdown.
+   dropdown. Choosing OpenCode makes the **Routing** screen (and its Settings
+   menu entry) visible automatically — Claude Code users who want the same
+   view without switching harness turn on **Use multiple LLMs** in Settings
+   instead; either one reveals Routing, and turning it back off never
+   deletes an existing `routing.json`.
 2. Open **Routing** and fill in the **Default for all agents** card: vendor
    and model. If you pick **Custom endpoint**, also enter a provider name
    plus the endpoint URL and API key — those are entered once and stored
