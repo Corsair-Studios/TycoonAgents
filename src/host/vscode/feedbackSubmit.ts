@@ -5,7 +5,14 @@
  */
 
 import * as crypto from "crypto";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { sanitize, type SanitizeRoots } from "./diagnosticReport";
+import { describeProviderSelection } from "../../core/providerSelection";
+import { describeRoutingVisibility, describeAgentRoutes } from "../../core/agentSettingsRoute";
+import { buildRoutingView } from "../../core/routingHostOps";
+import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 
 /**
  * "Submit Feedback" pipeline — see docs/FEEDBACK-PIPELINE-SPEC.md (§3
@@ -50,6 +57,65 @@ export interface FeedbackPayloadV1 {
   userDescription: string;
   diagnosticMarkdown?: string;
   contact?: string;
+  // --- 2026-09-06 additive context fields (routing/harness changed a lot
+  // recently — every submission now automatically records which app it
+  // came from, the harness, and the full agent roster state). Never
+  // secrets: env var NAMES only, never endpoint URLs or keys; no absolute
+  // paths (sanitize() already scrubs strings that flow through it, and
+  // these fields are built from ids/names/env-var-names only). ---
+  host?: "vscode" | "standalone";
+  harness?: FeedbackHarnessInfo;
+  routing?: FeedbackRoutingInfo;
+  agents?: FeedbackAgentInfo[];
+  pluginVersion?: string;
+  contextErrors?: string[];
+}
+
+/** Harness info block (spec addendum 2026-09-06). `running` is the harness
+ *  currently driving activity when the host knows it, else null. */
+export interface FeedbackHarnessInfo {
+  effective: string;
+  source: string;
+  running?: string | null;
+}
+
+export interface FeedbackRoutingDefaults {
+  vendor?: string;
+  model?: string;
+  transport?: string;
+  costModelClass?: string;
+}
+
+export interface FeedbackRoutingInfo {
+  visible: boolean;
+  reason: string;
+  profileActive: boolean;
+  routedAgentCount: number;
+  defaults?: FeedbackRoutingDefaults;
+}
+
+export interface FeedbackAgentInfo {
+  id: string;
+  model: string | null;
+  vendor: string | null;
+  costModelClass: string | null;
+  transport?: string | null;
+  routeSource: "explicit" | "default" | "frontmatter";
+  handWrittenBackend: boolean;
+  claudeTier: string | null;
+  keywords: string[];
+  endpointEnv?: string;
+  credentialEnv?: string;
+}
+
+/** Output of {@link buildFeedbackContext} — never throws; on any internal
+ *  failure the partial object is returned plus `contextErrors`. */
+export interface FeedbackContext {
+  host: "vscode" | "standalone";
+  harness?: FeedbackHarnessInfo;
+  routing?: FeedbackRoutingInfo;
+  agents?: FeedbackAgentInfo[];
+  contextErrors?: string[];
 }
 
 /** Raw (pre-sanitize) user-facing input, i.e. the SUBMIT_FEEDBACK message payload plus the already-built diagnostic markdown. */
@@ -77,6 +143,135 @@ export interface FeedbackPayloadContext {
   ticketId?: string;
   /** Injectable for tests; defaults to `new Date().toISOString()`. */
   createdAt?: string;
+  /** Output of {@link buildFeedbackContext}, when the caller wants the
+   *  auto-recorded host/harness/routing/agents fields spread into the
+   *  payload. Omitted entirely (rather than merged) when absent, so older
+   *  callers/tests that don't pass it keep producing the original v1
+   *  shape. */
+  context?: FeedbackContext;
+}
+
+/**
+ * Read `.claude/tycoon/agent-keywords.json` under `root` and return a map of
+ * agentId -> pipe-delimited pattern split into individual keywords. Missing
+ * or malformed file degrades to an empty map (never throws) — mirrors
+ * standalone/src/server.mjs's readKeywordsConfigStandalone.
+ */
+function readAgentKeywords(root: string): Record<string, string[]> {
+  const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+  const out: Record<string, string[]> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(keywordsPath, "utf8"));
+    const agents = parsed && typeof parsed === "object" ? parsed.agents : undefined;
+    if (agents && typeof agents === "object") {
+      for (const [agentId, cfg] of Object.entries(agents as Record<string, { pattern?: unknown }>)) {
+        const pattern = cfg && typeof cfg.pattern === "string" ? cfg.pattern : "";
+        out[agentId] = pattern
+          .split("|")
+          .map((kw) => kw.trim())
+          .filter(Boolean);
+      }
+    }
+  } catch {
+    /* missing/invalid => empty map */
+  }
+  return out;
+}
+
+/**
+ * Build the auto-recorded feedback context (host/harness/routing/agents) —
+ * spec addendum 2026-09-06. Every submission now automatically records
+ * which app it came from, the harness, and the full agent roster state,
+ * because routing/harness changed a lot recently. NEVER includes secrets:
+ * only env var NAMES (endpointEnv/credentialEnv), never endpoint URLs or
+ * key values; no absolute filesystem paths. This function never throws —
+ * any internal failure is caught and reported via `contextErrors` on the
+ * partial result instead.
+ */
+export function buildFeedbackContext(
+  root: string,
+  opts: { host: "vscode" | "standalone"; effectiveHarness?: string; harnessSource?: string; running?: string | null }
+): FeedbackContext {
+  const contextErrors: string[] = [];
+  const result: FeedbackContext = { host: opts.host };
+  const errRoots: SanitizeRoots = { projectRoot: root, homeDir: null, extensionDir: null };
+  try {
+    errRoots.homeDir = os.homedir();
+  } catch {
+    /* best-effort */
+  }
+  const pushError = (stage: string, err: unknown): void => {
+    const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "error";
+    const message = err instanceof Error ? err.message : String(err);
+    contextErrors.push(`${stage}: ${code} ${sanitize(message, errRoots)}`);
+  };
+
+  let effectiveHarness = opts.effectiveHarness;
+  let harnessSource = opts.harnessSource;
+  try {
+    if (effectiveHarness === undefined || harnessSource === undefined) {
+      const desc = describeProviderSelection({ cwd: root });
+      effectiveHarness = effectiveHarness ?? desc.effective;
+      harnessSource = harnessSource ?? desc.source;
+    }
+    result.harness = { effective: effectiveHarness, source: harnessSource, running: opts.running ?? null };
+  } catch (err) {
+    pushError("harness", err);
+  }
+
+  try {
+    const visibility = describeRoutingVisibility(root, effectiveHarness ?? "claude-code");
+    const view = buildRoutingView({ root, env: process.env });
+    const defaults = view.defaults;
+    const routing: FeedbackRoutingInfo = {
+      visible: visibility.visible,
+      reason: visibility.reason,
+      profileActive: visibility.profileActive,
+      routedAgentCount: visibility.routedAgentCount,
+    };
+    if (defaults) {
+      const d: FeedbackRoutingDefaults = {};
+      if (defaults.vendor) d.vendor = defaults.vendor;
+      if (defaults.model) d.model = defaults.model;
+      if (defaults.transport) d.transport = defaults.transport;
+      if (defaults.costModelClass) d.costModelClass = defaults.costModelClass;
+      if (Object.keys(d).length > 0) routing.defaults = d;
+    }
+    result.routing = routing;
+  } catch (err) {
+    pushError("routing", err);
+  }
+
+  try {
+    const routes = describeAgentRoutes(root);
+    const keywordsMap = readAgentKeywords(root);
+    const view = buildRoutingView({ root, env: process.env });
+    const backendById = new Map(view.agents.map((a) => [a.id, a.backend]));
+    const roster = loadAgentRoster(path.join(root, ".claude", "agents"));
+    result.agents = roster.map((agent): FeedbackAgentInfo => {
+      const route = routes[agent.id];
+      const backend = backendById.get(agent.id);
+      const entry: FeedbackAgentInfo = {
+        id: agent.id,
+        model: route?.resolvedModel ?? null,
+        vendor: route?.vendor ?? null,
+        costModelClass: route?.costModelClass ?? null,
+        transport: backend?.transport ?? null,
+        routeSource: route?.routeSource ?? "frontmatter",
+        handWrittenBackend: route?.handWrittenBackend ?? false,
+        claudeTier: route?.claudeTier ?? null,
+        keywords: keywordsMap[agent.id] ?? [],
+      };
+      if (backend?.endpointEnv) entry.endpointEnv = backend.endpointEnv;
+      if (backend?.apiKeyEnv) entry.credentialEnv = backend.apiKeyEnv;
+      return entry;
+    });
+  } catch (err) {
+    pushError("agents", err);
+  }
+
+  if (contextErrors.length > 0) result.contextErrors = contextErrors;
+  return result;
 }
 
 /**
@@ -108,6 +303,13 @@ export function buildFeedbackPayload(input: FeedbackSubmitInput, ctx: FeedbackPa
   }
   if (sanitizedContact !== "") {
     payload.contact = sanitizedContact;
+  }
+  if (ctx.context) {
+    payload.host = ctx.context.host;
+    if (ctx.context.harness) payload.harness = ctx.context.harness;
+    if (ctx.context.routing) payload.routing = ctx.context.routing;
+    if (ctx.context.agents) payload.agents = ctx.context.agents;
+    if (ctx.context.contextErrors) payload.contextErrors = ctx.context.contextErrors;
   }
   return payload;
 }

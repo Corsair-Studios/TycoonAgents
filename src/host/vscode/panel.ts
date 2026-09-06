@@ -140,6 +140,7 @@ import {
 import { buildDiagnosticReport, type DiagnosticReportInput, type SanitizeRoots } from "./diagnosticReport";
 import {
   buildFeedbackPayload,
+  buildFeedbackContext,
   postFeedback,
   FEEDBACK_ENDPOINT,
   FALLBACK_FORM_URL,
@@ -8006,6 +8007,11 @@ export class TycoonPanel {
       const diagnosticMarkdown =
         input.includeDiagnostics && reportInput ? buildDiagnosticReport(reportInput) : undefined;
 
+      const context =
+        root !== ""
+          ? buildFeedbackContext(root, { host: "vscode", effectiveHarness: this._resolveEffectiveHarness(root), running: null })
+          : undefined;
+
       const payload = buildFeedbackPayload(
         {
           category: input.category,
@@ -8018,6 +8024,7 @@ export class TycoonPanel {
           extensionVersion: this._currentExtensionVersion(),
           platform: process.platform,
           hostAppName: vscode.env.appName,
+          context,
         }
       );
 

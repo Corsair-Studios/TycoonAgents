@@ -300,6 +300,21 @@ export function buildFeedbackPayload(input, ctx) {
   return fn(input, ctx);
 }
 
+/** Builds the auto-recorded feedback context (host/harness/routing/agents —
+ * spec addendum 2026-09-06). Never throws; on internal failure returns a
+ * partial object plus `contextErrors`. Same function panel.ts's
+ * `_handleSubmitFeedback` calls, so both hosts record identically-shaped
+ * context.
+ * @type {(root: string, opts: object) => object} */
+export function buildFeedbackContext(root, opts) {
+  const fn = assertFn(
+    feedbackSubmitModule().buildFeedbackContext,
+    'buildFeedbackContext',
+    'out/src/host/vscode/feedbackSubmit.js',
+  );
+  return fn(root, opts);
+}
+
 /** POSTs `bodyString` to `endpoint` via `fetchImpl`, aborting after
  * `timeoutMs`. Never throws — resolves `{ ok, error? }`. Same function
  * panel.ts's `_handleConfirmFeedbackSend` calls.

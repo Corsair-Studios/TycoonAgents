@@ -88,7 +88,7 @@ import {
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, postPlanState, computePlanState } from './projectPlanMessages.mjs';
-import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, postFeedback } from './sharedLogic.mjs';
+import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1057,6 +1057,19 @@ async function handleSubmitFeedback(broadcastFn, msg) {
       : 'other';
     const provider = resolveProviderId({ projectDir: primaryProjectRoot || process.cwd(), env: process.env });
 
+    let context;
+    if (primaryProjectRoot) {
+      try {
+        context = buildFeedbackContext(primaryProjectRoot, {
+          host: 'standalone',
+          effectiveHarness: provider,
+          running: startupProviderId ?? null,
+        });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] buildFeedbackContext failed:', err instanceof Error ? err.message : err);
+      }
+    }
+
     const basePayload = buildFeedbackPayload(
       {
         category,
@@ -1070,9 +1083,13 @@ async function handleSubmitFeedback(broadcastFn, msg) {
         extensionVersion: readRepoVersion(),
         platform: process.platform,
         hostAppName: 'standalone',
+        context,
       },
     );
-    const fullPayload = { ...basePayload, provider, host: 'standalone' };
+    // `provider` kept for backward compatibility; `host`/`harness`/`routing`/
+    // `agents` now come from the shared buildFeedbackContext() builder above
+    // (spec addendum 2026-09-06) via basePayload.
+    const fullPayload = { ...basePayload, provider, host: basePayload.host ?? 'standalone' };
 
     const bodyString = JSON.stringify(fullPayload, null, 2);
     _pruneFeedbackTickets();
