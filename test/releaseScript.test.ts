@@ -100,7 +100,36 @@ test("bumpVersion applies patch and minor semver arithmetic", async () => {
 test("parseTestTotals extracts node --test pass/fail counts", async () => {
   const { parseTestTotals } = await loadScript();
   const totals = parseTestTotals("some output\n# pass 42\n# fail 1\n");
-  assert.deepEqual(totals, { pass: 42, fail: 1 });
+  assert.equal(totals.pass, 42);
+  assert.equal(totals.fail, 1);
+});
+
+test("parseTestTotals sums multiple node:test blocks and reports the python line separately", async () => {
+  const { parseTestTotals } = await loadScript();
+  const fixture = [
+    "> tycoonagents@0.0.586 package",
+    "ℹ tests 1868",
+    "ℹ pass 1800",
+    "ℹ fail 0",
+    "ℹ skipped 1",
+    "",
+    "ℹ tests 68",
+    "ℹ pass 68",
+    "ℹ fail 0",
+    "ℹ skipped 0",
+    "",
+    "Ran 217 tests in 2.665s",
+    "",
+    "OK (skipped=1)",
+  ].join("\n");
+  const totals = parseTestTotals(fixture);
+  assert.equal(totals.pass, 1868);
+  assert.equal(totals.fail, 0);
+  assert.equal(totals.skipped, 1);
+  assert.ok(totals.python);
+  assert.equal(totals.python.count, 217);
+  assert.equal(totals.python.ok, true);
+  assert.equal(totals.python.skipped, 1);
 });
 
 test("countZipEntriesFromBuffer reads the EOCD file count from a real zip", async () => {
@@ -158,6 +187,39 @@ test("refuses when HEAD is already this version's release commit", () => {
     const result = runScript(dir, ["patch", "--dry-run"]);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /already/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("no shell:true remains in release-local.mjs (DEP0190 avoidance)", () => {
+  const { readFileSync: readFileSyncSync } = require("node:fs");
+  const source = readFileSyncSync(SCRIPT_PATH, "utf8");
+  assert.doesNotMatch(source, /shell:\s*true/);
+});
+
+test("release commit message is written to a temp file with the trailer on its own line", () => {
+  const dir = makeTempRepo();
+  try {
+    // Simulate what main() builds: subject, blank line, trailer — written via
+    // -F so git never sees a literal "\n\n" collapsed onto the subject line.
+    const subject = "chore(release): 1.2.4";
+    const trailer = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>";
+    const commitBody = `${subject}\n\n${trailer}`;
+    const msgFile = join(dir, "commit-msg.txt");
+    writeFileSync(msgFile, commitBody, "utf8");
+
+    execSync("git add -A", { cwd: dir });
+    execSync(`git commit -q -F "${msgFile}"`, { cwd: dir });
+
+    const fullMessage = execSync("git log -1 --pretty=%B", { cwd: dir, encoding: "utf8" });
+    const lines = fullMessage.trim().split("\n");
+    assert.equal(lines[0], subject);
+    assert.equal(lines[1], "");
+    assert.equal(lines[2], trailer);
+
+    const subjectOnly = execSync("git log -1 --pretty=%s", { cwd: dir, encoding: "utf8" }).trim();
+    assert.equal(subjectOnly, subject, "trailer must not land on the subject line");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

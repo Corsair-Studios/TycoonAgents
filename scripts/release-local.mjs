@@ -19,10 +19,14 @@
 //
 // Local-only: unlike `npm run release` (scripts/release.mjs), this never
 // tags, pushes, or creates a GitHub Release.
-import { readFileSync, statSync, existsSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { readFileSync, statSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { execSync, execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
+
+/** Resolves the npm executable for spawnSync/execFileSync without a shell (avoids the Node DEP0190 warning). */
+const NPM_CMD = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const DEFAULT_TRAILER = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>";
 const LEVELS = ["patch", "minor"];
@@ -107,14 +111,46 @@ export function bumpVersion(version, level) {
   return `${major}.${minor}.${patch}`;
 }
 
-/** Parses `node --test` summary output for a pass/fail count line, e.g. "# pass 42". */
+/**
+ * Parses `npm run package` output for test totals. node:test prints one
+ * summary block per suite with lines like "ℹ pass 1868" / "ℹ fail 0" /
+ * "ℹ skipped 1" (also bare "# pass 42" from older/other runners) — this sums
+ * pass/fail/skipped across every such block found. A separate python
+ * unittest line, e.g. "Ran 217 tests in 2.665s ... OK (skipped=1)" or
+ * "... FAILED (failures=2)", is reported separately as `python`.
+ */
 export function parseTestTotals(output) {
-  const pass = /# pass (\d+)/.exec(output);
-  const fail = /# fail (\d+)/.exec(output);
-  return {
-    pass: pass ? Number(pass[1]) : undefined,
-    fail: fail ? Number(fail[1]) : undefined,
-  };
+  const nodeStatPattern = /^[ \t]*(?:ℹ|#)\s*(pass|fail|skipped)\s+(\d+)/gim;
+  let pass;
+  let fail;
+  let skipped;
+  let match;
+  while ((match = nodeStatPattern.exec(output)) !== null) {
+    const key = match[1].toLowerCase();
+    const value = Number(match[2]);
+    if (key === "pass") pass = (pass || 0) + value;
+    else if (key === "fail") fail = (fail || 0) + value;
+    else if (key === "skipped") skipped = (skipped || 0) + value;
+  }
+
+  let python;
+  const pythonMatch = /Ran (\d+) tests? in ([\d.]+)s\s*\r?\n*\s*(OK|FAILED)(?:\s*\(([^)]*)\))?/i.exec(output);
+  if (pythonMatch) {
+    const detail = pythonMatch[4] || "";
+    const skippedMatch = /skipped=(\d+)/.exec(detail);
+    const failuresMatch = /failures=(\d+)/.exec(detail);
+    const errorsMatch = /errors=(\d+)/.exec(detail);
+    python = {
+      count: Number(pythonMatch[1]),
+      seconds: Number(pythonMatch[2]),
+      ok: pythonMatch[3].toUpperCase() === "OK",
+      skipped: skippedMatch ? Number(skippedMatch[1]) : undefined,
+      failures: failuresMatch ? Number(failuresMatch[1]) : undefined,
+      errors: errorsMatch ? Number(errorsMatch[1]) : undefined,
+    };
+  }
+
+  return { pass, fail, skipped, python };
 }
 
 /**
@@ -236,9 +272,9 @@ function main() {
   }
 
   console.log(`[release] Bumping ${level}: ${currentVersion} -> (npm version will confirm)...`);
-  const versionResult = spawnSync("npm", ["version", level, "--no-git-tag-version"], {
+  const versionResult = spawnSync(NPM_CMD, ["version", level, "--no-git-tag-version"], {
     stdio: "inherit",
-    shell: true,
+    shell: false,
     cwd: root,
   });
   if (versionResult.status !== 0) {
@@ -250,9 +286,11 @@ function main() {
   const subject = `chore(release): ${newVersion}`;
   const commitBody = message ? `${subject}\n\n${message}\n\n${trailer}` : `${subject}\n\n${trailer}`;
 
+  const commitMsgFile = join(tmpdir(), `tycoon-release-commit-${process.pid}-${Date.now()}.txt`);
   try {
+    writeFileSync(commitMsgFile, commitBody, "utf8");
     execSync("git add package.json package-lock.json", { stdio: "inherit", cwd: root });
-    execSync(`git commit -m ${JSON.stringify(commitBody)}`, { stdio: "inherit", cwd: root });
+    execFileSync("git", ["commit", "-F", commitMsgFile], { stdio: "inherit", cwd: root });
   } catch (err) {
     console.error(
       `\n[release] git commit FAILED: ${err.message}\n` +
@@ -260,12 +298,18 @@ function main() {
       "or revert with: git checkout -- package.json package-lock.json\n",
     );
     process.exit(1);
+  } finally {
+    try {
+      unlinkSync(commitMsgFile);
+    } catch {
+      // best-effort cleanup only
+    }
   }
 
   const commitHash = execSync("git rev-parse --short HEAD", { cwd: root, encoding: "utf8" }).trim();
 
   console.log("[release] Running `npm run package`...");
-  const packageResult = spawnSync("npm", ["run", "package"], { stdio: "pipe", shell: true, cwd: root, encoding: "utf8" });
+  const packageResult = spawnSync(NPM_CMD, ["run", "package"], { stdio: "pipe", shell: false, cwd: root, encoding: "utf8" });
   process.stdout.write(packageResult.stdout || "");
   process.stderr.write(packageResult.stderr || "");
 
@@ -292,11 +336,23 @@ function main() {
   const { size, fileCount } = readVsixInfo(vsixPath);
   const sizeKb = (size / 1024).toFixed(1);
 
+  const nodeTestsSummary =
+    totals.pass !== undefined
+      ? `${totals.pass} passed` +
+        `${totals.fail ? `, ${totals.fail} failed` : ""}` +
+        `${totals.skipped ? `, ${totals.skipped} skipped` : ""}`
+      : "unknown";
+  const pythonSummary = totals.python
+    ? `; python: ${totals.python.count} tests in ${totals.python.seconds}s (${totals.python.ok ? "OK" : "FAILED"}` +
+      `${totals.python.skipped ? `, ${totals.python.skipped} skipped` : ""}` +
+      `${totals.python.failures ? `, ${totals.python.failures} failures` : ""}` +
+      `${totals.python.errors ? `, ${totals.python.errors} errors` : ""})`
+    : "";
+
   console.log(
     `\n[release] Released ${newVersion} (commit ${commitHash}): ${vsixPath} — ${sizeKb} KB, ` +
     `${fileCount !== undefined ? `${fileCount} files` : "file count unavailable"}. ` +
-    `Tests: ${totals.pass !== undefined ? `${totals.pass} passed` : "unknown"}` +
-    `${totals.fail ? `, ${totals.fail} failed` : ""}.\n`,
+    `Tests: ${nodeTestsSummary}${pythonSummary}.\n`,
   );
 }
 
