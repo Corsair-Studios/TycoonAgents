@@ -2993,6 +2993,11 @@
   // open sequence as the menu item, not a divergent copy.
   function openRoutingModal() {
     closeMenu();
+    // Only one panel open at a time (2026-09-05 fix): if Settings (the
+    // setup overlay) is showing — e.g. opened via the harness dropdown's
+    // "Open Agents" link — hide it before the Agents modal opens, the
+    // mirror of openSettingsFromAgents() closing the Agents modal below.
+    showMain();
     ensureRoutingModal();
     // A stale suppression from a previous session's failed save must
     // never survive a close/reopen — the fresh getRouting reply below
@@ -18916,24 +18921,12 @@
       const harnessRow = buildHarnessControl("settings");
       if (harnessRow) harnessSection.appendChild(harnessRow);
 
-      const openAgentsRow = document.createElement("p");
-      openAgentsRow.className = "delegation-mode-footnote";
-      const openAgentsLink = document.createElement("button");
-      openAgentsLink.type = "button";
-      openAgentsLink.className = "link-button";
-      openAgentsLink.textContent = "Open Agents";
-      openAgentsLink.addEventListener("click", () => {
-        openRoutingModal();
-      });
-      openAgentsRow.appendChild(openAgentsLink);
-      harnessSection.appendChild(openAgentsRow);
-
-      // p17-t4: nudge toward the Routing view's "Default for all agents"
-      // card when running OpenCode with no default model set and at least
-      // one agent riding bare frontmatter — see computeNeedsDefaultRoute in
-      // src/core/routingHostOps.ts (shared by both host settings builders).
-      // Recomputed on every settings payload, so it disappears on its own
-      // once a default is saved (handleRoutingSaved refetches settings).
+      // Exactly one "Open Agents" link in this section (2026-09-05 fix):
+      // when the OpenCode needsDefaultRoute hint shows, its own trailing
+      // link is the single link; otherwise show a standalone link in its
+      // place. See computeNeedsDefaultRoute in src/core/routingHostOps.ts
+      // (shared by both host settings builders). Recomputed on every
+      // settings payload, so this reflects the live state each render.
       if (harness.needsDefaultRoute && harness.effective === "opencode") {
         const defaultRouteHint = document.createElement("p");
         defaultRouteHint.className = "delegation-mode-footnote settings-harness-default-route-hint";
@@ -18948,6 +18941,18 @@
         });
         defaultRouteHint.appendChild(openRoutingLink);
         harnessSection.appendChild(defaultRouteHint);
+      } else {
+        const openAgentsRow = document.createElement("p");
+        openAgentsRow.className = "delegation-mode-footnote";
+        const openAgentsLink = document.createElement("button");
+        openAgentsLink.type = "button";
+        openAgentsLink.className = "link-button";
+        openAgentsLink.textContent = "Open Agents";
+        openAgentsLink.addEventListener("click", () => {
+          openRoutingModal();
+        });
+        openAgentsRow.appendChild(openAgentsLink);
+        harnessSection.appendChild(openAgentsRow);
       }
 
       setupConfigEl.appendChild(harnessSection);

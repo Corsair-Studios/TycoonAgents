@@ -528,6 +528,43 @@ test("Classic density: unchecking a routed agent's checkbox posts clearAgentRout
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
+test("Settings harness section has exactly one 'Open Agents' link, and clicking it hides Settings and shows the Agents modal", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+
+  const menuSettingsBtn = doc.getElementById("menu-settings");
+  assert.ok(menuSettingsBtn, "the DOM fixture should carry a static #menu-settings element");
+  menuSettingsBtn.click();
+  // OpenCode + needsDefaultRoute true exercises the hint-carries-the-link path.
+  dispatch({
+    type: "settings",
+    payload: { harness: { effective: "opencode", needsDefaultRoute: true } },
+  });
+
+  const setupViewEl = doc.getElementById("setup-view");
+  assert.ok(setupViewEl, "#setup-view should exist");
+  assert.equal(setupViewEl.hasAttribute("hidden"), false, "Settings should be visible after menu-settings click");
+
+  const harnessSections = [...doc.querySelectorAll("#setup-config .settings-heading")].filter(
+    (h: any) => /agent harness/i.test(h.textContent || ""),
+  );
+  assert.ok(harnessSections.length > 0, "expected an 'Agent harness' section to render");
+  const harnessSection = harnessSections[0].closest(".settings-section") || harnessSections[0].parentElement;
+  const openAgentsLinks = [...harnessSection.querySelectorAll("button")].filter(
+    (b: any) => (b.textContent || "").trim() === "Open Agents",
+  );
+  assert.equal(openAgentsLinks.length, 1, `expected exactly one "Open Agents" link, got: ${openAgentsLinks.length}`);
+
+  openAgentsLinks[0].click();
+  dispatch({ type: "routing", payload: routingPayloadFixture() });
+
+  assert.equal(setupViewEl.hasAttribute("hidden"), true, "Settings should be hidden after Open Agents is clicked");
+  const modal = doc.getElementById("routing-modal");
+  assert.ok(modal, "Agents modal should render");
+  assert.notEqual(modal.hasAttribute("hidden"), true, "Agents modal should be visible after Open Agents is clicked");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
 test("Classic density: orchestrator card shows the OpenCode-only routing note", () => {
   const { doc, dispatch, errors } = bootMainJs();
   openClassicAgentsModal(doc, dispatch);
