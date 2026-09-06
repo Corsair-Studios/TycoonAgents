@@ -685,12 +685,14 @@ untouched.
 
 ### Agents screen visibility
 
-The Agents screen (menu entry "Agents", always visible) starts with a
-harness dropdown (Claude Code default, OpenCode) at the top; Settings keeps
-a copy of the same dropdown plus an "Open Agents" link. The dropdown's
-value alone decides density (`describeRoutingVisibility`: visible when the
-effective harness is `opencode`, or when `routedAgentCount > 0` under
-Claude Code) — there is no separate profile-visibility toggle.
+The harness dropdown (Claude Code default, OpenCode) lives only in
+**Settings**; the Agents screen (menu entry "Agents", always visible) no
+longer has it and instead shows a read-only line — "Runs on Claude Code ·
+Change in Settings" (or "Runs on OpenCode · Change in Settings"). The
+Settings dropdown's value alone decides Agents' density
+(`describeRoutingVisibility`: visible when the effective harness is
+`opencode`, or when `routedAgentCount > 0` under Claude Code) — there is no
+separate profile-visibility toggle.
 
 Under the **Claude Code** harness, Agents shows classic cards: name, Claude
 tier radios, keyword chips/editor, stats, and Remove, plus a checkbox "Use

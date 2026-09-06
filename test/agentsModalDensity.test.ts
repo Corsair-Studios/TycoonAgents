@@ -327,6 +327,24 @@ test('Agents modal: the menu entry that opens it (#menu-routing) is present, and
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
+test('Agents modal header (2026-09-05): shows a read-only "Runs on ..." line with a "Change in Settings" link, and never a harness <select>', () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  openAgentsModalAtDensity(doc, dispatch, "claude");
+
+  const body = doc.getElementById("routing-modal-body");
+  assert.ok(body, "#routing-modal-body should render");
+  assert.equal(body.querySelectorAll("select").length, 0, "Agents modal must not render any harness <select> (harness is chosen only in Settings)");
+
+  const harnessLine = [...body.querySelectorAll("p")].find((p: any) => /^Runs on /.test(p.textContent || ""));
+  assert.ok(harnessLine, `Agents modal should show a "Runs on ..." line, got paragraphs: ${JSON.stringify([...body.querySelectorAll("p")].map((p: any) => p.textContent))}`);
+  assert.match(harnessLine.textContent, /Runs on Claude Code/, 'harness line should name the effective harness');
+
+  const changeBtn = [...body.querySelectorAll("button")].find((b: any) => /Change in Settings/.test(b.textContent || ""));
+  assert.ok(changeBtn, 'a "Change in Settings" link-button should render in the harness line');
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
 test("Agents modal density: no harness field at all also renders simple density", () => {
   const { doc, dispatch, errors } = bootMainJs();
   const menuRoutingBtn = doc.getElementById("menu-routing");

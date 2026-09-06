@@ -167,11 +167,12 @@ contract (the `harness` settings field, `SET_HARNESS` message) is in
 
 ### First run on OpenCode
 
-1. Choose **OpenCode** from the harness dropdown at the top of the
-   **Agents** screen (menu entry "Agents", always visible) — or from the
-   same dropdown's copy in Settings, next to an "Open Agents" link.
-   Choosing OpenCode switches Agents to full density; switching back to
-   Claude Code never deletes an existing `routing.json`.
+1. Choose **OpenCode** from the harness dropdown in **Settings** (next to
+   an "Open Agents" link) — the Agents screen itself no longer has this
+   dropdown; it shows a read-only line, "Runs on Claude Code · Change in
+   Settings" (or "Runs on OpenCode · Change in Settings"). Choosing OpenCode
+   switches Agents to full density; switching back to Claude Code never
+   deletes an existing `routing.json`.
 2. Open **Agents** and fill in the **Default for all agents** card: vendor
    and model. If you pick **Custom endpoint**, also enter a provider name
    plus the endpoint URL and API key — those are entered once and stored
@@ -190,7 +191,7 @@ block in their frontmatter (the MCP reviewers, e.g. `codex-reviewer`,
 default — they were already wired to a specific vendor/transport on
 purpose and are not swept into `defaults` resolution.
 
-The Settings screen's harness dropdown surfaces a hint — "OpenCode runs
+The Settings screen's harness dropdown (the only place it appears) surfaces a hint — "OpenCode runs
 each agent on its routed model. Set a default model your OpenCode install
 can reach." with a link straight into Agents — whenever OpenCode is
 selected, no `defaults` model is set, and at least one agent is still

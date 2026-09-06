@@ -3015,6 +3015,51 @@
     });
   }
 
+  // Closes the Agents modal and opens Settings — same sequence as the
+  // hamburger menu's Settings item (menuSettingsBtn above), reused by the
+  // Agents header's "Change in Settings" link (2026-09-05: harness question
+  // lives only in Settings; the Agents screen just links there).
+  function openSettingsFromAgents() {
+    closeModal(routingModalEl);
+    removeSetupOptionalsNodes();
+    setupStage = "done";
+    openedFromSettings = true;
+    showSetup();
+    vscode.postMessage({ type: "checkInstall" });
+    vscode.postMessage({ type: "getSettings" });
+  }
+
+  /**
+   * Read-only harness line atop the Agents screen content
+   * (2026-09-05 decision): "Runs on Claude Code" / "Runs on OpenCode" plus a
+   * link-button back to Settings, where the actual harness dropdown
+   * (buildHarnessControl) lives. Replaces the old buildHarnessControl mount
+   * that used to duplicate the dropdown here.
+   */
+  function buildAgentsHarnessLine(harnessEffective) {
+    if (!lastSettings || !lastSettings.harness) return null;
+    var harnessOptions = Array.isArray(lastSettings.harness.options)
+      ? lastSettings.harness.options
+      : [
+          { id: "claude-code", label: "Claude Code" },
+          { id: "opencode", label: "OpenCode" },
+        ];
+    var match = harnessOptions.find(function (opt) { return opt.id === harnessEffective; });
+    var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode" : "Claude Code");
+    var line = document.createElement("p");
+    line.className = "routing-agents-harness-line";
+    line.textContent = "Runs on " + harnessLabel + " · ";
+    var changeBtn = document.createElement("button");
+    changeBtn.type = "button";
+    changeBtn.className = "routing-inline-link-btn routing-agents-harness-change-btn";
+    changeBtn.textContent = "Change in Settings";
+    changeBtn.addEventListener("click", function () {
+      openSettingsFromAgents();
+    });
+    line.appendChild(changeBtn);
+    return line;
+  }
+
   if (themesFooterCloseBtn) {
     themesFooterCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
   }
@@ -18259,11 +18304,13 @@
     var isClaudeHarness = harnessEffective !== "opencode";
     var density = isClaudeHarness ? "simple" : "full";
 
-    // Harness dropdown atop the Agents screen (p20-t2) — same control/options
-    // as Settings, via the shared builder.
-    var agentsHarnessRow = buildHarnessControl("agents-modal");
-    if (agentsHarnessRow) {
-      routingContentEl.appendChild(agentsHarnessRow);
+    // Read-only "Runs on <harness> · Change in Settings" line atop the
+    // Agents screen (2026-09-05 decision): the harness question is asked
+    // ONLY in Settings now — no dropdown here, just a link back to it.
+    // buildHarnessControl is still used by Settings itself, further below.
+    var agentsHarnessLine = buildAgentsHarnessLine(harnessEffective);
+    if (agentsHarnessLine) {
+      routingContentEl.appendChild(agentsHarnessLine);
     }
 
     var rawPresets = payload.presets || { vendors: [], models: [] };
