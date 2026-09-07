@@ -844,6 +844,18 @@ body {
   color: var(--muted);
 }
 
+.agent-backend-provenance-line {
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-backend-open-link {
+  font-size: 11px;
+}
+
 .agent-routed-chip {
   font-weight: 600;
 }

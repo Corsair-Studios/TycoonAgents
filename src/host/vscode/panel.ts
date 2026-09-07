@@ -1248,6 +1248,13 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: removeAgent payload rejected:", parsedRemoveAgent.error.message);
           }
+        } else if (message.type === MSG.OPEN_AGENT_FILE) {
+          const parsedOpenAgentFile = MSG_SCHEMAS.ID_ONLY.safeParse(message);
+          if (parsedOpenAgentFile.success) {
+            await this._handleOpenAgentFile(parsedOpenAgentFile.data.id);
+          } else {
+            console.error("TycoonAgents: openAgentFile payload rejected:", parsedOpenAgentFile.error.message);
+          }
         } else if (message.type === MSG.GENERATE_DIAGNOSTIC) {
           const parsedGenerateDiagnostic = MSG_SCHEMAS.GENERATE_DIAGNOSTIC.safeParse(message);
           if (parsedGenerateDiagnostic.success) {
@@ -7389,6 +7396,36 @@ export class TycoonPanel {
         field: "model",
         error: String(err),
       });
+    }
+  }
+
+  /**
+   * Open `.claude/agents/<id>.md` in the editor — the "Open" link on the
+   * hand-written-backend provenance line (media/src/main/100-slot-editor-
+   * settings.js). Same id guard as `_handleRemoveAgent`; missing file or no
+   * workspace root is logged and ignored (no user-facing error message —
+   * this is a convenience link, not a mutating action).
+   */
+  private async _handleOpenAgentFile(id: string): Promise<void> {
+    if (!isSafeAgentId(id)) {
+      console.error("TycoonAgents: openAgentFile rejected invalid id:", id);
+      return;
+    }
+    const root = this._projectRoot();
+    if (root === "") {
+      console.error("TycoonAgents: openAgentFile: no workspace folder open");
+      return;
+    }
+    const agentPath = path.join(root, ".claude", "agents", `${id}.md`);
+    if (!fs.existsSync(agentPath)) {
+      console.error("TycoonAgents: openAgentFile: file not found:", agentPath);
+      return;
+    }
+    try {
+      const doc = await vscode.workspace.openTextDocument(agentPath);
+      await vscode.window.showTextDocument(doc);
+    } catch (err) {
+      console.error("TycoonAgents: openAgentFile: failed to open:", err);
     }
   }
 

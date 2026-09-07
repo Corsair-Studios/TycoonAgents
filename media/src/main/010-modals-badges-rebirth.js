@@ -1356,6 +1356,19 @@
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // Bug fix: the Agents screen's per-agent keywords come from
+    // lastSettings (settingsAgentsById in renderRoutingModal), which is
+    // only populated once a "settings" reply has landed. The VS Code host
+    // sends "settings" only in reply to getSettings (unlike the standalone
+    // server, which broadcasts it eagerly) — so opening Agents from the
+    // hamburger without visiting Settings first (or after a webview
+    // reload) left lastSettings null and every Keywords input blank. Ask
+    // for settings here too; the "settings" handler already re-renders the
+    // routing modal when it's open (see 060-theme-image-review.js), so
+    // keywords fill in once the reply arrives even if routing rendered
+    // first. Safe to request unconditionally — cheap, idempotent, and
+    // identical in both hosts.
+    vscode.postMessage({ type: "getSettings" });
   }
   var menuRoutingBtn = document.getElementById("menu-routing");
   if (menuRoutingBtn) {

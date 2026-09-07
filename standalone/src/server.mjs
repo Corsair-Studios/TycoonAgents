@@ -1011,6 +1011,40 @@ function handleBrowserMessage(msg) {
       }
       break;
     }
+    case 'openAgentFile': {
+      // Standalone analog of panel.ts's _handleOpenAgentFile: no in-browser
+      // text editor exists here, so this reveals .claude/agents/<id>.md in
+      // the OS file manager instead of opening it in an editor tab.
+      const root = primaryProjectRoot;
+      const id = String(msg.id || '');
+      if (!root) {
+        console.error('[tycoonagents-standalone] openAgentFile: no project root resolved');
+        break;
+      }
+      try {
+        const { isSafeAgentId } = agentConfigModule();
+        if (!isSafeAgentId(id)) {
+          console.error('[tycoonagents-standalone] openAgentFile: invalid agent id:', id);
+          break;
+        }
+        const agentPath = path.join(root, '.claude', 'agents', `${id}.md`);
+        if (!fs.existsSync(agentPath)) {
+          console.error('[tycoonagents-standalone] openAgentFile: file not found:', agentPath);
+          break;
+        }
+        const { spawn } = requireCompiledModule('node:child_process');
+        if (process.platform === 'win32') {
+          spawn('explorer', [`/select,${agentPath}`], { detached: true, stdio: 'ignore' }).unref();
+        } else if (process.platform === 'darwin') {
+          spawn('open', ['-R', agentPath], { detached: true, stdio: 'ignore' }).unref();
+        } else {
+          spawn('xdg-open', [path.dirname(agentPath)], { detached: true, stdio: 'ignore' }).unref();
+        }
+      } catch (err) {
+        console.error('[tycoonagents-standalone] openAgentFile failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    }
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
       // 6909). main.js's renderSettings() (media/main.js:16239) only shows

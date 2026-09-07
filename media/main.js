@@ -3095,6 +3095,19 @@
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // Bug fix: the Agents screen's per-agent keywords come from
+    // lastSettings (settingsAgentsById in renderRoutingModal), which is
+    // only populated once a "settings" reply has landed. The VS Code host
+    // sends "settings" only in reply to getSettings (unlike the standalone
+    // server, which broadcasts it eagerly) — so opening Agents from the
+    // hamburger without visiting Settings first (or after a webview
+    // reload) left lastSettings null and every Keywords input blank. Ask
+    // for settings here too; the "settings" handler already re-renders the
+    // routing modal when it's open (see 060-theme-image-review.js), so
+    // keywords fill in once the reply arrives even if routing rendered
+    // first. Safe to request unconditionally — cheap, idempotent, and
+    // identical in both hosts.
+    vscode.postMessage({ type: "getSettings" });
   }
   var menuRoutingBtn = document.getElementById("menu-routing");
   if (menuRoutingBtn) {
@@ -18159,7 +18172,23 @@
         }
       }
     }
-    return { openMap: openMap, focus: focus };
+    // Also capture any keyword-input the user has typed into but not yet
+    // saved, keyed by agent id: renderRoutingModal always sets
+    // `kwInput.value = loadedKeywords` on rebuild (e.g. the "settings" reply
+    // to the getSettings this modal posts on open), which would otherwise
+    // clobber in-progress typing before the user hits Save.
+    var keywordEdits = {};
+    if (routingContentEl) {
+      routingContentEl.querySelectorAll(".keyword-input").forEach(function (inp) {
+        var agentId = inp.dataset.agentId;
+        if (!agentId) return;
+        var loaded = inp.dataset.loaded || "";
+        if (inp.value !== loaded) {
+          keywordEdits[agentId] = inp.value;
+        }
+      });
+    }
+    return { openMap: openMap, focus: focus, keywordEdits: keywordEdits };
   }
 
   function restoreRoutingUiState(snapshot) {
@@ -18170,6 +18199,18 @@
         d.open = snapshot.openMap[key];
       }
     });
+    if (snapshot.keywordEdits) {
+      routingContentEl.querySelectorAll(".keyword-input").forEach(function (inp) {
+        var agentId = inp.dataset.agentId;
+        if (!agentId || !Object.prototype.hasOwnProperty.call(snapshot.keywordEdits, agentId)) return;
+        inp.value = snapshot.keywordEdits[agentId];
+        // Re-fire the input event so the card's own "input" listener marks
+        // kwUserEdited = true — that flag lives in the card's closure and
+        // was rebuilt fresh, so it can only be set this way, not assigned
+        // directly.
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
     if (snapshot.focus) {
       var el = routingContentEl.querySelector('[data-field-key="' + snapshot.focus.fieldKey.replace(/"/g, '\\"') + '"]');
       if (el) {
@@ -18453,6 +18494,30 @@
         backendLine.className = "agent-backend-line";
         backendLine.textContent = `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP`;
         head.appendChild(backendLine);
+
+        // Provenance line: where the hand-written backend: block actually
+        // came from, plus an "Open" link (openAgentFile -> panel.ts opens
+        // the file in an editor tab; standalone reveals it in the OS file
+        // manager). Pack attribution is appended only when the settings
+        // payload actually carries it (a.packId) — no new payload field is
+        // added here.
+        const provenanceLine = document.createElement("span");
+        provenanceLine.className = "agent-backend-provenance-line";
+        let provenanceText = `Defined in .claude/agents/${a.id}.md`;
+        if (a.packId) {
+          provenanceText += ` · from the ${a.packId} pack`;
+        }
+        provenanceLine.appendChild(document.createTextNode(provenanceText + " "));
+        const openLink = document.createElement("button");
+        openLink.type = "button";
+        openLink.className = "link-button agent-backend-open-link";
+        openLink.textContent = "Open";
+        openLink.addEventListener("click", () => {
+          vscode.postMessage({ type: "openAgentFile", id: a.id });
+        });
+        provenanceLine.appendChild(openLink);
+        head.appendChild(provenanceLine);
+
         head.appendChild(buildUseClaudeDisclosure());
       } else {
         if (density === "full") {
@@ -18555,6 +18620,8 @@
     kwInput.type = "text";
     kwInput.className = "keyword-input";
     kwInput.value = loadedKeywords;
+    kwInput.dataset.agentId = a.id;
+    kwInput.dataset.loaded = loadedKeywords;
     kwInput.placeholder = "kw1|kw2|kw3";
     if (!loadedKeywords || String(loadedKeywords).trim() === "") {
       kwInput.title = "No routing keywords set — routing to this agent is disabled";

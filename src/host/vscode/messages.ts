@@ -112,6 +112,9 @@ export const MSG = {
   SET_SESSION_JOURNAL_ENTRIES: "setSessionJournalEntries",
   SET_AGENT_KEYWORDS: "setAgentKeywords",
   REMOVE_AGENT: "removeAgent",
+  // Hand-written-backend provenance line's "Open" link — opens (VS Code) or
+  // reveals (standalone) .claude/agents/<id>.md.
+  OPEN_AGENT_FILE: "openAgentFile",
   AGENT_REMOVED: "agentRemoved",
   RESET_METRICS: "resetMetrics",
   METRICS_RESET: "metricsReset",

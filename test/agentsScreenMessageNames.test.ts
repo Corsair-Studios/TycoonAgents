@@ -57,6 +57,10 @@ test("Agents/Settings screens: removeAgent is still posted with its unchanged wi
   assert.ok(postsLiteralType("removeAgent"), 'expected a `vscode.postMessage({ type: "removeAgent", ... })` call in media/main.js');
 });
 
+test("Agents screen: openAgentFile is still posted with its unchanged wire string", () => {
+  assert.ok(postsLiteralType("openAgentFile"), 'expected a `vscode.postMessage({ type: "openAgentFile", ... })` call in media/main.js');
+});
+
 test("p20-t2: setUseMultipleLlms is no longer posted anywhere in media/main.js (the checkbox was removed)", () => {
   assert.equal(
     postsLiteralType("setUseMultipleLlms"),
@@ -96,7 +100,7 @@ test("Agents modal: saveRouting is still the ROUTING_MSG.SAVE wire value, posted
 // silent drift this file exists to catch.
 test("DRIFT GUARD: every message name checked here also exists as a wire value in src/host/vscode/messages.ts's MSG object", () => {
   const messagesSrc = readFileSync(MESSAGES_TS_PATH, "utf8");
-  for (const wire of ["setAgentModel", "setAgentKeywords", "removeAgent", "clearAgentRoute", "setUseMultipleLlms", "getRouting", "saveRouting"]) {
+  for (const wire of ["setAgentModel", "setAgentKeywords", "removeAgent", "openAgentFile", "clearAgentRoute", "setUseMultipleLlms", "getRouting", "saveRouting"]) {
     assert.match(
       messagesSrc,
       new RegExp(`:\\s*"${wire}"`),
