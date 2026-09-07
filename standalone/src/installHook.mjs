@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeTycoonHooks, getTycoonHookSlots } from './sharedLogic.mjs';
+import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, syncRuntimeFile } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -235,6 +235,64 @@ function stripBom(s) {
 }
 
 /**
+ * Refreshes any STALE runtime hook file(s) already sitting in
+ * `<targetDir>/.claude/tycoon/` (the bundled hook script + its companions —
+ * see {@link RUNTIME_HOOK_FILES's source, `getRuntimeHookFiles`}), by
+ * content hash, independent of hook REGISTRATION status.
+ *
+ * Fixes the 2026-09-06 bug: `install-hook` only ever checked whether the
+ * settings.local.json hook COMMAND already referenced *a*
+ * tycoon-claude-hook.cjs (by filename substring — see `isOurHookCommand` in
+ * hookInstall.ts) and, if so, reported "already registered (no changes)"
+ * without ever looking at the CONTENT of a runtime copy such a command
+ * might point at — e.g. a `.claude/tycoon/tycoon-claude-hook.cjs` left
+ * behind by an earlier VS Code extension install/repair. That copy could
+ * go stale relative to the repo's `hooks/tycoon-claude-hook.cjs` and no
+ * command run afterward would ever refresh it.
+ *
+ * This function is deliberately conservative about WHEN it acts: standalone
+ * itself never creates a `.claude/tycoon/` runtime copy (it registers the
+ * hook command by absolute path straight into this repo's `hooks/`, per
+ * the module header above) — so a file here is only ever refreshed if it
+ * ALREADY exists (put there by something else, i.e. VS Code). A project
+ * with no such copy is left exactly as `installHook` would have left it
+ * before this fix: no new files created, no behavior change.
+ *
+ * @param {string} targetDir project directory to check.
+ * @param {object} [opts]
+ * @param {string} [opts.hooksSourceDir] override for the source `hooks/`
+ *   directory (tests only — production callers use the default, this
+ *   repo's own `hooks/`).
+ * @returns {string[]} basenames actually overwritten this run (differed by
+ *   content from the source). Empty when every existing copy already
+ *   matched, or when the project has no runtime copies at all.
+ */
+export function refreshRuntimeHookCopies(targetDir, opts = {}) {
+  const absTarget = path.resolve(String(targetDir ?? ''));
+  const tycoonDir = path.join(absTarget, '.claude', 'tycoon');
+  const srcDir = opts.hooksSourceDir ?? hooksDir();
+  const refreshed = [];
+  for (const file of getRuntimeHookFiles()) {
+    const destPath = path.join(tycoonDir, file);
+    if (!fs.existsSync(destPath)) {
+      // No copy here — standalone doesn't create one; nothing to refresh.
+      continue;
+    }
+    const srcPath = path.join(srcDir, file);
+    if (!fs.existsSync(srcPath)) {
+      // Companion not built/shipped in this checkout — leave the existing
+      // copy alone rather than erroring; registration itself still works.
+      continue;
+    }
+    const status = syncRuntimeFile(srcPath, destPath);
+    if (status === 'refreshed') {
+      refreshed.push(file);
+    }
+  }
+  return refreshed;
+}
+
+/**
  * Idempotently registers the TycoonAgents hook in `targetDir`'s Claude Code
  * settings (`.claude/settings.local.json` — the same project-local,
  * uncommitted file hookInstall.ts writes hook registrations into; shared
@@ -245,7 +303,12 @@ function stripBom(s) {
  * @param {string} [opts.hookScriptPath] override for the hook script's
  *   absolute path (tests only — production callers use the default, which
  *   points at this repo's real hooks/tycoon-claude-hook.cjs).
- * @returns {{ settingsPath: string, changed: boolean, hookCommand: string }}
+ * @returns {{ settingsPath: string, changed: boolean, hookCommand: string, refreshed: string[] }}
+ *   `refreshed`: runtime hook file(s) under `.claude/tycoon/` that were
+ *   overwritten because they existed and differed by content from this
+ *   repo's `hooks/` — see {@link refreshRuntimeHookCopies}. Independent of
+ *   `changed` (registration status): either can be true/non-empty without
+ *   the other.
  * @throws {InstallHookError} on a missing/non-directory target, a missing
  *   hook script, or a settings file that exists but fails to parse as a JSON
  *   object. In every throw case the target settings file (if any) is left
@@ -310,5 +373,7 @@ export function installHook(targetDir, opts = {}) {
     fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
   }
 
-  return { settingsPath, changed, hookCommand };
+  const refreshed = refreshRuntimeHookCopies(absTarget);
+
+  return { settingsPath, changed, hookCommand, refreshed };
 }

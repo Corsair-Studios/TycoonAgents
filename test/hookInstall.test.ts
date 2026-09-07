@@ -18,6 +18,8 @@ import {
   LEGACY_HOOK_BASENAMES,
   LEGACY_STATE_FILE_NAMES,
   mergeManagedSubagentDepthEnv,
+  syncRuntimeFile,
+  RUNTIME_HOOK_FILES,
 } from "../src/host/vscode/hookInstall";
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
@@ -655,4 +657,63 @@ test("mergeManagedSubagentDepthEnv tolerates a malformed (non-object) existing e
     const env = result.env as Record<string, unknown>;
     assert.equal(env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, "2", `badEnv=${JSON.stringify(badEnv)} must not prevent the write`);
   }
+});
+
+// --- syncRuntimeFile (2026-09-06 stale-copy bug fix) -----------------------
+
+function mkTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-hookinstall-sync-"));
+}
+
+test("syncRuntimeFile: creates the destination when it does not exist", () => {
+  const dir = mkTempDir();
+  try {
+    const src = path.join(dir, "src.cjs");
+    fs.writeFileSync(src, "content-v1");
+    const dest = path.join(dir, "nested", "dest.cjs");
+    const status = syncRuntimeFile(src, dest);
+    assert.equal(status, "created");
+    assert.equal(fs.readFileSync(dest, "utf8"), "content-v1");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntimeFile: overwrites a stale destination that differs by content", () => {
+  const dir = mkTempDir();
+  try {
+    const src = path.join(dir, "src.cjs");
+    fs.writeFileSync(src, "content-v2");
+    const dest = path.join(dir, "dest.cjs");
+    fs.writeFileSync(dest, "content-v1-stale");
+    const status = syncRuntimeFile(src, dest);
+    assert.equal(status, "refreshed");
+    assert.equal(fs.readFileSync(dest, "utf8"), "content-v2");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncRuntimeFile: leaves a byte-identical destination untouched (mtime unchanged)", () => {
+  const dir = mkTempDir();
+  try {
+    const src = path.join(dir, "src.cjs");
+    fs.writeFileSync(src, "same-content");
+    const dest = path.join(dir, "dest.cjs");
+    fs.writeFileSync(dest, "same-content");
+    const mtimeBefore = fs.statSync(dest).mtimeMs;
+    const status = syncRuntimeFile(src, dest);
+    assert.equal(status, "unchanged");
+    assert.equal(fs.statSync(dest).mtimeMs, mtimeBefore);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("RUNTIME_HOOK_FILES includes the hook script and its known runtime companions", () => {
+  assert.ok(RUNTIME_HOOK_FILES.includes("tycoon-claude-hook.cjs"));
+  assert.ok(RUNTIME_HOOK_FILES.includes("agentBackend.js"));
+  assert.ok(RUNTIME_HOOK_FILES.includes("modelAliases.js"));
+  assert.ok(RUNTIME_HOOK_FILES.includes("delegationEnforcement.js"));
+  assert.ok(RUNTIME_HOOK_FILES.includes("fallbackChain.js"));
 });

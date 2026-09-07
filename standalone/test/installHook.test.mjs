@@ -21,6 +21,7 @@ import {
   OPENCODE_PLUGIN_FILES,
   mergeHookIntoSettings,
   defaultHookScriptPath,
+  refreshRuntimeHookCopies,
   InstallHookError,
   TYCOON_HOOK_SLOTS,
 } from '../src/installHook.mjs';
@@ -341,6 +342,80 @@ test('installOpenCodePlugin: missing source file in hooks/ yields an explicit er
     if (hadVictim && fs.existsSync(backupPath)) {
       fs.renameSync(backupPath, victim);
     }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- refreshRuntimeHookCopies (2026-09-06 stale-copy bug fix) --------------
+
+test('refreshRuntimeHookCopies: a stale live copy of the hook (e.g. left by a prior VS Code install) is replaced', () => {
+  const dir = mkTempDir();
+  try {
+    const tycoonDir = path.join(dir, '.claude', 'tycoon');
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    const destPath = path.join(tycoonDir, 'tycoon-claude-hook.cjs');
+    fs.writeFileSync(destPath, '// stale content from an old build\n');
+
+    const refreshed = refreshRuntimeHookCopies(dir);
+
+    assert.deepEqual(refreshed, ['tycoon-claude-hook.cjs']);
+    const realHookSrc = fs.readFileSync(defaultHookScriptPath(), 'utf8');
+    assert.equal(fs.readFileSync(destPath, 'utf8'), realHookSrc);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('refreshRuntimeHookCopies: an already-identical live copy is left alone (mtime unchanged)', () => {
+  const dir = mkTempDir();
+  try {
+    const tycoonDir = path.join(dir, '.claude', 'tycoon');
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    const destPath = path.join(tycoonDir, 'tycoon-claude-hook.cjs');
+    fs.copyFileSync(defaultHookScriptPath(), destPath);
+    const mtimeBefore = fs.statSync(destPath).mtimeMs;
+
+    const refreshed = refreshRuntimeHookCopies(dir);
+
+    assert.deepEqual(refreshed, [], 'identical file must not be reported as refreshed');
+    assert.equal(fs.statSync(destPath).mtimeMs, mtimeBefore, 'identical file must not be rewritten');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('refreshRuntimeHookCopies: a project with no .claude/tycoon runtime copy at all creates nothing', () => {
+  const dir = mkTempDir();
+  try {
+    const refreshed = refreshRuntimeHookCopies(dir);
+    assert.deepEqual(refreshed, []);
+    assert.ok(!fs.existsSync(path.join(dir, '.claude', 'tycoon', 'tycoon-claude-hook.cjs')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: refreshes a stale live hook copy even when registration is already up to date (no changes)', () => {
+  const dir = mkTempDir();
+  try {
+    const tycoonDir = path.join(dir, '.claude', 'tycoon');
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    fs.writeFileSync(path.join(tycoonDir, 'tycoon-claude-hook.cjs'), '// stale\n');
+
+    // Pre-register the hook command pointing at the repo's real hook script,
+    // so the SECOND install() call below is a pure no-op on registration —
+    // isolating that the stale-copy refresh does not depend on `changed`.
+    const first = installHook(dir);
+    assert.equal(first.changed, true);
+
+    const second = installHook(dir);
+    assert.equal(second.changed, false, 'registration should already be a no-op on the second call');
+    // The stale copy was written to .claude/tycoon before either call and
+    // is unrelated to the settings.local.json command (which points at the
+    // repo's absolute hooks/ path) — it must still be refreshed regardless.
+    const hookContent = fs.readFileSync(path.join(tycoonDir, 'tycoon-claude-hook.cjs'), 'utf8');
+    assert.equal(hookContent, fs.readFileSync(defaultHookScriptPath(), 'utf8'));
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

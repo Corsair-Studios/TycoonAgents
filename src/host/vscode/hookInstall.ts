@@ -283,6 +283,61 @@ export function mergeManagedSubagentDepthEnv(
 // ---------------------------------------------------------------------------
 
 /**
+ * The bundled hook script plus every companion runtime file an installer
+ * copies alongside it into `.claude/tycoon/` (VS Code) or may find already
+ * copied there by a prior VS Code install (standalone). Shared by both
+ * hosts so the file list never drifts between them — see
+ * `_handleInstallHooks` in panel.ts and `refreshRuntimeHookCopies` in
+ * standalone/src/installHook.mjs.
+ */
+export const RUNTIME_HOOK_FILES: ReadonlyArray<string> = [
+  "tycoon-claude-hook.cjs",
+  "agentBackend.js",
+  "modelAliases.js",
+  "delegationEnforcement.js",
+  "fallbackChain.js",
+];
+
+/** Outcome of syncing one runtime file — see {@link syncRuntimeFile}. */
+export type RuntimeFileSyncStatus = "created" | "refreshed" | "unchanged";
+
+/**
+ * Compares `srcPath` (the bundled/source-of-truth file) against `destPath`
+ * (the live copy in a project's `.claude/tycoon/`) by content, byte-for-byte
+ * — never by mtime or a "registered" flag, per the 2026-09-06 bug where a
+ * stale runtime copy survived an install because only hook REGISTRATION was
+ * checked, never the copy's content.
+ *
+ * - `destPath` missing: creates it (parent dir included) — `"created"`.
+ * - `destPath` present and byte-identical to `srcPath`: leaves it
+ *   completely untouched (no write, mtime unchanged) — `"unchanged"`.
+ * - `destPath` present and different: overwrites it — `"refreshed"`.
+ *
+ * `destPath` is always one of our own runtime files (see
+ * {@link RUNTIME_HOOK_FILES}), never a user-authored file, so overwriting on
+ * a content mismatch is always safe.
+ */
+export function syncRuntimeFile(srcPath: string, destPath: string): RuntimeFileSyncStatus {
+  const srcBuf = fs.readFileSync(srcPath);
+  let destBuf: Buffer | undefined;
+  try {
+    destBuf = fs.readFileSync(destPath);
+  } catch {
+    destBuf = undefined;
+  }
+  if (destBuf === undefined) {
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.copyFileSync(srcPath, destPath);
+    return "created";
+  }
+  if (srcBuf.equals(destBuf)) {
+    return "unchanged";
+  }
+  fs.copyFileSync(srcPath, destPath);
+  return "refreshed";
+}
+
+/**
  * Basenames of hook scripts belonging to a foreign/legacy agent-hook system
  * (path-agnostic — matched by substring against the full command string, so
  * it doesn't matter how that system quoted or rooted its path). These are

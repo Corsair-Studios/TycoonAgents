@@ -312,7 +312,10 @@ export async function runCli(argv) {
         return 0;
       }
 
-      const { settingsPath, changed } = installHook(dir);
+      const { settingsPath, changed, refreshed } = installHook(dir);
+      for (const file of refreshed) {
+        console.log(`TycoonAgents: refreshed ${file}`);
+      }
       console.log(
         changed
           ? `TycoonAgents: hook registered in ${settingsPath}`

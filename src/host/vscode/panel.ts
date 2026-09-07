@@ -183,6 +183,7 @@ import {
   cleanupForeignHookArtifacts,
   findLegacyHookCommands,
   LEGACY_STATE_FILE_NAMES,
+  syncRuntimeFile,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
@@ -5816,7 +5817,10 @@ export class TycoonPanel {
         "tycoon-claude-hook.cjs"
       ).fsPath;
       const dest = path.join(tycoonDir, "tycoon-claude-hook.cjs");
-      fs.copyFileSync(src, dest);
+      const hookSyncStatus = syncRuntimeFile(src, dest);
+      if (hookSyncStatus === "refreshed") {
+        console.log(`TycoonAgents: refreshed ${dest}`);
+      }
 
       // 2b. Copy the compiled agentBackend/modelAliases modules next to the
       // hook so it can require() them for generic backend-aware routing
@@ -5852,18 +5856,17 @@ export class TycoonPanel {
         // or that branch silently no-ops in VS Code installs (the require() is
         // wrapped in try/catch, so its absence fails open, never throws).
         const fallbackChainSrc = resolveRuntimeFile("fallbackChain.js");
-        if (agentBackendSrc) {
-          fs.copyFileSync(agentBackendSrc, path.join(tycoonDir, "agentBackend.js"));
-        }
-        if (modelAliasesSrc) {
-          fs.copyFileSync(modelAliasesSrc, path.join(tycoonDir, "modelAliases.js"));
-        }
-        if (delegationEnforcementSrc) {
-          fs.copyFileSync(delegationEnforcementSrc, path.join(tycoonDir, "delegationEnforcement.js"));
-        }
-        if (fallbackChainSrc) {
-          fs.copyFileSync(fallbackChainSrc, path.join(tycoonDir, "fallbackChain.js"));
-        }
+        const syncCompanion = (srcPath: string | undefined, fileName: string): void => {
+          if (!srcPath) return;
+          const status = syncRuntimeFile(srcPath, path.join(tycoonDir, fileName));
+          if (status === "refreshed") {
+            console.log(`TycoonAgents: refreshed ${path.join(tycoonDir, fileName)}`);
+          }
+        };
+        syncCompanion(agentBackendSrc, "agentBackend.js");
+        syncCompanion(modelAliasesSrc, "modelAliases.js");
+        syncCompanion(delegationEnforcementSrc, "delegationEnforcement.js");
+        syncCompanion(fallbackChainSrc, "fallbackChain.js");
       } catch {
         /* best-effort; hook falls back to legacy behavior when absent */
       }

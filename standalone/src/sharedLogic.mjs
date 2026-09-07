@@ -248,6 +248,36 @@ export function resolveProviderId(options) {
  * than caching the array yourself so a stale/missing `out/` still surfaces
  * the actionable "run `npx tsc -p .`" error at first real use.
  * @returns {ReadonlyArray<{event: string, matcher: string}>} */
+/** The bundled hook script plus every companion runtime file an installer
+ * copies into `.claude/tycoon/` — the exact `RUNTIME_HOOK_FILES` array from
+ * `src/host/vscode/hookInstall.ts`, reused via its compiled output.
+ * @returns {ReadonlyArray<string>} */
+export function getRuntimeHookFiles() {
+  const files = hookInstallModule().RUNTIME_HOOK_FILES;
+  if (!Array.isArray(files)) {
+    throw new Error(
+      '[tycoonagents-standalone] sharedLogic: expected "RUNTIME_HOOK_FILES" to be exported as an array from ' +
+        'out/src/host/vscode/hookInstall.js but it was not — the compiled output may be stale or the source ' +
+        'export was renamed. Run `npx tsc -p .` from the repo root and verify the export still exists.',
+    );
+  }
+  return files;
+}
+
+/** Content-hash sync of one runtime file — the exact `syncRuntimeFile`
+ * function from `src/host/vscode/hookInstall.ts`, reused via its compiled
+ * output. See that function's doc comment for the create/refresh/unchanged
+ * contract.
+ * @type {(srcPath: string, destPath: string) => 'created' | 'refreshed' | 'unchanged'} */
+export function syncRuntimeFile(srcPath, destPath) {
+  const fn = assertFn(
+    hookInstallModule().syncRuntimeFile,
+    'syncRuntimeFile',
+    'out/src/host/vscode/hookInstall.js',
+  );
+  return fn(srcPath, destPath);
+}
+
 export function getTycoonHookSlots() {
   const slots = hookInstallModule().TYCOON_HOOK_SLOTS;
   if (!Array.isArray(slots)) {
