@@ -358,7 +358,7 @@ export const REGULAR_AGENTS: PackAgent[] = [
     name: "Search & Retrieval Agent",
     model: "haiku",
     role:
-      "The fast search and retrieval specialist — uses the Haiku model for token-efficient searching, documentation lookup, and quick reference finding across codebases and documentation.",
+      "The fast search and retrieval specialist — uses the Haiku model for token-efficient searching, documentation lookup, and quick reference finding across codebases and documentation. Stop as soon as the question the brief asked is answered. Report conclusions and file:line references, not file excerpts. Do not read whole files when a grep hit already answers the brief, and cap exploration to the breadth the brief names — medium unless the brief says very thorough.",
     keywords: "search|find|lookup|grep|glob|locate|look|where|explore",
   },
   {
