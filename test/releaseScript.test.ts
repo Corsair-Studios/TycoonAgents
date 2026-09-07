@@ -192,10 +192,35 @@ test("refuses when HEAD is already this version's release commit", () => {
   }
 });
 
-test("no shell:true remains in release-local.mjs (DEP0190 avoidance)", () => {
+test("shell:true, if present, is never paired with an args array (DEP0190 avoidance)", () => {
   const { readFileSync: readFileSyncSync } = require("node:fs");
   const source = readFileSyncSync(SCRIPT_PATH, "utf8");
-  assert.doesNotMatch(source, /shell:\s*true/);
+  // The safe form is either `shell: true` with no separate args array (a
+  // single command string), or `shell: false` with an args array built via
+  // buildCommand(). What's unsafe is `shell: true` together with an argv
+  // array passed as the second spawnSync/execFileSync/exec* argument — that
+  // combination is what triggers Node's DEP0190 warning.
+  const unsafePattern = /\[[^\]]*\]\s*,\s*\{[^}]*shell:\s*true/;
+  assert.doesNotMatch(source, unsafePattern);
+});
+
+test("buildCommand routes through cmd.exe /d /s /c on win32 and passes argv through unchanged on posix", async () => {
+  const { buildCommand } = await loadScript();
+
+  const win = buildCommand("npm", ["version", "patch", "--no-git-tag-version"], "win32");
+  assert.equal(win.file, "cmd.exe");
+  assert.deepEqual(win.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.equal(win.args[3], "npm version patch --no-git-tag-version");
+
+  const posix = buildCommand("npm", ["version", "patch", "--no-git-tag-version"], "linux");
+  assert.equal(posix.file, "npm");
+  assert.deepEqual(posix.args, ["version", "patch", "--no-git-tag-version"]);
+});
+
+test("buildCommand quotes an argument containing whitespace on win32", async () => {
+  const { buildCommand } = await loadScript();
+  const win = buildCommand("npm", ["run", "package", "--message", "hello world"], "win32");
+  assert.equal(win.args[3], 'npm run package --message "hello world"');
 });
 
 test("release commit message is written to a temp file with the trailer on its own line", () => {

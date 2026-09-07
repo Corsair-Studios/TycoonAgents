@@ -25,8 +25,30 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
-/** Resolves the npm executable for spawnSync/execFileSync without a shell (avoids the Node DEP0190 warning). */
-const NPM_CMD = process.platform === "win32" ? "npm.cmd" : "npm";
+/**
+ * Quotes a single argv token for safe inclusion in a Windows `cmd.exe`
+ * command line (wraps in double quotes and doubles embedded quotes when the
+ * token contains whitespace or a shell metacharacter).
+ */
+export function quoteWindowsArg(arg) {
+  return /[\s"^&|<>]/.test(arg) ? `"${arg.replace(/"/g, '""')}"` : arg;
+}
+
+/**
+ * Builds a `{ file, args }` pair for spawnSync/execFileSync that runs
+ * `cmd [...args]` without `shell: true` (Node 24 on win32 rejects
+ * `spawnSync("npm.cmd", [...], { shell: false })` with EINVAL — the
+ * batch-file security change — so a `.cmd` must be launched via
+ * `cmd.exe /d /s /c "<quoted command line>"` instead). On POSIX this is a
+ * no-op passthrough. Always pass the result with `{ shell: false }`.
+ */
+export function buildCommand(cmd, args, platform = process.platform) {
+  if (platform === "win32") {
+    const line = [cmd, ...args].map(quoteWindowsArg).join(" ");
+    return { file: "cmd.exe", args: ["/d", "/s", "/c", line] };
+  }
+  return { file: cmd, args };
+}
 
 const DEFAULT_TRAILER = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>";
 const LEVELS = ["patch", "minor"];
@@ -272,13 +294,23 @@ function main() {
   }
 
   console.log(`[release] Bumping ${level}: ${currentVersion} -> (npm version will confirm)...`);
-  const versionResult = spawnSync(NPM_CMD, ["version", level, "--no-git-tag-version"], {
-    stdio: "inherit",
+  const versionCmd = buildCommand("npm", ["version", level, "--no-git-tag-version"]);
+  const versionResult = spawnSync(versionCmd.file, versionCmd.args, {
+    stdio: "pipe",
     shell: false,
     cwd: root,
+    encoding: "utf8",
   });
+  process.stdout.write(versionResult.stdout || "");
+  process.stderr.write(versionResult.stderr || "");
   if (versionResult.status !== 0) {
-    console.error(`\n[release] "npm version ${level} --no-git-tag-version" FAILED. Nothing committed.\n`);
+    console.error(
+      `\n[release] "npm version ${level} --no-git-tag-version" FAILED. Nothing committed.\n` +
+      `[release]   status: ${versionResult.status}\n` +
+      (versionResult.error ? `[release]   error: ${versionResult.error.message}\n` : "") +
+      (versionResult.stderr ? `[release]   stderr (tail): ${versionResult.stderr.trim().slice(-2000)}\n` : "") +
+      (versionResult.stdout ? `[release]   stdout (tail): ${versionResult.stdout.trim().slice(-2000)}\n` : ""),
+    );
     process.exit(versionResult.status || 1);
   }
 
@@ -309,13 +341,18 @@ function main() {
   const commitHash = execSync("git rev-parse --short HEAD", { cwd: root, encoding: "utf8" }).trim();
 
   console.log("[release] Running `npm run package`...");
-  const packageResult = spawnSync(NPM_CMD, ["run", "package"], { stdio: "pipe", shell: false, cwd: root, encoding: "utf8" });
+  const packageCmd = buildCommand("npm", ["run", "package"]);
+  const packageResult = spawnSync(packageCmd.file, packageCmd.args, { stdio: "pipe", shell: false, cwd: root, encoding: "utf8" });
   process.stdout.write(packageResult.stdout || "");
   process.stderr.write(packageResult.stderr || "");
 
   if (packageResult.status !== 0) {
     console.error(
       "\n[release] PACKAGING FAILED after the release commit already landed.\n" +
+      `[release]   status: ${packageResult.status}\n` +
+      (packageResult.error ? `[release]   error: ${packageResult.error.message}\n` : "") +
+      (packageResult.stderr ? `[release]   stderr (tail): ${packageResult.stderr.trim().slice(-2000)}\n` : "") +
+      (packageResult.stdout ? `[release]   stdout (tail): ${packageResult.stdout.trim().slice(-2000)}\n` : "") +
       "[release] The bump is committed but the VSIX was not produced. To undo the commit " +
       "(keeping your working tree files as they are) and try again:\n" +
       "[release]   git reset --soft HEAD~1\n",
