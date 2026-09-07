@@ -933,7 +933,7 @@
         details.className = "use-claude-tier-disclosure";
         const summary = document.createElement("summary");
         summary.className = "link-button";
-        summary.textContent = "Use Claude tier…";
+        summary.textContent = "Use Claude model…";
         details.appendChild(summary);
         details.appendChild(buildModelRadioGroup());
         return details;
@@ -965,19 +965,36 @@
       }
     }
 
-    const originalKeywords = a.keywords || "";
+    // The host has sent this field as `keywords` all along (panel.ts
+    // _handleGetSettings / standalone buildStandaloneSettingsPayload), but
+    // resolve defensively across the field-name variants a future payload
+    // shape might use so a rename on either host can't blank this input.
+    const loadedKeywords = a.keywords ?? a.keywordPattern ?? a.pattern ?? "";
+    const originalKeywords = loadedKeywords || "";
     // kwInputRef is filled in once the keyword input is built below — the
     // Save button is created first (head renders above the keyword row) but
     // both need each other, so a mutable box breaks the ordering dependency.
     // Declared before cardSaveBtn so the dependency doesn't rely on hoisting.
     var kwInputRef = {};
+    // Set only by the keyword input's own "input" event — i.e. the user
+    // actually typed/pasted/cleared it. doCardSave must never post a
+    // pattern the user didn't touch: a card rebuilt with a stale/empty
+    // `a.keywords` (e.g. a settings payload that raced ahead of the
+    // keywords config on disk) must not get its real saved pattern wiped
+    // out just because the freshly-built input's value no longer matches
+    // that stale `originalKeywords` baseline.
+    var kwUserEdited = false;
     const cardSaveBtn = document.createElement("button");
     cardSaveBtn.type = "button";
     cardSaveBtn.className = "skill-btn settings-btn agent-card-save-btn";
     cardSaveBtn.textContent = "Save";
     cardSaveBtn.title = "Save this agent's keywords and routing";
     const doCardSave = () => {
-      if (kwInputRef.value !== undefined && kwInputRef.value.value !== originalKeywords) {
+      if (
+        kwUserEdited &&
+        kwInputRef.value !== undefined &&
+        kwInputRef.value.value !== originalKeywords
+      ) {
         vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInputRef.value.value });
       }
       saveRoutingProfile();
@@ -1028,12 +1045,15 @@
     const kwInput = document.createElement("input");
     kwInput.type = "text";
     kwInput.className = "keyword-input";
-    kwInput.value = a.keywords || "";
+    kwInput.value = loadedKeywords;
     kwInput.placeholder = "kw1|kw2|kw3";
-    if (!a.keywords || String(a.keywords).trim() === "") {
+    if (!loadedKeywords || String(loadedKeywords).trim() === "") {
       kwInput.title = "No routing keywords set — routing to this agent is disabled";
       kwInput.style.borderColor = "var(--status-error)";
     }
+    kwInput.addEventListener("input", () => {
+      kwUserEdited = true;
+    });
     kwInput.addEventListener("keydown", (evt) => {
       if (evt.key === "Enter") {
         evt.preventDefault();
