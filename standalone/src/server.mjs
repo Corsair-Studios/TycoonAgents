@@ -936,6 +936,81 @@ function handleBrowserMessage(msg) {
       })();
       break;
     }
+    case 'setAgentKeywords': {
+      // Standalone analog of panel.ts's _handleSetAgentKeywords (~line
+      // 7493-7521). media/main.js posts { type, id, pattern } flat
+      // (matches panel.ts's MSG_SCHEMAS.SET_AGENT_KEYWORDS.safeParse(message)
+      // shape) — write the pattern into agent-keywords.json via the same
+      // compiled agentConfig.js helper the VS Code host and installAgentFiles
+      // use, then reply settingsUpdated the way setAgentModel does.
+      const root = primaryProjectRoot;
+      const id = String(msg.id || '');
+      const pattern = String(msg.pattern ?? '');
+      if (!root) {
+        console.error('[tycoonagents-standalone] setAgentKeywords: no project root resolved');
+        break;
+      }
+      try {
+        const { setKeywordPattern } = agentConfigModule();
+        const cfg = readKeywordsConfigStandalone(root);
+        const updated = setKeywordPattern(cfg, id, pattern);
+        const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
+        broadcast('message', { type: 'settingsUpdated', ok: true, id, field: 'keywords' });
+      } catch (err) {
+        broadcast('message', { type: 'settingsUpdated', ok: false, id, field: 'keywords', error: String(err) });
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'removeAgent': {
+      // Standalone analog of panel.ts's _handleRemoveAgent (~line 7399-
+      // 7482): delete .claude/agents/<id>.md and its agent-keywords.json
+      // routing entry. No native confirm dialog exists in the standalone
+      // host (the webview's own confirm UI gates the click before this
+      // message is ever posted), and orchestrator/coordinator agents are
+      // refused the same way panel.ts refuses removing "orchestrator".
+      const root = primaryProjectRoot;
+      const id = String(msg.id || '');
+      if (!root) {
+        console.error('[tycoonagents-standalone] removeAgent: no project root resolved');
+        break;
+      }
+      try {
+        const { isSafeAgentId } = agentConfigModule();
+        if (!isSafeAgentId(id)) {
+          broadcast('message', { type: 'agentRemoved', id, ok: false, error: 'invalid agent id' });
+          break;
+        }
+        if (id === 'orchestrator' || id === 'coordinator') {
+          broadcast('message', { type: 'agentRemoved', id, ok: false, error: 'core agent cannot be removed' });
+          break;
+        }
+        const agentPath = path.join(root, '.claude', 'agents', `${id}.md`);
+        if (fs.existsSync(agentPath)) {
+          fs.unlinkSync(agentPath);
+        }
+        const { removeKeywordPattern } = agentConfigModule();
+        const cfg = readKeywordsConfigStandalone(root);
+        const updated = removeKeywordPattern(cfg, id);
+        const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
+        broadcast('message', { type: 'agentRemoved', id, ok: true });
+      } catch (err) {
+        broadcast('message', { type: 'agentRemoved', id, ok: false, error: String(err) });
+        break;
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      try {
+        const { buildRoutingView } = routingHostOpsModule();
+        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] removeAgent routing re-post failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    }
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
       // 6909). main.js's renderSettings() (media/main.js:16239) only shows
@@ -1667,14 +1742,23 @@ function buildDoctrineRosterStandalone(root) {
   return rows;
 }
 
-/** Standalone analog of panel.ts's `_resolveReviewAgentId` (~line 5642-5649). */
+/**
+ * Standalone analog of panel.ts's `_resolveReviewAgentId` (~line 5642-5649).
+ * Falls back to `uefn-auditor` only when this project is detected as UEFN
+ * (via uefnDetectModule's detectUefnProject), so a non-UEFN project that
+ * merely has the UEFN pack installed is not routed to `uefn-auditor` for
+ * review.
+ */
 function resolveReviewAgentIdStandalone(root) {
   const agentsDir = path.join(root, '.claude', 'agents');
   const { loadAgentRoster } = agentRosterModule();
   const rosterFiles = loadAgentRoster(agentsDir);
   const hasId = (id) => rosterFiles.some((a) => a.id === id);
   if (hasId('reviewer')) return 'reviewer';
-  if (hasId('uefn-auditor')) return 'uefn-auditor';
+  if (hasId('uefn-auditor')) {
+    const { detectUefnProject } = uefnDetectModule();
+    if (detectUefnProject(root).detected) return 'uefn-auditor';
+  }
   return undefined;
 }
 

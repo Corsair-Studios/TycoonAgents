@@ -67,6 +67,84 @@
   /** Target theme id the pending confirm modal would switch to, if confirmed. */
   let pendingThemeSwitchTargetId = "";
 
+  // ── Remove-agent confirm modal (Agents screen card footer) — same
+  // backdrop/dialog/title/message/Cancel-Confirm shape as
+  // buildThemeSwitchConfirmModal above, reused for a different destructive
+  // action (removeAgent) since window.confirm isn't available in webviews. ──
+  let removeAgentConfirmModalEl = null;
+  let removeAgentConfirmMessageEl = null;
+  let removeAgentConfirmTitleEl = null;
+  let pendingRemoveAgentId = "";
+  let pendingRemoveAgentOnConfirm = null;
+
+  function closeRemoveAgentConfirmModal() {
+    if (removeAgentConfirmModalEl) removeAgentConfirmModalEl.setAttribute("hidden", "");
+  }
+
+  function buildRemoveAgentConfirmModal() {
+    if (removeAgentConfirmModalEl) return;
+
+    const modal = document.createElement("div");
+    modal.id = "remove-agent-confirm-modal";
+    modal.setAttribute("hidden", "");
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "remove-agent-confirm-backdrop";
+    backdrop.addEventListener("click", closeRemoveAgentConfirmModal);
+    modal.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.id = "remove-agent-confirm-dialog";
+
+    removeAgentConfirmTitleEl = document.createElement("div");
+    removeAgentConfirmTitleEl.id = "remove-agent-confirm-title";
+    dialog.appendChild(removeAgentConfirmTitleEl);
+
+    removeAgentConfirmMessageEl = document.createElement("p");
+    removeAgentConfirmMessageEl.id = "remove-agent-confirm-message";
+    dialog.appendChild(removeAgentConfirmMessageEl);
+
+    const actions = document.createElement("div");
+    actions.className = "reset-confirm-actions";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "skill-btn settings-btn";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", closeRemoveAgentConfirmModal);
+    actions.appendChild(cancelBtn);
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "skill-btn settings-btn danger-btn";
+    confirmBtn.textContent = "Remove";
+    confirmBtn.addEventListener("click", () => {
+      closeRemoveAgentConfirmModal();
+      if (typeof pendingRemoveAgentOnConfirm === "function") pendingRemoveAgentOnConfirm();
+    });
+    actions.appendChild(confirmBtn);
+
+    dialog.appendChild(actions);
+    modal.appendChild(dialog);
+    document.body.appendChild(modal);
+    removeAgentConfirmModalEl = modal;
+  }
+
+  /**
+   * Open the remove-agent confirm modal. `onConfirm` is called (and only
+   * called) if the user clicks Confirm — the caller is responsible for
+   * posting removeAgent.
+   */
+  function openRemoveAgentConfirmModal(agentId, agentName, onConfirm) {
+    buildRemoveAgentConfirmModal();
+    pendingRemoveAgentId = agentId;
+    pendingRemoveAgentOnConfirm = onConfirm;
+    removeAgentConfirmTitleEl.textContent = `Remove ${agentName || agentId}?`;
+    removeAgentConfirmMessageEl.textContent =
+      `This deletes ${agentName || agentId}'s agent file and its routing entry from this project. This can't be undone from here.`;
+    removeAgentConfirmModalEl.removeAttribute("hidden");
+  }
+
   /**
    * Show the in-panel "switch theme" confirmation. Called when the host
    * responds to SELECT_THEME with CONFIRM_THEME_SWITCH instead of switching

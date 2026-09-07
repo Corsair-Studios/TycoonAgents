@@ -79,7 +79,19 @@ test("_resolveReviewAgentId returns 'uefn-auditor' when only uefn-auditor.md is 
   try {
     writeAgentFile(root, "uefn-auditor");
     writeAgentFile(root, "verse-expert");
+    fs.writeFileSync(path.join(root, "Project.uproject"), "{}");
     assert.equal(callResolveReviewAgentId(root), "uefn-auditor");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_resolveReviewAgentId returns undefined when uefn-auditor.md is installed but the project has no UEFN signal", () => {
+  const root = tmpRoot();
+  try {
+    writeAgentFile(root, "uefn-auditor");
+    writeAgentFile(root, "verse-expert");
+    assert.equal(callResolveReviewAgentId(root), undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

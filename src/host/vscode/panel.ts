@@ -5774,22 +5774,26 @@ export class TycoonPanel {
   /**
    * Resolve which agent actually covers the "Review pass" doctrine section:
    * `reviewer` when its `.md` file is installed, else `uefn-auditor` when
-   * installed (a UEFN project's Verse Auditor), else `undefined` when
-   * neither is present. MUST be computed from the FULL installed agent set
-   * (via {@link loadAgentRoster}, same as `_buildDoctrineRoster`) rather than
-   * from `_buildDoctrineRoster`'s own `rows` output — that output has
-   * `tier: "reviewer"` agents deliberately excluded (see its doc comment),
-   * so `reviewer` can never be proven installed from `rows` alone. Passed as
-   * `renderDelegationDoctrine`'s `reviewAgentId` argument so the "Review
-   * pass" section names the real installed agent instead of falling back to
-   * a generic phrase whenever `reviewer` is installed on a non-UEFN project.
+   * installed AND this project is detected as UEFN (a UEFN project's Verse
+   * Auditor), else `undefined` when neither applies. MUST be computed from
+   * the FULL installed agent set (via {@link loadAgentRoster}, same as
+   * `_buildDoctrineRoster`) rather than from `_buildDoctrineRoster`'s own
+   * `rows` output — that output has `tier: "reviewer"` agents deliberately
+   * excluded (see its doc comment), so `reviewer` can never be proven
+   * installed from `rows` alone. The UEFN check (via {@link
+   * detectUefnProject}) prevents a non-UEFN project that merely has the
+   * UEFN pack installed from being routed to `uefn-auditor` for review.
+   * Passed as `renderDelegationDoctrine`'s `reviewAgentId` argument so the
+   * "Review pass" section names the real installed agent instead of falling
+   * back to a generic phrase whenever `reviewer` is installed on a
+   * non-UEFN project.
    */
   private _resolveReviewAgentId(root: string): string | undefined {
     const agentsDir = path.join(root, ".claude", "agents");
     const rosterFiles = loadAgentRoster(agentsDir);
     const hasId = (id: string) => rosterFiles.some((a) => a.id === id);
     if (hasId("reviewer")) return "reviewer";
-    if (hasId("uefn-auditor")) return "uefn-auditor";
+    if (hasId("uefn-auditor") && detectUefnProject(root).detected) return "uefn-auditor";
     return undefined;
   }
 

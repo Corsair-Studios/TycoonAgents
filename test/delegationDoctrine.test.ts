@@ -235,13 +235,13 @@ test("renderDelegationDoctrine(mode, false) omits the Review model tiering subse
 // preserve the HUMAN "the user is the final reviewer" phrase untouched.
 // ---------------------------------------------------------------------------
 
-test("Review pass section names uefn-auditor (not a 'reviewer' agent) on a UEFN-shaped roster, and preserves the human 'final reviewer' phrase", () => {
+test("Review pass section names uefn-auditor (not a 'reviewer' agent) on a UEFN-shaped roster when uefn=true, and preserves the human 'final reviewer' phrase", () => {
   const uefnRoster: DoctrineRosterAgent[] = [
     { id: "verse-expert", taskTypes: "Verse device implementation" },
     { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
     { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
   ];
-  const out = renderDelegationDoctrine("flat", true, uefnRoster);
+  const out = renderDelegationDoctrine("flat", true, uefnRoster, undefined, 0, false, true);
   assert.ok(out.includes("uefn-auditor"), "review section must name uefn-auditor on a UEFN roster");
 
   // "The user is the final reviewer" legitimately contains the substring
@@ -284,6 +284,23 @@ test("Review pass section names uefn-auditor via the explicit reviewAgentId argu
   const out = renderDelegationDoctrine("flat", true, roster, "uefn-auditor");
   assert.ok(/the `uefn-auditor` agent/i.test(out), "review section must name uefn-auditor when reviewAgentId='uefn-auditor'");
   assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
+});
+
+test("Review pass section falls back to the generic phrase (not uefn-auditor) when uefn-auditor is installed but the project is NOT detected as UEFN (uefn defaults to false)", () => {
+  const uefnRoster: DoctrineRosterAgent[] = [
+    { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
+    { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
+  ];
+  const out = renderDelegationDoctrine("flat", true, uefnRoster);
+  assert.ok(
+    out.includes("the review agent"),
+    "must fall back to the generic phrase on a non-UEFN project even when uefn-auditor is installed"
+  );
+  assert.equal(
+    out.includes("`uefn-auditor`"),
+    false,
+    "must not name uefn-auditor as the review agent on a non-UEFN project"
+  );
 });
 
 test("Review pass section falls back to a generic phrase (never a dangling id) when reviewAgentId is omitted and rosterAgents has neither reviewer nor uefn-auditor", () => {

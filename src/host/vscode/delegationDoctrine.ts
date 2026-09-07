@@ -197,15 +197,17 @@ function resolveEditId(rows: DoctrineRosterAgent[]): string | undefined {
 
 /**
  * Resolve the roster's review-pass agent id: `reviewer` when present, else
- * `uefn-auditor` when present (the UEFN roster's "Verse Auditor", which
- * REPLACES `reviewer` on a UEFN project), else `undefined` when neither is
- * installed. Mirrors {@link resolveEditId}'s pattern so
+ * `uefn-auditor` when present AND `uefn` is true (the UEFN roster's "Verse
+ * Auditor", which REPLACES `reviewer` on a UEFN project), else `undefined`
+ * when neither applies. `uefn` defaults to `false` so a non-UEFN project
+ * that merely has the UEFN pack installed does not get routed to
+ * `uefn-auditor` for review. Mirrors {@link resolveEditId}'s pattern so
  * {@link renderReviewSection} never hardcodes `reviewer` regardless of what's
  * actually installed for this project.
  */
-function resolveReviewId(rows: DoctrineRosterAgent[]): string | undefined {
+function resolveReviewId(rows: DoctrineRosterAgent[], uefn = false): string | undefined {
   const rowFor = (id: string) => rows.find((r) => r.id === id);
-  return (rowFor("reviewer") ?? rowFor("uefn-auditor"))?.id;
+  return (rowFor("reviewer") ?? (uefn ? rowFor("uefn-auditor") : undefined))?.id;
 }
 
 function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined): string {
@@ -534,9 +536,10 @@ Task-tool prompt spawned you, you are not the orchestrator. Do the work.`;
  */
 function renderReviewSection(
   rosterAgents: DoctrineRosterAgent[] | undefined,
-  reviewAgentId?: string
+  reviewAgentId?: string,
+  uefn = false
 ): string {
-  const reviewId = reviewAgentId ?? resolveReviewId(resolveRosterRows(rosterAgents));
+  const reviewId = reviewAgentId ?? resolveReviewId(resolveRosterRows(rosterAgents), uefn);
   const reviewAgentPhrase = reviewId ? `the \`${reviewId}\` agent` : "the review agent";
   const reviewAgentPhraseCap = reviewId ? `The \`${reviewId}\` agent's` : "The review agent's";
   const reviewAgentPossessive = reviewId ? `the \`${reviewId}\` agent's` : "the review agent's";
@@ -689,6 +692,12 @@ the agent's report claimed.`;
  * `seedProjectPlanEnabledDefault`, a decision made at the panel layer, not
  * here) — callers must read panel.ts's actual on-disk value and pass it in
  * explicitly rather than relying on this function's own default.
+ *
+ * `uefn` (default `false`) is passed through to {@link renderReviewSection}
+ * / {@link resolveReviewId} and only matters when `reviewAgentId` is
+ * omitted: it gates whether an installed `uefn-auditor` may be used as the
+ * review-pass fallback, so a non-UEFN project that merely has the UEFN pack
+ * installed does not get routed to Verse Auditor for review.
  */
 export function renderDelegationDoctrine(
   mode: DelegationMode,
@@ -696,7 +705,8 @@ export function renderDelegationDoctrine(
   rosterAgents?: DoctrineRosterAgent[],
   reviewAgentId?: string,
   sessionJournalEntries = 0,
-  projectPlanEnabled = false
+  projectPlanEnabled = false,
+  uefn = false
 ): string {
   const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
   const parts = [
@@ -707,7 +717,7 @@ export function renderDelegationDoctrine(
     VERIFICATION_SECTION,
   ];
   if (reviewEnabled) {
-    parts.push(renderReviewSection(rosterAgents, reviewAgentId));
+    parts.push(renderReviewSection(rosterAgents, reviewAgentId, uefn));
   }
   if (sessionJournalEntries > 0) {
     parts.push(renderSessionJournalSection(sessionJournalEntries));

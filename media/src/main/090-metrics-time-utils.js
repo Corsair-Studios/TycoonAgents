@@ -86,6 +86,37 @@
     return section;
   }
 
+  /** Floating toast host, created lazily and reused across calls. */
+  let toastHostEl = null;
+  let toastHideTimer = null;
+
+  /**
+   * Show a floating toast near the bottom of the screen. `kind` is "info",
+   * "success" (default-styled) or "error" (uses --status-error). Fades out
+   * on its own after ~2.5s; a new call replaces whatever toast is showing.
+   */
+  function showToast(text, kind) {
+    if (!toastHostEl) {
+      toastHostEl = document.createElement("div");
+      toastHostEl.id = "toast-host";
+      document.body.appendChild(toastHostEl);
+    }
+    if (toastHideTimer) {
+      clearTimeout(toastHideTimer);
+      toastHideTimer = null;
+    }
+    toastHostEl.textContent = text;
+    toastHostEl.className = kind === "error" ? "toast-visible toast-error" : "toast-visible";
+    // Force reflow so re-triggering the animation/opacity transition works
+    // even when a toast is already visible.
+    void toastHostEl.offsetWidth;
+    toastHostEl.classList.add("toast-shown");
+    toastHideTimer = setTimeout(() => {
+      toastHostEl.classList.remove("toast-shown");
+      toastHideTimer = null;
+    }, 2500);
+  }
+
   /** Flash a small "saved ✓" note inside a row element. */
   function flashSaved(rowEl) {
     if (!rowEl) return;

@@ -841,6 +841,32 @@
    * the matching entry from the routing payload's `agents[]`, passed as
    * `routingAgent`; simple density never touches it).
    */
+  /**
+   * Appends the bottom-of-card Remove control (quiet danger link,
+   * right-aligned) and returns the card. Called at every return point of
+   * buildUnifiedAgentCard so Remove always ends up below the keyword/slot/
+   * fallback content regardless of which density/branch built it.
+   */
+  function appendCardRemoveFooter(card, a) {
+    const footer = document.createElement("div");
+    footer.className = "agent-remove-footer";
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "link-button agent-remove-link";
+    removeBtn.textContent = "Remove";
+    removeBtn.dataset.removeAgentId = a.id;
+    removeBtn.addEventListener("click", () => {
+      openRemoveAgentConfirmModal(a.id, a.name, () => {
+        removeBtn.disabled = true;
+        removeBtn.textContent = "Removing…";
+        vscode.postMessage({ type: "removeAgent", id: a.id });
+      });
+    });
+    footer.appendChild(removeBtn);
+    card.appendChild(footer);
+    return card;
+  }
+
   function buildUnifiedAgentCard(a, routingAgent, density, presets, payload, routingDraft, hasDefaults) {
     const m = metricsFor(a.id);
     const card = document.createElement("div");
@@ -939,17 +965,26 @@
       }
     }
 
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "skill-btn skill-btn--remove agent-remove-btn";
-    removeBtn.textContent = "Remove";
-    removeBtn.dataset.removeAgentId = a.id;
-    removeBtn.addEventListener("click", () => {
-      removeBtn.disabled = true;
-      removeBtn.textContent = "Removing…";
-      vscode.postMessage({ type: "removeAgent", id: a.id });
-    });
-    head.appendChild(removeBtn);
+    const originalKeywords = a.keywords || "";
+    // kwInputRef is filled in once the keyword input is built below — the
+    // Save button is created first (head renders above the keyword row) but
+    // both need each other, so a mutable box breaks the ordering dependency.
+    // Declared before cardSaveBtn so the dependency doesn't rely on hoisting.
+    var kwInputRef = {};
+    const cardSaveBtn = document.createElement("button");
+    cardSaveBtn.type = "button";
+    cardSaveBtn.className = "skill-btn settings-btn agent-card-save-btn";
+    cardSaveBtn.textContent = "Save";
+    cardSaveBtn.title = "Save this agent's keywords and routing";
+    const doCardSave = () => {
+      if (kwInputRef.value !== undefined && kwInputRef.value.value !== originalKeywords) {
+        vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInputRef.value.value });
+      }
+      saveRoutingProfile();
+      showToast("Saving…", "info");
+    };
+    cardSaveBtn.addEventListener("click", doCardSave);
+    head.appendChild(cardSaveBtn);
     row.appendChild(head);
 
     // Stats
@@ -999,21 +1034,21 @@
       kwInput.title = "No routing keywords set — routing to this agent is disabled";
       kwInput.style.borderColor = "var(--status-error)";
     }
-    const kwSaveBtn = document.createElement("button");
-    kwSaveBtn.className = "skill-btn settings-btn";
-    kwSaveBtn.textContent = "Save";
-    kwSaveBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInput.value });
+    kwInput.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        doCardSave();
+      }
     });
+    kwInputRef.value = kwInput;
     kwInputWrap.appendChild(kwInput);
-    kwInputWrap.appendChild(kwSaveBtn);
     kwRow.appendChild(kwInputWrap);
     card.appendChild(kwRow);
 
     if (density !== "full") {
       // ── Classic (Claude Code) density: "Use another provider" checkbox
       // (p20-t2). No routing controls render until it's checked. ──
-      if (!routingAgent) return card;
+      if (!routingAgent) return appendCardRemoveFooter(card, a);
       const routeSource = routingAgent.routeSource || routingAgent.provenance || "frontmatter";
       // "default" (inherited from the Default-for-all-agents route) has no
       // explicit per-agent entry, so it must not auto-expand like a real
@@ -1133,7 +1168,7 @@
         card.appendChild(editorWrap);
       }
 
-      return card;
+      return appendCardRemoveFooter(card, a);
     }
 
     // ── Full density: routing slot editor, fallback editor, provenance ──
@@ -1180,7 +1215,7 @@
       nameTd.appendChild(sourceLine);
       routingRow.appendChild(nameTd);
       card.appendChild(routingRow);
-      return card;
+      return appendCardRemoveFooter(card, a);
     }
 
     sourceLine.appendChild(routingSourceChip(routingAgent.source));
@@ -1237,7 +1272,7 @@
     fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
     card.appendChild(fbRow);
 
-    return card;
+    return appendCardRemoveFooter(card, a);
   }
 
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
@@ -1549,7 +1584,10 @@
   }
 
   function saveRoutingProfile() {
-    if (routingSaving) return;
+    if (routingSaving) {
+      showToast("Save already in progress", "info");
+      return;
+    }
     var profile;
     try {
       profile = assembleRoutingProfile();
@@ -1566,6 +1604,7 @@
         check: {},
         write: {},
       };
+      showToast(routingLastResult.errors[0], "error");
       renderRoutingModal();
       return;
     }
@@ -1617,6 +1656,12 @@
     routingSaving = false;
     routingLastResult = msg ? { ok: msg.ok, errors: msg.errors, check: msg.check, write: msg.write } : null;
     if (msg && msg.ok === false) routingSuppressNextRebuild = true;
+    if (msg && msg.ok === false) {
+      var errText = (msg.errors && msg.errors.length) ? msg.errors.join("; ") : "Save failed";
+      showToast(errText, "error");
+    } else if (msg) {
+      showToast("Saved to disk", "success");
+    }
     renderRoutingModal();
     // p17-t4: a successful save can change routing.json's `defaults` slot,
     // which the Settings screen's harness.needsDefaultRoute hint depends on

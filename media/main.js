@@ -1806,6 +1806,84 @@
   /** Target theme id the pending confirm modal would switch to, if confirmed. */
   let pendingThemeSwitchTargetId = "";
 
+  // ── Remove-agent confirm modal (Agents screen card footer) — same
+  // backdrop/dialog/title/message/Cancel-Confirm shape as
+  // buildThemeSwitchConfirmModal above, reused for a different destructive
+  // action (removeAgent) since window.confirm isn't available in webviews. ──
+  let removeAgentConfirmModalEl = null;
+  let removeAgentConfirmMessageEl = null;
+  let removeAgentConfirmTitleEl = null;
+  let pendingRemoveAgentId = "";
+  let pendingRemoveAgentOnConfirm = null;
+
+  function closeRemoveAgentConfirmModal() {
+    if (removeAgentConfirmModalEl) removeAgentConfirmModalEl.setAttribute("hidden", "");
+  }
+
+  function buildRemoveAgentConfirmModal() {
+    if (removeAgentConfirmModalEl) return;
+
+    const modal = document.createElement("div");
+    modal.id = "remove-agent-confirm-modal";
+    modal.setAttribute("hidden", "");
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "remove-agent-confirm-backdrop";
+    backdrop.addEventListener("click", closeRemoveAgentConfirmModal);
+    modal.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.id = "remove-agent-confirm-dialog";
+
+    removeAgentConfirmTitleEl = document.createElement("div");
+    removeAgentConfirmTitleEl.id = "remove-agent-confirm-title";
+    dialog.appendChild(removeAgentConfirmTitleEl);
+
+    removeAgentConfirmMessageEl = document.createElement("p");
+    removeAgentConfirmMessageEl.id = "remove-agent-confirm-message";
+    dialog.appendChild(removeAgentConfirmMessageEl);
+
+    const actions = document.createElement("div");
+    actions.className = "reset-confirm-actions";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "skill-btn settings-btn";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", closeRemoveAgentConfirmModal);
+    actions.appendChild(cancelBtn);
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "skill-btn settings-btn danger-btn";
+    confirmBtn.textContent = "Remove";
+    confirmBtn.addEventListener("click", () => {
+      closeRemoveAgentConfirmModal();
+      if (typeof pendingRemoveAgentOnConfirm === "function") pendingRemoveAgentOnConfirm();
+    });
+    actions.appendChild(confirmBtn);
+
+    dialog.appendChild(actions);
+    modal.appendChild(dialog);
+    document.body.appendChild(modal);
+    removeAgentConfirmModalEl = modal;
+  }
+
+  /**
+   * Open the remove-agent confirm modal. `onConfirm` is called (and only
+   * called) if the user clicks Confirm — the caller is responsible for
+   * posting removeAgent.
+   */
+  function openRemoveAgentConfirmModal(agentId, agentName, onConfirm) {
+    buildRemoveAgentConfirmModal();
+    pendingRemoveAgentId = agentId;
+    pendingRemoveAgentOnConfirm = onConfirm;
+    removeAgentConfirmTitleEl.textContent = `Remove ${agentName || agentId}?`;
+    removeAgentConfirmMessageEl.textContent =
+      `This deletes ${agentName || agentId}'s agent file and its routing entry from this project. This can't be undone from here.`;
+    removeAgentConfirmModalEl.removeAttribute("hidden");
+  }
+
   /**
    * Show the in-panel "switch theme" confirmation. Called when the host
    * responds to SELECT_THEME with CONFIRM_THEME_SWITCH instead of switching
@@ -16052,6 +16130,37 @@
     return section;
   }
 
+  /** Floating toast host, created lazily and reused across calls. */
+  let toastHostEl = null;
+  let toastHideTimer = null;
+
+  /**
+   * Show a floating toast near the bottom of the screen. `kind` is "info",
+   * "success" (default-styled) or "error" (uses --status-error). Fades out
+   * on its own after ~2.5s; a new call replaces whatever toast is showing.
+   */
+  function showToast(text, kind) {
+    if (!toastHostEl) {
+      toastHostEl = document.createElement("div");
+      toastHostEl.id = "toast-host";
+      document.body.appendChild(toastHostEl);
+    }
+    if (toastHideTimer) {
+      clearTimeout(toastHideTimer);
+      toastHideTimer = null;
+    }
+    toastHostEl.textContent = text;
+    toastHostEl.className = kind === "error" ? "toast-visible toast-error" : "toast-visible";
+    // Force reflow so re-triggering the animation/opacity transition works
+    // even when a toast is already visible.
+    void toastHostEl.offsetWidth;
+    toastHostEl.classList.add("toast-shown");
+    toastHideTimer = setTimeout(() => {
+      toastHostEl.classList.remove("toast-shown");
+      toastHideTimer = null;
+    }, 2500);
+  }
+
   /** Flash a small "saved ✓" note inside a row element. */
   function flashSaved(rowEl) {
     if (!rowEl) return;
@@ -18241,6 +18350,32 @@
    * the matching entry from the routing payload's `agents[]`, passed as
    * `routingAgent`; simple density never touches it).
    */
+  /**
+   * Appends the bottom-of-card Remove control (quiet danger link,
+   * right-aligned) and returns the card. Called at every return point of
+   * buildUnifiedAgentCard so Remove always ends up below the keyword/slot/
+   * fallback content regardless of which density/branch built it.
+   */
+  function appendCardRemoveFooter(card, a) {
+    const footer = document.createElement("div");
+    footer.className = "agent-remove-footer";
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "link-button agent-remove-link";
+    removeBtn.textContent = "Remove";
+    removeBtn.dataset.removeAgentId = a.id;
+    removeBtn.addEventListener("click", () => {
+      openRemoveAgentConfirmModal(a.id, a.name, () => {
+        removeBtn.disabled = true;
+        removeBtn.textContent = "Removing…";
+        vscode.postMessage({ type: "removeAgent", id: a.id });
+      });
+    });
+    footer.appendChild(removeBtn);
+    card.appendChild(footer);
+    return card;
+  }
+
   function buildUnifiedAgentCard(a, routingAgent, density, presets, payload, routingDraft, hasDefaults) {
     const m = metricsFor(a.id);
     const card = document.createElement("div");
@@ -18339,17 +18474,26 @@
       }
     }
 
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "skill-btn skill-btn--remove agent-remove-btn";
-    removeBtn.textContent = "Remove";
-    removeBtn.dataset.removeAgentId = a.id;
-    removeBtn.addEventListener("click", () => {
-      removeBtn.disabled = true;
-      removeBtn.textContent = "Removing…";
-      vscode.postMessage({ type: "removeAgent", id: a.id });
-    });
-    head.appendChild(removeBtn);
+    const originalKeywords = a.keywords || "";
+    // kwInputRef is filled in once the keyword input is built below — the
+    // Save button is created first (head renders above the keyword row) but
+    // both need each other, so a mutable box breaks the ordering dependency.
+    // Declared before cardSaveBtn so the dependency doesn't rely on hoisting.
+    var kwInputRef = {};
+    const cardSaveBtn = document.createElement("button");
+    cardSaveBtn.type = "button";
+    cardSaveBtn.className = "skill-btn settings-btn agent-card-save-btn";
+    cardSaveBtn.textContent = "Save";
+    cardSaveBtn.title = "Save this agent's keywords and routing";
+    const doCardSave = () => {
+      if (kwInputRef.value !== undefined && kwInputRef.value.value !== originalKeywords) {
+        vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInputRef.value.value });
+      }
+      saveRoutingProfile();
+      showToast("Saving…", "info");
+    };
+    cardSaveBtn.addEventListener("click", doCardSave);
+    head.appendChild(cardSaveBtn);
     row.appendChild(head);
 
     // Stats
@@ -18399,21 +18543,21 @@
       kwInput.title = "No routing keywords set — routing to this agent is disabled";
       kwInput.style.borderColor = "var(--status-error)";
     }
-    const kwSaveBtn = document.createElement("button");
-    kwSaveBtn.className = "skill-btn settings-btn";
-    kwSaveBtn.textContent = "Save";
-    kwSaveBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "setAgentKeywords", id: a.id, pattern: kwInput.value });
+    kwInput.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        doCardSave();
+      }
     });
+    kwInputRef.value = kwInput;
     kwInputWrap.appendChild(kwInput);
-    kwInputWrap.appendChild(kwSaveBtn);
     kwRow.appendChild(kwInputWrap);
     card.appendChild(kwRow);
 
     if (density !== "full") {
       // ── Classic (Claude Code) density: "Use another provider" checkbox
       // (p20-t2). No routing controls render until it's checked. ──
-      if (!routingAgent) return card;
+      if (!routingAgent) return appendCardRemoveFooter(card, a);
       const routeSource = routingAgent.routeSource || routingAgent.provenance || "frontmatter";
       // "default" (inherited from the Default-for-all-agents route) has no
       // explicit per-agent entry, so it must not auto-expand like a real
@@ -18533,7 +18677,7 @@
         card.appendChild(editorWrap);
       }
 
-      return card;
+      return appendCardRemoveFooter(card, a);
     }
 
     // ── Full density: routing slot editor, fallback editor, provenance ──
@@ -18580,7 +18724,7 @@
       nameTd.appendChild(sourceLine);
       routingRow.appendChild(nameTd);
       card.appendChild(routingRow);
-      return card;
+      return appendCardRemoveFooter(card, a);
     }
 
     sourceLine.appendChild(routingSourceChip(routingAgent.source));
@@ -18637,7 +18781,7 @@
     fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
     card.appendChild(fbRow);
 
-    return card;
+    return appendCardRemoveFooter(card, a);
   }
 
   /** Full re-render of the Routing modal body from lastRoutingPayload + routingDraft. */
@@ -18949,7 +19093,10 @@
   }
 
   function saveRoutingProfile() {
-    if (routingSaving) return;
+    if (routingSaving) {
+      showToast("Save already in progress", "info");
+      return;
+    }
     var profile;
     try {
       profile = assembleRoutingProfile();
@@ -18966,6 +19113,7 @@
         check: {},
         write: {},
       };
+      showToast(routingLastResult.errors[0], "error");
       renderRoutingModal();
       return;
     }
@@ -19017,6 +19165,12 @@
     routingSaving = false;
     routingLastResult = msg ? { ok: msg.ok, errors: msg.errors, check: msg.check, write: msg.write } : null;
     if (msg && msg.ok === false) routingSuppressNextRebuild = true;
+    if (msg && msg.ok === false) {
+      var errText = (msg.errors && msg.errors.length) ? msg.errors.join("; ") : "Save failed";
+      showToast(errText, "error");
+    } else if (msg) {
+      showToast("Saved to disk", "success");
+    }
     renderRoutingModal();
     // p17-t4: a successful save can change routing.json's `defaults` slot,
     // which the Settings screen's harness.needsDefaultRoute hint depends on
