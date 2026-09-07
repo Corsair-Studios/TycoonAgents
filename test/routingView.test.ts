@@ -832,6 +832,38 @@ test('Routing panel: real buildRoutingView payload — every agent row select eq
     assertNoErrors('real routing payload render');
 
     for (const a of payload.agents) {
+      if (a.id === 'orchestrator' || (payload.orchestrator && a.id === payload.orchestrator.id)) {
+        // The orchestrator is not rendered as a `.routing-agent-row` card
+        // (see isOrchestratorRosterEntry in 100-slot-editor-settings.js) —
+        // it's configured by the dedicated "Orchestrator" settings-section
+        // instead (100-slot-editor-settings.js ~1413-1428). That section's
+        // read-only "Session model" card ([data-agent-row="orchestrator"])
+        // only renders once a "settings" payload names the orchestrator
+        // agent, which this test's dispatch doesn't send — but the
+        // full-density slot editor (keyed on harness.effective ===
+        // 'opencode', set above) always renders in that section regardless,
+        // so locate it via its "Orchestrator" <h2> heading instead of the
+        // read-only card, and assert its selects match the payload backend.
+        const orchHeading = Array.from(doc.querySelectorAll('.settings-heading')).find(
+          (h: any) => h.textContent === 'Orchestrator'
+        ) as any;
+        assert.ok(orchHeading, `orchestrator section heading should render; body dump:\\n${doc.body.outerHTML}`);
+        const orchSection = orchHeading.closest('.settings-section');
+        assert.ok(orchSection, 'orchestrator heading should sit in a settings-section');
+        const vendorSel = orchSection!.querySelector('.routing-vendor-select') as any;
+        const transportSel = vendorSel
+          ? (Array.from(orchSection!.querySelectorAll('select')).find(
+              (s: any) => s !== vendorSel && !s.className.includes('routing-model-select')
+            ) as any)
+          : null;
+        assert.ok(vendorSel, `orchestrator section dump:
+${orchSection!.outerHTML}`);
+        assert.ok(transportSel, `orchestrator section dump:
+${orchSection!.outerHTML}`);
+        assert.equal(vendorSel.value, a.backend.vendor, `orchestrator: vendor select should equal payload backend.vendor`);
+        assert.equal(transportSel.value, a.backend.transport, `orchestrator: transport select should equal payload backend.transport`);
+        continue;
+      }
       const row = doc.querySelector(`.routing-agent-row[data-agent-id="${a.id}"]`);
       assert.ok(row, `row should render for agent ${a.id}`);
       const vendorSel = row.querySelector('.routing-vendor-select') as any;
