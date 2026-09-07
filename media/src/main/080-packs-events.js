@@ -825,6 +825,28 @@
     return v ? v.charAt(0).toUpperCase() + v.slice(1) : v;
   }
 
+  /**
+   * Abbreviated model id for narrow columns: Claude models collapse to their
+   * family name (Sonnet/Haiku/Opus/Fable) via modelFamily; foreign models
+   * (e.g. "ollama-choy-cloud/qwen3.8:27b", "openai/gpt-5.4-mini") drop the
+   * vendor prefix before the last "/" and strip any parenthetical, leaving
+   * just the model id (e.g. "qwen3.8:27b", "gpt-5.4-mini"). Callers pair this
+   * with vendorLabelFor/costModelClass for the vendor/billing context, shown
+   * as a muted suffix or title tooltip rather than inline text.
+   * @param {string} model
+   * @returns {string}
+   */
+  function shortModelLabel(model) {
+    if (!model) return "";
+    const family = modelFamily(model);
+    if (family) return family;
+    let s = String(model);
+    const slash = s.lastIndexOf("/");
+    if (slash !== -1) s = s.slice(slash + 1);
+    s = s.replace(/\s*\([^)]*\)\s*/g, "").trim();
+    return s || String(model);
+  }
+
   /** Last CUMULATIVE metrics array received (state.agentMetrics), re-rendered on a timer so live time ticks. Always cumulative — see metricsScope's doc comment. */
   let lastMetrics = [];
 
@@ -1637,6 +1659,7 @@
         const nameEl = document.createElement("span");
         nameEl.className = "delegation-tier-name";
         nameEl.textContent = family;
+        nameEl.title = family;
         tierRow.appendChild(nameEl);
 
         const pct = Math.round((v.tokens / totalTierTokens) * 100);
@@ -1728,9 +1751,17 @@
       table.className = "delegation-agent-table";
       const thead = document.createElement("thead");
       const headRow = document.createElement("tr");
-      for (const label of ["Agent", "Model", "Tasks", "Tokens", "Cost share"]) {
+      const headCols = [
+        { label: "Agent", cls: "col-name" },
+        { label: "Model", cls: "col-model" },
+        { label: "Tasks", cls: "col-tasks" },
+        { label: "Tokens", cls: "col-tokens" },
+        { label: "Cost share", cls: "col-share" },
+      ];
+      for (const { label, cls } of headCols) {
         const th = document.createElement("th");
         th.textContent = label;
+        th.className = cls;
         headRow.appendChild(th);
       }
       thead.appendChild(headRow);
@@ -1743,20 +1774,29 @@
         const nameTd = document.createElement("td");
         nameTd.className = "col-name";
         nameTd.textContent = a.name || a.id;
+        nameTd.title = a.name || a.id;
         tr.appendChild(nameTd);
 
+        // Model cell: abbreviated id (shortModelLabel) keeps the column
+        // narrow — vendor and billing class (subscription/local) move to a
+        // small muted suffix plus a full-text title tooltip, rather than
+        // inline text like "Sonnet 5 (OpenAI, quota)" that used to blow the
+        // column out. Guarded — records without vendor/costModelClass
+        // (older sessions, the orchestrator row) render with no suffix.
         const modelTd = document.createElement("td");
-        modelTd.textContent = a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—";
-        // Vendor / cost-class suffix (label-only, no new layout): shows e.g.
-        // "Sonnet 5 (OpenAI, quota)" for a foreign/subscription backend.
-        // Guarded — records without these fields (older sessions, or the
-        // orchestrator row) render exactly as before.
+        modelTd.className = "col-model";
+        const fullModelLabel = a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—";
+        modelTd.textContent = a.model ? shortModelLabel(a.model) : "—";
         const modelVendor = a.vendor && a.vendor !== "anthropic" ? vendorLabelFor(a.vendor) : null;
         const modelCostTag = a.costModelClass === "subscription" ? "quota" : a.costModelClass === "local" ? "local" : null;
-        if (modelVendor || modelCostTag) {
-          const extras = [modelVendor, modelCostTag].filter(Boolean).join(", ");
-          modelTd.textContent += ` (${extras})`;
+        const modelExtras = [modelVendor, modelCostTag].filter(Boolean);
+        if (modelExtras.length) {
+          const suffix = document.createElement("span");
+          suffix.className = "delegation-model-suffix";
+          suffix.textContent = ` (${modelExtras.join(", ")})`;
+          modelTd.appendChild(suffix);
         }
+        modelTd.title = modelExtras.length ? `${fullModelLabel} (${modelExtras.join(", ")})` : fullModelLabel;
         tr.appendChild(modelTd);
 
         const tasksTd = document.createElement("td");
@@ -1770,6 +1810,7 @@
         tr.appendChild(tokensTd);
 
         const shareTd = document.createElement("td");
+        shareTd.className = "col-share";
         const cost = estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass);
         shareTd.textContent = cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
         tr.appendChild(shareTd);
