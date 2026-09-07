@@ -64,7 +64,7 @@ Read the project's `CLAUDE.md` in full, with line numbers, and check for:
 2. **Duplicated delegation rules.** Look for the same rule or sentence
    appearing more than once — inside `CLAUDE.md` alone, and across
    `CLAUDE.md` + `.claude/agents/*.md`. Known repeat offenders to check by
-   name: the "~5x cheaper" claim, the "NEVER use Grep or Glob directly"
+   name: the "~40x cheaper" claim, the "NEVER use Grep or Glob directly"
    rule, and the "What You Can/Cannot Do Directly" bullet lists. Record every
    occurrence with its file and line number. Distinguish *load-bearing*
    repetition (the same mandatory rule reinforced inside a single block,
@@ -115,6 +115,17 @@ Flag, per agent, any of:
 - **referenced nowhere** — an agent file that exists but isn't mentioned in
   any routing table in `CLAUDE.md` (may be intentional, e.g. a fallback or
   coordinator role — note it, don't assume it's a bug).
+- **missing `## Report Format` section** (p21-t8) — check whether the file
+  contains a heading matching `## Report Format` (case-insensitive,
+  whitespace-tolerant). If none is present, flag the file by name in this
+  finding. This is a **read-only check**: never add, edit, or reword this
+  section in any agent file — list the file names that lack it in the
+  sanitized report and let the user (or a coding-specialist task they
+  approve) add it. List every offending filename; don't just count them.
+  A deterministic helper for this specific check, `findAgentsMissingReportFormat`
+  in `checkReportFormat.mjs` (same directory as this file), is available if
+  you want to run it instead of eyeballing headings — it only reads files
+  and returns filenames, it never writes.
 
 Do **not** flag large agent files as bloat by size alone — a big file that
 carries genuine reference/domain knowledge (API syntax, error catalogs,
@@ -134,10 +145,8 @@ that restates, verbatim, content explained in full later in the same file).
   Report server names only; never print token/secret values found in this
   file (see Step 4).
 - **`.claude/settings.local.json`** — confirm the hooks TycoonAgents relies
-  on are present and wired (agent-activity logger, team-idle/completion hooks
-  per `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`; the session-journal writer is
-  expected only when `sessionJournalEntries` is greater than 0 in
-  `.claude/tycoon/execution.json` — absent otherwise is not a finding).
+  on are present and wired (session-journal writer, agent-activity logger,
+  team-idle/completion hooks per `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`).
   Note any hook entry that references a script path that doesn't exist on
   disk.
 

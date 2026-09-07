@@ -905,6 +905,11 @@ export class TycoonPanel {
     // was only ever copied once at install time.
     this._ensureProjectPlanSkillFresh();
 
+    // Auto-heal the always-on core skills (tycoon-ready-test,
+    // tycoon-diagnose) once per panel open for any project that has already
+    // run Install/Repair — see _ensureCoreSkillsFresh doc comment. Unlike
+    // project-plan these ship unconditionally, no opt-in flag.
+    this._ensureCoreSkillsFresh();
 
     // Auto-heal stale pack content (skills, commands, agent .md files) for
     // every pack this project already has installed, once per panel open
@@ -5406,6 +5411,39 @@ export class TycoonPanel {
     }
   }
 
+  /** Core skill ids shipped with every install, unconditionally (no pack
+   * membership, no opt-in checkbox) — unlike `project-plan`, which only
+   * lands when the Project Plan feature is enabled. Shared by
+   * `_ensureCoreSkillsFresh` (panel-open auto-heal) and `_handleInstallHooks`
+   * (explicit Install/Repair). */
+  private static readonly CORE_SKILL_IDS: readonly string[] = ["tycoon-ready-test", "tycoon-diagnose"];
+
+  /**
+   * Stage the always-on core skills (`tycoon-ready-test`, `tycoon-diagnose`)
+   * into `.claude/skills/<id>` via `_stageSkillTree`'s content-diff copy —
+   * same convention `_ensureProjectPlanSkillFresh` uses, except these two
+   * ship on EVERY install (no `projectPlanEnabled`-style opt-in flag), so
+   * the only gate is `_hooksInstalledForRoot` as the consent proxy: a
+   * project that never ran TycoonAgents' own Install/Repair is left
+   * untouched, but any project that has is kept current on every panel
+   * open (extension update, or a locally-drifted copy). Never throws.
+   */
+  private _ensureCoreSkillsFresh(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      if (!this._hooksInstalledForRoot(root)) return;
+      for (const skillId of TycoonPanel.CORE_SKILL_IDS) {
+        const { failed } = this._stageSkillTree(skillId, root);
+        if (failed.length > 0) {
+          console.error(`TycoonAgents: _ensureCoreSkillsFresh had copy failures for ${skillId}:`, failed);
+        }
+      }
+    } catch (e) {
+      console.error("TycoonAgents: _ensureCoreSkillsFresh failed:", e);
+    }
+  }
+
   /** The running extension's own `package.json` version, or `null` if it can't be read. Shared by `_handleGenerateDiagnostic` and `_ensureInstalledPacksFresh`. */
   private _currentExtensionVersion(): string | null {
     try {
@@ -5915,6 +5953,23 @@ export class TycoonPanel {
       // file just written above. Best-effort — internally try/caught, never
       // fails the hook install.
       this._ensureAgentKeywordsSeeded();
+
+      // 6c. Stage the always-on core skills (tycoon-ready-test,
+      // tycoon-diagnose) — same content-diff copy _ensureCoreSkillsFresh
+      // uses on later panel opens, run here too so a fresh Install/Repair
+      // has them immediately rather than waiting for the next panel open.
+      // Best-effort: a failure here must never fail the (already-successful)
+      // hook install.
+      for (const skillId of TycoonPanel.CORE_SKILL_IDS) {
+        try {
+          const { failed } = this._stageSkillTree(skillId, root);
+          if (failed.length > 0) {
+            console.error(`TycoonAgents: _handleInstallHooks core skill stage failed for ${skillId}:`, failed);
+          }
+        } catch (e) {
+          console.error(`TycoonAgents: _handleInstallHooks core skill stage threw for ${skillId}:`, e);
+        }
+      }
 
       // 7. Team Lead Mode (Phase 1) wiring — same `.claude` dir the hook install
       // just wrote into. A CLAUDE.md write failure is a USER-OWNED-file risk,

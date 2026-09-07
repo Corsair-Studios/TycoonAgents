@@ -375,5 +375,72 @@ export function installHook(targetDir, opts = {}) {
 
   const refreshed = refreshRuntimeHookCopies(absTarget);
 
-  return { settingsPath, changed, hookCommand, refreshed };
+  const skillsStaged = stageCoreSkills(absTarget);
+
+  return { settingsPath, changed, hookCommand, refreshed, skillsStaged };
+}
+
+/** Skill ids shipped with every install, unconditionally — same set as
+ * panel.ts's `CORE_SKILL_IDS` / server.mjs's startup auto-heal. */
+const CORE_SKILL_IDS = Object.freeze(['tycoon-ready-test', 'tycoon-diagnose']);
+
+/** Absolute path to this repo's `media/skills/` directory. */
+function mediaSkillsDir() {
+  return path.resolve(__dirname, '..', '..', 'media', 'skills');
+}
+
+/**
+ * Content-diff recursive copy of `media/skills/<skillId>` into
+ * `<targetDir>/.claude/skills/<skillId>` for each of {@link CORE_SKILL_IDS}
+ * — the CLI's `install-hook` analog of panel.ts's `_stageSkillTree` /
+ * server.mjs's `stageSkillTreeStandalone`, kept as a third small copy here
+ * (rather than importing server.mjs, which this module must not depend on)
+ * because `installHook.mjs` is Node-builtins-only and CLI-invokable without
+ * a running server. Never throws — per-file failures are collected and
+ * returned, never overwrite a file whose content already matches.
+ * @param {string} targetDir absolute project directory (already resolved).
+ * @returns {string[]} skill ids that had at least one file written.
+ */
+function stageCoreSkills(targetDir) {
+  const staged = [];
+  for (const skillId of CORE_SKILL_IDS) {
+    const src = path.join(mediaSkillsDir(), skillId);
+    const dest = path.join(targetDir, '.claude', 'skills', skillId);
+    let wrote = false;
+    const copyRecursive = (srcDir, destDir) => {
+      let entries;
+      try {
+        entries = fs.readdirSync(srcDir, { withFileTypes: true });
+      } catch {
+        return; // skill not present in this checkout — best-effort, skip
+      }
+      for (const entry of entries) {
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        if (entry.isDirectory()) {
+          copyRecursive(srcPath, destPath);
+          continue;
+        }
+        try {
+          const srcBuf = fs.readFileSync(srcPath);
+          let same = false;
+          try {
+            same = srcBuf.equals(fs.readFileSync(destPath));
+          } catch {
+            same = false;
+          }
+          if (!same) {
+            fs.mkdirSync(destDir, { recursive: true });
+            fs.copyFileSync(srcPath, destPath);
+            wrote = true;
+          }
+        } catch {
+          /* best-effort per-file; never blocks hook install */
+        }
+      }
+    };
+    copyRecursive(src, dest);
+    if (wrote) staged.push(skillId);
+  }
+  return staged;
 }

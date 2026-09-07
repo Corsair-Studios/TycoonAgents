@@ -312,9 +312,12 @@ export async function runCli(argv) {
         return 0;
       }
 
-      const { settingsPath, changed, refreshed } = installHook(dir);
+      const { settingsPath, changed, refreshed, skillsStaged } = installHook(dir);
       for (const file of refreshed) {
         console.log(`TycoonAgents: refreshed ${file}`);
+      }
+      for (const skillId of skillsStaged ?? []) {
+        console.log(`TycoonAgents: staged skill ${skillId}`);
       }
       console.log(
         changed

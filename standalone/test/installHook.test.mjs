@@ -426,3 +426,46 @@ test('mergeHookIntoSettings: does not mutate the input object', () => {
   mergeHookIntoSettings(input, 'node "/abs/tycoon-claude-hook.cjs"');
   assert.deepEqual(input, snapshot, 'input settings object must not be mutated');
 });
+
+// Core skills ship by default (2026-09-06 decision): install-hook stages
+// tycoon-ready-test and tycoon-diagnose into .claude/skills/<id>,
+// byte-identical to media/skills/<id>, with no opt-in flag required.
+const REPO_ROOT = path.resolve(path.dirname(defaultHookScriptPath()), '..');
+const CORE_SKILL_IDS = ['tycoon-ready-test', 'tycoon-diagnose'];
+
+test('installHook: stages both core skills byte-identically and reports them in skillsStaged', () => {
+  const dir = mkTempDir();
+  try {
+    const result = installHook(dir);
+    assert.deepEqual([...result.skillsStaged].sort(), [...CORE_SKILL_IDS].sort());
+
+    for (const skillId of CORE_SKILL_IDS) {
+      const srcDir = path.join(REPO_ROOT, 'media', 'skills', skillId);
+      const destDir = path.join(dir, '.claude', 'skills', skillId);
+      const shippedFiles = fs.readdirSync(srcDir, { withFileTypes: true }).filter((e) => e.isFile());
+      assert.ok(shippedFiles.length > 0, `sanity: media/skills/${skillId} must have at least one file`);
+      for (const entry of shippedFiles) {
+        const srcPath = path.join(srcDir, entry.name);
+        const destPath = path.join(destDir, entry.name);
+        assert.ok(fs.existsSync(destPath), `${skillId}/${entry.name} must be staged`);
+        assert.ok(
+          fs.readFileSync(srcPath).equals(fs.readFileSync(destPath)),
+          `${skillId}/${entry.name} must match shipped content byte-for-byte`,
+        );
+      }
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('installHook: second call reports no core skills staged (already current)', () => {
+  const dir = mkTempDir();
+  try {
+    installHook(dir);
+    const second = installHook(dir);
+    assert.deepEqual(second.skillsStaged, [], 'idempotent re-run should stage nothing new');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

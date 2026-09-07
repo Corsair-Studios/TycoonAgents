@@ -3787,6 +3787,28 @@ export async function startServer({
   // CURRENT call's primary root, never a stale prior instance's — same
   // posture as themeStore/themeImagesRootDir below.
   primaryProjectRoot = primary.root;
+
+  // Auto-heal the always-on core skills (tycoon-ready-test, tycoon-diagnose)
+  // for every resolved root that already has TycoonAgents hooks installed —
+  // standalone analog of panel.ts's _ensureCoreSkillsFresh, run once at
+  // server startup instead of "on panel open" (this host has no panel-open
+  // event). Same content-diff copy via stageSkillTreeStandalone; ships
+  // unconditionally, no project-plan-style opt-in flag. Best-effort: never
+  // blocks server startup.
+  for (const { root } of roots) {
+    try {
+      if (!hooksInstalledForRootStandalone(root)) continue;
+      for (const skillId of ['tycoon-ready-test', 'tycoon-diagnose']) {
+        const { failed } = stageSkillTreeStandalone(skillId, root);
+        if (failed.length > 0) {
+          console.error(`[tycoonagents-standalone] core skill auto-heal failed for ${skillId} in ${root}:`, failed);
+        }
+      }
+    } catch (err) {
+      console.error(`[tycoonagents-standalone] core skill auto-heal failed for ${root}:`, err);
+    }
+  }
+
   try {
     startupProviderId = resolveProviderId({ env, projectDir: primary.root });
   } catch (err) {

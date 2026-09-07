@@ -73,6 +73,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 - **UEFN pack.** Skills that understand Verse syntax and write Verse code, project/LSP checks, and the `uefn-auditor`/`verse-expert` agents. Pair it with Trashbyrd's UEFN Power Tools MCP for live access to an open UEFN level.
 - **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
 - **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
+- **Ready test & diagnose, by default.** The `tycoon-ready-test` skill (spawns every configured agent in parallel and verifies they light up in the visualization) and `tycoon-diagnose` skill (AI-reasoned audit of this project's own delegation/routing config) both ship in the VSIX and land in `.claude/skills/` on every Install/Repair — no separate opt-in.
 
 ## The layer on top: the tycoon visualization
 

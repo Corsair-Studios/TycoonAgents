@@ -80,5 +80,11 @@
     "name": "Tycoon Diagnose",
     "description": "Deep, AI-reasoned diagnosis of this project's own TycoonAgents/Claude Code config — CLAUDE.md managed blocks, .claude/agents consistency, keyword routing, MCP servers, and hooks — producing a sanitized Markdown report you can review and send to the maintainer. Makes no network calls.",
     "summary": "Diagnoses this project's own TycoonAgents/Claude Code configuration, with no network calls."
+  },
+  {
+    "id": "tycoon-ready-test",
+    "name": "Tycoon Ready Test",
+    "description": "Runs the TycoonAgents ready test — spawns every configured agent in parallel via the Task tool and verifies they light up in the TycoonAgents agent visualization, exposing delegation/routing problems.",
+    "summary": "Spawns every configured agent in parallel and verifies they light up in the agent visualization."
   }
 ]
