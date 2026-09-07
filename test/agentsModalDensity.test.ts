@@ -666,6 +666,153 @@ for (const harnessEffective of ["claude", "opencode"]) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Subscription/MCP guidance notice (2026-09-07): buildSubscriptionMcpNotice
+// in 100-slot-editor-settings.js, appended under the cost-class select.
+// ---------------------------------------------------------------------------
+
+function subscriptionRoutingPayloadFixture(vendor: string, costModelClass: string) {
+  const base = routingPayloadFixture();
+  return {
+    ...base,
+    agents: [
+      {
+        id: "coding-specialist",
+        name: "coding-specialist",
+        backend: { vendor, transport: "claude-native", model: "gpt-5", costModelClass },
+        source: "explicit",
+      },
+    ],
+    presets: { vendors: ["anthropic", "openai"], models: [] },
+  };
+}
+
+test("Subscription notice: openai vendor + subscription cost class renders the notice with agent id and OpenAI in the textarea", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: agentsPayload("opencode") });
+  dispatch({ type: "routing", payload: subscriptionRoutingPayloadFixture("openai", "subscription") });
+
+  const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+  assert.ok(card, "coding-specialist card should render");
+  const notice = card.querySelector(".routing-subscription-notice");
+  assert.ok(notice, "expected a subscription notice to render");
+  assert.equal(notice.hidden, false, "notice should be visible for openai + subscription");
+
+  const textarea = notice.querySelector(".routing-subscription-notice-textarea");
+  assert.ok(textarea, "notice should include a textarea");
+  assert.match(textarea.value, /coding-specialist/, `expected the agent id in the prompt, got: "${textarea.value}"`);
+  assert.match(textarea.value, /OpenAI/, `expected "OpenAI" in the prompt, got: "${textarea.value}"`);
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Subscription notice: anthropic vendor + subscription cost class renders no notice", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: agentsPayload("opencode") });
+  dispatch({ type: "routing", payload: subscriptionRoutingPayloadFixture("anthropic", "subscription") });
+
+  const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+  assert.ok(card, "coding-specialist card should render");
+  const notice = card.querySelector(".routing-subscription-notice");
+  assert.ok(notice, "the notice element still renders (built per slot)");
+  assert.equal(notice.hidden, true, "notice must stay hidden for anthropic + subscription");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Subscription notice: switching cost class to metered hides it", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: agentsPayload("opencode") });
+  dispatch({ type: "routing", payload: subscriptionRoutingPayloadFixture("openai", "subscription") });
+
+  const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+  assert.ok(card, "coding-specialist card should render");
+  const notice = card.querySelector(".routing-subscription-notice");
+  assert.equal(notice.hidden, false, "notice should start visible");
+
+  const costSelect = card.querySelector('select[data-field-key$=".costModelClass"]') as any;
+  assert.ok(costSelect, "cost class select should render");
+  costSelect.value = "metered";
+  costSelect.dispatchEvent(new (doc.defaultView as any).Event("change", { bubbles: true }));
+
+  assert.equal(notice.hidden, true, "notice must hide once cost class switches to metered");
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+function mcpRoutingPayloadFixture(vendor: string) {
+  const base = routingPayloadFixture();
+  return {
+    ...base,
+    agents: [
+      {
+        id: "coding-specialist",
+        name: "coding-specialist",
+        backend: { vendor, transport: "mcp", model: "gpt-5", costModelClass: "metered" },
+        source: "explicit",
+      },
+    ],
+    presets: { vendors: ["anthropic", "openai"], models: [] },
+  };
+}
+
+test("Subscription notice: mcp transport with no vendor renders a generic notice with no double spaces or 'undefined'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: agentsPayload("opencode") });
+  dispatch({ type: "routing", payload: mcpRoutingPayloadFixture("") });
+
+  const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+  assert.ok(card, "coding-specialist card should render");
+  const notice = card.querySelector(".routing-subscription-notice");
+  assert.ok(notice, "expected a subscription notice to render");
+  assert.equal(notice.hidden, false, "notice should be visible for mcp transport");
+
+  const body = notice.querySelector(".routing-subscription-notice-body") || notice;
+  assert.doesNotMatch(body.textContent, /undefined/, `body must not contain "undefined", got: "${body.textContent}"`);
+  assert.doesNotMatch(body.textContent, /  /, `body must not contain double spaces, got: "${body.textContent}"`);
+
+  const textarea = notice.querySelector(".routing-subscription-notice-textarea");
+  assert.ok(textarea, "notice should include a textarea");
+  assert.doesNotMatch(textarea.value, /undefined/, `prompt must not contain "undefined", got: "${textarea.value}"`);
+  assert.doesNotMatch(textarea.value, /  /, `prompt must not contain double spaces, got: "${textarea.value}"`);
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+test("Subscription notice: mcp transport with openai vendor renders vendor-specific notice with no double spaces or 'undefined'", () => {
+  const { doc, dispatch, errors } = bootMainJs();
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  menuRoutingBtn.click();
+  dispatch({ type: "settings", payload: agentsPayload("opencode") });
+  dispatch({ type: "routing", payload: mcpRoutingPayloadFixture("openai") });
+
+  const card = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+  assert.ok(card, "coding-specialist card should render");
+  const notice = card.querySelector(".routing-subscription-notice");
+  assert.ok(notice, "expected a subscription notice to render");
+  assert.equal(notice.hidden, false, "notice should be visible for mcp transport");
+
+  const body = notice.querySelector(".routing-subscription-notice-body") || notice;
+  assert.match(body.textContent, /OpenAI/, `expected "OpenAI" in the body, got: "${body.textContent}"`);
+  assert.doesNotMatch(body.textContent, /undefined/, `body must not contain "undefined", got: "${body.textContent}"`);
+  assert.doesNotMatch(body.textContent, /  /, `body must not contain double spaces, got: "${body.textContent}"`);
+
+  const textarea = notice.querySelector(".routing-subscription-notice-textarea");
+  assert.ok(textarea, "notice should include a textarea");
+  assert.doesNotMatch(textarea.value, /undefined/, `prompt must not contain "undefined", got: "${textarea.value}"`);
+  assert.doesNotMatch(textarea.value, /  /, `prompt must not contain double spaces, got: "${textarea.value}"`);
+
+  assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
 test("Classic density: orchestrator card shows the OpenCode-only routing note", () => {
   const { doc, dispatch, errors } = bootMainJs();
   openClassicAgentsModal(doc, dispatch);

@@ -17522,7 +17522,158 @@
    */
 // Part: 100-slot-editor-settings
 // Slot editor field builders and settings screen wiring.
-  function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix) {
+  /** "openai" -> "OpenAI", "google" -> "Google", else capitalized vendor id. */
+  function subscriptionNoticeVendorLabel(vendor) {
+    var v = String(vendor || "");
+    if (v.toLowerCase() === "openai") return "OpenAI";
+    if (v.toLowerCase() === "google") return "Google";
+    return v ? v.charAt(0).toUpperCase() + v.slice(1) : v;
+  }
+
+  /** The CLI a vendor's subscription is bridged through: Codex/Gemini for the two named vendors, else "<Vendor>". */
+  function subscriptionNoticeCliName(vendor) {
+    var v = String(vendor || "").toLowerCase();
+    if (v === "openai") return "Codex";
+    if (v === "google") return "Gemini";
+    return subscriptionNoticeVendorLabel(vendor);
+  }
+
+  /**
+   * Inline guidance notice for the slot editor (2026-09-07): a routing form
+   * can pick vendor + cost class "subscription", or transport "mcp", but
+   * this form has no way to create the vendor-CLI-as-MCP-server bridge and
+   * hand-written backend: block those actually require (see
+   * .claude/agents/codex-reviewer.md for the shape) — Save would otherwise
+   * silently write a routing entry that can never run. Shown directly under
+   * the cost-class select; dismissible per render until a relevant field
+   * changes. Returns { el, refresh } — `refresh` re-evaluates visibility and
+   * content and is wired to bubbling input/change events on the slot's own
+   * fields (and, via editorWrap/card-level wiring at call sites, its
+   * fallback chain's fields too) so the notice stays live without a full
+   * modal rebuild.
+   * @param {object} slot
+   * @param {{id:string,name:string}|undefined} agentInfo
+   */
+  function buildSubscriptionMcpNotice(slot, agentInfo) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-subscription-notice";
+    wrap.hidden = true;
+
+    var dismissed = false;
+
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "routing-subscription-notice-close";
+    closeBtn.setAttribute("aria-label", "Dismiss");
+    closeBtn.innerHTML = "&times;";
+    closeBtn.addEventListener("click", function () {
+      dismissed = true;
+      wrap.hidden = true;
+    });
+    wrap.appendChild(closeBtn);
+
+    var titleEl = document.createElement("p");
+    titleEl.className = "routing-subscription-notice-title";
+    titleEl.textContent = "Subscription providers are set up in chat, not here.";
+    wrap.appendChild(titleEl);
+
+    var bodyEl = document.createElement("p");
+    bodyEl.className = "routing-subscription-notice-body";
+    wrap.appendChild(bodyEl);
+
+    var textarea = document.createElement("textarea");
+    textarea.className = "routing-subscription-notice-textarea";
+    textarea.rows = 3;
+    textarea.readOnly = true;
+    wrap.appendChild(textarea);
+
+    var copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "skill-btn settings-btn routing-subscription-notice-copy";
+    copyBtn.textContent = "Copy request";
+    copyBtn.addEventListener("click", function () {
+      var text = textarea.value;
+      var done = function () {
+        var prevText = copyBtn.textContent;
+        copyBtn.textContent = "Copied";
+        setTimeout(function () { copyBtn.textContent = prevText; }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          textarea.select();
+          try { document.execCommand("copy"); } catch (e) { /* best effort */ }
+          done();
+        });
+      } else {
+        textarea.select();
+        try { document.execCommand("copy"); } catch (e) { /* best effort */ }
+        done();
+      }
+    });
+    wrap.appendChild(copyBtn);
+
+    function shouldShow() {
+      var vendor = String(slot.vendor || "").toLowerCase();
+      var subscriptionMismatch = slot.costModelClass === "subscription" && !!vendor && vendor !== "anthropic" && vendor !== "opencode";
+      var mcpWithoutBackend = slot.transport === "mcp";
+      return subscriptionMismatch || mcpWithoutBackend;
+    }
+
+    function buildPrompt() {
+      var vendor = slot.vendor || "";
+      var vendorLabel = subscriptionNoticeVendorLabel(vendor);
+      var cli = subscriptionNoticeCliName(vendor);
+      var model = slot.model || "its default model";
+      var agentName = (agentInfo && agentInfo.name) || "this";
+      var agentId = (agentInfo && agentInfo.id) || "agent";
+      var fallbackText = "Anthropic Sonnet";
+      if (Array.isArray(slot.fallback) && slot.fallback.length && slot.fallback[0]) {
+        var fb = slot.fallback[0];
+        if (fb.vendor || fb.model) {
+          fallbackText = (subscriptionNoticeVendorLabel(fb.vendor) + " " + (fb.model || "")).trim();
+        }
+      }
+      var vendorModel = vendorLabel ? (vendorLabel + " " + model) : (model + " on the right vendor");
+      var subscriptionPhrase = vendorLabel
+        ? "through my " + vendorLabel + " subscription using the " + cli + " CLI's MCP server"
+        : "through my subscription using the vendor CLI's MCP server";
+      return (
+        "Set up the " + agentName + " agent (" + agentId + ") to run on " + vendorModel +
+        " " + subscriptionPhrase + " (like codex-reviewer does), " +
+        "with a hand-written backend block in .claude/agents/" + agentId + ".md, cost class subscription, " +
+        "and fall back to " + fallbackText + " when the provider is unavailable. " +
+        "Keep the agent's keywords and delegation text unchanged."
+      );
+    }
+
+    function render() {
+      var vendorLabel = subscriptionNoticeVendorLabel(slot.vendor);
+      var cli = subscriptionNoticeCliName(slot.vendor);
+      bodyEl.textContent = vendorLabel
+        ? ("A " + vendorLabel + " subscription is reached through the " + cli +
+          " CLI bridged as an MCP server, which this form can't create. Ask your orchestrator to set it up — copy this request:")
+        : ("A subscription provider is reached through its CLI bridged as an MCP server, " +
+          "which this form can't create. Ask your orchestrator to set it up — copy this request:");
+      textarea.value = buildPrompt();
+    }
+
+    function refresh() {
+      dismissed = false;
+      apply();
+    }
+
+    function apply() {
+      var show = shouldShow() && !dismissed;
+      wrap.hidden = !show;
+      if (show) render();
+    }
+
+    apply();
+
+    return { el: wrap, refresh: refresh };
+  }
+
+  function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix, agentInfo) {
     var keyPrefix = fieldKeyPrefix || "";
     var frag = document.createElement("div");
     frag.className = "routing-slot-fields";
@@ -17716,6 +17867,19 @@
     costRow.appendChild(costSel);
     frag.appendChild(costRow);
 
+    // Subscription/MCP guidance notice (2026-09-07): a routing form can pick
+    // vendor + cost class "subscription", or transport "mcp", but this form
+    // has no way to actually wire a vendor CLI (Codex, Gemini, …) bridged as
+    // an MCP server with a hand-written backend: block — see
+    // .claude/agents/codex-reviewer.md for the shape. Warn inline and hand
+    // the user a ready-made request to paste to their orchestrator instead
+    // of letting Save silently produce a routing entry that can't run.
+    var subNotice = buildSubscriptionMcpNotice(slot, agentInfo);
+    frag.appendChild(subNotice.el);
+    frag._refreshSubscriptionNotice = subNotice.refresh;
+    frag.addEventListener("input", subNotice.refresh);
+    frag.addEventListener("change", subNotice.refresh);
+
     // Endpoint + credential env. For openai-compatible / Custom endpoint,
     // endpoint comes first and both fields carry connection-specific labels;
     // other transports only need the credential field.
@@ -17757,7 +17921,7 @@
    * buildSlotEditorFields uses for this slot, used to build each fallback
    * entry's own field keys.
    */
-  function buildFallbackEditor(slot, presets, onStructural, agentKey, fieldKeyPrefix) {
+  function buildFallbackEditor(slot, presets, onStructural, agentKey, fieldKeyPrefix, agentInfo) {
     if (!Array.isArray(slot.fallback)) slot.fallback = [];
     var keyPrefix = fieldKeyPrefix || "";
     var details = document.createElement("details");
@@ -17815,7 +17979,7 @@
       head.appendChild(removeBtn);
 
       item.appendChild(head);
-      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural, keyPrefix + ".fallback[" + idx + "]"));
+      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural, keyPrefix + ".fallback[" + idx + "]", agentInfo));
       list.appendChild(item);
     });
     details.appendChild(list);
@@ -18759,8 +18923,13 @@
           chipLine.appendChild(routedChip);
           editorWrap.appendChild(chipLine);
         }
-        editorWrap.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
+        var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id });
+        editorWrap.appendChild(slotFieldsEl);
         editorWrap.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
+        if (slotFieldsEl._refreshSubscriptionNotice) {
+          editorWrap.addEventListener("input", slotFieldsEl._refreshSubscriptionNotice);
+          editorWrap.addEventListener("change", slotFieldsEl._refreshSubscriptionNotice);
+        }
         card.appendChild(editorWrap);
       }
 
@@ -18857,7 +19026,8 @@
 
     const slotTd = document.createElement("div");
     slotTd.className = "routing-slot-td";
-    slotTd.appendChild(buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id));
+    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id });
+    slotTd.appendChild(fullSlotFieldsEl);
     routingRow.appendChild(slotTd);
 
     card.appendChild(routingRow);
@@ -18867,6 +19037,10 @@
     fbRow.setAttribute("data-agent-id", a.id);
     fbRow.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
     card.appendChild(fbRow);
+    if (fullSlotFieldsEl._refreshSubscriptionNotice) {
+      card.addEventListener("input", fullSlotFieldsEl._refreshSubscriptionNotice);
+      card.addEventListener("change", fullSlotFieldsEl._refreshSubscriptionNotice);
+    }
 
     return appendCardRemoveFooter(card, a);
   }
@@ -18945,8 +19119,13 @@
         orchMeta.appendChild(orchChip);
       }
       orchSection.appendChild(orchMeta);
-      orchSection.appendChild(buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator"));
+      var orchSlotFieldsEl = buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", { id: "orchestrator", name: "Orchestrator" });
+      orchSection.appendChild(orchSlotFieldsEl);
       orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
+      if (orchSlotFieldsEl._refreshSubscriptionNotice) {
+        orchSection.addEventListener("input", orchSlotFieldsEl._refreshSubscriptionNotice);
+        orchSection.addEventListener("change", orchSlotFieldsEl._refreshSubscriptionNotice);
+      }
     }
     if (orchestratorAgent || density === "full") {
       routingContentEl.appendChild(orchSection);
@@ -18962,8 +19141,13 @@
       defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
       defaultsSection.appendChild(defaultsHelp);
       if (!routingDraft.defaults) routingDraft.defaults = {};
-      defaultsSection.appendChild(buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults"));
+      var defaultsSlotFieldsEl = buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults", { id: "defaults", name: "Default for all agents" });
+      defaultsSection.appendChild(defaultsSlotFieldsEl);
       defaultsSection.appendChild(buildFallbackEditor(routingDraft.defaults, presets, renderRoutingModal, "defaults", "defaults"));
+      if (defaultsSlotFieldsEl._refreshSubscriptionNotice) {
+        defaultsSection.addEventListener("input", defaultsSlotFieldsEl._refreshSubscriptionNotice);
+        defaultsSection.addEventListener("change", defaultsSlotFieldsEl._refreshSubscriptionNotice);
+      }
       var clearDefaultsBtn = document.createElement("button");
       clearDefaultsBtn.type = "button";
       clearDefaultsBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";

@@ -6270,6 +6270,69 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 2px;
 }
 
+/* Subscription/MCP guidance notice (2026-09-07): appended under the cost
+   class select whenever the picked vendor/cost-class or transport combo
+   can't actually be wired by this form — see buildSubscriptionMcpNotice in
+   100-slot-editor-settings.js. */
+.routing-subscription-notice {
+  grid-column: 1 / -1;
+  position: relative;
+  margin-top: 4px;
+  padding: 8px 26px 8px 10px;
+  border: 1px solid var(--accent, #7aa2f7);
+  border-radius: 6px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+}
+
+.routing-subscription-notice-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.routing-subscription-notice-body {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.routing-subscription-notice-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  font-family: var(--mono-font, monospace);
+  padding: 6px;
+  resize: vertical;
+  background: var(--surface, #fff);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.routing-subscription-notice-copy {
+  margin-top: 6px;
+}
+
+.routing-subscription-notice-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.routing-subscription-notice-close:hover {
+  color: var(--text);
+}
+
 .routing-error-banner {
   margin: 10px 0;
   padding: 10px 12px;
