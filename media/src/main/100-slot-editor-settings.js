@@ -1467,7 +1467,25 @@
     ((lastSettings && lastSettings.agents) || []).forEach(function (ag) {
       if (!ag.isOrchestrator) settingsAgentsById[ag.id] = ag;
     });
-    var routingAgentList = payload.agents || [];
+    // Exclude the orchestrator from the roster card list: it is configured
+    // by the dedicated slot block above, not by an ordinary agent card.
+    // Match on payload.orchestrator.id (buildRoutingView's authoritative
+    // orchestrator id) plus the literal ids/flags the hosts use elsewhere
+    // (panel.ts _handleGetSettings, server.mjs buildStandaloneSettingsPayload,
+    // removeAgent's "orchestrator"/"coordinator" guard) so a mismatched or
+    // missing orchestrator.id still doesn't leak a duplicate card.
+    var orchestratorRoutingId = payload.orchestrator && payload.orchestrator.id;
+    function isOrchestratorRosterEntry(ag) {
+      if (!ag) return false;
+      if (ag.isOrchestrator) return true;
+      if (ag.id === "orchestrator" || ag.id === "coordinator") return true;
+      if (orchestratorRoutingId && ag.id === orchestratorRoutingId) return true;
+      if (ag.tier === "coordinator" || ag.isCoordinator) return true;
+      return false;
+    }
+    var routingAgentList = (payload.agents || []).filter(function (ag) {
+      return !isOrchestratorRosterEntry(ag);
+    });
     if (!routingAgentList.length) {
       var noAgents = document.createElement("p");
       noAgents.className = "settings-empty";

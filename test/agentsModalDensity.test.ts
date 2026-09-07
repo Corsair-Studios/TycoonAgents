@@ -627,6 +627,45 @@ test("Settings harness section has exactly one 'Open Agents' link, and clicking 
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
+function routingPayloadFixtureWithOrchestrator() {
+  const base = routingPayloadFixture();
+  return {
+    ...base,
+    agents: [
+      {
+        id: "orchestrator",
+        name: "Orchestrator",
+        backend: { vendor: "anthropic", transport: "claude-native", model: "opus", costModelClass: "subscription" },
+        source: "default",
+      },
+      ...base.agents,
+    ],
+  };
+}
+
+for (const harnessEffective of ["claude", "opencode"]) {
+  test(`Agents modal (${harnessEffective} density): orchestrator entry in payload.agents does not duplicate the top orchestrator block as a roster card`, () => {
+    const { doc, dispatch, errors } = bootMainJs();
+    const menuRoutingBtn = doc.getElementById("menu-routing");
+    menuRoutingBtn.click();
+    dispatch({ type: "settings", payload: agentsPayload(harnessEffective) });
+    dispatch({ type: "routing", payload: routingPayloadFixtureWithOrchestrator() });
+
+    const modal = doc.getElementById("routing-modal");
+    assert.ok(modal, "Agents modal should render");
+
+    const orchestratorBlocks = doc.querySelectorAll('[data-agent-row="orchestrator"]');
+    assert.equal(orchestratorBlocks.length, 1, `expected exactly one orchestrator UI block, got ${orchestratorBlocks.length}`);
+
+    const orchestratorCards = [...doc.querySelectorAll(".routing-agent-card")].filter(
+      (c: any) => c.getAttribute("data-agent-id") === "orchestrator",
+    );
+    assert.equal(orchestratorCards.length, 0, `expected no .routing-agent-card for the orchestrator, got ${orchestratorCards.length}`);
+
+    assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+  });
+}
+
 test("Classic density: orchestrator card shows the OpenCode-only routing note", () => {
   const { doc, dispatch, errors } = bootMainJs();
   openClassicAgentsModal(doc, dispatch);

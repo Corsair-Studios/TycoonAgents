@@ -303,22 +303,22 @@ the agent's report claimed.
 ## Review pass (enabled)
 
 Before the orchestrator reports a specialist's task as done, it routes the
-change to the `uefn-auditor` agent for a correctness and quality pass: read the
+change to the review agent for a correctness and quality pass: read the
 diff, check it against the task's intent and acceptance criteria, and flag
 bugs, regressions, or quality issues.
 
-If the `uefn-auditor` agent requires changes, the orchestrator sends them back to the
-original specialist to fix, then re-checks with the `uefn-auditor` agent once more. This
+If the review agent requires changes, the orchestrator sends them back to the
+original specialist to fix, then re-checks with the review agent once more. This
 is a single review gate, not an open-ended loop — after that one round of
 fixes the orchestrator reports the outcome rather than cycling further. The
-review stays a single pass, not a fan-out: if you are the `uefn-auditor` agent,
+review stays a single pass, not a fan-out: if you are the review agent,
 do not spawn further sub-agents. The orchestrator does not start the review
 while writers touching the same files are still in flight.
 
-The `uefn-auditor` agent's pass is a quality assist, not a sign-off: it catches bugs and
+The review agent's pass is a quality assist, not a sign-off: it catches bugs and
 regressions BEFORE the change reaches the user, so the human reviews cleaner
 work. The user is the final reviewer — the orchestrator surfaces the
-reviewed change for the user to approve and never treats the `uefn-auditor` agent's
+reviewed change for the user to approve and never treats the review agent's
 pass as final acceptance.
 
 ### Review model tiering (added 2026-09-06)
