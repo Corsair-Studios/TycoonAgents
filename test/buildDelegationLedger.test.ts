@@ -85,7 +85,7 @@ function row(overrides: Record<string, unknown>) {
 test("buildDelegationLedger: mixed vendors split into metered/subscription/local currencies", () => {
   const rows = [
     row({ id: "coding-specialist", model: "anthropic/sonnet", costModelClass: "metered", tokens: 1_000_000 }),
-    row({ id: "codex-reviewer", model: "openai/gpt-5.4-mini", costModelClass: "subscription", tokens: 500_000 }),
+    row({ id: "codex-reviewer", model: "openai/gpt-6", costModelClass: "subscription", tokens: 500_000 }),
     row({ id: "kimi-reviewer", model: "moonshot/kimi-k2", costModelClass: "local", tokens: 200_000 }),
   ];
   const result = mod.buildDelegationLedger(rows, mod.PRICE_TABLE, null);

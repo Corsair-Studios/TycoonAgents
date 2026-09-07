@@ -208,7 +208,7 @@
       "command": "codex",
       "args": [
         "-c",
-        "model=\"gpt-5.4-mini\"",
+        "model=\"gpt-6\"",
         "-c",
         "model_reasoning_effort=\"low\"",
         "-c",

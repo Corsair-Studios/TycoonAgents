@@ -42,7 +42,7 @@ backend:
   transport: claude-native | mcp | openai-compatible
   mcpServer: string         # required when transport is 'mcp' — id in .mcp.json, e.g. 'codex'
   tools: [string]           # MCP tool names the agent calls, e.g. [codex, codex-reply]
-  model: string             # 'provider/model' form, e.g. openai/gpt-5.4-mini, google/gemini-2.5-pro, moonshot/kimi-k2
+  model: string             # 'provider/model' form, e.g. openai/gpt-6, google/gemini-2.5-pro, moonshot/kimi-k2
   costModelClass: metered | subscription | local
   endpointEnv: string       # required when transport is 'openai-compatible' — env var holding base_url
   apiKeyEnv: string
@@ -115,7 +115,7 @@ backend:
   transport: mcp
   mcpServer: codex
   tools: [codex, codex-reply]
-  model: openai/gpt-5.4-mini
+  model: openai/gpt-6
   costModelClass: subscription
 ---
 
