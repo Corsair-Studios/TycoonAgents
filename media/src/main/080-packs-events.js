@@ -283,6 +283,102 @@
   }
 
   /**
+   * Build an honest "where delegated work ran" ledger from raw agent-metrics
+   * rows, split by cost currency (metered $/token, subscription quota,
+   * local hardware) rather than collapsing everything into one fabricated
+   * percent. Pure function — no DOM.
+   *
+   * @param {Array<{id?:string, vendor?:string, model?:string, costModelClass?:string, tokens?:number, cacheReadTokens?:number}>|undefined} rows delegated (non-orchestrator) agent metric rows
+   * @param {Record<string, {perMtok:number, weight:number}>} pricing PRICE_TABLE
+   * @param {number|null} orchestratorRate resolveOrchestratorPrice(lastMetrics) result
+   * @returns {{
+   *   metered: {usd:number, tokens:number, unknownModels:string[]},
+   *   subscription: {tokens:number},
+   *   local: {tokens:number},
+   *   unknown: {tokens:number, rows:Array<Object>},
+   *   counterfactualUsd: number|null,
+   *   billedUsd: number,
+   *   avoidedUsd: number|null,
+   *   billableTokens: number
+   * }}
+   */
+  function buildDelegationLedger(rows, pricing, orchestratorRate) {
+    const table = pricing || PRICE_TABLE;
+    const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+
+    const metered = { usd: 0, tokens: 0, unknownModels: [] };
+    const subscription = { tokens: 0 };
+    const local = { tokens: 0 };
+    // costModelClass()'s "unknown" outcome (no explicit costModelClass AND
+    // no model string to infer a family from) is genuinely unclassifiable —
+    // it must never be silently priced at DEFAULT_PRICE_KEY's rate as if it
+    // were a metered vendor we just don't have a rate for. Kept out of
+    // metered.usd/tokens and out of billableTokens (so it never leaks into
+    // the counterfactual either).
+    const unknown = { tokens: 0, rows: [] };
+    let billableTokens = 0; // excludes cacheReadTokens (spec 3) and unknown-class rows
+
+    for (const a of list) {
+      const billable = a.tokens ?? 0;
+      const cacheRead = a.cacheReadTokens ?? 0;
+      const totalTokens = billable + cacheRead;
+      const cls = costModelClass(a.model, a.costModelClass);
+
+      if (cls === "subscription") {
+        subscription.tokens += totalTokens;
+        billableTokens += billable;
+      } else if (cls === "local") {
+        local.tokens += totalTokens;
+        billableTokens += billable;
+      } else if (cls === "unknown") {
+        unknown.tokens += totalTokens;
+        unknown.rows.push(a);
+        // Deliberately NOT added to billableTokens: an unclassifiable row
+        // must never inflate the counterfactual either.
+      } else {
+        // metered (explicit "metered", or a model string costModelClass()
+        // could classify by family). Priced from the PASSED-IN `table`, not
+        // the module's PRICE_TABLE global, so a caller (or a test) can
+        // simulate a vendor/model with no published rate.
+        metered.tokens += totalTokens;
+        const key = resolvePriceKey(a.model, cls);
+        const priceRow = table[key] || table[DEFAULT_PRICE_KEY];
+        const price = priceRow ? priceRow.perMtok : null;
+        if (price == null || (billable <= 0 && cacheRead <= 0)) {
+          if (price == null) {
+            const label = a.model || a.vendor || "unknown model";
+            if (metered.unknownModels.indexOf(label) === -1) metered.unknownModels.push(label);
+          }
+        } else {
+          const billableAmt = billable > 0 ? billable : 0;
+          const cacheAmt = cacheRead > 0 ? cacheRead : 0;
+          metered.usd += (billableAmt / 1e6) * price + (cacheAmt / 1e6) * price * 0.1;
+        }
+        billableTokens += billable;
+      }
+    }
+
+    const billedUsd = metered.usd;
+    let counterfactualUsd = null;
+    let avoidedUsd = null;
+    if (orchestratorRate != null) {
+      counterfactualUsd = (billableTokens / 1e6) * orchestratorRate;
+      avoidedUsd = Math.max(0, counterfactualUsd - billedUsd);
+    }
+
+    return {
+      metered,
+      subscription,
+      local,
+      unknown,
+      counterfactualUsd,
+      billedUsd,
+      avoidedUsd,
+      billableTokens,
+    };
+  }
+
+  /**
    * Resolve the orchestrator's blended $/Mtok price from a metrics array.
    * Returns `null` — never a fabricated fallback price — when no
    * orchestrator entry is found or its model is unpriced; the metrics panel
@@ -1541,61 +1637,88 @@
       "All figures below are all time — totals since the last metrics reset, not scoped to the current session. Switch the Metrics tab to \"This session\" for current-session-only numbers.";
     el.appendChild(scopeCaption);
 
-    // ── 1. Hero savings ── how much cheaper the DELEGATED work (every
-    // non-orchestrator agent) was than if the orchestrator's own model had
-    // done all of it. Dimensionless (%) — no absolute $ figures, since the
-    // user is on a subscription where per-token dollars don't apply.
-    // Falls back to an explanatory line when there's no priced delegated
-    // work yet, or when delegating wasn't actually cheaper (never shown as
-    // a zero/negative "saving").
+    // ── 1. Ledger ── delegated work spans different currencies (metered
+    // $/token, subscription quota, local hardware); a single "% avoided"
+    // headline collapsed those into one fabricated number. Replaced
+    // 2026-09-07 with an honest per-currency ledger + counterfactual.
     const orchestratorPrice = resolveOrchestratorPrice(lastMetrics);
-    let actual = 0;
-    let counterfactual = 0;
-    if (orchestratorPrice != null) {
-      for (const a of delegatedAgents) {
-        const billable = a.tokens ?? 0;
-        const cacheRead = a.cacheReadTokens ?? 0;
-        if (!(billable > 0) && !(cacheRead > 0)) continue;
-        const cost = estCostUSDWithCache(billable, cacheRead, a.model, a.costModelClass);
-        if (cost == null) continue;
-        actual += cost;
-        // Counterfactual: what it would have cost had the orchestrator's own
-        // model done this work instead — billable at full rate, cache reads
-        // at 0.1x, same as estCostUSDWithCache's weighting.
-        counterfactual += (billable / 1e6) * orchestratorPrice + (cacheRead / 1e6) * orchestratorPrice * 0.1;
-      }
-    }
+    const ledger = buildDelegationLedger(delegatedAgents, PRICE_TABLE, orchestratorPrice);
+
     const hero = document.createElement("div");
     hero.className = "delegation-hero";
-    if (orchestratorPrice == null) {
-      // Orchestrator's model hasn't been observed yet (or is unpriced) — do
-      // NOT fabricate a baseline price to compute a ratio against. Honest
-      // unknown, not an error: this resolves itself once the orchestrator
-      // completes a task and its model is recorded.
-      const heroLabel = document.createElement("div");
-      heroLabel.className = "delegation-hero-label";
-      heroLabel.textContent = "Savings unavailable — orchestrator model not detected yet.";
-      hero.appendChild(heroLabel);
-    } else if (counterfactual > 0 && actual > 0 && actual < counterfactual) {
-      const savedPct = Math.round((1 - actual / counterfactual) * 100);
-      const heroNum = document.createElement("div");
-      heroNum.className = "delegation-hero-num";
-      heroNum.textContent = `~${savedPct}%`;
-      hero.appendChild(heroNum);
-      const heroLabel = document.createElement("div");
-      heroLabel.className = "delegation-hero-label";
-      heroLabel.textContent = "of token cost avoided by delegating";
-      hero.appendChild(heroLabel);
-      const heroSub = document.createElement("div");
-      heroSub.className = "delegation-hero-sub";
-      heroSub.textContent = "Work runs on cheaper specialist models instead of the orchestrator's model.";
-      hero.appendChild(heroSub);
+
+    const ledgerHeading = document.createElement("div");
+    ledgerHeading.className = "delegation-stats-heading";
+    ledgerHeading.textContent = "Where delegated work ran";
+    hero.appendChild(ledgerHeading);
+
+    const meteredRow = document.createElement("div");
+    meteredRow.className = "delegation-stats-row";
+    if (ledger.metered.tokens > 0) {
+      const unknownCount = ledger.metered.unknownModels.length;
+      const usdPart = unknownCount > 0 && ledger.metered.usd <= 0 ? "rate unknown" : fmtUSD(ledger.metered.usd);
+      meteredRow.textContent = `Metered (API): ${usdPart} · ${fmtTokens(ledger.metered.tokens)} tokens`;
     } else {
-      const heroLabel = document.createElement("div");
-      heroLabel.className = "delegation-hero-label";
-      heroLabel.textContent = "Not enough priced delegated work yet to estimate savings.";
-      hero.appendChild(heroLabel);
+      meteredRow.textContent = "Metered (API): no tokens yet";
     }
+    hero.appendChild(meteredRow);
+    if (ledger.metered.unknownModels.length > 0) {
+      const unknownNote = document.createElement("div");
+      unknownNote.className = "delegation-stats-caption";
+      unknownNote.textContent = `${ledger.metered.unknownModels.length} model${ledger.metered.unknownModels.length === 1 ? "" : "s"} without a rate excluded from the dollar sum (${ledger.metered.unknownModels.join(", ")}).`;
+      hero.appendChild(unknownNote);
+    }
+
+    const subRow = document.createElement("div");
+    subRow.className = "delegation-stats-row";
+    subRow.textContent = `Subscription: ${fmtTokens(ledger.subscription.tokens)} tokens — quota, not billed per token`;
+    hero.appendChild(subRow);
+
+    const localRow = document.createElement("div");
+    localRow.className = "delegation-stats-row";
+    localRow.textContent = `Local: ${fmtTokens(ledger.local.tokens)} tokens — runs on your hardware`;
+    hero.appendChild(localRow);
+
+    if (ledger.unknown.tokens > 0) {
+      const unknownTasks = ledger.unknown.rows.reduce((sum, a) => sum + (a.taskCount ?? 0), 0);
+      const unknownRow = document.createElement("div");
+      unknownRow.className = "delegation-stats-row";
+      unknownRow.textContent = `Unclassified: ${fmtTokens(ledger.unknown.tokens)} tokens (${unknownTasks} task${unknownTasks === 1 ? "" : "s"})`;
+      hero.appendChild(unknownRow);
+    }
+
+    // ── Counterfactual ── what it would have cost to run the same billable
+    // (non-cache-read) delegated tokens on the orchestrator's own model.
+    const counterSection = document.createElement("div");
+    counterSection.className = "delegation-stats-detail";
+    if (ledger.counterfactualUsd == null) {
+      counterSection.textContent = `If all delegated work had run on the orchestrator's model: estimate needs a rate (orchestrator model not detected yet). ${fmtTokens(ledger.billableTokens)} billable tokens delegated so far.`;
+      hero.appendChild(counterSection);
+    } else {
+      counterSection.textContent = `If all delegated work had run on the orchestrator's model: ~${fmtUSD(ledger.counterfactualUsd, false)} (estimate)`;
+      hero.appendChild(counterSection);
+
+      const billedLine = document.createElement("div");
+      billedLine.className = "delegation-stats-detail";
+      billedLine.textContent = `Actually billed for delegated work: ${fmtUSD(ledger.billedUsd, false)}`;
+      hero.appendChild(billedLine);
+
+      const avoidedLine = document.createElement("div");
+      avoidedLine.className = "delegation-stats-detail";
+      avoidedLine.textContent = `Estimated avoided: ~${fmtUSD(ledger.counterfactualUsd, false)} − ${fmtUSD(ledger.billedUsd, false)} ≈ ${fmtUSD(ledger.avoidedUsd, false)}`;
+      hero.appendChild(avoidedLine);
+
+      const caveat = document.createElement("div");
+      caveat.className = "delegation-stats-caption";
+      caveat.textContent = "Subscription and local work is excluded from the billed figure because it is not billed per token; spawn overhead is included in the counterfactual.";
+      hero.appendChild(caveat);
+    }
+
+    const unitNote = document.createElement("div");
+    unitNote.className = "delegation-stats-caption";
+    unitNote.textContent = "Token counts are per vendor tokenizer and are not directly comparable across models.";
+    hero.appendChild(unitNote);
+
     el.appendChild(hero);
 
     // ── Dispatched vs. completed reconciliation ── the orchestrator's

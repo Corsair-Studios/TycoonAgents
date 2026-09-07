@@ -291,7 +291,7 @@ function openDelegationTab(doc: any) {
 // (a) Detected Opus orchestrator -> savings figure still renders as before.
 // ---------------------------------------------------------------------------
 
-test("delegation hero: detected Opus orchestrator renders a priced savings percentage (no regression)", () => {
+test("delegation hero: detected Opus orchestrator renders the honest ledger (counterfactual/billed/avoided, no headline percent)", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, activeMs: 1000, taskCount: 1 },
@@ -300,14 +300,17 @@ test("delegation hero: detected Opus orchestrator renders a priced savings perce
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-  const heroLabel = body.querySelector(".delegation-hero-label");
-  const heroSub = body.querySelector(".delegation-hero-sub");
-
-  assert.ok(heroNum, "a priced Opus orchestrator should render a hero percentage");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  assert.ok(heroLabel && /avoided by delegating/i.test(heroLabel.textContent), "label should describe cost avoided");
-  assert.ok(heroSub && heroSub.textContent.length > 0, "sub-line should render");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "the fabricated headline percent must be gone");
+  const text = String(body.textContent);
+  // Opus counterfactual on 100000 billable tokens: 100000/1e6*10 = $1.00.
+  // Sonnet actual billed: 100000/1e6*4 = $0.40. Avoided: $0.60.
+  assert.match(text, /orchestrator's model.*~\$1\.00/is, `expected a $1.00 counterfactual, got: ${text}`);
+  assert.match(text, /Actually billed.*\$0\.40/is, `expected $0.40 billed, got: ${text}`);
+  assert.match(text, /Estimated avoided.*\$0\.60/is, `expected $0.60 avoided, got: ${text}`);
+  assert.match(text, /Where delegated work ran/i);
+  assert.match(text, /Metered \(API\)/i);
+  assert.match(text, /Subscription:.*quota, not billed per token/is);
+  assert.match(text, /Local:.*runs on your hardware/is);
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -317,7 +320,7 @@ test("delegation hero: detected Opus orchestrator renders a priced savings perce
 //     model (null), the other path resolveOrchestratorPrice floors to null.
 // ---------------------------------------------------------------------------
 
-test("delegation hero: NEGATIVE ANCHOR -- no orchestrator metrics entry -> no percentage, unknown-state text, never 'Opus'", () => {
+test("delegation hero: NEGATIVE ANCHOR -- no orchestrator metrics entry -> no percentage, no counterfactual $ figure, never 'Opus'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
@@ -325,13 +328,10 @@ test("delegation hero: NEGATIVE ANCHOR -- no orchestrator metrics entry -> no pe
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-  const heroLabel = body.querySelector(".delegation-hero-label");
-
-  assert.equal(heroNum, null, "no orchestrator entry must NOT render a percentage figure");
-  assert.ok(heroLabel, "an explanatory label must render instead");
-  assert.match(heroLabel.textContent, /savings unavailable/i, `expected an "unavailable" explanation, got "${heroLabel.textContent}"`);
-  assert.doesNotMatch(String(heroLabel.textContent), /opus/i, "unknown state must never mention Opus (no fabricated fallback price)");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "no orchestrator entry must NOT render a percentage figure");
+  const text = String(body.textContent);
+  assert.match(text, /estimate needs a rate/i, `expected the "estimate needs a rate" unknown state, got: ${text}`);
+  assert.doesNotMatch(text, /opus/i, "unknown state must never mention Opus (no fabricated fallback price)");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -344,11 +344,8 @@ test("delegation hero: NEGATIVE ANCHOR -- orchestrator entry present but model u
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-  const heroLabel = body.querySelector(".delegation-hero-label");
-
-  assert.equal(heroNum, null, "unpriced orchestrator model must NOT render a percentage figure");
-  assert.ok(heroLabel && /savings unavailable/i.test(heroLabel.textContent));
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "unpriced orchestrator model must NOT render a percentage figure");
+  assert.match(String(body.textContent), /estimate needs a rate/i);
   assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -431,14 +428,12 @@ test("delegation hero: modelBreakdown {opus:1000, sonnet:1000} blends to a token
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-
-  assert.ok(heroNum, "a blended, priced modelBreakdown should render a hero percentage");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  assert.equal(pct, 43, `expected the token-weighted blended price (7 $/Mtok) to yield ~43%, got ${pct}%`);
-  assert.ok(pct < 60, "blended 50/50 opus+sonnet must save LESS than the pure-opus 60% baseline");
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "no headline percent should ever render");
+  const text = String(body.textContent);
+  // Blended price 7 $/Mtok: counterfactual = 100000/1e6*7 = $0.70, billed = $0.40, avoided = $0.30.
+  assert.match(text, /orchestrator's model.*~\$0\.70/is, `expected a $0.70 counterfactual, got: ${text}`);
+  assert.match(text, /Estimated avoided.*\$0\.30/is, `expected $0.30 avoided, got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -460,16 +455,12 @@ test("delegation hero: modelBreakdown {} (empty) behaves identically to no model
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-
-  assert.ok(heroNum, "empty modelBreakdown must still fall back to scalar model and render a hero percentage");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  // Same agent numbers as test (a) (model:"opus", tokens:2000 orchestrator /
-  // coding-specialist tokens:100000) with no modelBreakdown yields 60% —
-  // an empty breakdown object must render the exact same figure.
-  assert.equal(pct, 60, `empty modelBreakdown should match the no-breakdown opus baseline of 60%, got ${pct}%`);
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "no headline percent should ever render");
+  const text = String(body.textContent);
+  // Empty breakdown falls back to scalar opus price 10 — same figures as test (a).
+  assert.match(text, /orchestrator's model.*~\$1\.00/is, `expected a $1.00 counterfactual, got: ${text}`);
+  assert.match(text, /Estimated avoided.*\$0\.60/is, `expected $0.60 avoided, got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -500,13 +491,11 @@ test("delegation hero: modelBreakdown with a genuinely unrecognized model prices
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-
-  assert.ok(heroNum, "a modelBreakdown containing an unrecognized-but-metered model should still render a hero percentage");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  assert.equal(pct, 4, `unrecognized model must be priced via DEFAULT_PRICE_KEY and pulled into the blend -- expected 4% (blended 4.1667 $/Mtok), got ${pct}%`);
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "no headline percent should ever render");
+  const text = String(body.textContent);
+  // Blended price 4.1667 $/Mtok: counterfactual = 100000/1e6*4.1667 = $0.42 (rounded), billed = $0.40.
+  assert.match(text, /orchestrator's model.*~\$0\.42/is, `expected a $0.42 counterfactual, got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -537,10 +526,13 @@ test("delegation hero: modelBreakdown of entirely unrecognized models still pric
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-
-  assert.equal(heroNum, null, "DEFAULT_PRICE_KEY (3 $/Mtok) prices the orchestrator cheaper than the sonnet worker (4 $/Mtok), so there is no positive savings percentage to render");
-  assert.match(String(body.textContent), /not enough.*priced delegated work/i, "must render the honest 'not enough priced delegated work' state, not a fabricated figure");
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "no headline percent should ever render");
+  const text = String(body.textContent);
+  // DEFAULT_PRICE_KEY (3 $/Mtok) prices the orchestrator cheaper than the
+  // sonnet worker (4 $/Mtok) -- counterfactual ($0.30) < billed ($0.40), so
+  // avoided must clamp to $0.00 rather than render a negative figure.
+  assert.match(text, /Estimated avoided.*\$0\.00/is, `avoided must clamp to $0.00, got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.doesNotMatch(text, /-\$/, "avoided must never render as a negative dollar figure");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

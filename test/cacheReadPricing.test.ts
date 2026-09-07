@@ -275,19 +275,20 @@ test("metrics table TOKENS column: includes cache-read tokens in the displayed t
 // not at face value, and not ignored entirely.
 // ---------------------------------------------------------------------------
 
-test("delegation hero: cache-read tokens are priced at ~0.1x, not face value or zero", () => {
+test("delegation hero: cache-read tokens are priced at ~0.1x in the Metered billed figure, not face value or zero", () => {
   const { doc, dispatch, errors } = bootMainJs();
   // Orchestrator: opus (10 $/Mtok), no cache reads (isolates the agent side).
   // Delegated agent: sonnet (4 $/Mtok), 0 billable tokens, 1,000,000
-  // cache-read tokens. If cache reads were priced at face value, actual cost
-  // would be 4.0 (== counterfactual 10.0 at the orchestrator price scaled
-  // the same way) -> some savings. If cache reads were ignored (cost=0/null),
-  // no hero renders at all. At the correct 0.1x weighting: actual =
-  // (1e6/1e6)*4*0.1 = 0.4, counterfactual = (1e6/1e6)*10*0.1 = 1.0 ->
-  // savedPct = round((1 - 0.4/1.0)*100) = 60%, IDENTICAL to the pure-billable
-  // opus/sonnet baseline in resolveOrchestratorPrice.test.ts test (a) —
-  // proving cache reads and billable tokens are weighted consistently at the
-  // same relative discount on both sides of the ratio.
+  // cache-read tokens. The 2026-09-07 ledger rewrite replaced the single
+  // hero percentage with a "Where delegated work ran" ledger: the Metered
+  // row's billed $ figure still prices cache reads at 0.1x — face value
+  // would bill $4.00, ignoring them would bill $0.00 — the correct figure
+  // is (1e6/1e6)*4*0.1 = $0.40. The counterfactual/avoided figures now
+  // deliberately EXCLUDE cache-read tokens (billable-tokens-only, see
+  // buildDelegationLedger), so with 0 billable tokens the counterfactual is
+  // $0.00 and avoided clamps to $0.00 — that is the new intentional
+  // behavior, not a regression, and is asserted here too so a future change
+  // can't silently fold cache reads back into the counterfactual.
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     {
@@ -304,13 +305,12 @@ test("delegation hero: cache-read tokens are priced at ~0.1x, not face value or 
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-
-  assert.ok(heroNum, "cache-read-only delegated work must still render a priced hero percentage");
-  assert.match(heroNum.textContent, /^~\d+%$/, `hero num should look like "~NN%", got "${heroNum.textContent}"`);
-  const pct = Number(heroNum.textContent.replace(/[^\d]/g, ""));
-  assert.equal(pct, 60, `cache reads priced at 0.1x on both sides should match the pure-billable 60% baseline, got ${pct}%`);
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "the headline percent was removed 2026-09-07");
+  const text = String(body.textContent);
+  assert.match(text, /Metered \(API\):[^\n]*\$0\.40/i, `expected the Metered row billed at $0.40 (0.1x cache-read pricing), got: ${text}`);
+  assert.match(text, /Actually billed for delegated work:\s*\$0\.40/i, `expected $0.40 billed, got: ${text}`);
+  assert.match(text, /Estimated avoided.*\$0\.00/is, `cache-read-only work is excluded from the counterfactual, so avoided must clamp to $0.00, got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -323,12 +323,10 @@ test("delegation hero: NEGATIVE ANCHOR -- billable=0 and cacheReadTokens=0 is sk
   dispatch({ type: "settings", payload: agentsPayload() });
 
   const body = openDelegationTab(doc);
-  const heroNum = body.querySelector(".delegation-hero-num");
-  const heroLabel = body.querySelector(".delegation-hero-label");
-
-  assert.equal(heroNum, null, "zero billable and zero cache-read tokens must not render a percentage");
-  assert.ok(heroLabel && /not enough priced/i.test(heroLabel.textContent), `expected a "not enough" explanation, got "${heroLabel && heroLabel.textContent}"`);
-  assert.doesNotMatch(String(body.textContent), /nan|infinity/i, "hero body must never leak NaN/Infinity text");
+  assert.equal(body.querySelector(".delegation-hero-num"), null, "zero billable and zero cache-read tokens must not render a percentage");
+  const text = String(body.textContent);
+  assert.match(text, /Metered \(API\): no tokens yet/i, `expected the Metered row to report "no tokens yet", got: ${text}`);
+  assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
