@@ -442,21 +442,47 @@ function appendSessionJournalEntry(projectRoot, promptText, maxEntries, at) {
 // ---------------------------------------------------------------------------
 // Keyword-based agent matching
 // ---------------------------------------------------------------------------
-function matchAgentFromKeywords(searchText, keywordsConfig) {
-  if (!keywordsConfig || !keywordsConfig.agents) return null;
-  const words = new Set(
-    searchText.toLowerCase().replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(Boolean)
+// Word-set builder shared by both call shapes below.
+function wordSetOf(text) {
+  return new Set(
+    String(text || "").toLowerCase().replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(Boolean)
   );
+}
+
+// Backward-compatible single-text form (used by transcript-keyword matching
+// in popMatchedAgent, where there is no description/prompt split) plus a
+// weighted two-part form used by Task attribution: `searchTextOrDescription`
+// is scored as the DESCRIPTION when `promptText` is also supplied, with each
+// description match worth far more than a prompt match (WEIGHT below) so a
+// prompt body that happens to contain another agent's keyword (e.g. "Ready
+// test rerun" containing "test") cannot outscore a description that actually
+// names the right agent's own domain. Prompt matches only add up when the
+// description alone doesn't already decide it, i.e. they can break ties
+// among descriptions with equal (including zero) description-side score, but
+// can never overturn a description match by themselves.
+const DESCRIPTION_WEIGHT = 1000;
+function matchAgentFromKeywords(searchTextOrDescription, keywordsConfig, promptText) {
+  if (!keywordsConfig || !keywordsConfig.agents) return null;
+  const hasSplit = typeof promptText === "string";
+  const descWords = wordSetOf(searchTextOrDescription);
+  const promptWords = hasSplit ? wordSetOf(promptText) : null;
+
   let bestAgent = null, bestScore = 0, bestKeyword = "";
   for (const [agentId, cfg] of Object.entries(keywordsConfig.agents)) {
     if (!cfg.pattern) continue;
-    let score = 0, firstMatch = "";
+    let descScore = 0, promptScore = 0, firstMatch = "";
     for (const kw of cfg.pattern.split("|")) {
-      if (words.has(kw.toLowerCase().trim())) {
-        score++;
+      const norm = kw.toLowerCase().trim();
+      if (!norm) continue;
+      if (descWords.has(norm)) {
+        descScore++;
+        if (!firstMatch) firstMatch = kw;
+      } else if (hasSplit && promptWords.has(norm)) {
+        promptScore++;
         if (!firstMatch) firstMatch = kw;
       }
     }
+    const score = hasSplit ? (descScore * DESCRIPTION_WEIGHT + promptScore) : descScore;
     if (score > bestScore) { bestScore = score; bestAgent = agentId; bestKeyword = firstMatch; }
   }
   return bestScore > 0 ? { agentId: bestAgent, matchedKeyword: bestKeyword } : null;
@@ -474,22 +500,6 @@ function pushActiveAgent(activeAgentFile, entry) {
     stack.push(entry);
     atomicWriteSync(activeAgentFile, JSON.stringify({ version: 1, agentId: entry.agentId, timestamp: entry.timestamp, stack }, null, 2));
   } finally {
-    releaseLock(lockPath);
-  }
-}
-
-// Reset the active-agent stack to empty. Called at the start of each turn
-// (UserPromptSubmit) so that sub-agents left over from an INTERRUPTED turn —
-// which never fire SubagentStop and thus never get popped — don't cause the
-// next turn's orchestrator tool calls to be mis-attributed. In a normal turn
-// the stack is already empty here, so this is a no-op. Best-effort: any error
-// (missing file/dir, lock contention, write failure) is swallowed.
-function clearActiveStack(activeAgentFile) {
-  const lockPath = activeAgentFile + ".lock";
-  if (!acquireLock(lockPath, 5000)) return;
-  try {
-    atomicWriteSync(activeAgentFile, JSON.stringify({ version: 1, agentId: "none", timestamp: Date.now(), stack: [] }, null, 2));
-  } catch { /* best-effort cleanup */ } finally {
     releaseLock(lockPath);
   }
 }
@@ -777,12 +787,17 @@ function peekActiveAgent(activeAgentFile) {
 // A stack entry that never received a matching SubagentStop (interrupted
 // worker, crashed process, denied/abandoned spawn whose lineage kept
 // running, etc.) would otherwise sit on the stack forever, corrupting every
-// later peek/attribution. UserPromptSubmit already resets the whole stack at
-// the start of each turn (see clearActiveStack), so this only guards against
-// mid-turn corruption. Any entry older than this TTL is evicted the next
-// time the stack is read for attribution. No single "normal" worker runtime
-// is authoritative — this is a defensive backstop, not a tuned SLA — so the
-// window is generous on purpose to avoid evicting a merely slow worker.
+// later peek/attribution. UserPromptSubmit used to unconditionally wipe the
+// whole stack for this (clearActiveStack, removed) but that also destroyed
+// entries for subagents still genuinely in flight across a turn boundary —
+// the 2026-09-06 ready-test regression, where 11 of 12 rapid-fire spawns had
+// their SubagentStop fall back to workerId "orchestrator" because an
+// intervening UserPromptSubmit wiped their stack entry first. UserPromptSubmit
+// now calls this TTL-based prune instead, so only entries older than this
+// TTL are evicted and a live entry from an in-flight spawn survives. No
+// single "normal" worker runtime is authoritative — this is a defensive
+// backstop, not a tuned SLA — so the window is generous on purpose to avoid
+// evicting a merely slow worker.
 const ORPHAN_ENTRY_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 // Effective "last activity" instant for TTL purposes: prefer entry.lastSeen
@@ -1355,11 +1370,34 @@ function main(raw) {
       const subagentType = toolInput.subagent_type || "";
       const description = toolInput.description || "";
       const prompt = (toolInput.prompt || "").substring(0, 500);
-      const searchText = (description + " " + prompt).toLowerCase();
 
       let agentId = "unknown";
       let routingMethod = "fallback";
       let matchedKeyword = "";
+
+      // Priority -2 (highest): Task description begins with "<agent-id>:" or
+      // "<agent-id> —"/"<agent-id> -" where agent-id exactly matches an
+      // installed .claude/agents/*.md basename. This is how CLAUDE.md's
+      // delegation table briefs a Task ("uefn-auditor: verse-audit
+      // verse-lint check", "codex-reviewer: codex foreign-review check") and
+      // must win outright, before subagent_type mapping and before keyword
+      // scoring — otherwise a shared keyword elsewhere in the description or
+      // prompt body (e.g. "verse" also matching verse-expert, or "test" in
+      // "Ready test rerun" also matching testing-specialist) can outscore the
+      // agent the description actually names.
+      try {
+        const prefixMatch = description.match(/^\s*([a-z0-9][a-z0-9-]*)\s*(?::|—|-)\s/i);
+        if (prefixMatch) {
+          const prefixId = prefixMatch[1].toLowerCase();
+          if (fs.existsSync(path.join(agentsDir, prefixId + ".md"))) {
+            agentId = prefixId;
+            routingMethod = "description-prefix";
+            matchedKeyword = prefixMatch[1];
+          }
+        }
+      } catch {
+        // Fail open: any prefix-parsing error falls through to normal routing.
+      }
 
       // Priority -1: Explicit "AGENT:<agent-id>" marker anywhere in the FULL prompt
       // (not the 500-char window used for keyword scoring below). Lets the
@@ -1369,7 +1407,7 @@ function main(raw) {
       // wins; unvalidated ids are ignored and fall through to normal routing.
       try {
         const fullPrompt = toolInput.prompt || "";
-        const overrideMatch = fullPrompt.match(/AGENT:\s?([a-z0-9-]+)/i);
+        const overrideMatch = agentId === "unknown" ? fullPrompt.match(/AGENT:\s?([a-z0-9-]+)/i) : null;
         if (overrideMatch) {
           const overrideId = overrideMatch[1].toLowerCase().replace(/\s+/g, "-");
           if (overrideId && fs.existsSync(path.join(agentsDir, overrideId + ".md"))) {
@@ -1413,9 +1451,13 @@ function main(raw) {
         }
       }
 
-      // Priority 2: Keyword matching on description + prompt
+      // Priority 2: Keyword matching, description weighted far above prompt
+      // body (DESCRIPTION_WEIGHT in matchAgentFromKeywords) so a prompt
+      // containing another agent's keyword (e.g. "Ready test rerun"
+      // matching testing-specialist's "test") cannot outscore the
+      // description's own match.
       if (agentId === "unknown" && keywordsConfig) {
-        const m = matchAgentFromKeywords(searchText, keywordsConfig);
+        const m = matchAgentFromKeywords(description, keywordsConfig, prompt);
         if (m) { agentId = m.agentId; matchedKeyword = m.matchedKeyword; routingMethod = "keyword"; }
       }
 
@@ -1810,10 +1852,13 @@ function main(raw) {
   // -------------------------------------------------------------------------
   // UserPromptSubmit always fires at the start of a turn. If the previous turn
   // was interrupted, its sub-agents never fired SubagentStop and remain on the
-  // stack, so reset it here before passing through. (Still maps downstream to
-  // SessionStart as before — this only adds the stack reset as a side effect.)
+  // stack, so this used to unconditionally clearActiveStack() here — but that
+  // also wipes entries for subagents still genuinely in flight across a turn
+  // boundary (see the ORPHAN_ENTRY_TTL_MS comment above). Use the TTL-based
+  // prune instead so a live entry survives. (Still maps downstream to
+  // SessionStart as before — this only changes the stack-reset side effect.)
   if (hookEvent === "UserPromptSubmit") {
-    clearActiveStack(activeAgentFile);
+    readAndPruneActiveStack(activeAgentFile, activityFile, at);
 
     // Session journal (opt-in, default off — see CLAUDE.md "Session Journal").
     // payload.prompt is the UserPromptSubmit hook's documented field for the

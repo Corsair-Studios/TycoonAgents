@@ -459,3 +459,43 @@ test("Contract 3: an entry with an old timestamp and NO lastSeen falls back to t
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression: UserPromptSubmit must not wipe a live in-flight spawn entry
+// ---------------------------------------------------------------------------
+// 2026-09-06 ready-test run: 11 of 12 rapid-fire Task spawns had their
+// SubagentStop attributed to workerId "orchestrator" with no model. Root
+// cause was UserPromptSubmit calling clearActiveStack() unconditionally --
+// firing between a spawn's push and its own SubagentStop pop (a real
+// pattern when the harness issues a fresh prompt per rapid-fire step) wiped
+// the entry before it could be popped. Fixed by having UserPromptSubmit call
+// readAndPruneActiveStack (TTL-based) instead, so fresh live entries survive
+// and only genuinely abandoned (TTL-expired) entries are evicted.
+test("Regression: an active-agent stack entry survives a UserPromptSubmit that arrives before its SubagentStop", () => {
+  const root = setupProject();
+  try {
+    seedStack(root, [
+      { agentId: "coding-specialist", model: "sonnet", timestamp: Date.now(), subagentType: "coding-specialist" },
+    ]);
+
+    // A fresh prompt submitted while the spawn above is still in flight --
+    // this must NOT clear the live entry.
+    runHook(root, { hook_event_name: "UserPromptSubmit", prompt: "next step", session_id: "attr-session" });
+
+    const stackAfterPrompt = readActiveAgent(root).stack;
+    assert.equal(stackAfterPrompt.length, 1, "a live entry must survive an intervening UserPromptSubmit");
+    assert.equal(stackAfterPrompt[0].agentId, "coding-specialist");
+
+    // The subagent's own stop must now attribute to it correctly, not fall
+    // back to "orchestrator".
+    runHook(root, subagentStopWithAgentId("coding-specialist", ""));
+
+    const records = readActivity(root);
+    const stop = records.filter((r) => r.event === "SubagentStop").pop();
+    assert.ok(stop, "expected a SubagentStop record");
+    assert.equal(stop!.workerId, "coding-specialist");
+    assert.equal(stop!.model, "sonnet");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
