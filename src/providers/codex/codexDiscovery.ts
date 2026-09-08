@@ -203,12 +203,105 @@ function collectHomeRelativeSignal(list: CodexCandidate[], seen: Set<string>): v
   }
 }
 
+/** Maps process.platform/arch to the folder name the OpenAI ChatGPT VS Code extension ships its bundled Codex binary under (observed under its `bin/` dir: windows-x86_64, darwin-arm64, darwin-x86_64, linux-x86_64). Returns null for combinations the extension doesn't ship (fail-open — this signal simply contributes no candidate). */
+function vsCodeExtensionBinPlatformFolder(): string | null {
+  if (process.platform === "win32") return "windows-x86_64";
+  if (process.platform === "darwin") return process.arch === "arm64" ? "darwin-arm64" : "darwin-x86_64";
+  if (process.platform === "linux") return "linux-x86_64";
+  return null;
+}
+
+/**
+ * Signal: the Codex binary bundled inside the OpenAI ChatGPT VS Code
+ * extension (installed for the Codex-in-VS Code experience even when no
+ * standalone `codex` CLI is on PATH). Extensions install under
+ * `<home>/.vscode/extensions` (and `.vscode-insiders`); each version lives in
+ * its own `openai.chatgpt-<version>-<platform>` folder, so we glob for that
+ * prefix, prefer the highest version when several are installed, and probe
+ * `bin/<platform-folder>/codex[.exe]` inside it.
+ */
+function collectVsCodeExtensionSignal(list: CodexCandidate[], seen: Set<string>): void {
+  const platformFolder = vsCodeExtensionBinPlatformFolder();
+  if (!platformFolder) return;
+
+  let home: string;
+  try {
+    home = os.homedir();
+    if (!home) return;
+  } catch {
+    return;
+  }
+
+  const extensionsRoots: { label: string; dir: string }[] = [
+    { label: "~/.vscode/extensions", dir: path.join(home, ".vscode", "extensions") },
+    { label: "~/.vscode-insiders/extensions", dir: path.join(home, ".vscode-insiders", "extensions") },
+  ];
+  if (process.platform === "win32") {
+    const userProfile = process.env["USERPROFILE"];
+    if (userProfile) {
+      addUniqueRoot(extensionsRoots, "%USERPROFILE%\\.vscode\\extensions", path.join(userProfile, ".vscode", "extensions"));
+    }
+  }
+
+  const binName = process.platform === "win32" ? "codex.exe" : "codex";
+
+  for (const root of extensionsRoots) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(root.dir);
+    } catch {
+      continue; // root doesn't exist / not readable — fail-open, try the next root
+    }
+
+    const matches = entries.filter((name) => name.startsWith("openai.chatgpt-"));
+    if (matches.length === 0) continue;
+
+    // Prefer the highest version when several are installed. Folder shape:
+    // openai.chatgpt-<version>-<platform>, e.g.
+    // openai.chatgpt-26.901.22334-win32-x64. Sort by parsed leading version
+    // numerically (falls back to string compare if unparseable) so the
+    // newest install wins.
+    matches.sort((a, b) => compareExtensionFolderVersions(b, a));
+
+    for (const folder of matches) {
+      const candidatePath = path.join(root.dir, folder, "bin", platformFolder, binName);
+      addCandidate(list, seen, `VS Code extension (${root.label}/${folder})`, candidatePath);
+    }
+  }
+}
+
+/** Adds a root to the list only if its resolved dir isn't already present (avoids probing the same extensions dir twice when USERPROFILE and os.homedir() coincide, as they normally do on Windows). */
+function addUniqueRoot(roots: { label: string; dir: string }[], label: string, dir: string): void {
+  const key = path.normalize(dir).toLowerCase();
+  if (roots.some((r) => path.normalize(r.dir).toLowerCase() === key)) return;
+  roots.push({ label, dir });
+}
+
+/** Extracts the `<version>` segment from an `openai.chatgpt-<version>-<platform>` folder name and compares two such names numerically (highest first when used as `(a,b)=>compare(b,a)`), falling back to a plain string compare when a version can't be parsed. */
+function compareExtensionFolderVersions(a: string, b: string): number {
+  const versionOf = (name: string): number[] | null => {
+    const match = /^openai\.chatgpt-(\d+(?:\.\d+)*)/.exec(name);
+    if (!match) return null;
+    return match[1].split(".").map((n) => parseInt(n, 10));
+  };
+  const va = versionOf(a);
+  const vb = versionOf(b);
+  if (!va || !vb) return a.localeCompare(b);
+  const len = Math.max(va.length, vb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (va[i] ?? 0) - (vb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
 /**
  * Discovers and content-verifies the path to the Codex CLI binary,
  * following docs/PATH-DISCOVERY.md's discovery ladder:
  *   1. CODEX_BINARY_PATH env override — always wins, skips every other rung.
  *   2. Multiple independent signals (PATH, npm global prefix, Homebrew,
- *      home-relative install dirs), de-duplicated before probing.
+ *      home-relative install dirs, the OpenAI ChatGPT VS Code extension's
+ *      bundled binary), de-duplicated before probing.
  *   3. Content-based verification: each candidate is run with `--version`
  *      and the output must start with "codex-cli " — a same-named file is
  *      never accepted on name/existence alone.
@@ -252,6 +345,7 @@ export function discoverCodexBinary(): string {
   collectNpmGlobalSignal(candidates, seen);
   collectHomebrewSignal(candidates, seen);
   collectHomeRelativeSignal(candidates, seen);
+  collectVsCodeExtensionSignal(candidates, seen);
 
   let sawWrongContent = false;
   for (const candidate of candidates) {

@@ -208,7 +208,7 @@
       "command": "codex",
       "args": [
         "-c",
-        "model=\"gpt-6\"",
+        "model=\"gpt-6-astra\"",
         "-c",
         "model_reasoning_effort=\"low\"",
         "-c",

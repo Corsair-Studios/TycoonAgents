@@ -98,7 +98,7 @@ test("Codex tool call: model falls back to gpt-6 when tool_input carries no mode
     const records = readActivity(root);
     const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
     assert.ok(rec, "expected an activity record for the mcp__codex__codex call");
-    assert.equal(rec!.model, "gpt-6", "model must fall back to the catalog.json launch-time default");
+    assert.equal(rec!.model, "gpt-6-astra", "model must fall back to the catalog.json launch-time default");
 
     assert.equal("tokens" in rec!, false, "tokens must be entirely ABSENT from the record, not present-and-0");
     assert.equal("cacheReadTokens" in rec!, false, "cacheReadTokens must be entirely ABSENT, not present-and-0");
@@ -146,7 +146,7 @@ test("Codex tool call: a non-string tool_input.model (e.g. a number) is ignored,
     const records = readActivity(root);
     const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
     assert.ok(rec);
-    assert.equal(rec!.model, "gpt-6", "a non-string model value must not be written through — default applies");
+    assert.equal(rec!.model, "gpt-6-astra", "a non-string model value must not be written through — default applies");
     assert.equal("tokens" in rec!, false);
   } finally {
     rmSync(root, { recursive: true, force: true });

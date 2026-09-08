@@ -145,6 +145,11 @@ const AGENT_CONFIG_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'ag
 // `summary` field wins, else first sentence of `description`). No `vscode`
 // import in its own or transitive dependencies.
 const CATALOG_SUMMARY_JS = path.join(REPO_ROOT, 'out', 'src', 'shared', 'catalogSummary.js');
+// Codex CLI binary discovery (src/providers/codex/codexDiscovery.ts) — reused
+// here so the standalone's pack-mcp install path substitutes a discovered
+// absolute path for the codex MCP server's `command` the same way panel.ts
+// does, instead of reimplementing the discovery ladder.
+const CODEX_DISCOVERY_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'codex', 'codexDiscovery.js');
 
 function requireCompiledOrThrow(jsPath, label) {
   if (!fs.existsSync(jsPath)) {
@@ -175,6 +180,37 @@ let _catalogSummaryModule;
 function catalogSummaryModule() {
   if (!_catalogSummaryModule) _catalogSummaryModule = requireCompiledOrThrow(CATALOG_SUMMARY_JS, 'catalogSummary');
   return _catalogSummaryModule;
+}
+let _codexDiscoveryModule;
+function codexDiscoveryModule() {
+  if (!_codexDiscoveryModule) _codexDiscoveryModule = requireCompiledOrThrow(CODEX_DISCOVERY_JS, 'codexDiscovery');
+  return _codexDiscoveryModule;
+}
+
+/**
+ * Mirrors panel.ts's _resolveCodexBinaryForInstall: for the `codex` MCP
+ * catalog entry only, if the resolved config's `command` is still the bare
+ * literal "codex", try substituting the absolute path discoverCodexBinary()
+ * finds (e.g. the Codex CLI bundled inside the OpenAI ChatGPT VS Code
+ * extension, not on PATH). Fail-open — any discovery failure just logs a
+ * warning and returns the config unchanged; install must never be blocked
+ * on this.
+ */
+function resolveCodexBinaryForInstallStandalone(id, config) {
+  if (id !== 'codex' || config === null || typeof config !== 'object' || config.command !== 'codex') {
+    return config;
+  }
+  try {
+    const { discoverCodexBinary } = codexDiscoveryModule();
+    const resolved = discoverCodexBinary();
+    if (resolved === 'codex') return config;
+    return { ...config, command: resolved };
+  } catch (e) {
+    console.warn(
+      `[tycoonagents-standalone] could not discover the Codex CLI binary; installing the MCP entry with command "codex" as-is. ${e && e.message ? e.message : String(e)}`,
+    );
+    return config;
+  }
 }
 
 // ── Delegation-doctrine / Project-Plan-toggle side-effect bridges ──────────
@@ -1652,7 +1688,8 @@ function handleInstallPack(payload) {
               'your own .mcp.json; see .mcp.json.example.',
           };
         } else {
-          const merged = mergeMcpServer(existing, pack.mcp, resolvedConfig);
+          const finalConfig = resolveCodexBinaryForInstallStandalone(pack.mcp, resolvedConfig);
+          const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
           fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
           results.mcp = 'installed';
         }

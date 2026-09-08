@@ -19,9 +19,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { discoverCodexBinary, CodexDiscoveryError } from "../src/providers/codex/codexDiscovery";
 
 const ENV_KEYS = ["CODEX_BINARY_PATH", "PATH", "Path", "APPDATA", "HOME", "USERPROFILE"] as const;
@@ -122,6 +123,107 @@ test("fail-open: a probe that throws internally does not propagate out of discov
         return true;
       },
     );
+  } finally {
+    restoreEnv(snap);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A real (non-batch) .exe cannot be a plain text script — CreateProcess
+ * requires an actual PE image, so a `@echo off`-style stub (fine for the
+ * ".cmd" candidates the other rungs use) fails with "not compatible"
+ * instead of running. The VS Code extension rung specifically probes
+ * `codex.exe` on win32, so its tests need a genuine tiny executable. This
+ * compiles one, once, on demand via the .NET compiler already available
+ * through PowerShell's `Add-Type -OutputType ConsoleApplication` — it reads
+ * a sibling `version.txt` next to itself and prints "codex-cli <that
+ * text>", so every test can reuse the same compiled binary and just vary
+ * the sidecar file for a different reported version.
+ */
+const _compiledExeStubsByVersion = new Map<string, string>();
+function compiledExeStubForVersion(versionOutput: string): string {
+  const cached = _compiledExeStubsByVersion.get(versionOutput);
+  if (cached && existsSync(cached)) return cached;
+
+  const workDir = mkdtempSync(join(tmpdir(), "codex-disc-exe-src-"));
+  const csFile = join(workDir, "stub.cs");
+  const outExe = join(workDir, "stub.exe");
+  // Written to a real .cs file (not inlined into the PowerShell command
+  // line) so the C# double quotes below never have to survive cmd.exe's own
+  // quote handling under execFileSync's shell:true.
+  const source =
+    "using System;\r\n" +
+    "class P { static void Main() { Console.WriteLine(\"codex-cli " + versionOutput + "\"); } }\r\n";
+  writeFileSync(csFile, source);
+
+  // sandboxEnv() (called before this in every test) blanks PATH so
+  // discovery's other signals miss, which would also hide "powershell" from
+  // a bare-name lookup here — use the well-known absolute location instead.
+  const systemRoot = process.env["SystemRoot"] || process.env["windir"] || "C:\\Windows";
+  const powershellExe = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  execFileSync(
+    powershellExe,
+    ["-NoProfile", "-Command", `Add-Type -OutputType ConsoleApplication -OutputAssembly '${outExe}' -Path '${csFile}'`],
+    { shell: true, windowsHide: true, timeout: 30_000 },
+  );
+  _compiledExeStubsByVersion.set(versionOutput, outExe);
+  return outExe;
+}
+
+/** Copies a compiled exe stub (built once per distinct version string, then cached) into `dir/name` so it reports "codex-cli <versionOutput>" when run with `--version`. */
+function writeExeStub(dir: string, name: string, versionOutput: string): string {
+  const dest = join(dir, name);
+  copyFileSync(compiledExeStubForVersion(versionOutput), dest);
+  return dest;
+}
+
+/** The bin/<platform> folder name discovery expects for this test's own process.platform/arch, mirroring vsCodeExtensionBinPlatformFolder(). */
+function platformFolderForThisProcess(): string {
+  if (process.platform === "win32") return "windows-x86_64";
+  if (process.platform === "darwin") return process.arch === "arm64" ? "darwin-arm64" : "darwin-x86_64";
+  return "linux-x86_64";
+}
+
+test("VS Code extension rung: finds the bundled codex binary under ~/.vscode/extensions/openai.chatgpt-*/bin/<platform>/codex", () => {
+  const snap = snapshotEnv();
+  const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-"));
+  try {
+    sandboxEnv(dir);
+    const platformFolder = platformFolderForThisProcess();
+    const extDir = join(dir, ".vscode", "extensions", "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
+    mkdirSync(extDir, { recursive: true });
+    const binName = process.platform === "win32" ? "codex.exe" : "codex";
+    const stub = process.platform === "win32" ? writeExeStub(extDir, binName, "26.901.22334") : writeStub(extDir, binName, "codex-cli 26.901.22334");
+
+    const resolved = discoverCodexBinary();
+    assert.equal(resolved, stub, "must resolve the bundled extension binary when no other signal matches");
+  } finally {
+    restoreEnv(snap);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("VS Code extension rung: prefers the highest version when multiple extension folders are installed", () => {
+  const snap = snapshotEnv();
+  const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-multi-"));
+  try {
+    sandboxEnv(dir);
+    const platformFolder = platformFolderForThisProcess();
+    const binName = process.platform === "win32" ? "codex.exe" : "codex";
+    const extensionsRoot = join(dir, ".vscode", "extensions");
+
+    const oldDir = join(extensionsRoot, "openai.chatgpt-1.0.0-win32-x64", "bin", platformFolder);
+    const newDir = join(extensionsRoot, "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    const isWin = process.platform === "win32";
+    if (isWin) writeExeStub(oldDir, binName, "1.0.0");
+    else writeStub(oldDir, binName, "codex-cli 1.0.0");
+    const newStub = isWin ? writeExeStub(newDir, binName, "26.901.22334") : writeStub(newDir, binName, "codex-cli 26.901.22334");
+
+    const resolved = discoverCodexBinary();
+    assert.equal(resolved, newStub, "must prefer the higher-version extension folder");
   } finally {
     restoreEnv(snap);
     rmSync(dir, { recursive: true, force: true });

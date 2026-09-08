@@ -120,7 +120,7 @@ test("findHttpMcpUrls: ignores non-http (stdio) entries and finds http entries r
     mcpServers: {
       "uefn-bridge": { command: "node", args: ["uefn-server.mjs"] },
       "my-epic-server": { type: "http", url: "http://127.0.0.1:8000/mcp" },
-      codex: { command: "codex", args: ["-c", 'model="gpt-6"', "mcp-server"] },
+      codex: { command: "codex", args: ["-c", 'model="gpt-6-astra"', "mcp-server"] },
     },
   };
 

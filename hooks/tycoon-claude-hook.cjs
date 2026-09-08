@@ -1657,7 +1657,7 @@ function main(raw) {
       // findings.md Section 3 — precedence CONFIRMED live). When the
       // caller didn't pass one, the record falls back to the launch-time
       // default baked into catalog.json's config.args
-      // (`-c model="gpt-6"`) rather than leaving model empty, since
+      // (`-c model="gpt-6-astra"`) rather than leaving model empty, since
       // that is genuinely the model the call ran on absent an override.
       //
       // tokens / cacheReadTokens: deliberately OMITTED (left undefined),
@@ -1706,7 +1706,7 @@ function main(raw) {
         if (toolName.indexOf(CODEX_TOOL_PREFIX) === 0) {
           const codexModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
             ? toolInput.model
-            : "gpt-6"; // catalog.json's codex entry launch-time default (-c model=)
+            : "gpt-6-astra"; // catalog.json's codex entry launch-time default (-c model=)
           record.model = codexModel;
           // tokens / cacheReadTokens intentionally left unset — see comment above.
         }

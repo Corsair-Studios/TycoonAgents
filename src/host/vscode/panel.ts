@@ -29,6 +29,7 @@ import {
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
+import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
@@ -3652,7 +3653,8 @@ export class TycoonPanel {
         return;
       }
 
-      const merged = mergeMcpServer(existing, id, resolvedConfig);
+      const finalConfig = this._resolveCodexBinaryForInstall(id, resolvedConfig);
+      const merged = mergeMcpServer(existing, id, finalConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
@@ -4039,7 +4041,8 @@ export class TycoonPanel {
                 "your own .mcp.json; see .mcp.json.example.",
             };
           } else {
-            const merged = mergeMcpServer(existing, pack.mcp, resolvedConfig);
+            const finalConfig = this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig);
+            const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
             fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
             results.mcp = "installed";
           }
@@ -4513,6 +4516,42 @@ export class TycoonPanel {
    * legitimately contain a literal backslash — a string with no token
    * occurrence is returned completely untouched.
    */
+  /**
+   * For the `codex` MCP catalog entry only: if the resolved config's
+   * `command` is still the bare literal `"codex"` (i.e. no user override
+   * already substituted something else), try to replace it with the
+   * absolute path discovered by discoverCodexBinary() — e.g. the Codex CLI
+   * bundled inside the OpenAI ChatGPT VS Code extension, which is not on
+   * PATH. This makes MCP launch work even when `codex` isn't a shell
+   * command, without changing behavior for any other server id. Fail-open:
+   * if discovery itself finds `codex` already resolves via PATH, or throws
+   * (nothing found anywhere), the original config is returned unchanged and
+   * the failure is only logged — install must never be blocked on this.
+   */
+  private _resolveCodexBinaryForInstall(id: string, config: unknown): unknown {
+    if (id !== "codex" || config === null || typeof config !== "object") {
+      return config;
+    }
+    const cfg = config as Record<string, unknown>;
+    if (cfg.command !== "codex") {
+      return config;
+    }
+    try {
+      const resolved = discoverCodexBinary();
+      if (resolved === "codex") {
+        // Already resolves via PATH — nothing to substitute.
+        return config;
+      }
+      return { ...cfg, command: resolved };
+    } catch (e) {
+      const message = e instanceof CodexDiscoveryError ? e.message : String(e);
+      console.warn(
+        `TycoonAgents: could not discover the Codex CLI binary; installing the MCP entry with command "codex" as-is. ${message}`
+      );
+      return config;
+    }
+  }
+
   private _resolveConfigTokens(config: unknown): unknown {
     const EXTENSION_TOKEN = "${EXTENSION_DIR}";
 

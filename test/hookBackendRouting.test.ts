@@ -140,7 +140,7 @@ test("(a) without agentBackend.js next to the hook, a mcp__codex__codex call rep
 
 // ---------------------------------------------------------------------------
 // (b) WITH the module and the real codex-reviewer.md: same base record plus
-// model 'openai/gpt-6', vendor 'openai', costModelClass 'subscription'.
+// model 'openai/gpt-6-astra', vendor 'openai', costModelClass 'subscription'.
 // ---------------------------------------------------------------------------
 
 test("(b) with agentBackend.js present and the real codex-reviewer.md, a mcp__codex__codex call adds vendor+costModelClass and the backend model", () => {
@@ -158,7 +158,7 @@ test("(b) with agentBackend.js present and the real codex-reviewer.md, a mcp__co
     const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
     assert.ok(rec, "expected an activity record for the mcp__codex__codex call");
 
-    assert.equal(rec!.model, "openai/gpt-6", "model must come from codex-reviewer.md's backend.model");
+    assert.equal(rec!.model, "openai/gpt-6-astra", "model must come from codex-reviewer.md's backend.model");
     assert.equal(rec!.vendor, "openai");
     assert.equal(rec!.costModelClass, "subscription");
     assert.equal(rec!.tool, "mcp__codex__codex");

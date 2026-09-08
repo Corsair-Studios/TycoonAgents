@@ -66,7 +66,7 @@ test("buildRoutingView: no routing.json -> frontmatter/alias/default sources, no
     "  vendor: openai",
     "  transport: mcp",
     "  mcpServer: codex",
-    "  model: openai/gpt-6",
+    "  model: openai/gpt-6-astra",
     "  costModelClass: subscription",
   ]);
   writeAgent(root, "alias-only.md", ["name: alias-only", "model: haiku"]);
@@ -92,7 +92,7 @@ test("buildRoutingView: no routing.json -> frontmatter/alias/default sources, no
 test("buildRoutingView: a slashed model: alias with no backend block is kept verbatim, never double-prefixed", () => {
   const root = tmpRoot();
   writeAgent(root, "claude-worker.md", ["name: claude-worker", "model: anthropic/claude-sonnet-4-6"]);
-  writeAgent(root, "codex-reviewer.md", ["name: codex-reviewer", "model: openai/gpt-6"]);
+  writeAgent(root, "codex-reviewer.md", ["name: codex-reviewer", "model: openai/gpt-6-astra"]);
 
   const view = buildRoutingView({ root, env: {} });
   const byId = new Map(view.agents.map((a) => [a.id, a]));
@@ -102,7 +102,7 @@ test("buildRoutingView: a slashed model: alias with no backend block is kept ver
   assert.equal(claudeWorker?.backend.vendor, "anthropic");
 
   const codexReviewer = byId.get("codex-reviewer");
-  assert.equal(codexReviewer?.backend.model, "openai/gpt-6");
+  assert.equal(codexReviewer?.backend.model, "openai/gpt-6-astra");
   assert.equal(codexReviewer?.backend.vendor, "openai");
 
   // No agent (or the orchestrator) should ever surface a double-slashed
@@ -478,9 +478,9 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   assert.equal(claudeWorker?.label, "anthropic/claude-sonnet-4-6");
   assert.equal(claudeWorker?.vendor, "anthropic");
 
-  const codex = byId.get("openai/gpt-6");
-  assert.ok(codex, "openai/gpt-6 preset should be present");
-  assert.equal(codex?.label, "openai/gpt-6");
+  const codex = byId.get("openai/gpt-6-astra");
+  assert.ok(codex, "openai/gpt-6-astra preset should be present");
+  assert.equal(codex?.label, "openai/gpt-6-astra");
 
   for (const m of view.presets.models) {
     assert.ok(
