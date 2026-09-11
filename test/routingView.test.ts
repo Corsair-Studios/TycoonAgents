@@ -1782,14 +1782,21 @@ test('Routing panel: openai-compatible slot renders Endpoint URL env before API 
     await flush();
     assertNoErrors('routing payload render');
 
+    // p27-t3: for a foreign-endpoint (non-native-vendor) slot, buildSlotEditorFields'
+    // vendor..MCP-server field block (including the env fields asserted here) now
+    // renders inside a <details class="routing-connection-details"> instead of as
+    // direct children of .routing-slot-fields — see docs/design/slot-editor-redesign.md
+    // section 2/10.1. The fields themselves, their order, and their content are unchanged.
     const outerSlot = doc.querySelector('.routing-slot-fields') as any;
-    const labels = Array.from(outerSlot.querySelectorAll(':scope > .routing-env-field label')).map((l: any) => l.textContent);
+    const connDetails = outerSlot.querySelector(':scope > .routing-connection-details') as any;
+    assert.ok(connDetails, 'foreign-endpoint slot should render a Connection <details>');
+    const labels = Array.from(connDetails.querySelectorAll(':scope > .routing-env-field label')).map((l: any) => l.textContent);
     assert.deepEqual(labels, ['Endpoint URL env', 'API key env'], 'endpoint field must render before the credential field, both relabeled');
 
-    const inputs = Array.from(outerSlot.querySelectorAll(':scope > .routing-env-field .routing-env-input')) as any[];
+    const inputs = Array.from(connDetails.querySelectorAll(':scope > .routing-env-field .routing-env-input')) as any[];
     inputs.forEach((inp) => assert.equal(inp.placeholder, 'env var NAME, never the value'));
 
-    const note = outerSlot.querySelector(':scope > .routing-env-note') as any;
+    const note = connDetails.querySelector(':scope > .routing-env-note') as any;
     assert.equal(
       note.textContent,
       'Names here; the values are stored per user in the TycoonAgents app-data folder, never in this project.'

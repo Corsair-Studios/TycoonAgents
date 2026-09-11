@@ -1089,7 +1089,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
             mismatch: false,
             options: [
               { id: 'claude-code', label: 'Claude Code' },
-              { id: 'opencode', label: 'OpenCode' },
+              { id: 'opencode', label: 'OpenCode (Experimental)' },
             ],
             requiresRestart: false,
           },
@@ -1116,7 +1116,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
             mismatch: false,
             options: [
               { id: 'claude-code', label: 'Claude Code' },
-              { id: 'opencode', label: 'OpenCode' },
+              { id: 'opencode', label: 'OpenCode (Experimental)' },
             ],
             requiresRestart: false,
           },
@@ -1143,7 +1143,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
             mismatch: true,
             options: [
               { id: 'claude-code', label: 'Claude Code' },
-              { id: 'opencode', label: 'OpenCode' },
+              { id: 'opencode', label: 'OpenCode (Experimental)' },
             ],
             requiresRestart: true,
           },
@@ -1161,6 +1161,192 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         'harness.mismatch true must show the restart hint on this render, with no prior setHarness in this session'
       );
       assertNoErrors('harness-dropdown');
+    });
+
+    // ── Step 10d: Harness unsupported-provider warning (p27) ─────────────────
+    // harness.warning is an optional string the host sends when the
+    // configured provider id isn't supported by the running build. It must
+    // render before the normal footnote hint, and must not appear at all
+    // when the field is absent.
+    await t.test('10d. harness warning: renders when harness.warning is set, absent otherwise', async () => {
+      const baseSettings = {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      };
+      const warningText =
+        'Configured provider "codex" is not supported by this build; running on Claude Code. Update the extension or change the setting.';
+
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'claude-code',
+            source: 'execution',
+            fileValue: 'codex',
+            running: 'claude-code',
+            mismatch: false,
+            warning: warningText,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      const warnedConfig = doc.getElementById('setup-config');
+      assert.ok(
+        (warnedConfig.textContent || '').includes(warningText),
+        'harness.warning text must render in the footnote area'
+      );
+      assertNoErrors('harness-warning-present');
+
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'claude-code',
+            source: 'execution',
+            fileValue: 'claude-code',
+            running: 'claude-code',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      const cleanConfig = doc.getElementById('setup-config');
+      assert.ok(
+        !(cleanConfig.textContent || '').includes(warningText),
+        'no harness.warning field -> warning text must be absent'
+      );
+      assertNoErrors('harness-warning-absent');
+    });
+
+    // ── Step 10e: Codex hooks/dispatcher install rows (p23-t11) ──────────────
+    // Two rows under the harness footnote, shown ONLY when harness.effective
+    // is 'codex', reflecting codexHooksInstalled/codexDispatcherInstalled and
+    // posting installCodexHooks/uninstallCodexHooks/installCodexDispatcher/
+    // uninstallCodexDispatcher on click.
+    await t.test('10e. codex install rows: render only for codex, reflect flags, post the right message', async () => {
+      const baseSettings = {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      };
+
+      // Not codex -> rows absent.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'claude-code',
+            source: 'execution',
+            fileValue: 'claude-code',
+            running: 'claude-code',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      assert.ok(
+        !(doc.getElementById('setup-config').textContent || '').includes('Codex hooks'),
+        'harness.effective !== codex -> no Codex hooks row'
+      );
+
+      // Codex, both not installed -> "Install" buttons.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'codex',
+            source: 'execution',
+            fileValue: 'codex',
+            running: 'codex',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+            codexHooksInstalled: false,
+            codexDispatcherInstalled: false,
+          },
+        },
+      });
+      await flush();
+      const notInstalledConfig = doc.getElementById('setup-config');
+      const rows = Array.from(notInstalledConfig.querySelectorAll('.harness-codex-install-row')) as any[];
+      assert.equal(rows.length, 2, 'expects a Codex hooks row and a Dispatcher row');
+      assert.ok((notInstalledConfig.textContent || '').includes('Codex hooks: not installed'));
+      assert.ok((notInstalledConfig.textContent || '').includes('Dispatcher: not installed'));
+      const installButtons = notInstalledConfig.querySelectorAll('.harness-codex-install-btn') as any;
+      assert.equal(installButtons.length, 2);
+      assert.equal(installButtons[0].textContent, 'Install');
+      installButtons[0].dispatchEvent(new win.Event('click'));
+      assert.equal(posted[posted.length - 1].type, 'installCodexHooks');
+      installButtons[1].dispatchEvent(new win.Event('click'));
+      assert.equal(posted[posted.length - 1].type, 'installCodexDispatcher');
+
+      // Codex, both installed -> "Uninstall" buttons.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'codex',
+            source: 'execution',
+            fileValue: 'codex',
+            running: 'codex',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+            codexHooksInstalled: true,
+            codexDispatcherInstalled: true,
+            codexDispatcherWarning: 'foreign [mcp_servers.tycoon] table left untouched.',
+          },
+        },
+      });
+      await flush();
+      const installedConfig = doc.getElementById('setup-config');
+      assert.ok((installedConfig.textContent || '').includes('Codex hooks: installed'));
+      assert.ok((installedConfig.textContent || '').includes('Dispatcher: installed'));
+      assert.ok(
+        (installedConfig.textContent || '').includes('foreign [mcp_servers.tycoon] table left untouched.'),
+        'codexDispatcherWarning must render'
+      );
+      const uninstallButtons = installedConfig.querySelectorAll('.harness-codex-install-btn') as any;
+      assert.equal(uninstallButtons[0].textContent, 'Uninstall');
+      uninstallButtons[0].dispatchEvent(new win.Event('click'));
+      assert.equal(posted[posted.length - 1].type, 'uninstallCodexHooks');
+      uninstallButtons[1].dispatchEvent(new win.Event('click'));
+      assert.equal(posted[posted.length - 1].type, 'uninstallCodexDispatcher');
+
+      assertNoErrors('codex-install-rows');
     });
 
     // ── Step 11: Archived Plans section (0.0.340+) ───────────────────────────
@@ -3473,6 +3659,1387 @@ test('Delegation compliance: zero totals (or toolCompliance absent) -> nothing r
     line = delegationBody.querySelector('.delegation-compliance-line');
     assert.ok(!line, 'toolCompliance undefined -> no compliance line, no crash');
     assert.doesNotMatch(delegationBody.innerHTML, /NaN/, 'panel HTML must never contain a literal NaN');
+  } finally {
+    h.win.close();
+  }
+});
+
+// ── Cross-vendor accent (p24-t2) ─────────────────────────────────────────
+// agentAccent() itself (fallback beats foreign, native under a matching
+// harness, etc.) is covered directly against 005-agent-accent.js by
+// test/agentAccent.test.ts. These tests only check that the webview's
+// render paths (metrics table, Agents/routing roster, legend) actually
+// consume that decision and apply the right class/suffix.
+
+test('accent: metrics table colors a foreign active agent light blue with no "(fb)" suffix, native agents unaffected', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 2,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, activeMs: 30000 },
+          { id: 'codex-reviewer', name: 'Codex Reviewer', status: 'active', model: 'gpt-6-astra', vendor: 'openai', tokens: 900, activeMs: 40000, taskCount: 1, lastActivityAt: Date.now() },
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 700, activeMs: 20000, taskCount: 1 },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const rows = [...tbody.querySelectorAll('tr')].filter((r: any) => !r.classList.contains('metrics-footer-row'));
+    const foreignRow = rows.find((r: any) => (r.querySelector('td.col-name span') || {}).textContent === 'Codex Reviewer');
+    assert.ok(foreignRow, 'foreign agent row should exist');
+    const foreignNameSpan = foreignRow.querySelector('td.col-name span');
+    assert.ok(foreignNameSpan.classList.contains('agent-accent-foreign'), 'foreign agent name gets agent-accent-foreign');
+    assert.ok(!/\(fb\)/.test(foreignNameSpan.textContent), 'foreign agent gets no "(fb)" suffix');
+    const foreignFill = foreignRow.querySelector('.status-bar-fill');
+    assert.ok(foreignFill.classList.contains('agent-accent-foreign'), 'foreign active agent bar fill gets agent-accent-foreign');
+
+    const nativeRow = rows.find((r: any) => (r.querySelector('td.col-name span') || {}).textContent === 'Coding Specialist');
+    const nativeNameSpan = nativeRow.querySelector('td.col-name span');
+    assert.ok(!nativeNameSpan.classList.contains('agent-accent-foreign'), 'native agent gets no foreign accent');
+    assert.ok(!nativeNameSpan.classList.contains('agent-accent-fallback'), 'native agent gets no fallback accent');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('accent: metrics table colors a fallback agent amber with "(fb)" suffix on the name cell', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          {
+            id: 'coding-specialist', name: 'Coding Specialist', status: 'active', model: 'sonnet',
+            vendor: 'anthropic', fallbackOf: 'ux-ui-designer', tokens: 700, activeMs: 20000, taskCount: 1,
+            lastActivityAt: Date.now(),
+          },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const row = [...tbody.querySelectorAll('tr')].find((r: any) => !r.classList.contains('metrics-footer-row'));
+    const nameSpan = row.querySelector('td.col-name span');
+    assert.ok(nameSpan.classList.contains('agent-accent-fallback'), 'fallback agent name gets agent-accent-fallback');
+    assert.match(nameSpan.textContent, /\(fb\)$/, 'fallback agent name cell ends with the " (fb)" suffix');
+    const fill = row.querySelector('.status-bar-fill');
+    assert.ok(fill.classList.contains('agent-accent-fallback'), 'fallback active agent bar fill gets agent-accent-fallback');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('accent: Agents/routing roster colors a foreign-vendor slot even with no run in progress, and flips when the harness changes', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const settingsClaude = {
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    };
+    h.dispatch(settingsClaude);
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    assert.ok(menuRoutingBtn, 'menu-routing button should exist so the Agents modal can be opened');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        { id: 'codex-reviewer', name: 'Codex Reviewer', backend: { vendor: 'openai' }, source: 'file' },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    assert.ok(card, 'codex-reviewer card should render even with no run in progress');
+    let nameEl = card.querySelector('.agent-name');
+    assert.ok(nameEl.classList.contains('agent-accent-foreign'), 'openai vendor under claude-code harness -> foreign accent, no run needed');
+
+    // p27-t6: card delineation — full outline via .routing-agent-card
+    // itself, plus a top accent bar class/data-attribute mirroring the
+    // same agentAccent() classification as the nameplate above.
+    assert.ok(card.classList.contains('routing-agent-card'), 'card should carry the bordered .routing-agent-card class');
+    assert.ok(card.classList.contains('agent-card-accent-foreign'), 'card should carry the foreign accent-bar class');
+    assert.equal(card.dataset.agentAccent, 'foreign', 'card should expose data-agent-accent matching agentAccent()');
+
+    const legend = h.doc.querySelector('.agent-accent-legend');
+    assert.ok(legend, 'accent legend line should render near the harness footnote');
+    assert.match(legend.textContent, /Light blue/i);
+    assert.match(legend.textContent, /Amber \(fb\)/i);
+
+    // Switching the harness to one where "openai" is native flips the slot
+    // back to unaccented on the very next render.
+    h.dispatch({
+      type: 'settings',
+      payload: { ...settingsClaude.payload, harness: { ...settingsClaude.payload.harness, effective: 'codex' } },
+    });
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    nameEl = card.querySelector('.agent-name');
+    assert.ok(!nameEl.classList.contains('agent-accent-foreign'), 'openai vendor under codex harness -> native, accent clears');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('accent: canvas source applies the ring/pulse accent for active foreign/fallback agents and the " (fb)" nameplate suffix, gated on charEntry.accentKind', () => {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+  assert.match(
+    src,
+    /charEntry\.accentKind === "foreign" \|\| charEntry\.accentKind === "fallback"/,
+    'the active-state ring is gated on the computed accentKind for foreign/fallback agents'
+  );
+  assert.match(src, /rgba\(255, 176, 32, 0\.9\)/, 'ring uses the amber accent color for fallback');
+  assert.match(src, /rgba\(79, 195, 247, 0\.9\)/, 'ring uses the light-blue accent color for foreign');
+  assert.match(
+    src,
+    /charEntry\.accentKind === "fallback" \? " \(fb\)" : ""/,
+    'the canvas nameplate label appends " (fb)" only for fallback agents'
+  );
+});
+
+test('p25-t1: subscription+mcp slot renders both the setup notice and the fallback editor; Add fallback works and Save posts the fallback entry', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    assert.ok(menuRoutingBtn, 'menu-routing button should exist');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'codex-reviewer',
+          name: 'Codex Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    assert.ok(card, 'codex-reviewer card should render');
+
+    // p27-t4: this slot already carries a hand-written backend block AND an
+    // mcpServer name — bridged-connected state: status row only, no Copy
+    // request button, per docs/design/slot-editor-redesign.md section 5.
+    const notice = card.querySelector('.routing-subscription-notice');
+    assert.ok(notice && !notice.hidden, 'subscription/MCP notice wrapper should render (hosting the status row)');
+    const statusLine = notice.querySelector('.routing-subscription-bridge-status');
+    assert.ok(statusLine, 'bridge status line should render');
+    assert.equal(statusLine.textContent, 'Bridged via Codex MCP - connected.', 'bridged-connected status line reads verbatim per section 5');
+    assert.ok(notice.querySelector('.routing-subscription-notice-copy').hidden, 'Copy request button hidden in bridged-connected state');
+
+    const fields = card.querySelector('.routing-slot-fields');
+    assert.ok(fields, 'slot body (buildSlotEditorFields) must render alongside the notice, not be replaced by it');
+
+    const fallbackDetails = card.querySelector('.routing-fallback-details[data-agent-id="codex-reviewer"]');
+    assert.ok(fallbackDetails, 'buildFallbackEditor must render for this slot');
+
+    const addBtn = fallbackDetails.querySelector('.routing-add-fallback-btn');
+    assert.ok(addBtn, 'Add fallback button should render');
+    assert.equal(addBtn.disabled, false, 'Add fallback should be enabled with 0 existing fallbacks');
+    addBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveBtn = card.querySelector('.agent-card-save-btn');
+    assert.ok(saveBtn, 'per-card Save button should render');
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    const savedSlot = saveMsg.profile && saveMsg.profile.agents && saveMsg.profile.agents['codex-reviewer'];
+    assert.ok(savedSlot, 'saved profile should carry a codex-reviewer slot');
+    assert.ok(Array.isArray(savedSlot.fallback) && savedSlot.fallback.length === 1, 'the added fallback entry should be present in the posted save payload');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p25-t1: a slot with a backend block (handWrittenBackend, no subscription mismatch) also renders the fallback editor', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'kimi-reviewer',
+          name: 'Kimi Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          backend: { vendor: 'moonshot', transport: 'mcp', mcpServer: 'kimi', model: 'kimi-k2', costModelClass: 'local' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'moonshot'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    assert.ok(card, 'kimi-reviewer card should render');
+    assert.ok(card.querySelector('.routing-slot-fields'), 'slot body should render for a backend-block slot');
+    assert.ok(card.querySelector('.routing-fallback-details[data-agent-id="kimi-reviewer"]'), 'fallback editor should render for a backend-block slot');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p25-t1: a native Anthropic slot renders unchanged (no notice, body + fallback editor present) and the depth gate disables Add fallback at 3', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'Coding Specialist',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'metered' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    assert.ok(card, 'coding-specialist card should render');
+    const notice = card.querySelector('.routing-subscription-notice');
+    assert.ok(!notice || notice.hidden, 'no visible notice for a native Anthropic slot');
+    assert.ok(card.querySelector('.routing-slot-fields'), 'slot body should render');
+    const fallbackDetails = card.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"]');
+    assert.ok(fallbackDetails, 'fallback editor should render');
+
+    const addBtn = fallbackDetails.querySelector('.routing-add-fallback-btn');
+    assert.equal(addBtn.disabled, false, 'Add fallback enabled at 0 entries');
+    for (let i = 0; i < 3; i++) {
+      addBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+      await h.flush();
+    }
+    const card2 = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    const fallbackDetails2 = card2.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"]');
+    const addBtn2 = fallbackDetails2.querySelector('.routing-add-fallback-btn');
+    assert.equal(addBtn2.disabled, true, 'Add fallback disabled once depth reaches 3');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p26-t1: codex-reviewer (openai, handWrittenBackend) suppresses the notice and bridge fields under codex, shows them under claude-code', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const settingsClaude = {
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    };
+    h.dispatch(settingsClaude);
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'codex-reviewer',
+          name: 'Codex Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    assert.ok(card, 'codex-reviewer card should render under claude-code');
+    // p27-t1: openai is foreign under claude-code, but this slot's bridge
+    // (hand-written backend + mcpServer "codex") is already set up, so the
+    // status line shows in place of the notice/copy-request box.
+    let notice = card.querySelector('.routing-subscription-notice');
+    assert.ok(notice && !notice.hidden, 'openai vendor is foreign under claude-code -> the notice wrapper is visible (hosting the status line)');
+    assert.ok(notice.querySelector('.routing-subscription-notice-copy').hidden, 'Copy request button hidden in bridged-connected state');
+    assert.equal(notice.querySelector('.routing-subscription-bridge-status').textContent, 'Bridged via Codex MCP - connected.', 'bridged-connected status line reads verbatim per section 5');
+    let fields = card.querySelector('.routing-slot-fields');
+    assert.ok(fields.querySelector('[data-field-key$=".mcpServer"]'), 'MCP server field should render under claude-code');
+
+    // Switch the harness to codex — openai is now the native vendor.
+    h.dispatch({
+      type: 'settings',
+      payload: { ...settingsClaude.payload, harness: { ...settingsClaude.payload.harness, effective: 'codex' } },
+    });
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    notice = card.querySelector('.routing-subscription-notice');
+    assert.ok(!notice || notice.hidden, 'openai vendor is native under codex -> no visible notice');
+    fields = card.querySelector('.routing-slot-fields');
+    assert.ok(fields, 'slot body should still render under codex');
+    assert.ok(!fields.querySelector('[data-field-key$=".transport"]'), 'Transport field should not render for the native vendor under codex');
+    assert.ok(!fields.querySelector('[data-field-key$=".mcpServer"]'), 'MCP server field should not render for the native vendor under codex');
+    assert.ok(!fields.querySelector('[data-field-key$=".credentialEnv"]'), 'Credential env field should not render for the native vendor under codex');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p26-t1: an anthropic/mcp/subscription slot under claude-code suppresses the notice and bridge fields (the reported bug)', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'claude-worker',
+          name: 'Claude Worker',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          backend: { vendor: 'anthropic', transport: 'mcp', mcpServer: 'claude', model: 'claude-sonnet-4-6', costModelClass: 'subscription' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="claude-worker"]');
+    assert.ok(card, 'claude-worker card should render');
+    const notice = card.querySelector('.routing-subscription-notice');
+    assert.ok(!notice || notice.hidden, 'anthropic is native under claude-code -> no visible notice even with transport mcp + cost subscription');
+    const fields = card.querySelector('.routing-slot-fields');
+    assert.ok(fields, 'slot body should render');
+    assert.ok(!fields.querySelector('[data-field-key$=".transport"]'), 'Transport field should not render for the native vendor');
+    assert.ok(!fields.querySelector('[data-field-key$=".mcpServer"]'), 'MCP server field should not render for the native vendor');
+    assert.ok(!fields.querySelector('[data-field-key$=".credentialEnv"]'), 'Credential env field should not render for the native vendor');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p26-t1: switching an agent slot to the native vendor collapses to the native route and omits it from the posted save; switching back to a foreign vendor restores the bridge fields', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'kimi-reviewer',
+          name: 'Kimi Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'moonshot', transport: 'mcp', mcpServer: 'kimi', model: 'kimi-k2', costModelClass: 'local' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'moonshot'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    assert.ok(card, 'kimi-reviewer card should render, expanded (routed foreign vendor)');
+    let vendorSel = card.querySelector('.routing-vendor-select');
+    assert.ok(vendorSel, 'vendor select should render');
+    assert.ok(card.querySelector('[data-field-key$=".mcpServer"]'), 'bridge MCP server field should render for the foreign vendor');
+
+    // Switch the vendor to the native one (anthropic under claude-code).
+    vendorSel.value = 'anthropic';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    assert.ok(card, 'kimi-reviewer card should still render after switching to the native vendor');
+    const providerCheckbox = card.querySelector('.agent-provider-checkbox');
+    assert.ok(providerCheckbox && !providerCheckbox.checked, '"Use another provider" should default back to unchecked for the native vendor');
+    assert.ok(!card.querySelector('.routing-slot-fields'), 'the editor (and its bridge fields) should collapse once the native vendor is selected');
+
+    const saveBtn = card.querySelector('.agent-card-save-btn');
+    assert.ok(saveBtn, 'per-card Save button should render');
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    const savedKimiSlot = saveMsg.profile && saveMsg.profile.agents && saveMsg.profile.agents['kimi-reviewer'];
+    // p26-t1 fix: the previously-picked model/tier is preserved across the
+    // native-vendor collapse, so the posted entry (if any) is at most a
+    // sparse { model } — never a vendor/transport/mcpServer backend block.
+    assert.ok(!savedKimiSlot || !savedKimiSlot.vendor, 'the posted save payload must carry no vendor/backend block for kimi-reviewer once it uses the native route');
+    assert.ok(!savedKimiSlot || !savedKimiSlot.transport, 'the posted save payload must carry no transport for kimi-reviewer once it uses the native route');
+
+    // Re-expand and switch back to a foreign vendor: bridge fields return.
+    const overrideOrCheckbox = card.querySelector('.agent-provider-checkbox, .routing-override-btn');
+    if (overrideOrCheckbox && overrideOrCheckbox.type === 'checkbox') {
+      overrideOrCheckbox.checked = true;
+      overrideOrCheckbox.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    } else if (overrideOrCheckbox) {
+      overrideOrCheckbox.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    }
+    await h.flush();
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    vendorSel = card.querySelector('.routing-vendor-select');
+    vendorSel.value = 'moonshot';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    // The model/tier preserved across the native collapse means slotHasContent
+    // is now true, so re-checking "Use another provider" no longer re-clones
+    // transport "mcp" from the backend (that reclone is gated on an empty
+    // draft) — the meaningful assertion here is that the bridge Transport
+    // and credential-env fields are back (no longer suppressed as "native"),
+    // not the exact transport value, which now depends on what the draft
+    // already carried.
+    assert.ok(card.querySelector('[data-field-key$=".transport"]'), 'bridge Transport field should reappear once a foreign vendor is selected again');
+    assert.ok(card.querySelector('[data-field-key$=".credentialEnv"]'), 'bridge credential env field should reappear once a foreign vendor is selected again');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p26-t1 fix: codex-reviewer under codex shows the "(native to this harness)" backend help text, checkbox unchecked', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'codex', source: 'execution', fileValue: 'codex', running: 'codex', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'codex-reviewer',
+          name: 'Codex Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          vendor: 'openai',
+          backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    assert.ok(card, 'codex-reviewer card should render under codex');
+    const providerCheckbox = card.querySelector('.agent-provider-checkbox');
+    assert.ok(providerCheckbox, 'provider checkbox should render');
+    assert.equal(providerCheckbox.checked, false, 'native hand-written-backend slot must not show a checked "Use another provider" checkbox');
+    assert.equal(providerCheckbox.disabled, true, 'checkbox stays disabled for a hand-written backend');
+    const helpSpan = card.querySelector('.delegation-mode-option-help');
+    assert.ok(helpSpan, 'help text should render');
+    assert.match(helpSpan.textContent, /native to this harness/, 'help text should read "native to this harness" for openai under codex');
+    assert.ok(!/via MCP \(hand-written\)/.test(helpSpan.textContent), 'help text must not still claim an MCP bridge for the native vendor');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p26-t1 fix: switching an agent slot to the native vendor preserves a previously-picked model/tier in the posted save', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'kimi-reviewer',
+          name: 'Kimi Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'moonshot', transport: 'mcp', mcpServer: 'kimi', model: 'kimi-k2', costModelClass: 'local' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'moonshot'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    const vendorSel = card.querySelector('.routing-vendor-select');
+    assert.ok(vendorSel, 'vendor select should render');
+
+    vendorSel.value = 'anthropic';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    const saveBtn = card.querySelector('.agent-card-save-btn');
+    assert.ok(saveBtn, 'per-card Save button should render');
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    const savedSlot = saveMsg.profile && saveMsg.profile.agents && saveMsg.profile.agents['kimi-reviewer'];
+    assert.ok(savedSlot, 'the previously-picked model must still be saved (a sparse {model} entry), not dropped entirely');
+    assert.equal(savedSlot.model, 'kimi-k2', 'the tier/model picked before switching to the native vendor must be preserved');
+    assert.ok(!savedSlot.vendor, 'no vendor/backend-block fields should be posted for the native route');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p25-t4: Default fallback picker round-trips defaultFallback through the posted save (opencode, full density)', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [],
+      presets: {
+        vendors: ['anthropic', 'openai', 'google'],
+        models: [{ id: 'openai/gpt-5.4-mini', vendor: 'openai', costModelClass: 'metered', label: 'OpenAI · gpt-5.4-mini' }],
+      },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const vendorSel = h.doc.querySelector('[data-field-key="defaultFallback.vendor"]');
+    assert.ok(vendorSel, 'Default fallback vendor select should render in full density');
+    vendorSel.value = 'openai';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    const modelSel = h.doc.querySelector('[data-field-key="defaultFallback.model"]');
+    assert.ok(modelSel, 'Default fallback model field should render once a vendor is chosen');
+    modelSel.value = 'openai/gpt-5.4-mini';
+    modelSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    const saveBtn = h.doc.getElementById('routing-save-btn');
+    assert.ok(saveBtn, 'routing modal Save button should exist');
+    assert.equal(saveBtn.disabled, false, 'Save should be enabled — openai is a dispatchable vendor');
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    assert.equal(saveMsg.profile.defaultFallback && saveMsg.profile.defaultFallback.vendor, 'openai');
+    assert.equal(saveMsg.profile.defaultFallback.model, 'openai/gpt-5.4-mini');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p25-t4: an undispatchable fallback vendor warns and disables Save under codex, but not under claude-code', async () => {
+  async function runWithHarness(harness: string) {
+    const h = await bootObjScaleHarness();
+    try {
+      h.dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'flat',
+          delegationHealth: {},
+          hookHealth: { healthy: true, issueCount: 0 },
+          contextBudget: null,
+          harness: { effective: harness, source: 'execution', fileValue: harness, running: harness, mismatch: false, options: [], requiresRestart: false },
+        },
+      });
+      const menuRoutingBtn = h.doc.getElementById('menu-routing');
+      menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+      await h.flush();
+
+      const routingPayload = {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [
+          {
+            id: 'coding-specialist',
+            name: 'Coding Specialist',
+            provenance: 'explicit',
+            handWrittenBackend: false,
+            backend: { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'subscription' },
+            source: 'routing',
+          },
+        ],
+        presets: { vendors: ['anthropic', 'google'], models: [] },
+        envProbe: {},
+        errors: [],
+      };
+      h.dispatch({ type: 'routing', payload: routingPayload });
+      h.tick(3);
+      await h.flush();
+      assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+      const card = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+      assert.ok(card, 'coding-specialist card should render');
+      const checkbox = card.querySelector('.agent-provider-checkbox');
+      assert.ok(checkbox, 'provider checkbox should render');
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+      await h.flush();
+
+      const card2 = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+      const fallbackDetails = card2.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"]');
+      assert.ok(fallbackDetails, 'fallback editor should render once expanded');
+      const addBtn = fallbackDetails.querySelector('.routing-add-fallback-btn');
+      addBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+      await h.flush();
+
+      const card3 = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+      const fbVendorSel = card3.querySelector('[data-field-key="agent:coding-specialist.fallback[0].vendor"]');
+      assert.ok(fbVendorSel, 'fallback entry 0 vendor select should render');
+      fbVendorSel.value = 'google';
+      fbVendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+      await h.flush();
+
+      const warning = h.doc.querySelector('.routing-fallback-dispatch-warning');
+      const saveBtn = h.doc.getElementById('routing-save-btn');
+      return { warningPresent: !!warning, saveDisabled: !!(saveBtn && saveBtn.disabled) };
+    } finally {
+      h.win.close();
+    }
+  }
+
+  const codexResult = await runWithHarness('codex');
+  assert.equal(codexResult.warningPresent, true, 'codex + google fallback with no GEMINI_API_KEY should warn');
+  assert.equal(codexResult.saveDisabled, true, 'Save should be disabled while the warning is present');
+
+  const claudeResult = await runWithHarness('claude-code');
+  assert.equal(claudeResult.warningPresent, false, 'claude-code has no cross-vendor dispatcher gate, so no warning');
+  assert.equal(claudeResult.saveDisabled, false, 'Save should stay enabled under claude-code');
+});
+
+test('p27-t5: compact fallback chain rows — one-line entries, details closed/open per state', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'codex', source: 'execution', fileValue: 'codex', running: 'codex', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      profile: {
+        agents: {
+          'coding-specialist': {
+            vendor: 'openai', transport: 'claude-native', model: 'gpt-6-astra', costModelClass: 'subscription',
+            fallback: [
+              { vendor: 'anthropic', model: 'claude-haiku', transport: 'claude-native', costModelClass: 'metered' },
+              { vendor: 'google', model: 'gemini-2.5-pro', transport: 'claude-native', costModelClass: 'subscription' },
+            ],
+          },
+        },
+      },
+      agents: [
+        {
+          id: 'coding-specialist',
+          name: 'Coding Specialist',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'openai', transport: 'claude-native', model: 'gpt-6-astra', costModelClass: 'subscription' },
+          source: 'routing',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai', 'google'], models: [] },
+      envProbe: {},
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    assert.ok(card, 'coding-specialist card should render');
+    const fallbackDetails = card.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"]');
+    assert.ok(fallbackDetails, 'fallback chain details should render');
+
+    const rows = fallbackDetails.querySelectorAll('.routing-fallback-item-line');
+    assert.equal(rows.length, 2, 'a two-entry chain should render two one-line rows');
+
+    const row0 = rows[0];
+    assert.equal(row0.querySelector('.routing-fallback-position-badge').textContent, '#1', 'row 0 shows position badge #1');
+    const summary0 = row0.querySelector('.routing-slot-summary-line');
+    assert.ok(summary0, 'row 0 should reuse buildSlotSummaryLine');
+    assert.match(summary0.textContent, /anthropic .* claude-haiku \(fb\)/, 'row 0 summary includes vendor/model and (fb) suffix');
+    assert.ok(row0.querySelector('.routing-inline-link-btn'), 'row 0 should render up/down/remove controls');
+
+    const row1 = rows[1];
+    assert.match(row1.querySelector('.routing-slot-summary-line').textContent, /google .* gemini-2\.5-pro \(fb\)/, 'row 1 summary shows entry 2 vendor/model');
+
+    const entryDetailsList = fallbackDetails.querySelectorAll('.routing-fallback-entry-details');
+    assert.equal(entryDetailsList.length, 2, 'each entry gets its own per-entry field details');
+    assert.equal(entryDetailsList[0].open, false, 'entry 0 (no dispatch warning, not empty) stays closed by default');
+    // entry 1 is google under codex with no GEMINI_API_KEY -> hard dispatch warning -> auto-opens.
+    assert.equal(entryDetailsList[1].open, true, 'entry 1 with a blocking dispatch warning under codex opens by default');
+    assert.ok(fallbackDetails.querySelector('.routing-fallback-dispatch-warning'), 'dispatch warning should render for the undispatchable entry');
+
+    // Add a third, empty entry and confirm its details opens by default.
+    const addBtn = fallbackDetails.querySelector('.routing-add-fallback-btn');
+    addBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const card2 = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    const fallbackDetails2 = card2.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"]');
+    const entryDetailsList2 = fallbackDetails2.querySelectorAll('.routing-fallback-entry-details');
+    assert.equal(entryDetailsList2.length, 3, 'a third entry should render after Add fallback');
+    assert.equal(entryDetailsList2[2].open, true, 'a newly added, still-empty entry opens its field details by default');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p27-t1: bridge notice only when the bridge is missing', async () => {
+  async function buildCard(agentOverrides: Record<string, unknown>, mcpServers?: Array<{ id: string; installed: boolean }>) {
+    const h = await bootObjScaleHarness();
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    if (mcpServers) {
+      h.dispatch({ type: 'mcp', servers: mcpServers });
+    }
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'test-agent',
+          name: 'Test Agent',
+          provenance: 'explicit',
+          source: 'file',
+          ...agentOverrides,
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+    const card = h.doc.querySelector('.routing-agent-card[data-agent-id="test-agent"]');
+    return { h, card };
+  }
+
+  // (a) hand-written backend + mcpServer "codex" -> bridged-connected: status row only.
+  {
+    const { h, card } = await buildCard({
+      handWrittenBackend: true,
+      backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' },
+    });
+    try {
+      assert.ok(card, 'card should render');
+      const notice = card.querySelector('.routing-subscription-notice');
+      assert.ok(notice && !notice.hidden, 'notice wrapper visible (hosting status row)');
+      const statusLine = notice.querySelector('.routing-subscription-bridge-status');
+      assert.equal(statusLine.textContent, 'Bridged via Codex MCP - connected.', 'bridged-connected status line reads verbatim per section 5');
+      assert.ok(notice.querySelector('.routing-subscription-notice-copy').hidden, 'Copy request button hidden in bridged-connected state');
+      assert.ok(notice.querySelector('.routing-subscription-request-details').hidden, '"Show request" details hidden in bridged-connected state');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // (a-2) same bridged slot, but the mcpServers catalog reports the server as NOT installed
+  // -> amber "MCP server not installed." wording instead of "connected." (p27-t4 follow-up).
+  {
+    const { h, card } = await buildCard(
+      {
+        handWrittenBackend: true,
+        backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' },
+      },
+      [{ id: 'codex', installed: false }]
+    );
+    try {
+      const notice = card.querySelector('.routing-subscription-notice');
+      const statusLine = notice.querySelector('.routing-subscription-bridge-status');
+      assert.equal(statusLine.textContent, 'Bridged via Codex MCP - MCP server not installed.', 'not-installed status line reads verbatim');
+      assert.ok(statusLine.classList.contains('theme-review-retry-warning'), 'not-installed status line uses the amber footnote class');
+      assert.ok(notice.querySelector('.routing-subscription-notice-copy').hidden, 'Copy request button stays hidden in bridged-connected (not-installed) state');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // (b) foreign subscription slot with no backend block -> bridged-missing: status row + one Copy request button, no textarea rendered by default.
+  {
+    const { h, card } = await buildCard({
+      handWrittenBackend: false,
+      backend: { vendor: 'openai', transport: 'mcp', model: 'gpt-6-astra', costModelClass: 'subscription' },
+    });
+    try {
+      assert.ok(card, 'card should render');
+      const notice = card.querySelector('.routing-subscription-notice');
+      assert.ok(notice && !notice.hidden, 'notice should show for a foreign subscription slot with no bridge set up');
+      const statusLine = notice.querySelector('.routing-subscription-bridge-status');
+      assert.equal(statusLine.textContent, 'Bridge via Codex MCP not installed.', 'bridged-missing status line names the CLI per section 5');
+      const copyBtn = notice.querySelector('.routing-subscription-notice-copy');
+      assert.ok(copyBtn && !copyBtn.hidden, 'exactly one Copy request button visible in bridged-missing state');
+      assert.equal(notice.querySelectorAll('.routing-subscription-notice-copy').length, 1, 'exactly one Copy request button rendered');
+      const details = notice.querySelector('.routing-subscription-request-details');
+      assert.ok(details && !details.hidden, '"Show request" details present');
+      assert.equal(details.open, false, '"Show request" details closed by default -- no textarea visible by default');
+
+      // Clicking Copy request copies the generated prompt text and shows a
+      // brief "Copied" confirmation on the button (p27-t4).
+      const clipboardCalls: string[] = [];
+      (h.win.navigator as any).clipboard = {
+        writeText: (text: string) => { clipboardCalls.push(text); return Promise.resolve(); },
+      };
+      copyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+      await h.flush();
+      assert.equal(clipboardCalls.length, 1, 'clipboard.writeText called once');
+      assert.match(clipboardCalls[0], /^Set up the /, 'copied text is the generated request prompt');
+      assert.equal(copyBtn.textContent, 'Copied', 'button label swaps to "Copied" after copying');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // (c) native-vendor slot -> neither notice nor status line (p26 rule unchanged).
+  {
+    const { h, card } = await buildCard({
+      handWrittenBackend: false,
+      backend: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'metered' },
+    });
+    try {
+      assert.ok(card, 'card should render');
+      const notice = card.querySelector('.routing-subscription-notice');
+      assert.ok(!notice || notice.hidden, 'no visible notice for a native vendor slot');
+    } finally {
+      h.win.close();
+    }
+  }
+});
+
+test('p27-t3: summary line format and Connection <details> collapse per slot state', async () => {
+  async function buildCard(agentId: string, agentOverrides: Record<string, unknown>, mcpServers?: Array<{ id: string; installed: boolean }>) {
+    const h = await bootObjScaleHarness();
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    if (mcpServers) {
+      h.dispatch({ type: 'mcp', servers: mcpServers });
+    }
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: agentId,
+          name: agentId,
+          provenance: 'explicit',
+          source: 'file',
+          ...agentOverrides,
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+    const card = h.doc.querySelector(`.routing-agent-card[data-agent-id="${agentId}"]`);
+    assert.ok(card, `${agentId} card should render`);
+    const line = card.querySelector('.routing-slot-summary-line');
+    assert.ok(line, `${agentId} summary line should render`);
+    const idSpan = line.querySelector('.routing-slot-summary-vendor-model');
+    const text = idSpan.textContent + line.querySelector('.routing-slot-summary-rest').textContent;
+    const details = card.querySelector('.routing-connection-details');
+    return { h, card, line, idSpan, text, details };
+  }
+
+  // native: claude-worker under claude-code -> "native" route, no accent, no Connection <details> at all.
+  {
+    const { h, idSpan, text, details } = await buildCard('claude-worker', {
+      handWrittenBackend: false,
+      backend: { vendor: 'anthropic', transport: 'claude-native', model: 'claude-sonnet-4-6', costModelClass: 'metered' },
+    });
+    try {
+      assert.equal(text, 'anthropic · claude-sonnet-4-6 · native · metered · 0 fallbacks');
+      assert.ok(!idSpan.className.includes('agent-accent-foreign'), 'native vendor gets no accent');
+      assert.ok(!details, 'Connection <details> must be absent entirely for a native-vendor slot');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // bridged-installed: codex-reviewer, hand-written backend + mcpServer, catalog says installed -> Connection closed.
+  {
+    const { h, idSpan, text, details } = await buildCard(
+      'codex-reviewer',
+      {
+        handWrittenBackend: true,
+        backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex-mcp', model: 'gpt-6-astra', costModelClass: 'subscription' },
+      },
+      [{ id: 'codex-mcp', installed: true }]
+    );
+    try {
+      assert.equal(text, 'openai · gpt-6-astra · bridged via MCP codex-mcp · subscription · 0 fallbacks');
+      assert.ok(idSpan.className.includes('agent-accent-foreign'), 'openai under claude-code is foreign -> accented');
+      assert.ok(details, 'Connection <details> should render for a bridged slot');
+      assert.equal(details.open, false, 'bridged-installed (bridge already set up) starts closed');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // bridged-missing: foreign subscription slot, mcp transport, no mcpServer/no hand-written backend -> Connection open.
+  {
+    const { h, idSpan, text, details } = await buildCard('gemini-reviewer', {
+      handWrittenBackend: false,
+      backend: { vendor: 'google', transport: 'mcp', model: 'gemini-2.5-pro', costModelClass: 'subscription' },
+    });
+    try {
+      assert.equal(text, 'google · gemini-2.5-pro · bridged via MCP (not installed) · subscription · 0 fallbacks');
+      assert.ok(idSpan.className.includes('agent-accent-foreign'), 'google under claude-code is foreign -> accented');
+      assert.ok(details, 'Connection <details> should render for a bridged-missing slot');
+      assert.equal(details.open, true, 'bridged-missing (needs a bridge with none set up) starts open');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // foreign-endpoint: kimi-reviewer, openai-compatible transport, local billing -> no bridge needed, Connection closed.
+  {
+    const { h, idSpan, text, details } = await buildCard('kimi-reviewer', {
+      handWrittenBackend: false,
+      backend: { vendor: 'moonshot', transport: 'openai-compatible', model: 'kimi-k2', costModelClass: 'local' },
+    });
+    try {
+      assert.equal(text, 'moonshot · kimi-k2 · OpenAI-compatible endpoint · local · 0 fallbacks');
+      assert.ok(idSpan.className.includes('agent-accent-foreign'), 'moonshot under claude-code is foreign -> accented');
+      assert.ok(details, 'Connection <details> should render for a foreign-endpoint slot');
+      assert.equal(details.open, false, 'foreign-endpoint with no dispatch warning starts closed');
+    } finally {
+      h.win.close();
+    }
+  }
+});
+
+test('p27-t3 round 2: a manually-toggled Connection <details> survives a structural rebuild', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    // foreign-endpoint: needsBridge() is false, so this starts closed by
+    // default — a clean signal that any later `open === true` came from the
+    // user's manual toggle surviving the rebuild, not the computed default.
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'kimi-reviewer',
+          name: 'kimi-reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'moonshot', transport: 'openai-compatible', model: 'kimi-k2', costModelClass: 'local' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    let details = card.querySelector('.routing-connection-details');
+    assert.equal(details.open, false, 'starts closed (no bridge needed for an openai-compatible slot)');
+    details.open = true;
+    details.dispatchEvent(new h.win.Event('toggle', { bubbles: true }));
+
+    // Trigger a structural rebuild (renderRoutingModal) via a field change
+    // that calls onStructural — a keyword edit does not; changing the
+    // vendor select does.
+    const vendorSel = card.querySelector('[data-field-key="agent:kimi-reviewer.vendor"]');
+    assert.ok(vendorSel, 'vendor select should render inside the open Connection details');
+    vendorSel.value = 'moonshot';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    card = h.doc.querySelector('.routing-agent-card[data-agent-id="kimi-reviewer"]');
+    details = card.querySelector('.routing-connection-details');
+    assert.ok(details, 'Connection <details> should still render after the rebuild');
+    assert.equal(details.open, true, 'manual open toggle should survive the structural rebuild');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p27-t3 round 2: orchestrator, defaults, and default-fallback editors each show a summary line (opencode, full density)', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: { vendor: 'openai', model: 'gpt-6-astra' }, source: 'file' },
+      agents: [],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    function summaryLineFor(headingText: string) {
+      const sections = Array.from(h.doc.querySelectorAll('.settings-section')) as Element[];
+      const section = sections.find((s) => s.querySelector('.settings-heading')?.textContent === headingText);
+      assert.ok(section, `"${headingText}" section should render`);
+      return section!.querySelector('.routing-slot-summary-line');
+    }
+
+    assert.ok(summaryLineFor('Orchestrator'), 'orchestrator editor should show a summary line');
+    assert.ok(summaryLineFor('Default for all agents'), 'defaults editor should show a summary line');
+    assert.ok(summaryLineFor('Default fallback'), 'default-fallback editor should show a summary line');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p27-t3 round 2: an empty draft slot falls back to the resolved vendor/model the old "Routed to" chip used', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    // Full density (opencode) never clones the backend into the draft
+    // slot up front (only classic density's isRouted branch does that) —
+    // routingDraft.agents[id] starts as a genuinely empty {} here, while
+    // the payload still carries the resolved backend the old "Routed to
+    // <vendor>/<model>" chip read from (via settingsAgentsById's
+    // vendor/resolvedModel fallback, since no `agents` entry was sent in
+    // the settings payload above).
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'codex-reviewer',
+          name: 'codex-reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: false,
+          backend: { vendor: 'openai', model: 'gpt-6-astra' },
+          source: 'file',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const row = h.doc.querySelector('.routing-agent-row[data-agent-id="codex-reviewer"]');
+    assert.ok(row, 'codex-reviewer row should render');
+    const slotTd = row.querySelector('.routing-slot-td');
+    const line = slotTd.querySelector('.routing-slot-summary-line');
+    assert.ok(line, 'summary line should render even for an empty draft slot');
+    const text = line.textContent;
+    assert.ok(!text.includes('unknown model'), 'should not show "unknown model" when the backend resolves a real model');
+    assert.match(text, /gpt-6-astra/, 'summary line should show the resolved model from routingAgent.backend');
+    assert.match(text, /openai/, 'summary line should show the resolved vendor from routingAgent.backend');
   } finally {
     h.win.close();
   }
