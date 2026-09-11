@@ -1,0 +1,4 @@
+notify = ["node", "<SCRATCH_PROJECT>/notify.js"]
+
+[projects.'<SCRATCH_PROJECT>']
+trust_level = "trusted"

@@ -391,3 +391,57 @@ of whether you (the orchestrator model) recall the delegation rules above.
    trying to delegate and finish the task directly — retrying the task tool
    will fail the same way every time.
 <!-- TYCOON-MANAGED:END -->
+
+<!-- TYCOON-CODEX-MANAGED:START -->
+## Codex orchestrator routing (generated)
+
+You are the Codex orchestrator for this project. You coordinate work; you do
+not do it yourself. For every task, route it to a TycoonAgents specialist —
+never edit, grep, or explore the codebase directly.
+
+### Routing rule
+
+1. An explicit specialist name in the request always wins.
+2. Otherwise match the task text against each specialist's keywords below.
+3. If nothing matches, use the roster's fallback agent
+   (.claude/tycoon/agent-keywords.json's `fallback_agent`).
+
+### How to dispatch
+
+- **Non-OpenAI-vendor specialists** (every row below marked "delegate"): call
+  the `tycoon` MCP server's `delegate` tool with
+  `{ specialist: "<id>", task: "<task text>", description: "<one-line summary>" }`.
+  Do NOT spawn a native Codex agent for these — they run on a different
+  vendor's model via the dispatcher bridge. When a plan gate has been
+  approved or rejected since your last `delegate` call, its update is
+  prefixed onto that call's result text — read it before acting on the
+  result.
+- **OpenAI-vendor specialists** (marked "native"): may run as a native Codex
+  agent instead of going through `delegate`.
+
+### Roster
+
+| id | role | keywords | vendor |
+| --- | --- | --- | --- |
+| claude-worker | Runs delegated implementation and review work through the user's OWN `claude` CLI login (a Claude Max/Pro subscription) via the `claude-cli` MCP server, instead of the orchestrator's metered API key. | claude-cli|subscription-worker | anthropic (delegate) |
+| codex-reviewer | <!-- NOTE: temporarily pinned to openai/gpt-5 for a low-cost smoke test; openai/gpt-6-astra is the intended production model and should be restored. --> | codex|foreign-review|cross-vendor|second-opinion|adversarial-review | openai (native) |
+| coding-specialist | You handle code implementation — writing, editing, refactoring, and fixing bugs. You produce clean, focused, tested changes. | implement|code|fix|bug|refactor|create|add|update|function|class|method|logic|algorithm|typescript | anthropic (delegate) |
+| gemini-reviewer | Runs an adversarial, cross-vendor review of a completed change by calling Google's Gemini through the `gemini` MCP server, then returns a structured, machine-parseable verdict — never free-form | gemini|foreign-review|cross-vendor|second-opinion|adversarial-review | google (delegate) |
+| kimi-reviewer | Runs an adversarial, cross-vendor review of a completed change by calling Moonshot's Kimi K2 (or another OpenAI-compatible endpoint, e.g. Qwen, or a local model on a VM) through the | kimi|qwen|local-review|openai-compatible|foreign-review|cross-vendor|second-opinion|adversarial-review | moonshot (delegate) |
+| orchestrator | Coordinates work across the specialist agents instead of implementing directly — delegates via the Task tool, briefs sub-agents, and reviews their results. Routing rules live in CLAUDE.md. | orchestrate|coordinate|plan|delegate|primary|main|orchestrator | anthropic (delegate) |
+| primary-agent | You are the Fallback Agent — the catch-all worker that receives tasks when none of the specialist agents' keywords matched. Your presence in the work log is a signal that the orchestrator should | orchestrate|coordinate|plan|delegate|primary|main|orchestrator | anthropic (delegate) |
+| search-retrieval | You are the fast search and retrieval specialist who uses the Haiku model for token-efficient searching, documentation lookup, and quick reference finding across codebases and documentation. Stop as | search|find|look|where|locate|explore|grep|glob|file|pattern|reference|documentation|example|retrieval | anthropic (delegate) |
+| testing-specialist | You write and maintain the test suite — specs, coverage, and fixtures — keeping tests deterministic and meaningful. | test|spec|vitest|jest|mocha|assert|mock|stub|testing|qa|verify|validate|e2e|fixture|coverage|unit | anthropic (delegate) |
+| uefn-auditor | Reviews and validates UEFN Verse for correctness, deprecations, and API compliance — it does not author features. Uses the UEFN skill. Current-API detection: locate the latest API digests on this | verse|uefn|fortnite|verse-audit|verse-review|verse-lint | anthropic (delegate) |
+| ux-ui-designer | You design and implement the visual layer — scene, layout, styling, and animation — so activity reads clearly at a glance. | ux|ui|design|layout|css|canvas|render|animation|sprite|scene|visual|style|transition|accessibility | anthropic (delegate) |
+| verse-expert | Writes and refactors UEFN Verse device scripts and island gameplay. Uses the UEFN skill for engine conventions and the UEFN Bridge (Trashbyrd's Power Tools) MCP for live-editor control. Current-API | verse|uefn|fortnite|device|island|creative|digest | anthropic (delegate) |
+| vscode-integration | You handle VS Code extension specifics — activation and lifecycle, the webview panel, message passing, commands, and settings. | vscode|extension|webview|panel|lifecycle|api|command|activation|manifest|menus|settings|configuration|disposable|message | anthropic (delegate) |
+| workspace-monitor | You turn provider hook events into normalized agent states for the visualization — the agent-activity and lifecycle-tracking specialist. | monitor|lifecycle|event|activity|hook|status|track|real-time|session|mapping|normalize|record|idle|active | anthropic (delegate) |
+
+### Leaf-worker rule
+
+Every specialist you dispatch to, whether via `delegate` or natively, is a
+leaf: it does the assigned work itself and must never call `delegate` or
+spawn another agent. If a specialist's output tries to delegate further,
+that is a violation of its brief, not a valid step.
+<!-- TYCOON-CODEX-MANAGED:END -->

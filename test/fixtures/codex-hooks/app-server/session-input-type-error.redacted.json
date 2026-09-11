@@ -1,0 +1,321 @@
+[
+  {
+    "t": 1788936712452,
+    "dir": "send",
+    "obj": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "clientInfo": {
+          "name": "tycoon-spike",
+          "version": "0.0.1"
+        }
+      }
+    }
+  },
+  {
+    "t": 1788936712633,
+    "dir": "stderr",
+    "obj": {
+      "raw": "\u001b[2m2026-09-09T06:51:52.633067Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_app_server\u001b[0m\u001b[2m:\u001b[0m Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <PROJECT>\\.codex\n       To load project-local config, hooks, and exec policies, add <PROJECT> as a trusted project in <HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\codex_home\\config.toml.\n\n"
+    }
+  },
+  {
+    "t": 1788936712704,
+    "dir": "recv",
+    "obj": {
+      "id": 1,
+      "result": {
+        "userAgent": "tycoon-spike/0.153.0 (Windows 10.0.26200; x86_64) xterm-256color (tycoon-spike; 0.0.1)",
+        "codexHome": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\codex_home",
+        "platformFamily": "windows",
+        "platformOs": "windows"
+      }
+    }
+  },
+  {
+    "t": 1788936712704,
+    "dir": "recv",
+    "obj": {
+      "method": "configWarning",
+      "params": {
+        "summary": "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <PROJECT>\\.codex\n       To load project-local config, hooks, and exec policies, add <PROJECT> as a trusted project in <HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\codex_home\\config.toml.\n",
+        "details": null
+      },
+      "emittedAtMs": 1788936712703
+    }
+  },
+  {
+    "t": 1788936712704,
+    "dir": "recv",
+    "obj": {
+      "method": "remoteControl/status/changed",
+      "params": {
+        "status": "disabled",
+        "serverName": "JSMMSI",
+        "installationId": "e2b21848-cd7f-4595-b6ce-3905b52329b9",
+        "environmentId": null
+      },
+      "emittedAtMs": 1788936712703
+    }
+  },
+  {
+    "t": 1788936713462,
+    "dir": "send",
+    "obj": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "thread/start",
+      "params": {
+        "cwd": "<HOME>/AppData/Local/Temp/claude/<SCRATCHPAD>/<SCRATCHPAD>/scratchpad/app-server-spike/proj"
+      }
+    }
+  },
+  {
+    "t": 1788936713500,
+    "dir": "recv",
+    "obj": {
+      "id": 2,
+      "result": {
+        "thread": {
+          "id": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+          "extra": null,
+          "sessionId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "openai",
+          "model": "gpt-6-astra",
+          "reasoningEffort": null,
+          "createdAt": 1788936713,
+          "updatedAt": 1788936713,
+          "recencyAt": 1788936713,
+          "status": {
+            "type": "idle"
+          },
+          "path": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\codex_home\\sessions\\2026\\09\\08\\rollout-2026-09-08T23-51-53-01a084ef-f502-7d31-ac72-f35359ee9e4b.jsonl",
+          "cwd": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\proj",
+          "cliVersion": "0.153.0",
+          "source": "vscode",
+          "canAcceptDirectInput": true,
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": []
+        },
+        "model": "gpt-6-astra",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "cwd": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\proj",
+        "runtimeWorkspaceRoots": [
+          "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\proj"
+        ],
+        "instructionSources": [],
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "readOnly",
+          "networkAccess": false
+        },
+        "activePermissionProfile": {
+          "id": ":read-only",
+          "extends": null
+        },
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      }
+    }
+  },
+  {
+    "t": 1788936713500,
+    "dir": "recv",
+    "obj": {
+      "method": "thread/started",
+      "params": {
+        "thread": {
+          "id": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+          "extra": null,
+          "sessionId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+          "forkedFromId": null,
+          "parentThreadId": null,
+          "preview": "",
+          "ephemeral": false,
+          "section": null,
+          "sectionEnteredAt": null,
+          "projectId": null,
+          "historyMode": "paginated",
+          "modelProvider": "openai",
+          "model": "gpt-6-astra",
+          "reasoningEffort": null,
+          "createdAt": 1788936713,
+          "updatedAt": 1788936713,
+          "recencyAt": 1788936713,
+          "status": {
+            "type": "idle"
+          },
+          "path": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\codex_home\\sessions\\2026\\09\\08\\rollout-2026-09-08T23-51-53-01a084ef-f502-7d31-ac72-f35359ee9e4b.jsonl",
+          "cwd": "<HOME>\\AppData\\Local\\Temp\\claude\\<SCRATCHPAD>\\<SCRATCHPAD>\\scratchpad\\app-server-spike\\proj",
+          "cliVersion": "0.153.0",
+          "source": "vscode",
+          "canAcceptDirectInput": true,
+          "threadSource": null,
+          "agentNickname": null,
+          "agentRole": null,
+          "gitInfo": null,
+          "name": null,
+          "turns": []
+        }
+      },
+      "emittedAtMs": 1788936713500
+    }
+  },
+  {
+    "t": 1788936713500,
+    "dir": "recv",
+    "obj": {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+        "name": "codex_apps",
+        "status": "starting",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1788936713500
+    }
+  },
+  {
+    "t": 1788936714435,
+    "dir": "recv",
+    "obj": {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+        "name": "codex_apps",
+        "status": "ready",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1788936714435
+    }
+  },
+  {
+    "t": 1788936714971,
+    "dir": "info",
+    "obj": {
+      "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b"
+    }
+  },
+  {
+    "t": 1788936714971,
+    "dir": "send",
+    "obj": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "turn/start",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+        "input": [
+          {
+            "type": "input_text",
+            "text": "Return M0_OK"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "t": 1788936714972,
+    "dir": "recv",
+    "obj": {
+      "error": {
+        "code": -32600,
+        "message": "Invalid request: unknown variant `input_text`, expected one of `text`, `image`, `localImage`, `audio`, `localAudio`, `skill`, `mention`"
+      },
+      "id": 3
+    }
+  },
+  {
+    "t": 1788936722835,
+    "dir": "recv",
+    "obj": {
+      "method": "mcpServer/startupStatus/updated",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+        "name": "codex_apps",
+        "status": "ready",
+        "error": null,
+        "failureReason": null
+      },
+      "emittedAtMs": 1788936722835
+    }
+  },
+  {
+    "t": 1788936729983,
+    "dir": "send",
+    "obj": {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "method": "turn/start",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b",
+        "input": [
+          {
+            "type": "input_text",
+            "text": "Spawn two parallel sub-agents: one reads a.txt in the cwd and reports its contents, the other reads b.txt in the cwd and reports its contents. Then summarize both."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "t": 1788936729983,
+    "dir": "recv",
+    "obj": {
+      "error": {
+        "code": -32600,
+        "message": "Invalid request: unknown variant `input_text`, expected one of `text`, `image`, `localImage`, `audio`, `localAudio`, `skill`, `mention`"
+      },
+      "id": 4
+    }
+  },
+  {
+    "t": 1788936759992,
+    "dir": "send",
+    "obj": {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "method": "thread/archive",
+      "params": {
+        "threadId": "01a084ef-f502-7d31-ac72-f35359ee9e4b"
+      }
+    }
+  },
+  {
+    "t": 1788936759995,
+    "dir": "recv",
+    "obj": {
+      "error": {
+        "code": -32600,
+        "message": "no rollout found for thread id 01a084ef-f502-7d31-ac72-f35359ee9e4b"
+      },
+      "id": 5
+    }
+  },
+  {
+    "t": 1788936761013,
+    "dir": "exit",
+    "obj": {
+      "code": null,
+      "sig": "SIGTERM"
+    }
+  }
+]

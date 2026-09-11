@@ -1,0 +1,33 @@
+[hooks]
+
+[[hooks.session_start]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "session_start"], timeout_sec = 20 }]
+
+[[hooks.session_end]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "session_end"], timeout_sec = 20 }]
+
+[[hooks.user_prompt_submit]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "user_prompt_submit"], timeout_sec = 20 }]
+
+[[hooks.pre_tool_use]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "pre_tool_use"], timeout_sec = 20 }]
+
+[[hooks.post_tool_use]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "post_tool_use"], timeout_sec = 20 }]
+
+[[hooks.subagent_start]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "subagent_start"], timeout_sec = 20 }]
+
+[[hooks.subagent_stop]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "subagent_stop"], timeout_sec = 20 }]
+
+[[hooks.stop]]
+matcher = "*"
+hooks = [{ type = "command", command = ["node", "record.js", "stop"], timeout_sec = 20 }]
