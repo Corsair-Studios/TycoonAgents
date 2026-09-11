@@ -104,7 +104,13 @@
           "type": "string",
           "enum": [
             "claude-code",
-            "opencode"
+            "opencode",
+            "codex"
+          ],
+          "enumDescriptions": [
+            "Claude Code",
+            "OpenCode (Experimental) — new and not yet thoroughly tested.",
+            "Codex (Experimental) — new and not yet thoroughly tested."
           ],
           "default": "claude-code",
           "description": "Which coding agent harness TycoonAgents reads activity from: 'claude-code' watches .claude/tycoon/activity.jsonl written by the Claude Code hook; 'opencode' watches the OpenCode harness's activity log instead. The TYCOON_PROVIDER environment variable, if set, always overrides this setting."
@@ -135,6 +141,7 @@
     "vscode:prepublish": "npm run build && npm run copy:hookruntime && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:standalone && npm run test:compiled",
     "copy:hookruntime": "node scripts/copy-hook-runtime.mjs",
     "opencode:config": "node scripts/generate-opencode-config.mjs",
+    "generate:codex-config": "node scripts/generate-codex-config.mjs",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "build:webview": "node scripts/build-webview.mjs",
     "check:webview-sync": "node scripts/check-webview-sync.mjs",
@@ -159,6 +166,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@openai/codex": "0.153.0",
     "@types/node": "^20",
     "@types/vscode": "^1.85.0",
     "docx": "^8.5.0",
