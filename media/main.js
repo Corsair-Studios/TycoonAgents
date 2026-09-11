@@ -17248,7 +17248,7 @@ if (typeof module !== "undefined" && module.exports) {
   };
 
   var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
-  var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv"];
+  var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv", "useDefaultFallback"];
 
   var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
@@ -17760,6 +17760,20 @@ if (typeof module !== "undefined" && module.exports) {
     var billing = s.costModelClass || "metered";
     var fallbackCount = Array.isArray(s.fallback) ? s.fallback.length : 0;
     var fallbackText = fallbackCount + (fallbackCount === 1 ? " fallback" : " fallbacks");
+    // p31-t2: append whether routingDraft.defaultFallback applies to this
+    // slot — skipped for fallback-chain entries themselves and for the
+    // defaultFallback slot's own summary line (nothing "defaults" onto it).
+    if (!isFallbackEntry) {
+      var dfSlotForSummary = typeof routingDraft !== "undefined" && routingDraft && routingDraft.defaultFallback;
+      var isDefaultFallbackSelfForSummary = !!dfSlotForSummary && s === dfSlotForSummary;
+      if (!isDefaultFallbackSelfForSummary) {
+        if (s.useDefaultFallback === false) {
+          fallbackText += " · no default";
+        } else if (dfSlotForSummary && slotHasContent(dfSlotForSummary)) {
+          fallbackText += " + default";
+        }
+      }
+    }
 
     var line = document.createElement("p");
     line.className = "routing-slot-summary-line";
@@ -18445,6 +18459,52 @@ if (typeof module !== "undefined" && module.exports) {
       onStructural();
     });
     details.appendChild(addBtn);
+
+    // p31-t2: read-only "Default: <label>" row + opt-out checkbox, shown
+    // for EVERY slot (including subscription/MCP and backend-configured
+    // slots) — reads/writes routingDraft.defaultFallback (top-level, set by
+    // ensureDefaultFallbackDraft) and this slot's own `useDefaultFallback`.
+    var dfSlot = routingDraft && routingDraft.defaultFallback;
+    var isThisSlotTheDefault = !!dfSlot && slot === dfSlot;
+    var defaultRow = document.createElement("p");
+    defaultRow.className = "routing-default-fallback-row";
+    var defaultLabelSpan = document.createElement("span");
+    if (isThisSlotTheDefault) {
+      defaultLabelSpan.textContent = "Default: (this agent)";
+    } else if (dfSlot && slotHasContent(dfSlot)) {
+      defaultLabelSpan.className = "agent-accent-fallback";
+      defaultLabelSpan.textContent = "Default: " + (dfSlot.vendor || "unknown") + " · " + (dfSlot.model || "unknown model") + " (fb)";
+    } else {
+      defaultLabelSpan.textContent = "Default: none set";
+    }
+    defaultRow.appendChild(defaultLabelSpan);
+    details.appendChild(defaultRow);
+
+    var useDefaultLabel = document.createElement("label");
+    useDefaultLabel.className = "routing-use-default-fallback-label";
+    var useDefaultCheckbox = document.createElement("input");
+    useDefaultCheckbox.type = "checkbox";
+    useDefaultCheckbox.className = "routing-use-default-fallback-checkbox";
+    useDefaultCheckbox.checked = slot.useDefaultFallback !== false;
+    useDefaultCheckbox.disabled = isThisSlotTheDefault;
+    useDefaultCheckbox.addEventListener("change", function () {
+      if (useDefaultCheckbox.checked) {
+        delete slot.useDefaultFallback;
+      } else {
+        slot.useDefaultFallback = false;
+      }
+      onStructural();
+    });
+    useDefaultLabel.appendChild(useDefaultCheckbox);
+    useDefaultLabel.appendChild(document.createTextNode(" Use default fallback for this agent"));
+    details.appendChild(useDefaultLabel);
+
+    if (slot.useDefaultFallback === false && !isThisSlotTheDefault) {
+      var optOutNote = document.createElement("p");
+      optOutNote.className = "routing-defaults-help";
+      optOutNote.textContent = "This agent will fail after its own chain.";
+      details.appendChild(optOutNote);
+    }
 
     return details;
   }
@@ -19710,6 +19770,45 @@ if (typeof module !== "undefined" && module.exports) {
       routingContentEl.appendChild(errBox);
     }
 
+    // ── Default fallback (p25-t4, moved to top p31-t2) — full density
+    // only, rendered ABOVE the agent roster per docs/design/slot-editor-
+    // redesign.md. Top-level `defaultFallback` slot used at RESOLVE time by
+    // any slot whose own `fallback` is empty (see routingProfile.ts's
+    // defaultFallback doc comment) unless a slot's own `useDefaultFallback`
+    // is explicitly false. Never preset — an empty draft just means "None".
+    if (density === "full") {
+      var defaultFallbackSection = buildSection("Default fallback");
+      var defaultFallbackHelp = document.createElement("p");
+      defaultFallbackHelp.className = "routing-defaults-help";
+      defaultFallbackHelp.textContent = "Fires for any agent after its own fallback chain when it runs out of tokens or is unreachable. Agents can opt out below.";
+      defaultFallbackSection.appendChild(defaultFallbackHelp);
+      if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
+      defaultFallbackSection.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
+      var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
+      defaultFallbackSection.appendChild(defaultFallbackFieldsEl);
+      if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
+        defaultFallbackSection.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+        defaultFallbackSection.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+      }
+      var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
+      var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
+      if (defaultFallbackWarning) {
+        routingHasBlockingDispatchWarning = true;
+        defaultFallbackSection.appendChild(defaultFallbackWarning);
+      }
+      var clearDefaultFallbackBtn = document.createElement("button");
+      clearDefaultFallbackBtn.type = "button";
+      clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
+      clearDefaultFallbackBtn.textContent = "None";
+      clearDefaultFallbackBtn.disabled = !slotHasContent(routingDraft.defaultFallback);
+      clearDefaultFallbackBtn.addEventListener("click", function () {
+        routingDraft.defaultFallback = {};
+        renderRoutingModal();
+      });
+      defaultFallbackSection.appendChild(clearDefaultFallbackBtn);
+      routingContentEl.appendChild(defaultFallbackSection);
+    }
+
     // ── Orchestrator (p19-t1: read-only session-model card in both
     // densities; full-only slot/fallback editor appended below it) ──
     var orchestratorAgent = ((lastSettings && lastSettings.agents) || []).find(function (ag) { return ag.isOrchestrator; });
@@ -19771,43 +19870,6 @@ if (typeof module !== "undefined" && module.exports) {
       });
       defaultsSection.appendChild(clearDefaultsBtn);
       routingContentEl.appendChild(defaultsSection);
-    }
-
-    // ── Default fallback (p25-t4) — full density only. Top-level
-    // `defaultFallback` slot used at RESOLVE time by any slot whose own
-    // `fallback` is empty (see routingProfile.ts's defaultFallback doc
-    // comment). Never preset — an empty draft just means "None".
-    if (density === "full") {
-      var defaultFallbackSection = buildSection("Default fallback");
-      var defaultFallbackHelp = document.createElement("p");
-      defaultFallbackHelp.className = "routing-defaults-help";
-      defaultFallbackHelp.textContent = "Used when an agent's own fallback chain is empty. Choose None to leave it unset.";
-      defaultFallbackSection.appendChild(defaultFallbackHelp);
-      if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
-      defaultFallbackSection.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
-      var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
-      defaultFallbackSection.appendChild(defaultFallbackFieldsEl);
-      if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
-        defaultFallbackSection.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-        defaultFallbackSection.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-      }
-      var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
-      var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
-      if (defaultFallbackWarning) {
-        routingHasBlockingDispatchWarning = true;
-        defaultFallbackSection.appendChild(defaultFallbackWarning);
-      }
-      var clearDefaultFallbackBtn = document.createElement("button");
-      clearDefaultFallbackBtn.type = "button";
-      clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
-      clearDefaultFallbackBtn.textContent = "None";
-      clearDefaultFallbackBtn.disabled = !slotHasContent(routingDraft.defaultFallback);
-      clearDefaultFallbackBtn.addEventListener("click", function () {
-        routingDraft.defaultFallback = {};
-        renderRoutingModal();
-      });
-      defaultFallbackSection.appendChild(clearDefaultFallbackBtn);
-      routingContentEl.appendChild(defaultFallbackSection);
     }
 
     // ── Per-agent cards (unified: simple or full density) ──

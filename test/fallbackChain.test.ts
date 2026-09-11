@@ -14,8 +14,14 @@ import {
   resolveNextFallback,
   buildFallbackInstruction,
   FallbackState,
+  MAX_FALLBACK_DEPTH,
 } from "../src/core/fallbackChain";
+import { MAX_FALLBACK_DEPTH as ROUTING_PROFILE_MAX_FALLBACK_DEPTH } from "../src/core/routingProfile";
 import type { RoutingSlot } from "../src/core/routingProfile";
+
+test("MAX_FALLBACK_DEPTH stays in sync between fallbackChain.ts (local, zero-dependency copy) and routingProfile.ts (exported)", () => {
+  assert.equal(MAX_FALLBACK_DEPTH, ROUTING_PROFILE_MAX_FALLBACK_DEPTH);
+});
 
 test("isProviderFailure matches the documented quota/unavailable/unreachable patterns", () => {
   assert.equal(isProviderFailure("usage limit reached for this account"), true);
@@ -132,6 +138,94 @@ test("resolveNextFallback: defaultFallback chain is exhausted after its single e
   });
   assert.equal(result.exhausted, true);
   assert.equal(result.slot, null);
+});
+
+// p31-t1: routing-level default fallback fires at the bottom of every
+// chain (explicit chain exhausted, not just empty), gated per-slot by
+// useDefaultFallback and by MAX_FALLBACK_DEPTH.
+
+test("resolveNextFallback: explicit chain exhausted then defaultFallback fires", () => {
+  const defaultFallback: RoutingSlot = { vendor: "google", model: "google/gemini-2.5-pro" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: chain(), // length 2: openai, then moonshot (see chain())
+    attemptsSoFar: 2, // chain exhausted
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.slot?.model, "google/gemini-2.5-pro");
+  assert.equal(result.index, 2);
+});
+
+test("resolveNextFallback: useDefaultFallback false — exhausted chain does not fall through", () => {
+  const defaultFallback: RoutingSlot = { vendor: "moonshot", model: "moonshot/kimi-k2" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: chain(),
+    attemptsSoFar: 2,
+    defaultFallback,
+    useDefaultFallback: false,
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+  assert.match(result.reason ?? "", /useDefaultFallback is false/);
+});
+
+test("resolveNextFallback: defaultFallback equal to a chain member already attempted is not fired", () => {
+  const defaultFallback: RoutingSlot = { vendor: "moonshot", model: "moonshot/kimi-k2" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: chain(), // chain()[1] is moonshot/kimi-k2, see helper below
+    attemptsSoFar: 2,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+  assert.match(result.reason ?? "", /duplicates/);
+});
+
+test("resolveNextFallback: defaultFallback equal to the failing slot is not fired at chain end", () => {
+  const defaultFallback: RoutingSlot = { vendor: "anthropic", model: "anthropic/sonnet" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [{ vendor: "openai", model: "openai/gpt-5.4-mini" }],
+    attemptsSoFar: 1,
+    defaultFallback,
+    failingSlot: { vendor: "anthropic", model: "anthropic/sonnet" },
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+  assert.match(result.reason ?? "", /duplicates/);
+});
+
+test("resolveNextFallback: MAX_FALLBACK_DEPTH caps the default — a 3-deep explicit chain never falls through", () => {
+  const threeDeep: RoutingSlot[] = [
+    { vendor: "a", model: "a/1" },
+    { vendor: "b", model: "b/1" },
+    { vendor: "c", model: "c/1" },
+  ];
+  const defaultFallback: RoutingSlot = { vendor: "d", model: "d/1" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: threeDeep,
+    attemptsSoFar: 3, // chain exhausted at depth 3 == MAX_FALLBACK_DEPTH
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+  assert.match(result.reason ?? "", /MAX_FALLBACK_DEPTH/);
+});
+
+test("resolveNextFallback: no reason is set when defaultFallback resolves successfully", () => {
+  const defaultFallback: RoutingSlot = { vendor: "moonshot", model: "moonshot/kimi-k2" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 0,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.reason, undefined);
 });
 
 test("buildFallbackInstruction names the next model and position when not exhausted", () => {

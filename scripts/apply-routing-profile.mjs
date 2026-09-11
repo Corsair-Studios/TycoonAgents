@@ -527,9 +527,14 @@ function main() {
     const fallbackBackends = Array.isArray(slot.fallback)
       ? slot.fallback.map((fb) => routingSlotToBackend(fb))
       : undefined;
-    resolvedAgents[agentId] = fallbackBackends && fallbackBackends.length > 0
+    const resolvedEntry = fallbackBackends && fallbackBackends.length > 0
       ? { backend, fallback: fallbackBackends }
       : { backend };
+    // p31-t1: only emitted when explicitly false — absence means "default
+    // true" for every consumer (dispatcher, Claude hook), so an unset slot
+    // produces byte-identical output to before this field existed.
+    if (slot.useDefaultFallback === false) resolvedEntry.useDefaultFallback = false;
+    resolvedAgents[agentId] = resolvedEntry;
   }
 
   // Orchestrator slot: find the agent file whose frontmatter declares

@@ -185,6 +185,86 @@ test("PreToolUse re-dispatch: defaultFallback is never used when the slot has it
   assert.equal(spawn!.model, "google/gemini-2.5-pro");
 });
 
+// p31-t1: the routing-level defaultFallback now fires once an EXPLICIT
+// chain is exhausted too, not only when the slot has no chain at all —
+// gated by the per-slot useDefaultFallback switch on routing.resolved.json.
+
+test("PreToolUse re-dispatch: defaultFallback fires once an explicit 1-entry chain is exhausted", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(join(agentsDir, "coding-specialist.md"), "---\ndescription: Implements code.\nmodel: sonnet\n---\nBody.\n", "utf8");
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({
+      agents: { "coding-specialist": { fallback: [{ vendor: "google", model: "google/gemini-2.5-pro" }] } },
+      defaultFallback: { vendor: "moonshot", model: "moonshot/kimi-k2" },
+    }),
+    "utf8",
+  );
+  writeFileSync(
+    fallbackStatePath(root),
+    // attemptsSoFar 2: chain[0] already tried once (attempt 1), this is the
+    // second recorded failure -> resolver call uses attemptsSoFar-1 = 1,
+    // which is past the 1-entry explicit chain -> defaultFallback.
+    JSON.stringify({ "test-session-fb3": { "coding-specialist": { attemptsSoFar: 2 } } }),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "Task",
+    tool_input: { subagent_type: "coding-specialist", description: "implement widget", prompt: "write code" },
+    session_id: "test-session-fb3",
+  });
+
+  const records = readActivity(root);
+  const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+  assert.ok(spawn);
+  assert.equal(spawn!.vendor, "moonshot");
+  assert.equal(spawn!.model, "moonshot/kimi-k2");
+});
+
+test("PreToolUse re-dispatch: useDefaultFallback:false on the slot suppresses the default once its explicit chain is exhausted", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(join(agentsDir, "coding-specialist.md"), "---\ndescription: Implements code.\nmodel: sonnet\n---\nBody.\n", "utf8");
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({
+      agents: {
+        "coding-specialist": {
+          fallback: [{ vendor: "google", model: "google/gemini-2.5-pro" }],
+          useDefaultFallback: false,
+        },
+      },
+      defaultFallback: { vendor: "moonshot", model: "moonshot/kimi-k2" },
+    }),
+    "utf8",
+  );
+  writeFileSync(
+    fallbackStatePath(root),
+    JSON.stringify({ "test-session-fb4": { "coding-specialist": { attemptsSoFar: 2 } } }),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "Task",
+    tool_input: { subagent_type: "coding-specialist", description: "implement widget", prompt: "write code" },
+    session_id: "test-session-fb4",
+  });
+
+  const records = readActivity(root);
+  const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+  // Exhausted with no fallback -> no fallbackOf/fallbackDepth fields added,
+  // dispatch proceeds on the originally assigned model unchanged.
+  assert.ok(spawn);
+  assert.notEqual(spawn!.vendor, "moonshot");
+  assert.notEqual(spawn!.model, "moonshot/kimi-k2");
+});
+
 test("PostToolUse mcp__codex__* result with a usage-limit failure text emits a FallbackTriggered record and a fallback spawn attributed to the bound reviewer agent", () => {
   const root = setupProject();
   const agentsDir = join(root, ".claude", "agents");

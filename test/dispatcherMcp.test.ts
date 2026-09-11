@@ -386,6 +386,63 @@ test("handleDelegateTool: defaultFallback is used when the specialist has no cha
   }
 });
 
+// p31-t1: defaultFallback now fires at the bottom of an EXPLICIT chain too,
+// once it's exhausted — not only when the specialist has no chain at all.
+
+test("handleDelegateTool: defaultFallback fires once the specialist's own explicit chain is exhausted", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, {
+    version: 1,
+    agents: {
+      "coding-specialist": { fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }] },
+    },
+    defaultFallback: { vendor: "google", model: "google/gemini-2.5-pro" },
+  });
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    // Primary fails, its one explicit fallback entry also fails, so the
+    // third attempt must be the defaultFallback.
+    const result = await withStubFailure("429 rate limit", 2, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    assert.equal(result.isError, undefined);
+    const records = readActivityRecords(mod.resolveActivityFile());
+    const fallbackPre = records.find((r) => r.event === "PreToolUse" && r.fallbackDepth === 2);
+    assert.ok(fallbackPre, "expected a second-level fallback (the default) to be attempted");
+    assert.equal(fallbackPre!.vendor, "google");
+    assert.equal(fallbackPre!.model, "google/gemini-2.5-pro");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleDelegateTool: useDefaultFallback:false on the specialist's slot suppresses the default once its chain is exhausted", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, {
+    version: 1,
+    agents: {
+      "coding-specialist": {
+        fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }],
+        useDefaultFallback: false,
+      },
+    },
+    defaultFallback: { vendor: "google", model: "google/gemini-2.5-pro" },
+  });
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    const result = await withStubFailure("429 rate limit", 2, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    // Both the primary and its one explicit fallback fail; with the
+    // default suppressed there is nothing left, so the call must error.
+    assert.ok(result.isError, "expected the delegate call to fail once fallback is exhausted");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("handleDelegateTool: a non-failure adapter error does not trigger fallback, even with a chain configured", async () => {
   const dir = makeProjectDir();
   writeRoutingJson(dir, {

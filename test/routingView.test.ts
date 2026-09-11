@@ -109,6 +109,23 @@ function makeFakeImage(win: any) {
   };
 }
 
+/**
+ * p31-t2: the "Default fallback" section now renders above Orchestrator
+ * (docs/design/slot-editor-redesign.md), so a bare `.routing-slot-fields`
+ * (or `.routing-vendor-select`/`.routing-model-select`/etc.) query no
+ * longer reliably hits the orchestrator's own fields — it may hit the
+ * Default fallback slot's instead. Scope to the section whose <h2> reads
+ * "Orchestrator" (buildSection) rather than relying on document order.
+ */
+function orchestratorSection(doc: any) {
+  const heading = Array.from(doc.querySelectorAll('h2.settings-heading')).find(
+    (h: any) => h.textContent === 'Orchestrator'
+  ) as any;
+  const section = heading && heading.closest('section');
+  if (!section) throw new Error('Orchestrator section (h2.settings-heading) not found');
+  return section;
+}
+
 function buildRoutingPayload(overrides?: Partial<any>) {
   const base = {
     profile: null,
@@ -337,7 +354,7 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   assert.ok(setDot.className.includes('routing-env-dot--set'), 'ANTHROPIC_API_KEY is set in envProbe fixture');
 
   // ── Editing the orchestrator model + Save posts a clean profile ──
-  const orchModelSelect = doc.querySelector('.routing-slot-fields .routing-model-select') as any;
+  const orchModelSelect = orchestratorSection(doc).querySelector('.routing-model-select') as any;
   assert.ok(orchModelSelect, 'orchestrator model select should render');
   orchModelSelect.value = 'haiku';
   orchModelSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
@@ -386,7 +403,7 @@ test('Routing panel: renders fixture payload, edits model, saves a clean profile
   assertNoErrors('routingSaved + refresh');
 
   // ── Custom endpoint preset ──
-  const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+  const vendorSelect = orchestratorSection(doc).querySelector('.routing-vendor-select') as any;
   vendorSelect.value = 'custom-endpoint';
   vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
   await flush();
@@ -1115,13 +1132,13 @@ test('Routing panel: Custom endpoint provider name field sets slot.vendor and ro
     assertNoErrors('routing payload render');
 
     // ── Choose Custom endpoint, type a provider name ──
-    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    const vendorSelect = orchestratorSection(doc).querySelector('.routing-vendor-select') as any;
     vendorSelect.value = 'custom-endpoint';
     vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
     assertNoErrors('custom endpoint select');
 
-    const nameInput = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    const nameInput = orchestratorSection(doc).querySelector('.routing-vendor-name-input') as any;
     assert.ok(nameInput, 'Custom endpoint should reveal a Provider name input');
     nameInput.value = 'ollama-windows';
     nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));
@@ -1154,7 +1171,7 @@ test('Routing panel: Custom endpoint provider name field sets slot.vendor and ro
     await flush();
     assertNoErrors('reopen with a payload-declared vendor');
 
-    const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    const vendorSelectAfter = orchestratorSection(doc).querySelector('.routing-vendor-select') as any;
     assert.equal(vendorSelectAfter.value, 'ollama-windows', 'a vendor already present on the payload should be selectable directly, not dropped into Custom endpoint');
     const optionValues = Array.from(vendorSelectAfter.options).map((o: any) => o.value);
     assert.ok(optionValues.includes('ollama-windows'), 'ollama-windows should be a real <option> in the vendor select');
@@ -1165,7 +1182,7 @@ test('Routing panel: Custom endpoint provider name field sets slot.vendor and ro
     vendorSelectAfter.value = 'custom-endpoint';
     vendorSelectAfter.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
-    const nameInputAfter = doc.querySelector('.routing-slot-fields .routing-vendor-name-input') as any;
+    const nameInputAfter = orchestratorSection(doc).querySelector('.routing-vendor-name-input') as any;
     assert.ok(nameInputAfter, 'Provider name input should render under Custom endpoint');
     nameInputAfter.value = '';
     nameInputAfter.dispatchEvent(new win.Event('input', { bubbles: true }));
@@ -1675,7 +1692,7 @@ test('Routing panel: failed save -> close -> reopen -> a fresh routing payload r
     await flush();
     assertNoErrors('routing payload render');
 
-    const vendorSelect = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    const vendorSelect = orchestratorSection(doc).querySelector('.routing-vendor-select') as any;
     vendorSelect.value = 'custom-endpoint';
     vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
@@ -1708,7 +1725,7 @@ test('Routing panel: failed save -> close -> reopen -> a fresh routing payload r
     await flush();
     assertNoErrors('fresh routing payload after reopen');
 
-    const vendorSelectAfter = doc.querySelector('.routing-slot-fields .routing-vendor-select') as any;
+    const vendorSelectAfter = orchestratorSection(doc).querySelector('.routing-vendor-select') as any;
     assert.equal(vendorSelectAfter.value, 'openai', 'the fresh routing payload must rebuild the draft, not be suppressed by the stale prior-session failure flag');
   } finally {
     win.close();
@@ -1733,7 +1750,7 @@ test('Routing panel: picking a preset model sets cost class from the preset, in 
     await flush();
     assertNoErrors('routing payload render');
 
-    const modelSelect = doc.querySelector('.routing-slot-fields .routing-model-select') as any;
+    const modelSelect = orchestratorSection(doc).querySelector('.routing-model-select') as any;
     assert.ok(modelSelect, 'orchestrator model select should render');
     const costSelect = doc.querySelector('.routing-slot-fields select[data-field-key="orchestrator.costModelClass"]') as any;
     assert.equal(costSelect.value, 'metered', 'starts at the fixture cost class');
@@ -1745,7 +1762,7 @@ test('Routing panel: picking a preset model sets cost class from the preset, in 
 
     assert.equal(costSelect.value, 'subscription', 'selecting the big-pickle preset should update cost class in place');
     assert.equal(
-      doc.querySelector('.routing-slot-fields .routing-model-select'),
+      orchestratorSection(doc).querySelector('.routing-model-select'),
       modelSelect,
       'the fix must update the existing cost class select in place, not rebuild the whole slot'
     );
@@ -1787,7 +1804,7 @@ test('Routing panel: openai-compatible slot renders Endpoint URL env before API 
     // renders inside a <details class="routing-connection-details"> instead of as
     // direct children of .routing-slot-fields — see docs/design/slot-editor-redesign.md
     // section 2/10.1. The fields themselves, their order, and their content are unchanged.
-    const outerSlot = doc.querySelector('.routing-slot-fields') as any;
+    const outerSlot = orchestratorSection(doc).querySelector('.routing-slot-fields') as any;
     const connDetails = outerSlot.querySelector(':scope > .routing-connection-details') as any;
     assert.ok(connDetails, 'foreign-endpoint slot should render a Connection <details>');
     const labels = Array.from(connDetails.querySelectorAll(':scope > .routing-env-field label')).map((l: any) => l.textContent);

@@ -6632,6 +6632,26 @@ button.theme-review-preview:focus-visible::after {
   color: var(--muted);
 }
 
+/* p31-t2: read-only "Default: <label>" row + opt-out checkbox at the end
+   of every slot's fallback editor. */
+.routing-default-fallback-row {
+  font-size: 11px;
+  margin: 8px 0 2px;
+}
+
+.routing-use-default-fallback-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 2px;
+}
+
+.routing-use-default-fallback-checkbox {
+  margin: 0;
+}
+
 .routing-inline-link-btn {
   background: none;
   border: none;

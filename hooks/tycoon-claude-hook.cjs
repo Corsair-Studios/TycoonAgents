@@ -1680,15 +1680,15 @@ function main(raw) {
           const attemptsSoFar = (perSession[agentId] && perSession[agentId].attemptsSoFar) || 0;
           if (attemptsSoFar > 0) {
             const resolvedRouting = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
-            const chainRaw =
-              (resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[agentId] &&
-                resolvedRouting.agents[agentId].fallback) || [];
+            const resolvedAgentEntry = resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[agentId];
+            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || [];
             const chain = Array.isArray(chainRaw) ? chainRaw : [];
             const result = fallbackChain.resolveNextFallback({
               slotId: agentId,
               chain,
               attemptsSoFar: attemptsSoFar - 1,
               defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
+              useDefaultFallback: resolvedAgentEntry && resolvedAgentEntry.useDefaultFallback === false ? false : true,
               failingSlot: { model },
             });
             if (!result.exhausted && result.slot) {
@@ -1950,9 +1950,8 @@ function main(raw) {
             const resolvedRouting = readJsonSafe(
               path.join(tycoonDir, "routing.resolved.json")
             );
-            const chainRaw =
-              (resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[slotId] &&
-                resolvedRouting.agents[slotId].fallback) || [];
+            const resolvedAgentEntry = resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[slotId];
+            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || [];
             const chain = Array.isArray(chainRaw) ? chainRaw : [];
 
             const stateData = loadFallbackStateFile(tycoonDir);
@@ -1968,6 +1967,7 @@ function main(raw) {
               chain,
               attemptsSoFar: newAttempts - 1,
               defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
+              useDefaultFallback: resolvedAgentEntry && resolvedAgentEntry.useDefaultFallback === false ? false : true,
               failingSlot: { vendor: mcpBackend.vendor, model: mcpBackend.model },
             });
             const instruction = fallbackChain.buildFallbackInstruction({

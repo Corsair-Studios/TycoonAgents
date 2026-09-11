@@ -5,10 +5,16 @@
  * Attribution header - optional; end users may remove it.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FallbackState = void 0;
+exports.FallbackState = exports.MAX_FALLBACK_DEPTH = void 0;
 exports.isProviderFailure = isProviderFailure;
 exports.resolveNextFallback = resolveNextFallback;
 exports.buildFallbackInstruction = buildFallbackInstruction;
+// Mirrors routingProfile.ts's MAX_FALLBACK_DEPTH (also exported there for
+// validateSlot's own depth check). Duplicated as a literal, not imported,
+// because this module must stay zero-dependency (no fs/path pulled in via
+// routingProfile.ts) — it is require()'d directly by the CommonJS hooks
+// without routingProfile.js alongside it. Keep both values in sync by hand.
+exports.MAX_FALLBACK_DEPTH = 3;
 // ---------------------------------------------------------------------------
 // Plan p15-t1: shared fallback-chain resolver, consumed by BOTH hosts'
 // wiring (hooks/tycoon-opencode-plugin.ts, hooks/tycoon-claude-hook.cjs).
@@ -81,30 +87,54 @@ function isSameSlot(a, b) {
     return a.vendor === b.vendor && a.model === b.model && a.transport === b.transport;
 }
 function resolveNextFallback(input) {
-    const explicitChain = Array.isArray(input.chain) ? input.chain : [];
-    let chain = explicitChain;
-    let usingDefaultFallback = false;
-    if (chain.length === 0 && input.defaultFallback) {
-        chain = [input.defaultFallback];
-        usingDefaultFallback = true;
-    }
-    // p25-t3: self-loop guard — a synthesized [defaultFallback] chain is the
-    // only place this can actually loop: routing.json's own `fallback` array
-    // is author-written and validated against MAX_FALLBACK_DEPTH, and its
-    // entries are positionally indexed by attemptsSoFar across successive
-    // calls — silently dropping a matching entry from it would desync that
-    // index on a later retry (a chain entry equal to THIS attempt's own model
-    // is expected mid-progression, not a loop). So: drop `defaultFallback`
-    // only, and only when it equals the slot that just failed (same
-    // vendor+model+transport) — leaving nothing to try in that case.
-    if (usingDefaultFallback && input.failingSlot && isSameSlot(chain[0], input.failingSlot)) {
-        chain = [];
-    }
+    const chain = Array.isArray(input.chain) ? input.chain : [];
     const index = input.attemptsSoFar;
-    if (index < 0 || index >= chain.length) {
-        return { slot: null, index, exhausted: true };
+    // 1) Walk the explicit chain first, unchanged from before p31-t1: an
+    //    author-written `fallback` array is positionally indexed by
+    //    attemptsSoFar across successive calls, so nothing here filters it.
+    if (index >= 0 && index < chain.length) {
+        return { slot: chain[index], index, exhausted: false };
     }
-    return { slot: chain[index], index, exhausted: false };
+    // 2) p31-t1: the explicit chain is exhausted (or was empty/absent to
+    //    start with) — fall through to the profile's top-level
+    //    `defaultFallback`, once, unless the slot opted out.
+    if (index === chain.length) {
+        const useDefault = input.useDefaultFallback !== false;
+        if (!useDefault) {
+            return { slot: null, index, exhausted: true, reason: "useDefaultFallback is false for this slot" };
+        }
+        if (!input.defaultFallback) {
+            return { slot: null, index, exhausted: true, reason: "no defaultFallback configured on the profile" };
+        }
+        // Overall depth stays capped by MAX_FALLBACK_DEPTH — the default counts
+        // as one more step. If the explicit chain already used up the full
+        // depth (index === MAX_FALLBACK_DEPTH), the default does not fire.
+        if (index >= exports.MAX_FALLBACK_DEPTH) {
+            return {
+                slot: null,
+                index,
+                exhausted: true,
+                reason: `defaultFallback would exceed MAX_FALLBACK_DEPTH (${exports.MAX_FALLBACK_DEPTH})`,
+            };
+        }
+        // p25-t3 self-loop guard, generalized: skip a defaultFallback equal to
+        // the slot that just failed, or to any chain entry already attempted
+        // (i.e. any member of the now-exhausted explicit chain).
+        const duplicatesFailingSlot = isSameSlot(input.defaultFallback, input.failingSlot);
+        const duplicatesChainEntry = chain.some((entry) => isSameSlot(input.defaultFallback, entry));
+        if (duplicatesFailingSlot || duplicatesChainEntry) {
+            return {
+                slot: null,
+                index,
+                exhausted: true,
+                reason: "defaultFallback duplicates the failing slot or an already-attempted chain entry",
+            };
+        }
+        return { slot: input.defaultFallback, index, exhausted: false };
+    }
+    // 3) Anything past the (possible) default-fallback slot, or a negative
+    //    index, is simply exhausted.
+    return { slot: null, index, exhausted: true };
 }
 const MAX_TRACKED_SESSIONS = 200;
 class FallbackState {

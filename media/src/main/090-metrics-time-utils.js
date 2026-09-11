@@ -1101,7 +1101,7 @@
   };
 
   var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
-  var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv"];
+  var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv", "useDefaultFallback"];
 
   var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }

@@ -152,6 +152,20 @@ this reason. The fallback shim is Experimental.
 8. **Clear profile** removes the routing profile and its generated blocks but keeps everything you stored via Set value….
 9. Each agent row shows its **"model from …"** source line, a **"ran on fallback"** chip when it last ran on a fallback entry, and the view's **Totals** block rolls up per-vendor and per-cost-class counts.
 
+### Default fallback
+
+The **Routing** view has a **Default fallback** picker at the top. It fires
+for any agent once that agent's own fallback chain is exhausted, or
+immediately when the agent has none, whenever the agent runs out of tokens
+(usage limit, 401/429, quota) or is unreachable (connection refused, missing
+endpoint). Each agent's **"Fallback chain (N)"** section shows the default
+as a final amber **"(fb)"** row with a **"Use default fallback for this
+agent"** checkbox, checked by default; unchecking it makes that agent fail
+after its own chain instead. The default never falls back to itself, never
+repeats an agent already tried in the chain, and total chain depth stays at
+most 3. Fallback targets must be dispatchable in the current harness — the
+existing amber warning flags one that isn't.
+
 See [`docs/ROUTING-PROFILE.md`](docs/ROUTING-PROFILE.md) for the full `routing.json` schema.
 
 See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).

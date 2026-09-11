@@ -4450,6 +4450,151 @@ test('p25-t4: Default fallback picker round-trips defaultFallback through the po
   }
 });
 
+test('p31-t2: Default fallback section renders above the Agents roster', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.doc.getElementById('menu-routing').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    h.dispatch({
+      type: 'routing',
+      payload: {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [
+          { id: 'codex-reviewer', name: 'Codex Reviewer', provenance: 'explicit', handWrittenBackend: true, backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' }, source: 'file' },
+          { id: 'coding-specialist', name: 'Coding Specialist', provenance: 'explicit', handWrittenBackend: false, backend: { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'subscription' }, source: 'routing' },
+        ],
+        presets: { vendors: ['anthropic', 'openai'], models: [] },
+        errors: [],
+      },
+    });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const headings = [...h.doc.querySelectorAll('h2.settings-heading')].map((el: any) => el.textContent);
+    const dfIdx = headings.indexOf('Default fallback');
+    const agentsIdx = headings.indexOf('Agents');
+    assert.ok(dfIdx !== -1, 'Default fallback heading should render');
+    assert.ok(agentsIdx !== -1, 'Agents heading should render');
+    assert.ok(dfIdx < agentsIdx, `Default fallback (${dfIdx}) must precede Agents roster (${agentsIdx})`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p31-t2: every slot shows the Default row + opt-out checkbox, unchecking persists useDefaultFallback=false, summary line reflects it', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.doc.getElementById('menu-routing').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    h.dispatch({
+      type: 'routing',
+      payload: {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [
+          { id: 'codex-reviewer', name: 'Codex Reviewer', provenance: 'explicit', handWrittenBackend: true, backend: { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'gpt-6-astra', costModelClass: 'subscription' }, source: 'file' },
+          { id: 'coding-specialist', name: 'Coding Specialist', provenance: 'explicit', handWrittenBackend: false, backend: { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'subscription' }, source: 'routing' },
+        ],
+        presets: {
+          vendors: ['anthropic', 'openai'],
+          models: [{ id: 'openai/gpt-5.4-mini', vendor: 'openai', costModelClass: 'metered', label: 'OpenAI · gpt-5.4-mini' }],
+        },
+        errors: [],
+      },
+    });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    // Set a default fallback via the top picker.
+    const vendorSel = h.doc.querySelector('[data-field-key="defaultFallback.vendor"]');
+    vendorSel.value = 'openai';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    const modelSel = h.doc.querySelector('[data-field-key="defaultFallback.model"]');
+    modelSel.value = 'openai/gpt-5.4-mini';
+    modelSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    // Selecting a model does not itself trigger a structural rebuild (only
+    // the vendor select does) — re-fire the vendor select's change (same
+    // value) to force renderRoutingModal so the other slots' "Default: …"
+    // rows below pick up the now-set model.
+    const vendorSelAgain = h.doc.querySelector('[data-field-key="defaultFallback.vendor"]');
+    vendorSelAgain.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    for (const agentId of ['codex-reviewer', 'coding-specialist']) {
+      const fallbackDetails = h.doc.querySelector(`.routing-fallback-details[data-agent-id="${agentId}"]`);
+      assert.ok(fallbackDetails, `${agentId} fallback editor should render`);
+      const defaultRow = fallbackDetails.querySelector('.routing-default-fallback-row');
+      assert.ok(defaultRow, `${agentId} should show a Default row`);
+      assert.match(defaultRow.textContent, /Default: openai · openai\/gpt-5\.4-mini \(fb\)/, `${agentId} Default row should name the default fallback`);
+      const checkbox = fallbackDetails.querySelector('.routing-use-default-fallback-checkbox');
+      assert.ok(checkbox, `${agentId} should show the opt-out checkbox`);
+      assert.equal(checkbox.checked, true, `${agentId} checkbox should default to checked`);
+    }
+
+    // Uncheck for coding-specialist only.
+    const codingCheckbox = h.doc.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"] .routing-use-default-fallback-checkbox');
+    codingCheckbox.checked = false;
+    codingCheckbox.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    const optOutNote = h.doc.querySelector('.routing-fallback-details[data-agent-id="coding-specialist"] .routing-defaults-help');
+    assert.ok(optOutNote && /will fail after its own chain/.test(optOutNote.textContent), 'opt-out note should render for coding-specialist');
+
+    // Summary line text: codex-reviewer keeps "+ default", coding-specialist reads "no default".
+    const codexSummaryLine = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"] .routing-slot-summary-line, .routing-agent-fallback-row[data-agent-id="codex-reviewer"] .routing-slot-summary-line');
+    assert.ok(codexSummaryLine, 'codex-reviewer summary line should render');
+    assert.match(codexSummaryLine.textContent, /\+ default/, 'codex-reviewer summary should append "+ default"');
+    const codingSummaryLine = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"] .routing-slot-summary-line, .routing-agent-fallback-row[data-agent-id="coding-specialist"] .routing-slot-summary-line');
+    assert.ok(codingSummaryLine, 'coding-specialist summary line should render');
+    assert.match(codingSummaryLine.textContent, /no default/, 'coding-specialist summary should append "no default" once opted out');
+
+    // Save and confirm useDefaultFallback=false landed in the posted payload.
+    const saveBtn = h.doc.getElementById('routing-save-btn');
+    saveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    const savedCoding = saveMsg.profile.agents && saveMsg.profile.agents['coding-specialist'];
+    assert.ok(savedCoding, 'coding-specialist slot should be in the saved profile');
+    assert.equal(savedCoding.useDefaultFallback, false, 'unchecked opt-out should persist useDefaultFallback=false');
+    const savedCodex = saveMsg.profile.agents && saveMsg.profile.agents['codex-reviewer'];
+    if (savedCodex) {
+      assert.notEqual(savedCodex.useDefaultFallback, false, 'codex-reviewer should not have opted out');
+    }
+  } finally {
+    h.win.close();
+  }
+});
+
 test('p25-t4: an undispatchable fallback vendor warns and disables Save under codex, but not under claude-code', async () => {
   async function runWithHarness(harness: string) {
     const h = await bootObjScaleHarness();

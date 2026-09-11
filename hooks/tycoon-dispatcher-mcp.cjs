@@ -238,9 +238,11 @@ function readRoutingChainForSpecialist(projectDir, specialistId) {
     const parsed = JSON.parse(raw);
     const chainRaw =
       (parsed && parsed.agents && parsed.agents[specialistId] && parsed.agents[specialistId].fallback) || [];
+    const agentEntry = parsed && parsed.agents && parsed.agents[specialistId];
     return {
       chain: Array.isArray(chainRaw) ? chainRaw : [],
       defaultFallback: parsed && parsed.defaultFallback,
+      useDefaultFallback: agentEntry && agentEntry.useDefaultFallback === false ? false : true,
     };
   } catch {
     // routing.resolved.json absent/unreadable: fall back to the unmerged
@@ -255,12 +257,14 @@ function readRoutingChainForSpecialist(projectDir, specialistId) {
       const parsed = JSON.parse(raw);
       const chainRaw =
         (parsed && parsed.agents && parsed.agents[specialistId] && parsed.agents[specialistId].fallback) || [];
+      const agentEntry = parsed && parsed.agents && parsed.agents[specialistId];
       return {
         chain: Array.isArray(chainRaw) ? chainRaw : [],
         defaultFallback: parsed && parsed.defaultFallback,
+        useDefaultFallback: agentEntry && agentEntry.useDefaultFallback === false ? false : true,
       };
     } catch {
-      return { chain: [], defaultFallback: undefined };
+      return { chain: [], defaultFallback: undefined, useDefaultFallback: true };
     }
   }
 }
@@ -383,7 +387,7 @@ async function handleDelegateTool(args) {
   // (fallbackOf:workerId, fallbackDepth) before the adapter call, mirroring
   // the PreToolUse already written above for attempt 0.
   const fallbackChainModule = getFallbackChainModule();
-  const { chain: fallbackChainEntries, defaultFallback } = readRoutingChainForSpecialist(projectDir, workerId);
+  const { chain: fallbackChainEntries, defaultFallback, useDefaultFallback } = readRoutingChainForSpecialist(projectDir, workerId);
 
   let currentVendor = vendor;
   let currentModel = model;
@@ -465,6 +469,7 @@ async function handleDelegateTool(args) {
       chain: fallbackChainEntries,
       attemptsSoFar: fallbackDepth,
       defaultFallback,
+      useDefaultFallback,
       failingSlot: { vendor: currentVendor, model: currentModel },
     });
     if (next.exhausted || !next.slot) {

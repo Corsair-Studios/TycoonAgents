@@ -240,6 +240,23 @@ test('writes routing.resolved.json with agents and orchestrator', () => {
   assert.equal(doc.agents['ghost-agent'], undefined);
 });
 
+test('p31-t1: useDefaultFallback:false on a routing.json agent slot validates and round-trips into routing.resolved.json', () => {
+  const root = setupFixtureRoot();
+  const routingPath = path.join(root, '.claude', 'tycoon', 'routing.json');
+  const profile = JSON.parse(fs.readFileSync(routingPath, 'utf8'));
+  profile.agents['existing-backend'].useDefaultFallback = false;
+  fs.writeFileSync(routingPath, JSON.stringify(profile, null, 2), 'utf8');
+
+  const result = run(['--root', root]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const resolvedPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
+  const doc = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+  assert.equal(doc.agents['existing-backend'].useDefaultFallback, false);
+  // Absence on an agent with no opinion means "default true" — not emitted.
+  assert.equal(Object.prototype.hasOwnProperty.call(doc.agents['no-backend'], 'useDefaultFallback'), false);
+});
+
 test('routing.resolved.json includes top-level defaultFallback in converted Backend shape when routing.json sets one', () => {
   const root = setupFixtureRoot();
   const routingPath = path.join(root, '.claude', 'tycoon', 'routing.json');

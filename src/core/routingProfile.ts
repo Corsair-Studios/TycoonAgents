@@ -19,7 +19,7 @@ import type { Backend, Transport, CostModelClass } from "./agentBackend";
 const VALID_TRANSPORTS: Transport[] = ["claude-native", "mcp", "openai-compatible"];
 const VALID_COST_MODEL_CLASSES: CostModelClass[] = ["metered", "subscription", "local"];
 const SECRET_NAME_PATTERN = /key|secret|token|password/i;
-const MAX_FALLBACK_DEPTH = 3;
+export const MAX_FALLBACK_DEPTH = 3;
 
 export interface RoutingSlot {
   vendor?: string;
@@ -34,6 +34,12 @@ export interface RoutingSlot {
    *  Backend's `apiKeyEnv` — see routingSlotToBackend() for the mapping. */
   credentialEnv?: string;
   fallback?: RoutingSlot[];
+  /** p31-t1: whether this slot falls through to the profile's top-level
+   *  `defaultFallback` once its own `fallback` chain (explicit or empty) is
+   *  exhausted. Defaults to true when absent — existing profiles with no
+   *  opinion keep today's "default fires at the bottom of the chain"
+   *  behavior. Set false to opt a slot out entirely. */
+  useDefaultFallback?: boolean;
 }
 
 export interface RoutingProfile {
@@ -137,6 +143,12 @@ function validateSlot(value: unknown, jsonPath: string, errors: string[], depth:
   }
   if (obj["credentialEnv"] !== undefined && typeof obj["credentialEnv"] !== "string") {
     errors.push(`${jsonPath}.credentialEnv: expected a string, got ${JSON.stringify(obj["credentialEnv"])}`);
+    ok = false;
+  }
+  if (obj["useDefaultFallback"] !== undefined && typeof obj["useDefaultFallback"] !== "boolean") {
+    errors.push(
+      `${jsonPath}.useDefaultFallback: expected a boolean, got ${JSON.stringify(obj["useDefaultFallback"])}`
+    );
     ok = false;
   }
   if (obj["fallback"] !== undefined) {
