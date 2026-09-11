@@ -1439,6 +1439,7 @@ function main(raw) {
     if (popped && popped.fallbackOf !== undefined) {
       record.fallbackOf = popped.fallbackOf;
       record.fallbackDepth = popped.fallbackDepth;
+      record.fallbackIsDefault = popped.fallbackIsDefault === true;
     }
 
     const { tokens, cacheReadTokens } = extractSubagentTokens(payload);
@@ -1671,6 +1672,7 @@ function main(raw) {
       let fallbackDepth;
       let fallbackVendor;
       let fallbackCostModelClass;
+      let fallbackIsDefault;
       try {
         const fallbackChain = getFallbackChainModule();
         const sessId = typeof payload.session_id === "string" ? payload.session_id : undefined;
@@ -1697,6 +1699,7 @@ function main(raw) {
               if (result.slot.model) model = result.slot.model;
               fallbackVendor = result.slot.vendor;
               fallbackCostModelClass = result.slot.costModelClass;
+              fallbackIsDefault = result.isDefault === true;
             }
           }
         }
@@ -1738,7 +1741,7 @@ function main(raw) {
         ? parentEntry.agentId
         : undefined;
 
-      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId, fallbackOf, fallbackDepth };
+      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId, fallbackOf, fallbackDepth, fallbackIsDefault };
       pushActiveAgent(activeAgentFile, stackEntry);
 
       /** @type {Record<string, unknown>} */
@@ -1760,6 +1763,7 @@ function main(raw) {
       if (fallbackOf !== undefined) {
         record.fallbackOf = fallbackOf;
         record.fallbackDepth = fallbackDepth;
+        record.fallbackIsDefault = fallbackIsDefault === true;
         if (fallbackVendor) record.vendor = fallbackVendor;
         if (fallbackCostModelClass) record.costModelClass = fallbackCostModelClass;
       }
@@ -1986,6 +1990,7 @@ function main(raw) {
               slotId,
               failedModel: mcpBackend.model,
               nextModel: result.slot && result.slot.model,
+              fallbackIsDefault: result.isDefault === true,
               reason: toolResponseText.slice(0, 300),
               at,
             };

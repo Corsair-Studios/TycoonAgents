@@ -392,6 +392,7 @@ async function handleDelegateTool(args) {
   let currentVendor = vendor;
   let currentModel = model;
   let fallbackDepth = 0;
+  let fallbackIsDefault = false;
 
   for (;;) {
     const { fn: adapterFn } = dispatcherAdapters.resolveAdapter(currentVendor);
@@ -416,6 +417,7 @@ async function handleDelegateTool(args) {
       if (fallbackDepth > 0) {
         stopRecord.fallbackOf = workerId;
         stopRecord.fallbackDepth = fallbackDepth;
+        stopRecord.fallbackIsDefault = fallbackIsDefault;
       }
       if (typeof tokens === "number") stopRecord.tokens = tokens;
       appendRecord(activityFile, stopRecord);
@@ -453,6 +455,7 @@ async function handleDelegateTool(args) {
     if (fallbackDepth > 0) {
       errorRecord.fallbackOf = workerId;
       errorRecord.fallbackDepth = fallbackDepth;
+      errorRecord.fallbackIsDefault = fallbackIsDefault;
     }
     appendRecord(activityFile, errorRecord);
 
@@ -477,6 +480,7 @@ async function handleDelegateTool(args) {
     }
 
     fallbackDepth += 1;
+    fallbackIsDefault = next.isDefault === true;
     currentVendor = next.slot.vendor || currentVendor;
     currentModel = next.slot.model || currentModel;
 
@@ -491,6 +495,7 @@ async function handleDelegateTool(args) {
       model: currentModel,
       fallbackOf: workerId,
       fallbackDepth,
+      fallbackIsDefault,
       at: Date.now(),
     };
     if (next.slot.costModelClass) fbPreRecord.costModelClass = next.slot.costModelClass;

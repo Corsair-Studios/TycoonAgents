@@ -298,6 +298,41 @@ test("PreToolUse Task without model or agentDescription -> WorkerSpawned has no 
   }
 });
 
+test("PreToolUse Task with fallbackOf/fallbackDepth/fallbackIsDefault -> WorkerSpawned propagates all three (p32-t2)", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    fallbackOf: "coding-specialist",
+    fallbackDepth: 1,
+    fallbackIsDefault: true,
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].fallbackOf, "coding-specialist");
+    assert.equal(events[0].fallbackDepth, 1);
+    assert.equal(events[0].fallbackIsDefault, true);
+  }
+});
+
+test("PreToolUse Task without fallbackIsDefault -> WorkerSpawned has no fallbackIsDefault field (old records)", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    fallbackOf: "coding-specialist",
+    fallbackDepth: 1,
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].fallbackIsDefault, undefined);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // parentId/tier propagation (Team Lead Mode Phase 3: hierarchy telemetry)
 // ---------------------------------------------------------------------------

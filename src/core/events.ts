@@ -48,7 +48,7 @@ export type NormalizedEvent =
   // delegationMode (Team Lead Mode Phase 4) is the delegation topology active at spawn
   // time ("flat"|"team_leads"); undefined on legacy records — treated as "flat" by
   // computeDelegationModeStats in core/state.ts.
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; provider?: string; sessionId?: string }
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; fallbackIsDefault?: boolean; provider?: string; sessionId?: string }
   | {
       type: "WorkerActivity";
       at: number;

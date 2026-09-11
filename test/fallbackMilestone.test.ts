@@ -280,6 +280,7 @@ test("PRD M2 (3): computeStateFromRecords for a no-fallbackOf fixture matches th
     costModelClass: "metered",
     fallbackOf: undefined,
     fallbackDepth: undefined,
+    fallbackIsDefault: undefined,
     description: undefined,
     tier: undefined,
     parentId: undefined,

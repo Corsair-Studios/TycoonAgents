@@ -861,9 +861,9 @@
       defaultLabelSpan.textContent = "Default: (this agent)";
     } else if (dfSlot && slotHasContent(dfSlot)) {
       defaultLabelSpan.className = "agent-accent-fallback";
-      defaultLabelSpan.textContent = "Default: " + (dfSlot.vendor || "unknown") + " · " + (dfSlot.model || "unknown model") + " (fb)";
+      defaultLabelSpan.textContent = "Default: " + (dfSlot.vendor || "unknown") + " · " + (dfSlot.model || "unknown model") + " (dfb)";
     } else {
-      defaultLabelSpan.textContent = "Default: none set";
+      defaultLabelSpan.textContent = "No default set — set one up below the orchestrator.";
     }
     defaultRow.appendChild(defaultLabelSpan);
     details.appendChild(defaultRow);
@@ -1225,6 +1225,15 @@
         connectionOpenMap[key] = !!d.open;
       });
     }
+    // p32-t1: the "Default fallback" <details> (routing-default-fallback-
+    // section) — same collapse-on-every-structural-rebuild problem as the
+    // per-slot Connection details above. null when the section wasn't in
+    // the DOM yet (never renders anywhere the map covers null).
+    var defaultFallbackOpen = null;
+    if (routingContentEl) {
+      var dfDetailsSnap = routingContentEl.querySelector(".routing-default-fallback-section");
+      if (dfDetailsSnap) defaultFallbackOpen = !!dfDetailsSnap.open;
+    }
     var focus = null;
     var active = document.activeElement;
     if (active && routingContentEl && routingContentEl.contains(active)) {
@@ -1253,7 +1262,7 @@
         }
       });
     }
-    return { openMap: openMap, connectionOpenMap: connectionOpenMap, focus: focus, keywordEdits: keywordEdits };
+    return { openMap: openMap, connectionOpenMap: connectionOpenMap, defaultFallbackOpen: defaultFallbackOpen, focus: focus, keywordEdits: keywordEdits };
   }
 
   function restoreRoutingUiState(snapshot) {
@@ -1271,6 +1280,10 @@
           d.open = snapshot.connectionOpenMap[key];
         }
       });
+    }
+    if (snapshot.defaultFallbackOpen !== null && snapshot.defaultFallbackOpen !== undefined) {
+      var dfDetailsRestore = routingContentEl.querySelector(".routing-default-fallback-section");
+      if (dfDetailsRestore) dfDetailsRestore.open = snapshot.defaultFallbackOpen;
     }
     if (snapshot.keywordEdits) {
       routingContentEl.querySelectorAll(".keyword-input").forEach(function (inp) {
@@ -1580,6 +1593,7 @@
     const cardNameVendor = (m && m.vendor) || (cardBackend && cardBackend.vendor) || a.vendor || null;
     const cardNameCostClass = (m && m.costModelClass) || (cardBackend && cardBackend.costModelClass) || a.costModelClass || null;
     const cardNameFallbackOf = (m && m.fallbackOf) || null;
+    const cardNameIsDefaultFallback = !!(m && m.fallbackIsDefault);
     const cardAccentKind = agentAccent({
       vendor: cardNameVendor,
       costModelClass: cardNameCostClass,
@@ -1594,7 +1608,7 @@
     nameEl.className = "agent-name"
       + (cardAccentKind === "foreign" ? " agent-accent-foreign" : "")
       + (cardAccentKind === "fallback" ? " agent-accent-fallback" : "");
-    nameEl.textContent = (a.name || a.id) + (cardAccentKind === "fallback" ? " (fb)" : "");
+    nameEl.textContent = (a.name || a.id) + (cardAccentKind === "fallback" ? (cardNameIsDefaultFallback ? " (dfb)" : " (fb)") : "");
     head.appendChild(nameEl);
 
     if (density === "full" && routingAgent && routingAgent.description) {
@@ -2122,12 +2136,12 @@
       // the association before ever hitting it live.
       var accentLegend = document.createElement("p");
       accentLegend.className = "agent-accent-legend";
-      accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback";
+      accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback · (dfb): default fallback";
       routingContentEl.appendChild(accentLegend);
       // p25-t4: explicit legend note for the fallback picker/warnings below.
       var fallbackLegend = document.createElement("p");
       fallbackLegend.className = "agent-accent-legend";
-      fallbackLegend.textContent = "Fallback renders amber with (fb)";
+      fallbackLegend.textContent = "Amber (fb): fallback · (dfb): default fallback";
       routingContentEl.appendChild(fallbackLegend);
     }
 
@@ -2156,45 +2170,6 @@
         errBox.appendChild(p);
       });
       routingContentEl.appendChild(errBox);
-    }
-
-    // ── Default fallback (p25-t4, moved to top p31-t2) — full density
-    // only, rendered ABOVE the agent roster per docs/design/slot-editor-
-    // redesign.md. Top-level `defaultFallback` slot used at RESOLVE time by
-    // any slot whose own `fallback` is empty (see routingProfile.ts's
-    // defaultFallback doc comment) unless a slot's own `useDefaultFallback`
-    // is explicitly false. Never preset — an empty draft just means "None".
-    if (density === "full") {
-      var defaultFallbackSection = buildSection("Default fallback");
-      var defaultFallbackHelp = document.createElement("p");
-      defaultFallbackHelp.className = "routing-defaults-help";
-      defaultFallbackHelp.textContent = "Fires for any agent after its own fallback chain when it runs out of tokens or is unreachable. Agents can opt out below.";
-      defaultFallbackSection.appendChild(defaultFallbackHelp);
-      if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
-      defaultFallbackSection.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
-      var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
-      defaultFallbackSection.appendChild(defaultFallbackFieldsEl);
-      if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
-        defaultFallbackSection.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-        defaultFallbackSection.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-      }
-      var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
-      var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
-      if (defaultFallbackWarning) {
-        routingHasBlockingDispatchWarning = true;
-        defaultFallbackSection.appendChild(defaultFallbackWarning);
-      }
-      var clearDefaultFallbackBtn = document.createElement("button");
-      clearDefaultFallbackBtn.type = "button";
-      clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
-      clearDefaultFallbackBtn.textContent = "None";
-      clearDefaultFallbackBtn.disabled = !slotHasContent(routingDraft.defaultFallback);
-      clearDefaultFallbackBtn.addEventListener("click", function () {
-        routingDraft.defaultFallback = {};
-        renderRoutingModal();
-      });
-      defaultFallbackSection.appendChild(clearDefaultFallbackBtn);
-      routingContentEl.appendChild(defaultFallbackSection);
     }
 
     // ── Orchestrator (p19-t1: read-only session-model card in both
@@ -2228,6 +2203,66 @@
     if (orchestratorAgent || density === "full") {
       routingContentEl.appendChild(orchSection);
     }
+
+    // ── Default fallback (p25-t4, moved below Orchestrator + collapsed
+    // p32-t1) — rendered in BOTH densities: it was previously gated behind
+    // `density === "full"`, which meant a claude-code-harness user (density
+    // "simple", the default harness) could never see or configure it at
+    // all — that was the root cause of the "I don't see anywhere to set up
+    // a default fallback" report. Top-level `defaultFallback` slot used at
+    // RESOLVE time by any slot whose own `fallback` is empty (see
+    // routingProfile.ts's defaultFallback doc comment) unless a slot's own
+    // `useDefaultFallback` is explicitly false. Never preset — an empty
+    // draft just means "None". Collapsed by default (<details>) so it reads
+    // as an opt-in offer, not a required step; summary text reflects
+    // current state so a set default is visible without expanding.
+    if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
+    var defaultFallbackIsSet = slotHasContent(routingDraft.defaultFallback);
+    var defaultFallbackDetails = document.createElement("details");
+    defaultFallbackDetails.className = "routing-default-fallback-section";
+    var defaultFallbackSummary = document.createElement("summary");
+    if (defaultFallbackIsSet) {
+      defaultFallbackSummary.className = "agent-accent-fallback";
+      defaultFallbackSummary.textContent = "Default fallback: " + (routingDraft.defaultFallback.vendor || "unknown") + " · " + (routingDraft.defaultFallback.model || "unknown model");
+      defaultFallbackDetails.open = true;
+    } else {
+      defaultFallbackSummary.textContent = "Set up a default fallback?";
+    }
+    defaultFallbackDetails.appendChild(defaultFallbackSummary);
+    if (!defaultFallbackIsSet) {
+      var defaultFallbackSummaryHint = document.createElement("p");
+      defaultFallbackSummaryHint.className = "routing-defaults-help routing-default-fallback-summary-hint";
+      defaultFallbackSummaryHint.textContent = "Catches any agent that runs out of tokens or is unreachable after its own chain.";
+      defaultFallbackDetails.appendChild(defaultFallbackSummaryHint);
+    }
+    var defaultFallbackHelp = document.createElement("p");
+    defaultFallbackHelp.className = "routing-defaults-help";
+    defaultFallbackHelp.textContent = "Fires for any agent after its own fallback chain when it runs out of tokens or is unreachable. Agents can opt out below.";
+    defaultFallbackDetails.appendChild(defaultFallbackHelp);
+    defaultFallbackDetails.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
+    var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
+    defaultFallbackDetails.appendChild(defaultFallbackFieldsEl);
+    if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
+      defaultFallbackDetails.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+      defaultFallbackDetails.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+    }
+    var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
+    var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
+    if (defaultFallbackWarning) {
+      routingHasBlockingDispatchWarning = true;
+      defaultFallbackDetails.appendChild(defaultFallbackWarning);
+    }
+    var clearDefaultFallbackBtn = document.createElement("button");
+    clearDefaultFallbackBtn.type = "button";
+    clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
+    clearDefaultFallbackBtn.textContent = "None";
+    clearDefaultFallbackBtn.disabled = !defaultFallbackIsSet;
+    clearDefaultFallbackBtn.addEventListener("click", function () {
+      routingDraft.defaultFallback = {};
+      renderRoutingModal();
+    });
+    defaultFallbackDetails.appendChild(clearDefaultFallbackBtn);
+    routingContentEl.appendChild(defaultFallbackDetails);
 
     // ── Defaults (p17-t3) — full density only. One slot applied to every
     // agent that has neither its own routing.json entry nor a hand-written

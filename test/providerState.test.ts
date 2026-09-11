@@ -360,6 +360,29 @@ test("WorkerSpawned with vendor/costModelClass/fallbackOf/fallbackDepth populate
   assert.equal(metric!.fallbackDepth, 1);
 });
 
+test("WorkerSpawned with fallbackIsDefault:true populates AgentMetric.fallbackIsDefault (p32-t2)", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "codex-reviewer",
+    fallbackOf: "coding-specialist",
+    fallbackDepth: 1,
+    fallbackIsDefault: true,
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "codex-reviewer");
+  assert.equal(metric!.fallbackIsDefault, true);
+});
+
+test("WorkerSpawned without fallbackOf leaves fallbackIsDefault unset even if somehow present", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "codex-reviewer",
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "codex-reviewer");
+  assert.equal(metric!.fallbackIsDefault, undefined);
+});
+
 test("Lead spawn (tier: lead) followed by worker spawn (parentId: lead) both populate AgentMetric", () => {
   let state = applyEvent(initialWorldState(), {
     type: "WorkerSpawned",

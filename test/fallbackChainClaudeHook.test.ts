@@ -150,6 +150,7 @@ test("PreToolUse re-dispatch (call site ~1504): a slot with no own fallback chai
   assert.equal(spawn!.fallbackDepth, 1);
   assert.equal(spawn!.vendor, "moonshot");
   assert.equal(spawn!.model, "moonshot/kimi-k2");
+  assert.equal(spawn!.fallbackIsDefault, true);
 });
 
 test("PreToolUse re-dispatch: defaultFallback is never used when the slot has its own explicit fallback chain (unchanged behaviour)", () => {
@@ -183,6 +184,7 @@ test("PreToolUse re-dispatch: defaultFallback is never used when the slot has it
   assert.ok(spawn);
   assert.equal(spawn!.vendor, "google");
   assert.equal(spawn!.model, "google/gemini-2.5-pro");
+  assert.equal(spawn!.fallbackIsDefault, false);
 });
 
 // p31-t1: the routing-level defaultFallback now fires once an EXPLICIT

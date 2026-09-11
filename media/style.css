@@ -6632,6 +6632,40 @@ button.theme-review-preview:focus-visible::after {
   color: var(--muted);
 }
 
+/* p32-t1: collapsed-by-default section (below the Orchestrator card)
+   offering to set up a default fallback. Styled like .settings-section so
+   it reads as a peer of the surrounding cards even though it's a
+   <details>, not a <section>. */
+.routing-default-fallback-section {
+  background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 12px 0;
+}
+
+.routing-default-fallback-section > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground, var(--fg));
+  padding: 2px 0;
+  list-style-position: outside;
+}
+
+.routing-default-fallback-section > summary.agent-accent-fallback {
+  color: var(--accent);
+}
+
+.routing-default-fallback-section > summary:focus-visible {
+  outline: 1px solid var(--accent-info);
+  outline-offset: 2px;
+}
+
+.routing-default-fallback-summary-hint {
+  margin-top: 2px;
+}
+
 /* p31-t2: read-only "Default: <label>" row + opt-out checkbox at the end
    of every slot's fallback editor. */
 .routing-default-fallback-row {

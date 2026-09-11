@@ -270,9 +270,15 @@ test("Agents modal density: harness.effective !== 'opencode' renders simple dens
     `simple density must NOT render a "Default for all agents" section, got sections: ${JSON.stringify(sectionTitles)}`,
   );
 
-  // No per-agent slot editor (vendor/transport/model selects) in simple density.
-  assert.equal(doc.querySelectorAll(".routing-slot-fields").length, 0, "simple density must not render any slot editor fields");
-  assert.equal(doc.querySelectorAll(".routing-fallback-details").length, 0, "simple density must not render any fallback-chain editor");
+  // No PER-AGENT slot editor (vendor/transport/model selects) in simple
+  // density. The Default fallback section (p32-t1) is the one exception —
+  // it renders in both densities, collapsed by default, since a claude-code
+  // user needs a way to configure it too (that gap was the reported bug).
+  const dfDetails = doc.querySelector("details.routing-default-fallback-section");
+  assert.ok(dfDetails, "simple density should still render the collapsed Default fallback section");
+  assert.equal(dfDetails.open, false, "Default fallback section should be collapsed by default");
+  assert.equal(doc.querySelectorAll(".routing-slot-fields").length, 1, "simple density must render exactly the Default fallback slot editor, no other slot editor fields");
+  assert.equal(doc.querySelectorAll(".routing-fallback-details").length, 0, "simple density must not render any per-agent fallback-chain editor");
 
   // Footer: Close only.
   const closeBtn = doc.getElementById("routing-footer-close-btn");
@@ -333,7 +339,7 @@ test('Agents modal header (2026-09-05): shows a read-only "Runs on ..." line wit
 
   const body = doc.getElementById("routing-modal-body");
   assert.ok(body, "#routing-modal-body should render");
-  assert.equal(body.querySelectorAll("select").length, 0, "Agents modal must not render any harness <select> (harness is chosen only in Settings)");
+  assert.equal(body.querySelectorAll("select[id$='-harness-select']").length, 0, "Agents modal must not render any harness <select> (harness is chosen only in Settings)");
 
   const harnessLine = [...body.querySelectorAll("p")].find((p: any) => /^Runs on /.test(p.textContent || ""));
   assert.ok(harnessLine, `Agents modal should show a "Runs on ..." line, got paragraphs: ${JSON.stringify([...body.querySelectorAll("p")].map((p: any) => p.textContent))}`);

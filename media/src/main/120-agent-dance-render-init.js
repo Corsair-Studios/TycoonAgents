@@ -1482,6 +1482,11 @@
         fallbackOf: agent.fallbackOf,
         harness: accentHarness,
       });
+      // dfb (p31-t2): default-fallback dispatches get "(dfb)" instead of
+      // "(fb)" on the nameplate/tooltip label below — same accent color,
+      // distinct suffix so a viewer can tell "a fallback" from "THE default
+      // fallback" at a glance.
+      charEntry.accentIsDefault = !!agent.fallbackIsDefault;
 
       // ── Dazed-on-damage: reentry-cooldown decay + ACTIVE override ────
       // Decays unconditionally every frame (not just while dazed) so a
@@ -2987,7 +2992,7 @@
             yFront: cy,
             kind: "character",
             name: ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id)
-              + (charEntry.accentKind === "fallback" ? " (fb)" : ""),
+              + (charEntry.accentKind === "fallback" ? (charEntry.accentIsDefault ? " (dfb)" : " (fb)") : ""),
             role: agentRoleLabel(agent),
           });
 
@@ -3082,7 +3087,7 @@
           // foreign gets no suffix, only the ring above. slice(0, 24) runs on
           // the base name first so the suffix is never truncated away.
           const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24)
-            + (charEntry.accentKind === "fallback" ? " (fb)" : "");
+            + (charEntry.accentKind === "fallback" ? (charEntry.accentIsDefault ? " (dfb)" : " (fb)") : "");
           // Word-wrap: greedily pack whitespace-separated words into lines that
           // fit maxLabelW so long names ("VS Code Integration", "Search &
           // Retrieval") stack onto 2-3 centered lines instead of clipping.

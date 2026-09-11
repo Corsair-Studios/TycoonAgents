@@ -63,6 +63,7 @@ test("resolveNextFallback: 0 attempts so far resolves to fallback[0]", () => {
   assert.equal(result.exhausted, false);
   assert.equal(result.slot?.model, "openai/gpt-5.4-mini");
   assert.equal(result.index, 0);
+  assert.equal(result.isDefault, false);
 });
 
 test("resolveNextFallback: 1 attempt so far resolves to fallback[1]", () => {
@@ -70,6 +71,7 @@ test("resolveNextFallback: 1 attempt so far resolves to fallback[1]", () => {
   assert.equal(result.exhausted, false);
   assert.equal(result.slot?.model, "moonshot/kimi-k2");
   assert.equal(result.index, 1);
+  assert.equal(result.isDefault, false);
 });
 
 test("resolveNextFallback: attemptsSoFar past the chain length is exhausted", () => {
@@ -97,6 +99,7 @@ test("resolveNextFallback: no chain uses defaultFallback, fallbackDepth 1", () =
   assert.equal(result.exhausted, false);
   assert.equal(result.slot?.model, "openai/gpt-5.4-mini");
   assert.equal(result.index, 0); // 1-based position (index + 1) is fallbackDepth 1
+  assert.equal(result.isDefault, true);
 });
 
 test("resolveNextFallback: undefined chain uses defaultFallback the same as an empty one", () => {
@@ -120,6 +123,7 @@ test("resolveNextFallback: an explicit chain is left unchanged even when default
     defaultFallback,
   });
   assert.equal(result.slot?.model, "openai/gpt-5.4-mini"); // chain()[0], not defaultFallback
+  assert.equal(result.isDefault, false);
 });
 
 test("resolveNextFallback: no defaultFallback and no chain stays exhausted (no fallback)", () => {
@@ -155,6 +159,7 @@ test("resolveNextFallback: explicit chain exhausted then defaultFallback fires",
   assert.equal(result.exhausted, false);
   assert.equal(result.slot?.model, "google/gemini-2.5-pro");
   assert.equal(result.index, 2);
+  assert.equal(result.isDefault, true);
 });
 
 test("resolveNextFallback: useDefaultFallback false — exhausted chain does not fall through", () => {

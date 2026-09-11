@@ -145,6 +145,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
             ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),
             ...(record.fallbackOf !== undefined ? { fallbackOf: record.fallbackOf } : {}),
             ...(record.fallbackDepth !== undefined ? { fallbackDepth: record.fallbackDepth } : {}),
+            ...(record.fallbackIsDefault !== undefined ? { fallbackIsDefault: record.fallbackIsDefault } : {}),
           },
         ];
       }

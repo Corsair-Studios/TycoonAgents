@@ -1031,7 +1031,7 @@
       fallbackOf: agent.fallbackOf,
       harness: rowHarness,
     });
-    const displayNameWithSuffix = displayName + (rowAccentKind === "fallback" ? " (fb)" : "");
+    const displayNameWithSuffix = displayName + (rowAccentKind === "fallback" ? (agent.fallbackIsDefault ? " (dfb)" : " (fb)") : "");
 
     const nameTd = document.createElement("td");
     nameTd.className = `col-name${showActive ? " name--active" : ""}`;

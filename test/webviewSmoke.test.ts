@@ -3772,6 +3772,58 @@ test('accent: metrics table colors a fallback agent amber with "(fb)" suffix on 
   }
 });
 
+test('p32-t1: metrics table suffixes "(dfb)" instead of "(fb)" when the metric has fallbackIsDefault, plain "(fb)" otherwise', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          {
+            id: 'coding-specialist', name: 'Coding Specialist', status: 'active', model: 'sonnet',
+            vendor: 'anthropic', fallbackOf: 'ux-ui-designer', fallbackIsDefault: true, tokens: 700, activeMs: 20000, taskCount: 1,
+            lastActivityAt: Date.now(),
+          },
+          {
+            id: 'testing-specialist', name: 'Testing Specialist', status: 'idle', model: 'sonnet',
+            vendor: 'anthropic', fallbackOf: 'ux-ui-designer', tokens: 100, activeMs: 0, taskCount: 0,
+          },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const rows = [...tbody.querySelectorAll('tr')].filter((r: any) => !r.classList.contains('metrics-footer-row'));
+    const dfbRow = rows.find((r: any) => r.querySelector('td.col-name span').textContent.includes('Coding Specialist'));
+    const fbRow = rows.find((r: any) => r.querySelector('td.col-name span').textContent.includes('Testing Specialist'));
+    assert.match(dfbRow.querySelector('td.col-name span').textContent, /\(dfb\)$/, 'fallbackIsDefault metric ends with "(dfb)"');
+    assert.match(fbRow.querySelector('td.col-name span').textContent, /\(fb\)$/, 'plain fallback metric ends with "(fb)"');
+    assert.ok(!/\(dfb\)/.test(fbRow.querySelector('td.col-name span').textContent), 'plain fallback metric never gets "(dfb)"');
+  } finally {
+    h.win.close();
+  }
+});
+
 test('accent: Agents/routing roster colors a foreign-vendor slot even with no run in progress, and flips when the harness changes', async () => {
   const h = await bootObjScaleHarness();
   try {
@@ -3850,8 +3902,8 @@ test('accent: canvas source applies the ring/pulse accent for active foreign/fal
   assert.match(src, /rgba\(79, 195, 247, 0\.9\)/, 'ring uses the light-blue accent color for foreign');
   assert.match(
     src,
-    /charEntry\.accentKind === "fallback" \? " \(fb\)" : ""/,
-    'the canvas nameplate label appends " (fb)" only for fallback agents'
+    /charEntry\.accentKind === "fallback" \? \(charEntry\.accentIsDefault \? " \(dfb\)" : " \(fb\)"\) : ""/,
+    'the canvas nameplate label appends " (fb)" (or " (dfb)" for the default fallback) only for fallback agents'
   );
 });
 
@@ -4450,7 +4502,7 @@ test('p25-t4: Default fallback picker round-trips defaultFallback through the po
   }
 });
 
-test('p31-t2: Default fallback section renders above the Agents roster', async () => {
+test('p32-t1: Default fallback section renders below Orchestrator, above Agents, collapsed by default with exactly one picker', async () => {
   const h = await bootObjScaleHarness();
   try {
     h.dispatch({
@@ -4484,12 +4536,96 @@ test('p31-t2: Default fallback section renders above the Agents roster', async (
     await h.flush();
     assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
 
+    const dfDetails = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.ok(dfDetails, 'Default fallback <details> section should render');
+    assert.equal(dfDetails.open, false, 'section should be collapsed by default when unset');
+    assert.equal(dfDetails.querySelector('summary').textContent, 'Set up a default fallback?');
+
     const headings = [...h.doc.querySelectorAll('h2.settings-heading')].map((el: any) => el.textContent);
-    const dfIdx = headings.indexOf('Default fallback');
+    const orchIdx = headings.indexOf('Orchestrator');
     const agentsIdx = headings.indexOf('Agents');
-    assert.ok(dfIdx !== -1, 'Default fallback heading should render');
-    assert.ok(agentsIdx !== -1, 'Agents heading should render');
-    assert.ok(dfIdx < agentsIdx, `Default fallback (${dfIdx}) must precede Agents roster (${agentsIdx})`);
+    const allSections = [...h.doc.querySelectorAll('#routing-modal-content > *')];
+    const orchSectionIdx = allSections.findIndex((el: any) => el.querySelector && el.querySelector('h2.settings-heading') && el.querySelector('h2.settings-heading').textContent === 'Orchestrator');
+    const dfSectionIdx = allSections.indexOf(dfDetails);
+    const agentsSectionIdx = allSections.findIndex((el: any) => el.querySelector && el.querySelector('h2.settings-heading') && el.querySelector('h2.settings-heading').textContent === 'Agents');
+    assert.ok(orchIdx !== -1 && agentsIdx !== -1, 'Orchestrator and Agents headings should render');
+    assert.ok(orchSectionIdx < dfSectionIdx, `Default fallback section (${dfSectionIdx}) must come after Orchestrator (${orchSectionIdx})`);
+    assert.ok(dfSectionIdx < agentsSectionIdx, `Default fallback section (${dfSectionIdx}) must precede Agents roster (${agentsSectionIdx})`);
+
+    const pickers = h.doc.querySelectorAll('[data-field-key="defaultFallback.vendor"]');
+    assert.equal(pickers.length, 1, 'exactly one Default fallback vendor picker should exist in the DOM');
+
+    // Expand: summary click toggles native <details> open state.
+    dfDetails.querySelector('summary').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    dfDetails.open = true;
+    await h.flush();
+    assert.ok(dfDetails.querySelector('[data-field-key="defaultFallback.vendor"]'), 'vendor picker should be present once expanded');
+
+    // Set a default fallback, then summary text should switch.
+    const vendorSel = dfDetails.querySelector('[data-field-key="defaultFallback.vendor"]');
+    vendorSel.value = 'openai';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    const dfDetailsAfter = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.match(dfDetailsAfter.querySelector('summary').textContent, /^Default fallback: openai/, 'summary should switch to naming the chosen default once set');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p32-t1: Default fallback section stays open across a structural rebuild after being manually expanded while empty', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.doc.getElementById('menu-routing').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    h.dispatch({
+      type: 'routing',
+      payload: {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [
+          { id: 'coding-specialist', name: 'Coding Specialist', provenance: 'explicit', handWrittenBackend: false, backend: { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'subscription' }, source: 'routing' },
+        ],
+        presets: {
+          vendors: ['anthropic', 'openai'],
+          models: [{ id: 'openai/gpt-5.4-mini', vendor: 'openai', costModelClass: 'metered', label: 'OpenAI · gpt-5.4-mini' }],
+        },
+        errors: [],
+      },
+    });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    let dfDetails = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.equal(dfDetails.open, false, 'section starts collapsed while empty');
+    dfDetails.open = true; // manual expand while still empty (no default set)
+    await h.flush();
+
+    // Change an unrelated slot's field — the orchestrator's transport —
+    // which triggers onStructural (a full renderRoutingModal rebuild).
+    const orchTransportSel = h.doc.querySelector('[data-field-key="orchestrator.transport"]');
+    assert.ok(orchTransportSel, 'orchestrator transport select should render');
+    orchTransportSel.value = orchTransportSel.value === 'claude-native' ? 'openai-compatible' : 'claude-native';
+    orchTransportSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    dfDetails = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.ok(dfDetails, 'Default fallback section should still render after the rebuild');
+    assert.equal(dfDetails.open, true, 'manual open-while-empty must survive an unrelated structural rebuild');
   } finally {
     h.win.close();
   }
@@ -4554,7 +4690,7 @@ test('p31-t2: every slot shows the Default row + opt-out checkbox, unchecking pe
       assert.ok(fallbackDetails, `${agentId} fallback editor should render`);
       const defaultRow = fallbackDetails.querySelector('.routing-default-fallback-row');
       assert.ok(defaultRow, `${agentId} should show a Default row`);
-      assert.match(defaultRow.textContent, /Default: openai · openai\/gpt-5\.4-mini \(fb\)/, `${agentId} Default row should name the default fallback`);
+      assert.match(defaultRow.textContent, /Default: openai · openai\/gpt-5\.4-mini \(dfb\)/, `${agentId} Default row should name the default fallback`);
       const checkbox = fallbackDetails.querySelector('.routing-use-default-fallback-checkbox');
       assert.ok(checkbox, `${agentId} should show the opt-out checkbox`);
       assert.equal(checkbox.checked, true, `${agentId} checkbox should default to checked`);
@@ -5124,7 +5260,11 @@ test('p27-t3 round 2: orchestrator, defaults, and default-fallback editors each 
 
     assert.ok(summaryLineFor('Orchestrator'), 'orchestrator editor should show a summary line');
     assert.ok(summaryLineFor('Default for all agents'), 'defaults editor should show a summary line');
-    assert.ok(summaryLineFor('Default fallback'), 'default-fallback editor should show a summary line');
+    // p32-t1: Default fallback moved out of .settings-section into its own
+    // collapsed <details class="routing-default-fallback-section">.
+    const dfDetails = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.ok(dfDetails, 'default-fallback section should render');
+    assert.ok(dfDetails.querySelector('.routing-slot-summary-line'), 'default-fallback editor should show a summary line');
   } finally {
     h.win.close();
   }

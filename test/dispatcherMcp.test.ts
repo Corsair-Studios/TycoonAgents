@@ -353,9 +353,11 @@ test("handleDelegateTool: usage-limit adapter failure advances through the speci
     assert.equal(fallbackPre!.fallbackOf, "coding-specialist");
     assert.equal(fallbackPre!.vendor, "moonshot");
     assert.equal(fallbackPre!.model, "moonshot/kimi-k2");
+    assert.equal(fallbackPre!.fallbackIsDefault, false);
     assert.ok(stop, "expected a SubagentStop after the fallback succeeded");
     assert.equal(stop!.fallbackOf, "coding-specialist");
     assert.equal(stop!.fallbackDepth, 1);
+    assert.equal(stop!.fallbackIsDefault, false);
   } finally {
     restore();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -380,6 +382,7 @@ test("handleDelegateTool: defaultFallback is used when the specialist has no cha
     assert.ok(fallbackPre, "expected defaultFallback to be used as the fallback entry");
     assert.equal(fallbackPre!.vendor, "moonshot");
     assert.equal(fallbackPre!.model, "moonshot/kimi-k2");
+    assert.equal(fallbackPre!.fallbackIsDefault, true);
   } finally {
     restore();
     fs.rmSync(dir, { recursive: true, force: true });

@@ -114,6 +114,10 @@ export interface ResolveNextFallbackResult {
   slot: RoutingSlot | null;
   index: number;
   exhausted: boolean;
+  /** p32-t2: true when `slot` came from `defaultFallback` (the routing-level
+   *  default) rather than the slot's own explicit `chain`. False when `slot`
+   *  came from the chain, and false/absent when `slot` is null. */
+  isDefault?: boolean;
   /** Set only when `exhausted` is true AND a defaultFallback existed but
    *  was declined — explains why (useDefaultFallback:false, no
    *  defaultFallback configured, depth cap reached, or the default
@@ -138,7 +142,7 @@ export function resolveNextFallback(input: ResolveNextFallbackInput): ResolveNex
   //    author-written `fallback` array is positionally indexed by
   //    attemptsSoFar across successive calls, so nothing here filters it.
   if (index >= 0 && index < chain.length) {
-    return { slot: chain[index], index, exhausted: false };
+    return { slot: chain[index], index, exhausted: false, isDefault: false };
   }
 
   // 2) p31-t1: the explicit chain is exhausted (or was empty/absent to
@@ -176,7 +180,7 @@ export function resolveNextFallback(input: ResolveNextFallbackInput): ResolveNex
         reason: "defaultFallback duplicates the failing slot or an already-attempted chain entry",
       };
     }
-    return { slot: input.defaultFallback, index, exhausted: false };
+    return { slot: input.defaultFallback, index, exhausted: false, isDefault: true };
   }
 
   // 3) Anything past the (possible) default-fallback slot, or a negative

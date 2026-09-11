@@ -72,6 +72,10 @@ export interface AgentMetric {
   fallbackOf?: string;
   /** 1-based index into the fallback chain for the most recent fallback dispatch. Undefined when never fallen back. */
   fallbackDepth?: number;
+  /** p32-t2: true when the most recent fallback dispatch resolved to the routing-level
+   *  defaultFallback rather than the agent's own chain entry. Undefined when never fallen back
+   *  or on records predating this field. */
+  fallbackIsDefault?: boolean;
   /** Total number of fallback re-dispatches recorded for this agent. Always present (default 0) so the webview can sum it. */
   fallbackCount: number;
   /** One-line description of this agent's role. */
@@ -309,6 +313,7 @@ function upsertMetric(
     costModelClass: undefined,
     fallbackOf: undefined,
     fallbackDepth: undefined,
+    fallbackIsDefault: undefined,
     fallbackCount: 0,
     description: undefined,
     tier: undefined,
@@ -537,6 +542,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           costModelClass: event.costModelClass ?? m.costModelClass,
           fallbackOf: event.fallbackOf ?? m.fallbackOf,
           fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
+          fallbackIsDefault: event.fallbackOf !== undefined ? event.fallbackIsDefault : m.fallbackIsDefault,
           fallbackCount: event.fallbackOf !== undefined ? m.fallbackCount + 1 : m.fallbackCount,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
