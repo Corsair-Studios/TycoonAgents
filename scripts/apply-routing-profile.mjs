@@ -613,6 +613,15 @@ function main() {
   }
   const resolvedDoc = { agents: sortedAgents };
   if (resolvedOrchestrator) resolvedDoc.orchestrator = resolvedOrchestrator;
+  // Top-level defaultFallback: converted through the same
+  // routingSlotToBackend used for every agent/orchestrator backend, so
+  // hooks/tycoon-claude-hook.cjs and hooks/tycoon-dispatcher-mcp.cjs (both
+  // of which read resolvedRouting.defaultFallback as a Backend-shaped
+  // object) see it in real runs, not just hand-written test fixtures.
+  // Omitted entirely when the source routing.json has no defaultFallback.
+  if (profile.defaultFallback) {
+    resolvedDoc.defaultFallback = routingSlotToBackend(profile.defaultFallback);
+  }
   const resolvedJson = JSON.stringify(resolvedDoc, null, 2) + "\n";
   let existingResolvedJson;
   try {

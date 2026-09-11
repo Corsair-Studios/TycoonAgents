@@ -240,6 +240,44 @@ test('writes routing.resolved.json with agents and orchestrator', () => {
   assert.equal(doc.agents['ghost-agent'], undefined);
 });
 
+test('routing.resolved.json includes top-level defaultFallback in converted Backend shape when routing.json sets one', () => {
+  const root = setupFixtureRoot();
+  const routingPath = path.join(root, '.claude', 'tycoon', 'routing.json');
+  const profile = JSON.parse(fs.readFileSync(routingPath, 'utf8'));
+  profile.defaultFallback = {
+    vendor: 'moonshot',
+    transport: 'openai-compatible',
+    model: 'moonshot/kimi-k2',
+    costModelClass: 'local',
+    endpointEnv: 'KIMI_ENDPOINT_URL',
+    credentialEnv: 'KIMI_API_KEY',
+  };
+  fs.writeFileSync(routingPath, JSON.stringify(profile, null, 2), 'utf8');
+
+  const result = run(['--root', root]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const resolvedPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
+  const doc = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+  assert.ok(doc.defaultFallback, 'expected a converted defaultFallback');
+  assert.equal(doc.defaultFallback.vendor, 'moonshot');
+  assert.equal(doc.defaultFallback.transport, 'openai-compatible');
+  assert.equal(doc.defaultFallback.model, 'moonshot/kimi-k2');
+  assert.equal(doc.defaultFallback.costModelClass, 'local');
+  assert.equal(doc.defaultFallback.endpointEnv, 'KIMI_ENDPOINT_URL');
+  assert.equal(doc.defaultFallback.apiKeyEnv, 'KIMI_API_KEY');
+});
+
+test('routing.resolved.json omits defaultFallback entirely when routing.json has none', () => {
+  const root = setupFixtureRoot();
+  const result = run(['--root', root]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const resolvedPath = path.join(root, '.claude', 'tycoon', 'routing.resolved.json');
+  const doc = JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+  assert.equal(Object.prototype.hasOwnProperty.call(doc, 'defaultFallback'), false);
+});
+
 test('ghost agent in profile with no matching file is warned, not created', () => {
   const root = setupFixtureRoot();
   const result = run(['--root', root]);

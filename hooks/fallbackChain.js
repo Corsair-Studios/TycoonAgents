@@ -75,8 +75,31 @@ function isProviderFailure(text) {
         return false;
     return PROVIDER_FAILURE_PATTERNS.some((re) => re.test(text));
 }
+function isSameSlot(a, b) {
+    if (!a || !b)
+        return false;
+    return a.vendor === b.vendor && a.model === b.model && a.transport === b.transport;
+}
 function resolveNextFallback(input) {
-    const chain = Array.isArray(input.chain) ? input.chain : [];
+    const explicitChain = Array.isArray(input.chain) ? input.chain : [];
+    let chain = explicitChain;
+    let usingDefaultFallback = false;
+    if (chain.length === 0 && input.defaultFallback) {
+        chain = [input.defaultFallback];
+        usingDefaultFallback = true;
+    }
+    // p25-t3: self-loop guard — a synthesized [defaultFallback] chain is the
+    // only place this can actually loop: routing.json's own `fallback` array
+    // is author-written and validated against MAX_FALLBACK_DEPTH, and its
+    // entries are positionally indexed by attemptsSoFar across successive
+    // calls — silently dropping a matching entry from it would desync that
+    // index on a later retry (a chain entry equal to THIS attempt's own model
+    // is expected mid-progression, not a loop). So: drop `defaultFallback`
+    // only, and only when it equals the slot that just failed (same
+    // vendor+model+transport) — leaving nothing to try in that case.
+    if (usingDefaultFallback && input.failingSlot && isSameSlot(chain[0], input.failingSlot)) {
+        chain = [];
+    }
     const index = input.attemptsSoFar;
     if (index < 0 || index >= chain.length) {
         return { slot: null, index, exhausted: true };

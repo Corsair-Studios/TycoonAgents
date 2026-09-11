@@ -41,6 +41,12 @@ export interface RoutingProfile {
   orchestrator?: RoutingSlot;
   agents: Record<string, RoutingSlot>;
   defaults?: Partial<RoutingSlot>;
+  /** p25-t2: top-level fallback slot used at RESOLVE time (see
+   *  hooks/fallbackChain.js resolveNextFallback) by any slot whose own
+   *  `fallback` is undefined or empty. Never merged into per-agent slots by
+   *  mergeSlots() — it is applied only when a resolver builds a chain for a
+   *  slot, not inherited via the defaults/agent merge. */
+  defaultFallback?: RoutingSlot;
 }
 
 export interface LoadRoutingProfileResult {
@@ -210,6 +216,10 @@ export function loadRoutingProfile(projectRoot: string): LoadRoutingProfileResul
     validateSlot(obj["defaults"], "defaults", errors, 0);
   }
 
+  if (obj["defaultFallback"] !== undefined) {
+    validateSlot(obj["defaultFallback"], "defaultFallback", errors, 0);
+  }
+
   if (errors.length > 0) {
     return { profile: null, path: filePath, errors };
   }
@@ -220,6 +230,7 @@ export function loadRoutingProfile(projectRoot: string): LoadRoutingProfileResul
   };
   if (obj["orchestrator"] !== undefined) profile.orchestrator = obj["orchestrator"] as RoutingSlot;
   if (obj["defaults"] !== undefined) profile.defaults = obj["defaults"] as Partial<RoutingSlot>;
+  if (obj["defaultFallback"] !== undefined) profile.defaultFallback = obj["defaultFallback"] as RoutingSlot;
 
   return { profile, path: filePath, errors: [] };
 }

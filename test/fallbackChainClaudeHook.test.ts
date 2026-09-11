@@ -110,3 +110,157 @@ test("Stop with no session_id in the payload leaves fallback-state.json untouche
   const stateAfter = JSON.parse(readFileSync(fallbackStatePath(root), "utf8"));
   assert.ok(Object.prototype.hasOwnProperty.call(stateAfter, "session-a"));
 });
+
+// ---------------------------------------------------------------------------
+// Plan task p25-t3: routing.resolved.json's top-level `defaultFallback` is
+// now wired at both call sites (PreToolUse re-dispatch ~1504, PostToolUse
+// mcp__ failure ~1770), used only when the slot itself has no `fallback`
+// chain — and PostToolUse for mcp__codex/gemini/kimi tools with a
+// provider-failure result text emits the same FallbackTriggered/PreToolUse
+// spawn record path the hook already has for a failed native worker.
+// ---------------------------------------------------------------------------
+
+test("PreToolUse re-dispatch (call site ~1504): a slot with no own fallback chain uses routing.resolved.json's top-level defaultFallback", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(join(agentsDir, "coding-specialist.md"), "---\ndescription: Implements code.\nmodel: sonnet\n---\nBody.\n", "utf8");
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({ agents: {}, defaultFallback: { vendor: "moonshot", model: "moonshot/kimi-k2" } }),
+    "utf8",
+  );
+  writeFileSync(
+    fallbackStatePath(root),
+    JSON.stringify({ "test-session-fb1": { "coding-specialist": { attemptsSoFar: 1 } } }),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "Task",
+    tool_input: { subagent_type: "coding-specialist", description: "implement widget", prompt: "write code" },
+    session_id: "test-session-fb1",
+  });
+
+  const records = readActivity(root);
+  const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+  assert.ok(spawn, "expected a spawn record for coding-specialist");
+  assert.equal(spawn!.fallbackOf, "coding-specialist");
+  assert.equal(spawn!.fallbackDepth, 1);
+  assert.equal(spawn!.vendor, "moonshot");
+  assert.equal(spawn!.model, "moonshot/kimi-k2");
+});
+
+test("PreToolUse re-dispatch: defaultFallback is never used when the slot has its own explicit fallback chain (unchanged behaviour)", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(join(agentsDir, "coding-specialist.md"), "---\ndescription: Implements code.\nmodel: sonnet\n---\nBody.\n", "utf8");
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({
+      agents: { "coding-specialist": { fallback: [{ vendor: "google", model: "google/gemini-2.5-pro" }] } },
+      defaultFallback: { vendor: "moonshot", model: "moonshot/kimi-k2" },
+    }),
+    "utf8",
+  );
+  writeFileSync(
+    fallbackStatePath(root),
+    JSON.stringify({ "test-session-fb2": { "coding-specialist": { attemptsSoFar: 1 } } }),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "Task",
+    tool_input: { subagent_type: "coding-specialist", description: "implement widget", prompt: "write code" },
+    session_id: "test-session-fb2",
+  });
+
+  const records = readActivity(root);
+  const spawn = records.find((r) => r.event === "PreToolUse" && r.workerId === "coding-specialist");
+  assert.ok(spawn);
+  assert.equal(spawn!.vendor, "google");
+  assert.equal(spawn!.model, "google/gemini-2.5-pro");
+});
+
+test("PostToolUse mcp__codex__* result with a usage-limit failure text emits a FallbackTriggered record and a fallback spawn attributed to the bound reviewer agent", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    join(agentsDir, "codex-reviewer.md"),
+    [
+      "---",
+      "model: sonnet",
+      "backend:",
+      "  vendor: openai",
+      "  transport: mcp",
+      "  mcpServer: codex",
+      "  tools: [codex]",
+      "  model: openai/gpt-6-astra",
+      "  costModelClass: subscription",
+      "---",
+      "",
+      "# Codex Reviewer (test fixture)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({ agents: {}, defaultFallback: { vendor: "moonshot", model: "moonshot/kimi-k2" } }),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PostToolUse",
+    tool_name: "mcp__codex__codex",
+    tool_input: {},
+    tool_response: "Error: usage limit reached for this account",
+    session_id: "test-session-fb3",
+  });
+
+  const records = readActivity(root);
+  const triggered = records.find((r) => r.event === "FallbackTriggered");
+  assert.ok(triggered, "expected a FallbackTriggered record for the mcp__codex__codex failure");
+  assert.equal(triggered!.workerId, "codex-reviewer");
+  assert.equal(triggered!.nextModel, "moonshot/kimi-k2");
+});
+
+test("PostToolUse mcp__ result with ordinary (non-failure) text writes no FallbackTriggered record", () => {
+  const root = setupProject();
+  const agentsDir = join(root, ".claude", "agents");
+  mkdirSync(agentsDir, { recursive: true });
+  writeFileSync(
+    join(agentsDir, "codex-reviewer.md"),
+    [
+      "---",
+      "model: sonnet",
+      "backend:",
+      "  vendor: openai",
+      "  transport: mcp",
+      "  mcpServer: codex",
+      "  tools: [codex]",
+      "  model: openai/gpt-6-astra",
+      "  costModelClass: subscription",
+      "---",
+      "",
+      "# Codex Reviewer (test fixture)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  runHook(root, {
+    hook_event_name: "PostToolUse",
+    tool_name: "mcp__codex__codex",
+    tool_input: {},
+    tool_response: "verdict: changes-requested — looks fine otherwise",
+    session_id: "test-session-fb4",
+  });
+
+  const records = readActivity(root);
+  assert.equal(records.some((r) => r.event === "FallbackTriggered"), false);
+});

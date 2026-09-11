@@ -42,6 +42,7 @@ import {
   type RoutingSlot,
 } from "./routingProfile";
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
+import { isFallbackTargetDispatchable } from "./fallbackTargets";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
 import { loadAgentRoster } from "../providers/claude-code/agentRoster";
 import { hasValue as localEnvHasValue, setValue as localEnvSetValue, clearValue as localEnvClearValue } from "./localEnvStore";
@@ -121,6 +122,12 @@ export interface RoutingView {
    *  the profile has none / no profile is loaded — so the panel can render
    *  and edit the "route everything through one backend" control directly. */
   defaults?: Partial<RoutingSlot>;
+  /** p25-t2: the profile's top-level `defaultFallback` (verbatim), or
+   *  undefined when the profile has none / no profile is loaded. Read/write
+   *  flows through the existing GET_ROUTING/SAVE_ROUTING message pair (see
+   *  messages.ts SAVE_ROUTING) exactly like `defaults` above — no separate
+   *  message type. */
+  defaultFallback?: RoutingSlot;
   envProbe: Record<string, EnvProbeEntry>;
   presets: RoutingPresets;
   lastApplied: RoutingLastApplied;
@@ -447,6 +454,7 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
     orchestrator,
     agents,
     defaults: profile?.defaults,
+    defaultFallback: profile?.defaultFallback,
     envProbe: probeEnv(Array.from(envNames), env),
     presets: buildPresets(),
     lastApplied: readLastApplied(root),
@@ -466,6 +474,13 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
  *     touched routing.json) rather than a hand-written `backend:` block —
  *     those agents (e.g. the MCP reviewers) intentionally keep their own
  *     backend and don't need a default route.
+ *
+ * p23-t5 follow-up: reviewed whether provider "codex" needs this same
+ * nudge. It does not — `effectiveHarness` here is a HOST selection
+ * (claude-code vs opencode), and codex is not a third host in that sense;
+ * codex-reviewer is subscription-billed via the ChatGPT plan the same way
+ * claude-code agents are, so the "no subscription fallback" condition this
+ * function guards against doesn't hold for it. Left opencode-only.
  */
 export function computeNeedsDefaultRoute(effectiveHarness: string, view: Pick<RoutingView, "defaults" | "agents">): boolean {
   if (effectiveHarness !== "opencode") return false;
@@ -537,7 +552,12 @@ export interface SaveRoutingProfileOptions {
    *  a profile carrying an `orchestrator` slot is rejected outright — the
    *  orchestrator is OpenCode's concept, and under Claude Code that slot
    *  would silently do nothing. Omitted (undefined) means "unknown" and
-   *  skips this check, preserving existing callers that don't yet pass it. */
+   *  skips this check, preserving existing callers that don't yet pass it.
+   *  p23-t5 follow-up: reviewed for codex — the `orchestrator` profile slot
+   *  is an OpenCode-native concept (its own orchestrator.md/backend
+   *  wiring); codex has no equivalent slot to guard, so this rejection
+   *  stays keyed on effectiveHarness !== "opencode" rather than adding a
+   *  codex-specific branch. */
   effectiveHarness?: string;
 }
 
@@ -550,6 +570,65 @@ export interface SaveRoutingProfileOptions {
  *   and NOTHING is written, including the real routing.json.
  * - A missing generator script fails the whole call with one error, no writes.
  */
+/**
+ * GEMINI_API_KEY presence for the codex+google dispatchability check:
+ * process.env first, then the per-user local env value store (same
+ * fallback order as hooks/dispatcherAdapters.cjs's resolveVendorEnv() and
+ * the webview's "stored" treatment) — never the value itself, only a
+ * synthetic marker fed into isFallbackTargetDispatchable's `env` param so
+ * the real secret never passes through this function or any error message.
+ */
+function buildFallbackDispatchEnv(): Record<string, string | undefined> {
+  const present =
+    (typeof process.env["GEMINI_API_KEY"] === "string" && process.env["GEMINI_API_KEY"] !== "") ||
+    (() => {
+      try {
+        return localEnvHasValue("GEMINI_API_KEY");
+      } catch {
+        return false;
+      }
+    })();
+  return { GEMINI_API_KEY: present ? "present" : undefined };
+}
+
+/**
+ * Walk every `fallback` chain entry (any agent slot, orchestrator, defaults)
+ * plus the top-level `defaultFallback`, recording one error string per
+ * target isFallbackTargetDispatchable() rejects for `harness`. Named after
+ * the offending JSON path so the panel can point at the exact entry.
+ */
+function collectUndispatchableFallbackTargets(profile: RoutingProfile, harness: string): string[] {
+  const errors: string[] = [];
+  const dispatchEnv = buildFallbackDispatchEnv();
+  // Only actual FALLBACK targets are checked — a primary agents[id]/
+  // orchestrator/defaults slot is the intentionally-chosen main route and
+  // is out of scope here, matching p25-t4's "chain entry and defaultFallback"
+  // wording.
+  const walkChain = (chain: RoutingSlot[] | undefined, jsonPath: string): void => {
+    if (!Array.isArray(chain)) return;
+    chain.forEach((child, idx) => {
+      const childPath = `${jsonPath}[${idx}]`;
+      const check = isFallbackTargetDispatchable(child, harness, dispatchEnv);
+      if (!check.ok) {
+        errors.push(`${childPath}: ${check.reason ?? "not dispatchable under the current harness"}`);
+      }
+      walkChain(child.fallback, `${childPath}.fallback`);
+    });
+  };
+  for (const agentId of Object.keys(profile.agents ?? {})) {
+    walkChain(profile.agents[agentId]?.fallback, `agents.${agentId}.fallback`);
+  }
+  walkChain(profile.orchestrator?.fallback, "orchestrator.fallback");
+  if (profile.defaultFallback) {
+    const check = isFallbackTargetDispatchable(profile.defaultFallback, harness, dispatchEnv);
+    if (!check.ok) {
+      errors.push(`defaultFallback: ${check.reason ?? "not dispatchable under the current harness"}`);
+    }
+    walkChain(profile.defaultFallback.fallback, "defaultFallback.fallback");
+  }
+  return errors;
+}
+
 export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRoutingResult {
   const { root, profile } = opts;
   const nodeBin = opts.nodeBin ?? process.execPath;
@@ -632,6 +711,24 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
         check: EMPTY_SAVE_RESULT_SCRIPTS,
         write: EMPTY_SAVE_RESULT_SCRIPTS,
       };
+    }
+
+    // p25-t4: reject any chain entry or defaultFallback that cannot
+    // actually dispatch under the caller's current harness. Only runs when
+    // the caller supplied effectiveHarness (undefined skips this, same
+    // "unknown harness" posture the orchestrator guard above takes) — a
+    // hard block here, not a partial write, since a silently-unreachable
+    // fallback target is worse than a rejected save.
+    if (opts.effectiveHarness !== undefined) {
+      const dispatchErrors = collectUndispatchableFallbackTargets(validated, opts.effectiveHarness);
+      if (dispatchErrors.length > 0) {
+        return {
+          ok: false,
+          errors: dispatchErrors,
+          check: EMPTY_SAVE_RESULT_SCRIPTS,
+          write: EMPTY_SAVE_RESULT_SCRIPTS,
+        };
+      }
     }
   } catch (err) {
     return {

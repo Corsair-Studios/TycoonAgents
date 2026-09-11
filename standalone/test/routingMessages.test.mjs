@@ -150,6 +150,51 @@ test('POST /message {type: "saveRouting"} -> writes routing.json, replies routin
   }
 });
 
+// p25-t2: routing.json top-level defaultFallback round-trips through
+// saveRouting (write) and getRouting (read), and lands on disk.
+test('POST /message {type: "saveRouting"} with defaultFallback -> routing.json on disk and getRouting reply both carry it', async () => {
+  const projectRoot = mkTempProject();
+  const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const collector = createSseCollector(eventsRes.body.getReader());
+
+    const defaultFallback = {
+      vendor: 'openai',
+      transport: 'openai-compatible',
+      model: 'openai/gpt-5.4-mini',
+      costModelClass: 'metered',
+      endpointEnv: 'OPENAI_ENDPOINT',
+    };
+    const profile = { version: 1, agents: {}, defaultFallback };
+
+    const res = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ type: 'saveRouting', profile }),
+    });
+    assert.equal(res.status, 202);
+
+    const saved = await collector.next('routingSaved');
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const written = JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'routing.json'), 'utf8'));
+    assert.deepEqual(written.defaultFallback, defaultFallback);
+
+    const routingAfterSave = await collector.next('routing');
+    assert.deepEqual(routingAfterSave.payload.defaultFallback, defaultFallback);
+
+    // Fresh getRouting confirms the read path independently of the save broadcast.
+    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getRouting' }) });
+    assert.equal(getRes.status, 202);
+    const routing = await collector.next('routing', (d) => d.payload.defaultFallback !== undefined);
+    assert.deepEqual(routing.payload.defaultFallback, defaultFallback);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
 test('POST /message {type: "clearRouting"} -> deletes routing.json and replies with a fresh routing reply falling back to alias', async () => {
   const projectRoot = mkTempProject();
   writeFixtureAgent(projectRoot, 'coding-specialist.md', ['name: coding-specialist', 'model: sonnet']);

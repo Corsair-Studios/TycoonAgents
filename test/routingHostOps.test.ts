@@ -245,6 +245,30 @@ test("saveRoutingProfile: writes file + runs check-then-write on both generators
   assert.equal(result.write.opencode.code, 0);
 });
 
+// p25-t2: defaultFallback round-trip — set via saveRoutingProfile, read
+// back via buildRoutingView, and verify routing.json on disk holds it.
+test("saveRoutingProfile + buildRoutingView: defaultFallback round-trips through both write and read", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const defaultFallback = {
+    vendor: "openai",
+    transport: "openai-compatible",
+    model: "openai/gpt-5.4-mini",
+    costModelClass: "metered",
+    endpointEnv: "OPENAI_ENDPOINT",
+  };
+  const profile = { version: 1, agents: {}, defaultFallback };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir });
+  assert.equal(result.ok, true, JSON.stringify(result));
+
+  const written = JSON.parse(fs.readFileSync(path.join(root, ".claude", "tycoon", "routing.json"), "utf8"));
+  assert.deepEqual(written.defaultFallback, defaultFallback);
+
+  const view = buildRoutingView({ root, env: {} });
+  assert.deepEqual(view.defaultFallback, defaultFallback);
+});
+
 test("saveRoutingProfile: a profile containing an apiKey-shaped field is rejected and nothing is written", () => {
   const root = tmpRoot();
   const scriptsDir = makeFakeScriptsDir();
@@ -539,4 +563,122 @@ test("buildRoutingView: orchestrator.md with a bare model: alias -> resolved mod
   const view = buildRoutingView({ root, env: {} });
   assert.equal(view.orchestrator.source, "alias");
   assert.equal(view.orchestrator.backend.model, "anthropic/opus");
+});
+
+// ---------------------------------------------------------------------------
+// p25-t4: saveRoutingProfile rejects an undispatchable fallback target for
+// the caller's current harness (chain entries and defaultFallback), and
+// still allows a save whose targets are all valid for that harness.
+// ---------------------------------------------------------------------------
+
+test("saveRoutingProfile: rejects a defaultFallback vendor codex can't dispatch, nothing written", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = {
+    version: 1,
+    agents: {},
+    defaultFallback: { vendor: "mystery-vendor", model: "mystery-vendor/x" },
+  };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.startsWith("defaultFallback") && e.includes("mystery-vendor")));
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+});
+
+test("saveRoutingProfile: rejects an agent fallback-chain entry with google vendor under codex when GEMINI_API_KEY is unset", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = {
+    version: 1,
+    agents: {
+      "coding-specialist": {
+        vendor: "anthropic",
+        model: "anthropic/sonnet",
+        fallback: [{ vendor: "google", model: "google/gemini" }],
+      },
+    },
+  };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.startsWith("agents.coding-specialist.fallback[0]") && e.includes("GEMINI_API_KEY")));
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+});
+
+test("saveRoutingProfile: keeps a save whose fallback targets are all valid for the current harness (codex)", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = {
+    version: 1,
+    agents: {
+      "coding-specialist": {
+        vendor: "anthropic",
+        model: "anthropic/sonnet",
+        fallback: [{ vendor: "openai-compatible", transport: "openai-compatible", model: "local/x", endpointEnv: "OPENAI_COMPAT_BASE_URL" }],
+      },
+    },
+    defaultFallback: { vendor: "openai", model: "openai/gpt-5.4-mini" },
+  };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), true);
+});
+
+test("saveRoutingProfile: same google-fallback profile is allowed under claude-code (no codex dispatcher gate)", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = {
+    version: 1,
+    agents: {},
+    defaultFallback: { vendor: "google", model: "google/gemini" },
+  };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "claude-code" });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+});
+
+test("saveRoutingProfile: an undefined effectiveHarness skips dispatchability validation entirely", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = {
+    version: 1,
+    agents: {},
+    defaultFallback: { vendor: "mystery-vendor", model: "mystery-vendor/x" },
+  };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+});
+
+test("saveRoutingProfile: google defaultFallback under codex is accepted when GEMINI_API_KEY is only in the local env store", () => {
+  withIsolatedStoreDir(() => {
+    setLocalEnvValue("GEMINI_API_KEY", "test-only-value", {});
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    const profile = { version: 1, agents: {}, defaultFallback: { vendor: "google", model: "google/gemini" } };
+
+    const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+
+    assert.equal(result.ok, true, JSON.stringify(result));
+  });
+});
+
+test("saveRoutingProfile: google defaultFallback under codex is refused when GEMINI_API_KEY is set neither in process.env nor the local env store", () => {
+  withIsolatedStoreDir(() => {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    const profile = { version: 1, agents: {}, defaultFallback: { vendor: "google", model: "google/gemini" } };
+
+    const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((e) => e.startsWith("defaultFallback") && e.includes("GEMINI_API_KEY")));
+  });
 });

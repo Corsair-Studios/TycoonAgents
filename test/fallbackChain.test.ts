@@ -78,6 +78,62 @@ test("resolveNextFallback: an empty chain is immediately exhausted", () => {
   assert.equal(result.slot, null);
 });
 
+// p25-t2: routing.json top-level defaultFallback, applied at resolve time
+// only when a slot has no explicit chain.
+test("resolveNextFallback: no chain uses defaultFallback, fallbackDepth 1", () => {
+  const defaultFallback: RoutingSlot = { vendor: "openai", model: "openai/gpt-5.4-mini" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 0,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.slot?.model, "openai/gpt-5.4-mini");
+  assert.equal(result.index, 0); // 1-based position (index + 1) is fallbackDepth 1
+});
+
+test("resolveNextFallback: undefined chain uses defaultFallback the same as an empty one", () => {
+  const defaultFallback: RoutingSlot = { vendor: "moonshot", model: "moonshot/kimi-k2" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: undefined as unknown as RoutingSlot[],
+    attemptsSoFar: 0,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.slot?.model, "moonshot/kimi-k2");
+});
+
+test("resolveNextFallback: an explicit chain is left unchanged even when defaultFallback is set", () => {
+  const defaultFallback: RoutingSlot = { vendor: "moonshot", model: "moonshot/kimi-k2" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: chain(),
+    attemptsSoFar: 0,
+    defaultFallback,
+  });
+  assert.equal(result.slot?.model, "openai/gpt-5.4-mini"); // chain()[0], not defaultFallback
+});
+
+test("resolveNextFallback: no defaultFallback and no chain stays exhausted (no fallback)", () => {
+  const result = resolveNextFallback({ slotId: "coding-specialist", chain: [], attemptsSoFar: 0 });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+});
+
+test("resolveNextFallback: defaultFallback chain is exhausted after its single entry", () => {
+  const defaultFallback: RoutingSlot = { vendor: "openai", model: "openai/gpt-5.4-mini" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 1,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+});
+
 test("buildFallbackInstruction names the next model and position when not exhausted", () => {
   const result = resolveNextFallback({ slotId: "coding-specialist", chain: chain(), attemptsSoFar: 0 });
   const text = buildFallbackInstruction({
@@ -165,4 +221,78 @@ test("FallbackState: endSession clears tracked failures for that session only", 
 
   assert.equal(state.getNext("session-1", "coding-specialist"), undefined);
   assert.notEqual(state.getNext("session-2", "coding-specialist"), undefined);
+});
+
+// p25-t3: self-loop guard — resolveNextFallback must never resolve to a
+// chain entry (explicit or defaultFallback) equal to the slot that just
+// failed (same vendor+model+transport).
+
+test("resolveNextFallback: self-loop guard skips a defaultFallback equal to the failing slot", () => {
+  const failingSlot = { vendor: "anthropic", model: "anthropic/sonnet", transport: undefined };
+  const defaultFallback: RoutingSlot = { vendor: "anthropic", model: "anthropic/sonnet" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 0,
+    defaultFallback,
+    failingSlot,
+  });
+  assert.equal(result.exhausted, true);
+  assert.equal(result.slot, null);
+});
+
+test("resolveNextFallback: self-loop guard never filters an explicit chain — only a synthesized defaultFallback — so positional indexing across retries stays correct", () => {
+  // An explicit chain entry equal to the CURRENT failing attempt is expected
+  // mid-progression (attempt 2 failed on chain[0]'s own model) and must not
+  // be treated as a self-loop — filtering it would desync attemptsSoFar
+  // indexing on the next call.
+  const explicitChain: RoutingSlot[] = [
+    { vendor: "openai", model: "openai/gpt-5.4-mini" },
+    { vendor: "moonshot", model: "moonshot/kimi-k2" },
+  ];
+  const failingSlotIsChain0 = { vendor: "openai", model: "openai/gpt-5.4-mini", transport: undefined };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: explicitChain,
+    attemptsSoFar: 1,
+    failingSlot: failingSlotIsChain0,
+  });
+  assert.equal(result.slot?.model, "moonshot/kimi-k2"); // normal positional advance, chain untouched
+});
+
+test("resolveNextFallback: self-loop guard leaves a chain with no matching entry unchanged", () => {
+  const failingSlot = { vendor: "anthropic", model: "anthropic/opus", transport: undefined };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: chain(),
+    attemptsSoFar: 0,
+    failingSlot,
+  });
+  assert.equal(result.slot?.model, "openai/gpt-5.4-mini");
+});
+
+test("resolveNextFallback: without a failingSlot, no self-loop filtering happens (backward compatible)", () => {
+  const defaultFallback: RoutingSlot = { vendor: "anthropic", model: "anthropic/sonnet" };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 0,
+    defaultFallback,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.slot?.model, "anthropic/sonnet");
+});
+
+test("resolveNextFallback: self-loop guard treats differing transport as a distinct slot (not filtered)", () => {
+  const failingSlot = { vendor: "anthropic", model: "anthropic/sonnet", transport: "claude-native" as const };
+  const defaultFallback: RoutingSlot = { vendor: "anthropic", model: "anthropic/sonnet", transport: "mcp" as const };
+  const result = resolveNextFallback({
+    slotId: "coding-specialist",
+    chain: [],
+    attemptsSoFar: 0,
+    defaultFallback,
+    failingSlot,
+  });
+  assert.equal(result.exhausted, false);
+  assert.equal(result.slot?.transport, "mcp");
 });

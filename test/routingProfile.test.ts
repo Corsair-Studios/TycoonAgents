@@ -160,6 +160,109 @@ test("loadRoutingProfile: fallback nesting deeper than 3 is rejected", () => {
 });
 
 // ---------------------------------------------------------------------------
+// p25-t2: top-level defaultFallback
+// ---------------------------------------------------------------------------
+
+test("loadRoutingProfile: valid top-level defaultFallback loads", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {},
+    defaultFallback: {
+      vendor: "openai",
+      transport: "openai-compatible",
+      model: "openai/gpt-5.4-mini",
+      costModelClass: "metered",
+      endpointEnv: "OPENAI_ENDPOINT",
+    },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.deepEqual(errors, []);
+  assert.ok(profile);
+  assert.equal(profile!.defaultFallback?.model, "openai/gpt-5.4-mini");
+});
+
+test("loadRoutingProfile: defaultFallback with invalid vendor type is rejected naming defaultFallback", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {},
+    defaultFallback: { vendor: 42 },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.equal(profile, null);
+  assert.ok(errors.some((e) => e.startsWith("defaultFallback.vendor")));
+});
+
+test("loadRoutingProfile: defaultFallback with invalid transport is rejected naming defaultFallback", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {},
+    defaultFallback: { transport: "carrier-pigeon" },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.equal(profile, null);
+  assert.ok(errors.some((e) => e.startsWith("defaultFallback.transport")));
+});
+
+test("loadRoutingProfile: defaultFallback nesting deeper than MAX_FALLBACK_DEPTH is rejected", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {},
+    defaultFallback: {
+      vendor: "a",
+      fallback: [
+        {
+          vendor: "b",
+          fallback: [
+            {
+              vendor: "c",
+              fallback: [{ vendor: "d", fallback: [{ vendor: "e" }] }],
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.equal(profile, null);
+  assert.ok(errors.some((e) => /defaultFallback/.test(e) && /exceeds max fallback depth/i.test(e)));
+});
+
+test("loadRoutingProfile: secret-like property inside defaultFallback is rejected", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {},
+    defaultFallback: { vendor: "a", apiKey: "sk-nope" },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.equal(profile, null);
+  assert.ok(errors.some((e) => /secrets must not be stored/i.test(e)));
+});
+
+test("loadRoutingProfile: defaultFallback is not inherited into a per-agent merge across vendors", () => {
+  const root = tmpRoot();
+  writeRoutingObj(root, {
+    version: 1,
+    agents: {
+      foo: { vendor: "different-vendor", model: "different/model" },
+    },
+    defaults: { vendor: "anthropic", model: "anthropic/haiku", costModelClass: "subscription" },
+    defaultFallback: { vendor: "openai", model: "openai/gpt-5.4-mini" },
+  });
+  const { profile, errors } = loadRoutingProfile(root);
+  assert.deepEqual(errors, []);
+  assert.ok(profile);
+  const resolved = resolveAgentSlot(profile, "foo");
+  // defaultFallback is a separate top-level value — mergeSlots() never sets
+  // `.fallback` on a resolved slot from it.
+  assert.equal(resolved?.fallback, undefined);
+});
+
+// ---------------------------------------------------------------------------
 // 9. secret-like property at top level
 // ---------------------------------------------------------------------------
 

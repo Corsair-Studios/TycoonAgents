@@ -49,6 +49,14 @@ function readFixtureRecord(): ActivityRecord {
   return JSON.parse(raw.split("\n")[0]) as ActivityRecord;
 }
 
+/** Reads backend.model out of codex-reviewer.md's frontmatter directly, so this suite tracks whatever model the agent file currently declares (gpt-5 today, Astra when flipped back) instead of hardcoding either id. */
+function readCodexReviewerBackendModel(): string {
+  const raw = readFileSync(CODEX_REVIEWER_MD, "utf8");
+  const match = /^backend:[\s\S]*?^\s*model:\s*(\S+)\s*$/m.exec(raw);
+  if (!match) throw new Error(`could not find backend.model in ${CODEX_REVIEWER_MD} frontmatter`);
+  return match[1];
+}
+
 /** Set up a scratch project dir with .claude/agents/ (and optionally a hook copy with the compiled modules next to it). */
 function setupProject(opts: { withModule: boolean; extraAgentMd?: { name: string; content: string } }): {
   root: string;
@@ -140,7 +148,9 @@ test("(a) without agentBackend.js next to the hook, a mcp__codex__codex call rep
 
 // ---------------------------------------------------------------------------
 // (b) WITH the module and the real codex-reviewer.md: same base record plus
-// model 'openai/gpt-6-astra', vendor 'openai', costModelClass 'subscription'.
+// the model from codex-reviewer.md's backend.model (read live, not
+// hardcoded, so this stays green whichever model the agent file currently
+// declares), vendor 'openai', costModelClass 'subscription'.
 // ---------------------------------------------------------------------------
 
 test("(b) with agentBackend.js present and the real codex-reviewer.md, a mcp__codex__codex call adds vendor+costModelClass and the backend model", () => {
@@ -158,7 +168,7 @@ test("(b) with agentBackend.js present and the real codex-reviewer.md, a mcp__co
     const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
     assert.ok(rec, "expected an activity record for the mcp__codex__codex call");
 
-    assert.equal(rec!.model, "openai/gpt-6-astra", "model must come from codex-reviewer.md's backend.model");
+    assert.equal(rec!.model, readCodexReviewerBackendModel(), "model must come from codex-reviewer.md's backend.model");
     assert.equal(rec!.vendor, "openai");
     assert.equal(rec!.costModelClass, "subscription");
     assert.equal(rec!.tool, "mcp__codex__codex");
@@ -232,6 +242,59 @@ test("(d) a tool from an unregistered MCP server yields the generic activity rec
     assert.equal("costModelClass" in rec!, false);
     assert.equal("tokens" in rec!, false);
     assert.equal(rec!.workerId, "orchestrator");
+  } finally {
+    cleanup(root, join(hookPath, ".."));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (e) WITHOUT agentBackend.js (legacy branch) but WITH the real
+// codex-reviewer.md present, the legacy fallback must still resolve the
+// model from the agent file's backend.model (scanned directly, no compiled
+// module needed) rather than the stale launch-time default. Regression
+// coverage for the live bug: activity.jsonl recorded "gpt-6-astra" even
+// though codex-reviewer.md declared backend.model openai/gpt-5.
+// ---------------------------------------------------------------------------
+
+test("(e) without agentBackend.js but with codex-reviewer.md present, the legacy fallback resolves model from backend.model, not the stale default", () => {
+  const { root, hookPath } = setupProject({ withModule: false });
+  try {
+    mkdirSync(join(root, ".claude", "agents"), { recursive: true });
+    copyFileSync(CODEX_REVIEWER_MD, join(root, ".claude", "agents", "codex-reviewer.md"));
+    runHook(hookPath, root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__codex__codex",
+      tool_input: {},
+      session_id: "test-session-legacy-backend-1",
+    });
+    const records = readActivity(root);
+    const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
+    assert.ok(rec, "expected an activity record for the mcp__codex__codex call");
+    assert.equal(rec!.model, readCodexReviewerBackendModel(), "legacy fallback must resolve model from codex-reviewer.md's backend.model");
+    assert.notEqual(rec!.model, "gpt-6-astra", "must not fall through to the stale legacy default when backend.model is declared");
+  } finally {
+    cleanup(root, join(hookPath, ".."));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// (f) WITHOUT agentBackend.js and with NO agent .md declaring a backend
+// block for the codex server, the legacy fallback keeps the legacy default.
+// ---------------------------------------------------------------------------
+
+test("(f) without agentBackend.js and with no backend block declared, the legacy fallback keeps the legacy default model", () => {
+  const { root, hookPath } = setupProject({ withModule: false });
+  try {
+    runHook(hookPath, root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__codex__codex",
+      tool_input: {},
+      session_id: "test-session-legacy-default-1",
+    });
+    const records = readActivity(root);
+    const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "mcp__codex__codex");
+    assert.ok(rec, "expected an activity record for the mcp__codex__codex call");
+    assert.equal(rec!.model, "gpt-6-astra", "with no backend block declared anywhere, the legacy default must still be used");
   } finally {
     cleanup(root, join(hookPath, ".."));
   }
