@@ -25,6 +25,13 @@ const REQUIRED_ENTRIES = [
   "extension/out/src/core/modelAliases.js",
   "extension/out/src/core/routingProfile.js",
   "extension/out/src/core/localEnvStore.js",
+  // p23-t11: panel.ts's INSTALL_CODEX_HOOKS/INSTALL_CODEX_DISPATCHER
+  // handlers require these at runtime, and copy the two scripts they pass
+  // as hookScriptPath/serverScriptPath from hooks/.
+  "extension/out/src/providers/codex/installCodexHooks.js",
+  "extension/out/src/providers/codex/installCodexDispatcher.js",
+  "extension/hooks/tycoon-codex-hook.cjs",
+  "extension/hooks/tycoon-dispatcher-mcp.cjs",
 ];
 
 const FORBIDDEN_ENTRIES = [
@@ -97,5 +104,32 @@ test("packaged VSIX does not ship media/src (source parts for media/main.js)", (
     `VSIX ${path.basename(vsixPath)} ships media/src/* source parts — these ` +
       `are build-time-only inputs concatenated into media/main.js (plan ` +
       `p21-t1) and must be excluded via .vscodeignore.`
+  );
+});
+
+test("packaged VSIX's compiled Codex installer modules export their install symbols (p23-t11)", () => {
+  const vsixPath = findVsix();
+  const hooksJs = execFileSync(
+    "unzip",
+    ["-p", vsixPath, "extension/out/src/providers/codex/installCodexHooks.js"],
+    { encoding: "utf8" }
+  );
+  assert.ok(
+    hooksJs.includes("installCodexHooks") && hooksJs.includes("uninstallCodexHooks"),
+    `VSIX ${path.basename(vsixPath)}'s installCodexHooks.js is missing the ` +
+      `installCodexHooks/uninstallCodexHooks symbols panel.ts's ` +
+      `INSTALL_CODEX_HOOKS/UNINSTALL_CODEX_HOOKS handlers require().`
+  );
+
+  const dispatcherJs = execFileSync(
+    "unzip",
+    ["-p", vsixPath, "extension/out/src/providers/codex/installCodexDispatcher.js"],
+    { encoding: "utf8" }
+  );
+  assert.ok(
+    dispatcherJs.includes("installCodexDispatcher") && dispatcherJs.includes("uninstallCodexDispatcher"),
+    `VSIX ${path.basename(vsixPath)}'s installCodexDispatcher.js is missing ` +
+      `the installCodexDispatcher/uninstallCodexDispatcher symbols panel.ts's ` +
+      `INSTALL_CODEX_DISPATCHER/UNINSTALL_CODEX_DISPATCHER handlers require().`
   );
 });

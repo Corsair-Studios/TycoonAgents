@@ -152,10 +152,16 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       }
 
-      const providerId = resolveProviderId({
-        settingValue: readExplicitProviderSetting(cfg),
-        projectDir: projectRoot,
-      });
+      let providerId: ProviderId;
+      try {
+        providerId = resolveProviderId({
+          settingValue: readExplicitProviderSetting(cfg),
+          projectDir: projectRoot,
+        });
+      } catch (err) {
+        log(`TycoonAgents: resolveProviderId failed, falling back to claude-code: ${err instanceof Error ? err.message : err}`);
+        providerId = "claude-code";
+      }
       log(`TycoonAgents: using provider "${providerId}".`);
       provider = createProvider(providerId, activityFile);
       provider.start((e) => runtime.ingest(e));

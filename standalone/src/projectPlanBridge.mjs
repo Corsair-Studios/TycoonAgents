@@ -74,9 +74,42 @@ export function projectPlanBackupFilePath(root) {
   return projectPlanModule().projectPlanBackupFilePath(root);
 }
 
+/** Hardened, rotating, shrink-guarded plan.json.bak writer — see
+ * projectPlan.ts's writePlanBackup doc comment for full behavior. Call ONLY
+ * with an already-parsed/validated `plan` (never raw unvalidated bytes). */
+export function writePlanBackup(root, plan, logger) {
+  return projectPlanModule().writePlanBackup(root, plan, logger);
+}
+
+/** Snapshots the current on-disk plan.json (even if unparsable) before
+ * RESTORE_PLAN_BACKUP overwrites it with .bak. Keeps at most 3 snapshots. */
+export function writePreRestoreSnapshot(root, planPath, logger) {
+  return projectPlanModule().writePreRestoreSnapshot(root, planPath, logger);
+}
+
 /** Archives a complete-and-approved plan snapshot (idempotent, no-op otherwise). */
 export function archivePlanIfComplete(root, plan) {
   return projectPlanModule().archivePlanIfComplete(root, plan);
+}
+
+/** Sets `phaseId`'s gate to `"approved"` (+`approvedAt`) and advances
+ * `currentPhaseId` — see projectPlan.ts's approvePhase doc comment. Pure;
+ * does not touch disk. */
+export function approvePhase(plan, phaseId) {
+  return projectPlanModule().approvePhase(plan, phaseId);
+}
+
+/** Writes `plan` to `planPath` (plan.json). Call `writePlanBackup` alongside
+ * this on the SAME plan for the standard backup-on-write pattern. */
+export function writePlan(planPath, plan) {
+  return projectPlanModule().writePlan(planPath, plan);
+}
+
+/** `<root>/.claude/tycoon/gate-events.jsonl` append-only writer — mirrors
+ * panel.ts's MSG.APPROVE_PHASE branch. Creates the file/dir if missing,
+ * never truncates, and swallows+logs write failures (never throws). */
+export function appendGateEvent(root, event, logger) {
+  return projectPlanModule().appendGateEvent(root, event, logger);
 }
 
 /** Every archived plan snapshot under `<root>/.claude/tycoon/plans/`, newest-first. */

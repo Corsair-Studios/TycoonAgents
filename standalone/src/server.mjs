@@ -87,7 +87,7 @@ import {
   handleRenameThemeCharacter,
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
-import { handleRestorePlanBackup, postPlanState, computePlanState } from './projectPlanMessages.mjs';
+import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -235,6 +235,68 @@ let _providerSelectionModule;
 function providerSelectionModule() {
   if (!_providerSelectionModule) _providerSelectionModule = requireCompiledOrThrow(PROVIDER_SELECTION_JS, 'providerSelection');
   return _providerSelectionModule;
+}
+
+// p23-t11: Codex hook/dispatcher installers (leaf modules under
+// src/providers/codex/ — same "pure, no vscode import" posture as the
+// modules above).
+const INSTALL_CODEX_HOOKS_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'codex', 'installCodexHooks.js');
+const INSTALL_CODEX_DISPATCHER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'codex', 'installCodexDispatcher.js');
+let _installCodexHooksModule;
+function installCodexHooksModule() {
+  if (!_installCodexHooksModule) _installCodexHooksModule = requireCompiledOrThrow(INSTALL_CODEX_HOOKS_JS, 'installCodexHooks');
+  return _installCodexHooksModule;
+}
+let _installCodexDispatcherModule;
+function installCodexDispatcherModule() {
+  if (!_installCodexDispatcherModule) _installCodexDispatcherModule = requireCompiledOrThrow(INSTALL_CODEX_DISPATCHER_JS, 'installCodexDispatcher');
+  return _installCodexDispatcherModule;
+}
+// Extension-parity script paths: the standalone process's own copies under
+// REPO_ROOT/hooks/ (same files panel.ts ships in the .vsix's hooks/ dir).
+const CODEX_HOOK_SCRIPT_PATH = path.join(REPO_ROOT, 'hooks', 'tycoon-codex-hook.cjs');
+const CODEX_DISPATCHER_SCRIPT_PATH = path.join(REPO_ROOT, 'hooks', 'tycoon-dispatcher-mcp.cjs');
+// Markers mirrored from installCodexHooks.ts's private TOML_MARKER_START /
+// HOOKS_JSON_MARKER_DESCRIPTION constants (not exported — that file must
+// not be edited here). Keep byte-identical to that file's.
+const CODEX_HOOK_TOML_MARKER = '# tycoon-codex-hook: managed notify entry (do not edit by hand)';
+const CODEX_HOOKS_JSON_MARKER_DESCRIPTION = 'tycoon-codex-hook: managed by TycoonAgents (do not edit by hand)';
+let _lastCodexHookWarnings;
+let _lastCodexDispatcherWarnings;
+
+/** Standalone analog of panel.ts's _detectCodexHooksInstalled. */
+function detectCodexHooksInstalledStandalone(root) {
+  try {
+    const { resolveCodexHome } = installCodexHooksModule();
+    const { codexHome } = resolveCodexHome({ env: process.env, platform: process.platform });
+    const configTomlPath = path.join(codexHome, 'config.toml');
+    const hasToml = fs.existsSync(configTomlPath) && fs.readFileSync(configTomlPath, 'utf8').includes(CODEX_HOOK_TOML_MARKER);
+    let hasHooksJson = false;
+    if (root) {
+      const hooksJsonPath = path.join(root, '.codex', 'hooks.json');
+      if (fs.existsSync(hooksJsonPath)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
+          hasHooksJson = parsed && typeof parsed === 'object' && parsed.description === CODEX_HOOKS_JSON_MARKER_DESCRIPTION;
+        } catch {
+          hasHooksJson = false;
+        }
+      }
+    }
+    return hasToml || hasHooksJson;
+  } catch {
+    return false;
+  }
+}
+
+/** Standalone analog of panel.ts's _detectCodexDispatcherInstalled. */
+function detectCodexDispatcherInstalledStandalone() {
+  try {
+    const { isDispatcherMarkerInConfigToml } = installCodexDispatcherModule();
+    return isDispatcherMarkerInConfigToml(process.env, process.platform);
+  } catch {
+    return false;
+  }
 }
 
 let _routingHostOpsModule;
@@ -865,6 +927,77 @@ function handleBrowserMessage(msg) {
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
       break;
     }
+    case 'installCodexHooks': {
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] installCodexHooks: no project root resolved');
+        break;
+      }
+      try {
+        const { installCodexHooks } = installCodexHooksModule();
+        const result = installCodexHooks({
+          projectDir: root,
+          env: process.env,
+          platform: process.platform,
+          hookScriptPath: CODEX_HOOK_SCRIPT_PATH,
+        });
+        _lastCodexHookWarnings = result.warnings;
+      } catch (err) {
+        console.error('[tycoonagents-standalone] installCodexHooks failed:', err instanceof Error ? err.message : err);
+        _lastCodexHookWarnings = [err instanceof Error ? err.message : String(err)];
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'uninstallCodexHooks': {
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] uninstallCodexHooks: no project root resolved');
+        break;
+      }
+      try {
+        const { uninstallCodexHooks } = installCodexHooksModule();
+        uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+        _lastCodexHookWarnings = undefined;
+      } catch (err) {
+        console.error('[tycoonagents-standalone] uninstallCodexHooks failed:', err instanceof Error ? err.message : err);
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'installCodexDispatcher': {
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] installCodexDispatcher: no project root resolved');
+        break;
+      }
+      try {
+        const { installCodexDispatcher } = installCodexDispatcherModule();
+        const result = installCodexDispatcher({
+          projectDir: root,
+          env: process.env,
+          platform: process.platform,
+          serverScriptPath: CODEX_DISPATCHER_SCRIPT_PATH,
+        });
+        _lastCodexDispatcherWarnings = result.warnings;
+      } catch (err) {
+        console.error('[tycoonagents-standalone] installCodexDispatcher failed:', err instanceof Error ? err.message : err);
+        _lastCodexDispatcherWarnings = [err instanceof Error ? err.message : String(err)];
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
+    case 'uninstallCodexDispatcher': {
+      try {
+        const { uninstallCodexDispatcher } = installCodexDispatcherModule();
+        uninstallCodexDispatcher({ env: process.env, platform: process.platform });
+        _lastCodexDispatcherWarnings = undefined;
+      } catch (err) {
+        console.error('[tycoonagents-standalone] uninstallCodexDispatcher failed:', err instanceof Error ? err.message : err);
+      }
+      broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      break;
+    }
     case 'setUseMultipleLlms': {
       // Standalone analog of panel.ts's _handleSetUseMultipleLlms (p18-t1).
       // Never touches routing.json — hiding the Routing screen again must
@@ -1119,6 +1252,13 @@ function handleBrowserMessage(msg) {
       // RESTORE_PLAN_BACKUP below), which reads the REAL
       // .claude/tycoon/plan.json via the compiled projectPlan.js bridge.
       postPlanState(primaryProjectRoot, broadcast);
+      break;
+    case 'APPROVE_PHASE':
+      // Standalone analog of panel.ts's MSG.APPROVE_PHASE branch (~line
+      // 2623) — projectPlanMessages.mjs's handleApprovePhase sets the gate
+      // to "approved", writes plan.json + .bak, archives if complete, and
+      // appends a gate-events.jsonl line with source:"standalone".
+      handleApprovePhase(primaryProjectRoot, msg.phaseId, broadcast);
       break;
     case 'REQUEST_OFFLOAD_OFFER_STATE':
       // Standalone analog of panel.ts's _postOffloadOfferState (~line 8152).
@@ -2184,13 +2324,28 @@ function buildStandaloneHarnessSettings() {
   } catch (err) {
     console.error('[tycoonagents-standalone] needsDefaultRoute computation failed:', err instanceof Error ? err.message : err);
   }
+  // p23-t11: same codex-only install-state flags as panel.ts's
+  // _buildHarnessSettings.
+  const codexExtra = description.effective === 'codex'
+    ? {
+        codexHooksInstalled: detectCodexHooksInstalledStandalone(cwd),
+        codexDispatcherInstalled: detectCodexDispatcherInstalledStandalone(),
+        ...(_lastCodexHookWarnings && _lastCodexHookWarnings.length > 0
+          ? { codexHooksWarning: _lastCodexHookWarnings.join(' ') }
+          : {}),
+        ...(_lastCodexDispatcherWarnings && _lastCodexDispatcherWarnings.length > 0
+          ? { codexDispatcherWarning: _lastCodexDispatcherWarnings.join(' ') }
+          : {}),
+      }
+    : {};
   return {
     ...description,
     running,
     mismatch,
     options: [
       { id: 'claude-code', label: 'Claude Code' },
-      { id: 'opencode', label: 'OpenCode' },
+      { id: 'opencode', label: 'OpenCode (Experimental)' },
+      { id: 'codex', label: 'Codex (Experimental)' },
     ],
     // The watcher/provider was resolved once at process startup (see
     // `startupProviderId` and cli.mjs) and never reconstructed mid-process,
@@ -2200,6 +2355,7 @@ function buildStandaloneHarnessSettings() {
     // whose file already matches what's running doesn't show a stale hint.
     requiresRestart: mismatch,
     needsDefaultRoute,
+    ...codexExtra,
   };
 }
 
@@ -3156,6 +3312,25 @@ function buildHostHtml() {
         <span class="badge-hud-count">0</span>
         <span class="badge-hud-dot" aria-hidden="true"></span>
       </button>
+      <!-- Rebirth trophy row: SIBLING of #badge-hud-btn (never a child — a
+           child would inherit .badge-hud's positioning context, which is
+           where .badge-hud-dot's top/right offsets live). One bare gold cup
+           per completed rebirth, immediately left of the badge medal;
+           rendered by updateTrophyRow() in media/main.js from the
+           module-scope rebirthCount. The gradient the cups share lives in
+           this hidden defs-only sprite (referenced via fill:url(#...) from
+           each cup) so the cup markup itself only needs to live in ONE
+           place (media/main.js's TROPHY_CUP_SVG). -->
+      <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="trophyCupGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#ffe9a8" />
+            <stop offset="50%" stop-color="#ffb020" />
+            <stop offset="100%" stop-color="#8a4d06" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <div id="trophy-row" class="trophy-row"></div>
     </div>
 
     <!-- Resize handle: drag to split stage vs metrics panel -->

@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { handleRestorePlanBackup, postPlanState } from '../src/projectPlanMessages.mjs';
+import { handleRestorePlanBackup, handleApprovePhase, postPlanState } from '../src/projectPlanMessages.mjs';
 
 function mkTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-planrestore-'));
@@ -60,6 +60,22 @@ test('handleRestorePlanBackup: restores plan.json from plan.json.bak after a cor
   // Fresh re-read off disk (not the broadcast payload) — the pC-t2 acceptance bar.
   const restored = JSON.parse(fs.readFileSync(path.join(dir, 'plan.json'), 'utf8'));
   assert.equal(restored.title, 'Good Plan');
+});
+
+test('handleRestorePlanBackup: saves a pre-restore snapshot of the original plan.json bytes before overwriting', (t) => {
+  const root = mkTempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = seedTycoonDir(root);
+  fs.writeFileSync(path.join(dir, 'plan.json.bak'), JSON.stringify(GOOD_PLAN, null, 2));
+  const originalBytes = '{ this is not valid json';
+  fs.writeFileSync(path.join(dir, 'plan.json'), originalBytes);
+
+  handleRestorePlanBackup(root, fakeBroadcast([]));
+
+  const snapshots = fs.readdirSync(dir).filter((f) => f.startsWith('plan.json.pre-restore-'));
+  assert.equal(snapshots.length, 1, 'exactly one pre-restore snapshot written');
+  const snapshotContent = fs.readFileSync(path.join(dir, snapshots[0]), 'utf8');
+  assert.equal(snapshotContent, originalBytes, 'snapshot holds the original (corrupt) bytes verbatim');
 });
 
 test('handleRestorePlanBackup: no .bak file present is a no-op (plan.json left untouched), still reposts PLAN_STATE', (t) => {
@@ -120,4 +136,64 @@ test('postPlanState: a good plan.json read backs it up to plan.json.bak (best-ef
   assert.equal(planState.data.plan.title, 'Good Plan');
   assert.equal(planState.data.hasBackup, true);
   assert.ok(fs.existsSync(path.join(dir, 'plan.json.bak')), '.bak written on a good read');
+});
+
+const PLAN_WITH_PHASE = {
+  version: 1,
+  title: 'Gated Plan',
+  phases: [{ id: 'p1', num: 1, name: 'Phase One', goal: 'do stuff', gate: 'pending', taskIds: [] }],
+  tasks: [],
+  currentPhaseId: 'p1',
+  currentTaskId: null,
+};
+
+test('handleApprovePhase: sets the gate to approved with approvedAt, writes plan.json + .bak, appends one gate-event line, reposts PLAN_STATE', (t) => {
+  const root = mkTempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = seedTycoonDir(root);
+  fs.writeFileSync(path.join(dir, 'plan.json'), JSON.stringify(PLAN_WITH_PHASE, null, 2));
+
+  const calls = [];
+  handleApprovePhase(root, 'p1', fakeBroadcast(calls));
+
+  const planState = calls.find((c) => c.data.type === 'PLAN_STATE');
+  assert.ok(planState);
+  const phase = planState.data.plan.phases.find((p) => p.id === 'p1');
+  assert.equal(phase.gate, 'approved');
+  assert.ok(phase.approvedAt, 'approvedAt set');
+
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'plan.json'), 'utf8'));
+  assert.equal(onDisk.phases[0].gate, 'approved');
+  assert.ok(fs.existsSync(path.join(dir, 'plan.json.bak')), '.bak written');
+
+  const eventsPath = path.join(dir, 'gate-events.jsonl');
+  const lines = fs.readFileSync(eventsPath, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1, 'exactly one event line');
+  const event = JSON.parse(lines[0]);
+  assert.equal(event.type, 'gate');
+  assert.equal(event.phaseId, 'p1');
+  assert.equal(event.phaseNum, 1);
+  assert.equal(event.name, 'Phase One');
+  assert.equal(event.gate, 'approved');
+  assert.equal(event.source, 'standalone');
+  assert.ok(event.ts);
+});
+
+test('handleApprovePhase: unknown phaseId is a no-op (plan.json untouched), still reposts PLAN_STATE', (t) => {
+  const root = mkTempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = seedTycoonDir(root);
+  const original = JSON.stringify(PLAN_WITH_PHASE, null, 2);
+  fs.writeFileSync(path.join(dir, 'plan.json'), original);
+
+  const calls = [];
+  handleApprovePhase(root, 'does-not-exist', fakeBroadcast(calls));
+
+  const planState = calls.find((c) => c.data.type === 'PLAN_STATE');
+  assert.ok(planState);
+  assert.equal(planState.data.plan.phases[0].gate, 'pending', 'unchanged');
+
+  const onDiskRaw = fs.readFileSync(path.join(dir, 'plan.json'), 'utf8');
+  assert.equal(onDiskRaw, original, 'plan.json bytes untouched');
+  assert.equal(fs.existsSync(path.join(dir, 'gate-events.jsonl')), false, 'no event appended');
 });

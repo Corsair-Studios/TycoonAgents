@@ -19,6 +19,8 @@ import {
   isPhaseComplete,
   readPlan,
   writePlan,
+  appendGateEvent,
+  gateEventsFilePath,
 } from "../src/host/vscode/projectPlan";
 import type { ProjectPlan, PlanTask, PlanPhase } from "../src/shared/types";
 
@@ -206,6 +208,78 @@ test("approvePhase: does not mutate the input plan", () => {
   const snapshot = JSON.parse(JSON.stringify(plan));
   approvePhase(plan, "phase-a");
   assert.deepEqual(plan, snapshot);
+});
+
+test("approvePhase: sets approvedAt to an ISO timestamp on the approved phase", () => {
+  const plan = makeFixturePlan();
+  const before = Date.now();
+  const out = approvePhase(plan, "phase-a");
+  const phase = out.phases.find((p) => p.id === "phase-a");
+  assert.ok(phase?.approvedAt);
+  const parsed = Date.parse(phase!.approvedAt!);
+  assert.ok(!Number.isNaN(parsed));
+  assert.ok(parsed >= before);
+});
+
+// ---------------------------------------------------------------------------
+// appendGateEvent
+// ---------------------------------------------------------------------------
+
+test("appendGateEvent: appends exactly one well-formed JSONL line, creating the file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-gate-events-"));
+  const filePath = gateEventsFilePath(dir);
+  assert.equal(fs.existsSync(filePath), false);
+  appendGateEvent(dir, {
+    ts: "2026-09-11T00:00:00.000Z",
+    phaseId: "p28",
+    phaseNum: 28,
+    name: "Phase Twenty-Eight",
+    gate: "approved",
+    source: "panel",
+  });
+  const raw = fs.readFileSync(filePath, "utf8");
+  const lines = raw.split("\n").filter((l) => l.length > 0);
+  assert.equal(lines.length, 1);
+  const parsed = JSON.parse(lines[0]);
+  assert.deepEqual(parsed, {
+    ts: "2026-09-11T00:00:00.000Z",
+    type: "gate",
+    phaseId: "p28",
+    phaseNum: 28,
+    name: "Phase Twenty-Eight",
+    gate: "approved",
+    source: "panel",
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("appendGateEvent: appends, never truncates, across multiple calls", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-gate-events-"));
+  const filePath = gateEventsFilePath(dir);
+  appendGateEvent(dir, {
+    ts: "2026-09-11T00:00:00.000Z",
+    phaseId: "p1",
+    phaseNum: 1,
+    name: "One",
+    gate: "approved",
+    source: "panel",
+  });
+  appendGateEvent(dir, {
+    ts: "2026-09-11T00:01:00.000Z",
+    phaseId: "p2",
+    phaseNum: 2,
+    name: "Two",
+    gate: "approved",
+    source: "standalone",
+  });
+  const lines = fs
+    .readFileSync(filePath, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0);
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[0]).phaseId, "p1");
+  assert.equal(JSON.parse(lines[1]).phaseId, "p2");
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------

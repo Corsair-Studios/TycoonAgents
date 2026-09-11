@@ -49,6 +49,129 @@ function atomicWriteSync(filePath, data) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Gate events (plan p29-t2): surface unseen plan-gate approvals/rejections
+// from <tycoonDir>/gate-events.jsonl to the orchestrator via additionalContext.
+// Purely additive/read-only w.r.t. that file - the host side (panel/standalone)
+// owns writing gate-events.jsonl; this hook only reads it and tracks a byte
+// offset cursor so each event is surfaced exactly once.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read gate events appended to gate-events.jsonl since the last recorded
+ * cursor, then advance the cursor to the file's current size. Malformed
+ * lines are skipped. A missing cursor file is treated as offset 0. If the
+ * events file has shrunk below the stored cursor (rotated/truncated), the
+ * cursor resets to 0 so events are re-read from the start rather than
+ * silently skipped.
+ * @param {string} tycoonDir
+ * @returns {Array<Record<string, unknown>>}
+ */
+function readUnseenGateEvents(tycoonDir) {
+  const eventsPath = path.join(tycoonDir, "gate-events.jsonl");
+  const cursorPath = path.join(tycoonDir, "gate-events.cursor");
+
+  let size;
+  try {
+    size = fs.statSync(eventsPath).size;
+  } catch {
+    return []; // no events file yet
+  }
+
+  let cursor = 0;
+  try {
+    const raw = fs.readFileSync(cursorPath, "utf8").trim();
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) cursor = parsed;
+  } catch { /* missing cursor = 0 */ }
+
+  if (cursor > size) cursor = 0; // file shrank below cursor: reset
+
+  if (cursor >= size) return []; // nothing new
+
+  /** @type {Array<Record<string, unknown>>} */
+  const events = [];
+  try {
+    const fd = fs.openSync(eventsPath, "r");
+    try {
+      const len = size - cursor;
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, cursor);
+      const chunk = buf.toString("utf8");
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsedLine = JSON.parse(trimmed);
+          if (parsedLine && typeof parsedLine === "object") events.push(parsedLine);
+        } catch { /* skip malformed line */ }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return []; // read failed: fail open, no events surfaced this call
+  }
+
+  try {
+    atomicWriteSync(cursorPath, String(size));
+  } catch { /* best-effort: a failed cursor write may re-surface events next call */ }
+
+  return events;
+}
+
+/**
+ * Format one gate event into a single line of additionalContext text.
+ * Falls back gracefully when optional fields are missing.
+ * @param {Record<string, unknown>} evt
+ * @returns {string}
+ */
+/**
+ * Collapse newlines/tabs to single spaces, strip other control chars, trim,
+ * and cap to maxLen (appending an ellipsis when truncated). Keeps a single
+ * untrusted field from breaking the one-line-per-event additionalContext
+ * format or growing it unboundedly.
+ * @param {unknown} value
+ * @param {number} maxLen
+ * @returns {string}
+ */
+function sanitizeGateText(value, maxLen) {
+  if (typeof value !== "string" || !value) return "";
+  // eslint-disable-next-line no-control-regex
+  let s = value.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x09\x0b\x0c\x0e-\x1f\x7f]/g, "").trim();
+  if (s.length > maxLen) s = s.slice(0, maxLen) + "…";
+  return s;
+}
+
+function formatGateEventLine(evt) {
+  const gate = typeof evt.gate === "string" ? evt.gate : "pending";
+  const phaseNumRaw = evt.phaseNum;
+  const phaseNum = typeof phaseNumRaw === "number" && Number.isFinite(phaseNumRaw) ? phaseNumRaw : null;
+  const rawName = typeof evt.name === "string" && evt.name ? evt.name : (typeof evt.phaseId === "string" ? evt.phaseId : "unknown");
+  const name = sanitizeGateText(rawName, 120) || "unknown";
+  const phaseId = sanitizeGateText(evt.phaseId, 32);
+  const ts = typeof evt.ts === "string" ? evt.ts : "";
+  const source = typeof evt.source === "string" ? evt.source : "unknown";
+  const phaseLabel = phaseNum !== null ? `phase ${phaseNum}` : (phaseId ? `phase ${phaseId}` : "phase ?");
+  return `Plan gate update: ${phaseLabel} ${name} ${gate}${ts ? ` at ${ts}` : ""} (${source}).`;
+}
+
+/**
+ * Build the merged additionalContext string for a set of gate events, plus
+ * any existing additionalContext text the handler already produced. Returns
+ * null when there is nothing to add (no events and no existing text).
+ * @param {Array<Record<string, unknown>>} events
+ * @param {string} [existing]
+ * @returns {string|null}
+ */
+function mergeGateEventContext(events, existing) {
+  if (!events || events.length === 0) return existing || null;
+  const lines = events.map(formatGateEventLine).join("\n");
+  if (existing) return existing + "\n" + lines;
+  return lines;
+}
+
 // A lock file older than this is assumed to belong to a crashed or foreign
 // process (every hook invocation finishes in well under this window) and is
 // safe to steal rather than let the active-agent stack freeze forever.
@@ -272,6 +395,66 @@ function buildMcpBackendRouting(agentsDir) {
     }
   }
   return { exact, prefixes };
+}
+
+// p_bugfix: lightweight, zero-dependency scan for an mcpServer's
+// backend.model directly out of .claude/agents/*.md frontmatter, used ONLY
+// by the legacy mcp__codex__ fallback below when agentBackend.js isn't
+// available next to the hook (so buildMcpBackendRouting/lookupMcpBackend
+// above never ran). Mirrors the subset of YAML readAgentFrontmatter parses
+// (flat backend.<key>: value lines under an indented `backend:` block) but
+// without requiring the compiled module, so the correct model still shows
+// up even in an unbuilt/uninstalled checkout. Returns the raw model string
+// verbatim (e.g. "openai/gpt-5") — same convention as the compiled path,
+// which does not strip the vendor prefix either (see test (b) in
+// test/hookBackendRouting.test.ts).
+function findBackendModelForMcpServer(agentsDir, mcpServer) {
+  let files;
+  try {
+    files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+  } catch {
+    return undefined;
+  }
+  for (const file of files) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(agentsDir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const normalized = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+    const fmMatch = normalized.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+    const backendMatch = fmMatch[1].match(/^backend:\s*\n((?:[ \t]+\S.*\n?)*)/m);
+    if (!backendMatch) continue;
+    const block = backendMatch[1];
+    const serverMatch = block.match(/^\s*mcpServer:\s*(\S+)\s*$/m);
+    const server = serverMatch ? serverMatch[1].replace(/^["']|["']$/g, "") : undefined;
+    if (server !== mcpServer) continue;
+    const modelMatch = block.match(/^\s*model:\s*(\S+)\s*$/m);
+    if (modelMatch) return modelMatch[1].replace(/^["']|["']$/g, "");
+  }
+  return undefined;
+}
+
+// Second fallback tier: routing.resolved.json's agents[agentId].backend.model
+// (written by scripts/apply-routing-profile.mjs), tried when no agent .md
+// file could be scanned/matched directly. agentId here is the agent whose
+// backend declares this mcpServer, if any is known via findBackendModelForMcpServer's
+// caller; when the caller doesn't know which agentId to look up it scans every
+// entry in resolvedRouting.agents for one whose backend.mcpServer matches.
+function findResolvedRoutingModelForMcpServer(tycoonDir, mcpServer) {
+  const resolved = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
+  const agents = resolved && resolved.agents;
+  if (!agents || typeof agents !== "object") return undefined;
+  for (const agentId of Object.keys(agents)) {
+    const entry = agents[agentId];
+    const backend = entry && entry.backend;
+    if (backend && backend.mcpServer === mcpServer && typeof backend.model === "string" && backend.model) {
+      return backend.model;
+    }
+  }
+  return undefined;
 }
 
 function lookupMcpBackend(routing, toolName) {
@@ -1505,6 +1688,8 @@ function main(raw) {
               slotId: agentId,
               chain,
               attemptsSoFar: attemptsSoFar - 1,
+              defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
+              failingSlot: { model },
             });
             if (!result.exhausted && result.slot) {
               fallbackOf = agentId;
@@ -1704,9 +1889,20 @@ function main(raw) {
         // else-if, so there is no double routing.
         const CODEX_TOOL_PREFIX = "mcp__codex__";
         if (toolName.indexOf(CODEX_TOOL_PREFIX) === 0) {
-          const codexModel = (toolInput && typeof toolInput.model === "string" && toolInput.model)
-            ? toolInput.model
-            : "gpt-6-astra"; // catalog.json's codex entry launch-time default (-c model=)
+          // p_bugfix: resolve in order — (1) a per-call override, (2) an
+          // agent .md's backend.model scanned directly (no compiled module
+          // required — see findBackendModelForMcpServer above), (3)
+          // routing.resolved.json's slot model for this mcpServer, (4) the
+          // legacy launch-time default. This fixes activity records
+          // reporting the stale catalog.json launch default (gpt-6-astra)
+          // when an agent file has since repinned backend.model (e.g.
+          // codex-reviewer.md -> openai/gpt-5) but agentBackend.js wasn't
+          // available next to the hook to route it through mcpBackend above.
+          const codexModel =
+            (toolInput && typeof toolInput.model === "string" && toolInput.model) ||
+            findBackendModelForMcpServer(agentsDir, "codex") ||
+            findResolvedRoutingModelForMcpServer(tycoonDir, "codex") ||
+            "gpt-6-astra"; // catalog.json's codex entry launch-time default (-c model=)
           record.model = codexModel;
           // tokens / cacheReadTokens intentionally left unset — see comment above.
         }
@@ -1771,6 +1967,8 @@ function main(raw) {
               slotId,
               chain,
               attemptsSoFar: newAttempts - 1,
+              defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
+              failingSlot: { vendor: mcpBackend.vendor, model: mcpBackend.model },
             });
             const instruction = fallbackChain.buildFallbackInstruction({
               workerId: slotId,
@@ -1801,6 +1999,24 @@ function main(raw) {
                 hookSpecificOutput: {
                   hookEventName: "PostToolUse",
                   additionalContext: instruction,
+                },
+              }));
+            } catch { /* never let output construction break the hook */ }
+          }
+        }
+      } else if (toolName === "Task") {
+        // Surface unseen plan-gate approvals/rejections (plan p29-t2). Only
+        // this hook's own PostToolUse output for the Task tool - the mcp__
+        // branch above is mutually exclusive (toolName can't match both).
+        const gateEvents = readUnseenGateEvents(tycoonDir);
+        if (gateEvents.length > 0) {
+          const additionalContext = mergeGateEventContext(gateEvents);
+          if (additionalContext) {
+            try {
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: {
+                  hookEventName: "PostToolUse",
+                  additionalContext,
                 },
               }));
             } catch { /* never let output construction break the hook */ }
@@ -1868,6 +2084,21 @@ function main(raw) {
     if (journalMax > 0) {
       const promptText = typeof payload.prompt === "string" ? payload.prompt : "";
       appendSessionJournalEntry(projectRoot, promptText, journalMax, at);
+    }
+
+    // Surface unseen plan-gate approvals/rejections (plan p29-t2).
+    try {
+      const gateEvents = readUnseenGateEvents(tycoonDir);
+      if (gateEvents.length > 0) {
+        const additionalContext = mergeGateEventContext(gateEvents);
+        if (additionalContext) {
+          try {
+            process.stdout.write(JSON.stringify({ additionalContext }));
+          } catch { /* never let output construction break the hook */ }
+        }
+      }
+    } catch {
+      // Fail open: any error surfacing gate events must never break UserPromptSubmit.
     }
   }
 

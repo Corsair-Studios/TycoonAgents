@@ -55,6 +55,8 @@ const PlanPhaseSchema = z.object({
   goal: z.string(),
   gate: z.enum(["pending", "approved"]),
   taskIds: z.array(z.string()),
+  /** ISO timestamp set when the gate transitions to "approved" (see {@link approvePhase}). */
+  approvedAt: z.string().optional(),
 });
 
 /** Zod schema mirroring {@link ProjectPlan} in src/shared/types.ts. */
@@ -161,7 +163,7 @@ export function applyTaskResult(
  */
 export function approvePhase(plan: ProjectPlan, phaseId: string): ProjectPlan {
   const phases: PlanPhase[] = plan.phases.map((p) =>
-    p.id === phaseId ? { ...p, gate: "approved" as const } : p
+    p.id === phaseId ? { ...p, gate: "approved" as const, approvedAt: new Date().toISOString() } : p
   );
   const approvedNum = phases.find((p) => p.id === phaseId)?.num;
   const next =
@@ -282,6 +284,222 @@ export function readPlanSafe(filePath: string): ReadPlanResult {
 /** Backup path for a plan.json: `<planPath>.bak`, written on every good read (see `_postPlanState`). */
 export function projectPlanBackupFilePath(root: string): string {
   return path.join(root, ".claude", "tycoon", "plan.json.bak");
+}
+
+/** Path to the append-only gate-event log: `<root>/.claude/tycoon/gate-events.jsonl`. */
+export function gateEventsFilePath(root: string): string {
+  return path.join(root, ".claude", "tycoon", "gate-events.jsonl");
+}
+
+/** One line of {@link gateEventsFilePath} — mirrors the fixed contract the
+ * `tycoon-claude-hook.cjs` reader is built against. */
+export interface GateEvent {
+  ts: string;
+  type: "gate";
+  phaseId: string;
+  phaseNum: number;
+  name: string;
+  gate: "approved" | "pending" | "rejected";
+  source: "panel" | "standalone";
+}
+
+/**
+ * Append one gate-event line to `<root>/.claude/tycoon/gate-events.jsonl`
+ * (created if missing, never truncated/rewritten). Best-effort: write
+ * failures are logged via `logger` and swallowed so a gate-event append
+ * never fails the phase-approval action that triggered it.
+ */
+export function appendGateEvent(
+  root: string,
+  event: Omit<GateEvent, "type">,
+  logger: PlanBackupLogger = console
+): void {
+  try {
+    const filePath = gateEventsFilePath(root);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const line = JSON.stringify({ type: "gate" as const, ...event }) + "\n";
+    fs.appendFileSync(filePath, line, "utf8");
+  } catch (err) {
+    logger.warn("TycoonAgents: failed to append gate event:", err);
+  }
+}
+
+/** Rotation slots `<planPath>.bak.1` .. `.bak.3`, oldest-numbered = oldest content. */
+export function projectPlanBackupRotationFilePaths(root: string): string[] {
+  const base = projectPlanBackupFilePath(root);
+  return [1, 2, 3].map((n) => `${base}.${n}`);
+}
+
+/** Path a shrink-guarded backup attempt is diverted to instead of clobbering `.bak`. */
+export function projectPlanBackupShrunkFilePath(root: string): string {
+  return `${projectPlanBackupFilePath(root)}.shrunk`;
+}
+
+/** Minimal logger shape both hosts already pass around (`console` satisfies this). */
+export interface PlanBackupLogger {
+  warn: (...args: unknown[]) => void;
+}
+
+/**
+ * Hardened plan.json.bak writer, shared by panel.ts's `_postPlanState` and the
+ * standalone's `computePlanState` — this is the ONLY place that should ever
+ * touch plan.json.bak.
+ *
+ * Fixes the post-incident gap where `fs.copyFileSync(planPath, backupPath)`
+ * blindly copied the raw file on every good read/tick with no history: after
+ * an abrupt restart, plan.json on disk reverted to an old snapshot that
+ * happened to be byte-identical to the last `.bak`, silently destroying hours
+ * of newer plan state with nothing to recover from.
+ *
+ * Called ONLY after `readPlanSafe`/`parseProjectPlan` has already produced a
+ * valid `plan` (never from a raw copy of unvalidated bytes) — `plan` is
+ * re-serialized here, so the backup is guaranteed to be valid JSON matching
+ * the schema.
+ *
+ * Behavior:
+ * - Serializes `plan` and compares it to the CURRENT `.bak` (if any). If
+ *   identical, this is a no-op — no rotation happens for a no-op refresh.
+ * - Shrink guard: if `.bak` currently holds a plan with MORE phases AND MORE
+ *   tasks than the new `plan` (a proxy for "this looks like an old snapshot
+ *   overwriting a newer one"), the write is diverted to
+ *   `plan.json.bak.shrunk` instead of touching `.bak`/rotation, unless
+ *   `process.env.TYCOON_PLAN_ALLOW_SHRINK === "1"`. A logged warning either
+ *   way.
+ * - Otherwise rotates history: `.bak.2` -> `.bak.3`, `.bak.1` -> `.bak.2`,
+ *   current `.bak` -> `.bak.1`, then writes the new content to `.bak`.
+ * - Every branch that touches disk logs exactly one line via `logger.warn`
+ *   (matching the existing `console.warn` call sites this replaces).
+ *
+ * Never throws — mirrors the try/catch the old `copyFileSync` call sites
+ * already wrapped this in.
+ */
+export function writePlanBackup(root: string, plan: ProjectPlan, logger: PlanBackupLogger = console): void {
+  try {
+    const backupPath = projectPlanBackupFilePath(root);
+    const newContent = JSON.stringify(plan, null, 2);
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+
+    let existingRaw: string | null = null;
+    try {
+      existingRaw = fs.readFileSync(backupPath, "utf8");
+    } catch {
+      existingRaw = null;
+    }
+
+    if (existingRaw !== null) {
+      let existingPlan: ProjectPlan | null = null;
+      try {
+        existingPlan = parseProjectPlan(JSON.parse(stripBom(existingRaw)));
+      } catch {
+        existingPlan = null;
+      }
+
+      if (existingPlan) {
+        const isShrinking =
+          plan.phases.length < existingPlan.phases.length && plan.tasks.length < existingPlan.tasks.length;
+        if (isShrinking && process.env.TYCOON_PLAN_ALLOW_SHRINK !== "1") {
+          const shrunkPath = projectPlanBackupShrunkFilePath(root);
+          fs.writeFileSync(shrunkPath, newContent);
+          logger.warn(
+            `TycoonAgents: plan.json.bak write skipped — new plan has fewer phases/tasks ` +
+              `(${plan.phases.length}/${plan.tasks.length}) than the existing backup ` +
+              `(${existingPlan.phases.length}/${existingPlan.tasks.length}); wrote ${shrunkPath} instead. ` +
+              `Set TYCOON_PLAN_ALLOW_SHRINK=1 to allow this.`
+          );
+          return;
+        }
+      }
+
+      if (existingRaw === newContent) {
+        // Identical content — nothing changed since the last backup, skip rotation entirely.
+        return;
+      }
+    }
+
+    const rotationPaths = projectPlanBackupRotationFilePaths(root);
+    for (let i = rotationPaths.length - 1; i >= 1; i--) {
+      try {
+        if (fs.existsSync(rotationPaths[i - 1])) {
+          fs.copyFileSync(rotationPaths[i - 1], rotationPaths[i]);
+        }
+      } catch {
+        // best-effort rotation; a missing/unreadable slot just leaves the next one as-is
+      }
+    }
+    if (existingRaw !== null) {
+      try {
+        fs.writeFileSync(rotationPaths[0], existingRaw);
+      } catch {
+        // best-effort
+      }
+    }
+
+    // Minimal atomicity for the .bak file itself: write to a sibling temp
+    // file then rename over it, so a crash mid-write can never leave .bak
+    // truncated/partial (the numbered .bak.1-.bak.3 slots above stay plain
+    // copy/rename since they're already-redundant history, not the primary
+    // recovery file).
+    const tmpPath = `${backupPath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpPath, newContent);
+    fs.renameSync(tmpPath, backupPath);
+    logger.warn(`TycoonAgents: wrote plan.json.bak (${plan.phases.length} phases, ${plan.tasks.length} tasks).`);
+  } catch (err) {
+    logger.warn("TycoonAgents: failed to write plan.json.bak backup:", err);
+  }
+}
+
+/** Prefix for pre-restore snapshots: `<root>/.claude/tycoon/plan.json.pre-restore-`. */
+function preRestoreSnapshotPrefix(root: string): string {
+  return path.join(path.dirname(projectPlanBackupFilePath(root)), "plan.json.pre-restore-");
+}
+
+/**
+ * Snapshots the CURRENT on-disk `plan.json` (raw bytes, even if unparsable —
+ * this must survive a corrupt file too) to
+ * `plan.json.pre-restore-<ISO-timestamp-with-colons-replaced>.json`
+ * immediately before MSG.RESTORE_PLAN_BACKUP overwrites plan.json with
+ * `.bak`. Keeps at most 3 such snapshots (deletes the oldest by filename
+ * timestamp once a 4th would be written). No-op (returns `null`) if
+ * plan.json doesn't currently exist — there's nothing to snapshot. Never
+ * throws; a failure here is logged and does not block the restore itself.
+ *
+ * Returns the snapshot's absolute path on success, else `null`.
+ */
+export function writePreRestoreSnapshot(
+  root: string,
+  planPath: string,
+  logger: PlanBackupLogger = console
+): string | null {
+  try {
+    if (!fs.existsSync(planPath)) return null;
+    const raw = fs.readFileSync(planPath);
+    const dir = path.dirname(projectPlanBackupFilePath(root));
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/:/g, "-");
+    const snapshotPath = `${preRestoreSnapshotPrefix(root)}${stamp}.json`;
+    fs.writeFileSync(snapshotPath, raw);
+
+    const prefix = preRestoreSnapshotPrefix(root);
+    const existing = fs
+      .readdirSync(dir)
+      .filter((f) => path.join(dir, f).startsWith(prefix) && f.endsWith(".json"))
+      .map((f) => path.join(dir, f))
+      .sort();
+    const excess = existing.length - 3;
+    for (let i = 0; i < excess; i++) {
+      try {
+        fs.unlinkSync(existing[i]);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+
+    logger.warn(`TycoonAgents: saved pre-restore snapshot of plan.json to ${snapshotPath}`);
+    return snapshotPath;
+  } catch (err) {
+    logger.warn("TycoonAgents: failed to write pre-restore plan.json snapshot:", err);
+    return null;
+  }
 }
 
 // ============================================================================

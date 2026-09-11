@@ -76,7 +76,8 @@ test('POST /message {type: "getSettings"} -> settings.harness reports claude-cod
     assert.equal(settings.payload.harness.source, 'default');
     assert.deepEqual(settings.payload.harness.options, [
       { id: 'claude-code', label: 'Claude Code' },
-      { id: 'opencode', label: 'OpenCode' },
+      { id: 'opencode', label: 'OpenCode (Experimental)' },
+      { id: 'codex', label: 'Codex (Experimental)' },
     ]);
     // Nothing has changed since startup -> running (startupProviderId)
     // matches effective, so no mismatch/restart hint.
@@ -157,5 +158,102 @@ test('a server started with TYCOON_PROVIDER set reports harness.source "env" reg
     await runtime.close();
     if (prevEnv === undefined) delete process.env.TYCOON_PROVIDER;
     else process.env.TYCOON_PROVIDER = prevEnv;
+  }
+});
+
+// ---------------------------------------------------------------------
+// p23-t11: installCodexHooks/uninstallCodexHooks/installCodexDispatcher/
+// uninstallCodexDispatcher, mirroring panel.ts's handlers. Real temp
+// CODEX_HOME + project dir, started with TYCOON_PROVIDER=codex so
+// harness.effective stays 'codex' throughout.
+// ---------------------------------------------------------------------
+
+test('installCodexHooks/uninstallCodexHooks: install sets the config.toml marker and flips codexHooksInstalled true; uninstall restores byte-identical and flips it back', async () => {
+  const projectRoot = mkTempProject();
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-codexhome-'));
+  const prevCodexHome = process.env.CODEX_HOME;
+  const prevProvider = process.env.TYCOON_PROVIDER;
+  process.env.CODEX_HOME = codexHome;
+  process.env.TYCOON_PROVIDER = 'codex';
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_PROVIDER: 'codex' },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const collector = createSseCollector(eventsRes.body.getReader());
+
+    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getSettings' }) });
+    assert.equal(getRes.status, 202);
+    let settings = await collector.next('settings');
+    assert.equal(settings.payload.harness.effective, 'codex');
+    assert.equal(settings.payload.harness.codexHooksInstalled, false);
+
+    const installRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'installCodexHooks' }) });
+    assert.equal(installRes.status, 202);
+    settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexHooksInstalled === true);
+    assert.equal(settings.payload.harness.codexHooksInstalled, true);
+
+    const configTomlPath = path.join(codexHome, 'config.toml');
+    const afterInstall = fs.readFileSync(configTomlPath, 'utf8');
+    assert.match(afterInstall, /tycoon-codex-hook: managed notify entry/);
+    const hooksJsonPath = path.join(projectRoot, '.codex', 'hooks.json');
+    assert.equal(fs.existsSync(hooksJsonPath), true);
+
+    const uninstallRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'uninstallCodexHooks' }) });
+    assert.equal(uninstallRes.status, 202);
+    settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexHooksInstalled === false);
+    assert.equal(settings.payload.harness.codexHooksInstalled, false);
+
+    const afterUninstall = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, 'utf8') : '';
+    assert.doesNotMatch(afterUninstall, /tycoon-codex-hook: managed notify entry/);
+    assert.equal(fs.existsSync(hooksJsonPath), false, 'our own hooks.json (no foreign content) is removed on uninstall');
+  } finally {
+    controller.abort();
+    await runtime.close();
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+    if (prevProvider === undefined) delete process.env.TYCOON_PROVIDER;
+    else process.env.TYCOON_PROVIDER = prevProvider;
+  }
+});
+
+test('installCodexDispatcher/uninstallCodexDispatcher: install sets the dispatcher marker and flips codexDispatcherInstalled true; uninstall clears it', async () => {
+  const projectRoot = mkTempProject();
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-codexhome-'));
+  const prevCodexHome = process.env.CODEX_HOME;
+  const prevProvider = process.env.TYCOON_PROVIDER;
+  process.env.CODEX_HOME = codexHome;
+  process.env.TYCOON_PROVIDER = 'codex';
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_PROVIDER: 'codex' },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const collector = createSseCollector(eventsRes.body.getReader());
+
+    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getSettings' }) });
+    let settings = await collector.next('settings');
+    assert.equal(settings.payload.harness.codexDispatcherInstalled, false);
+
+    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'installCodexDispatcher' }) });
+    settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexDispatcherInstalled === true);
+    assert.equal(settings.payload.harness.codexDispatcherInstalled, true);
+
+    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'uninstallCodexDispatcher' }) });
+    settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexDispatcherInstalled === false);
+    assert.equal(settings.payload.harness.codexDispatcherInstalled, false);
+  } finally {
+    controller.abort();
+    await runtime.close();
+    if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = prevCodexHome;
+    if (prevProvider === undefined) delete process.env.TYCOON_PROVIDER;
+    else process.env.TYCOON_PROVIDER = prevProvider;
   }
 });

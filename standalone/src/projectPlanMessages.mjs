@@ -21,11 +21,11 @@
 //
 // Mirrors panel.ts's `_postPlanState()`/MSG.RESTORE_PLAN_BACKUP branch
 // line-for-line, substituting broadcast('message', {...}) for
-// `this._panel.webview.postMessage(...)`. Only RESTORE_PLAN_BACKUP is wired
-// from server.mjs today — REQUEST_PLAN/APPROVE_PHASE/OVERRIDE_TASK/
-// SET_PROJECT_PLAN_ENABLED are out of this task's scope and remain
-// unhandled (server.mjs's default case logs them) until a later task adds
-// full Project Plan routing to the standalone.
+// `this._panel.webview.postMessage(...)`. Wired from server.mjs: REQUEST_PLAN
+// (1249), APPROVE_PHASE (1256), SET_PROJECT_PLAN_ENABLED (1282), and
+// RESTORE_PLAN_BACKUP via `case THEME_MSG_WIRE.RESTORE_PLAN_BACKUP` (773,
+// calling handleRestorePlanBackup at 775). Only OVERRIDE_TASK is unhandled
+// (default case logs it) until a later task adds it.
 //
 // Node built-ins only. No 'vscode' import, direct or transitive (see
 // projectPlanBridge.mjs's header for the load-time guarantee this relies on).
@@ -72,11 +72,7 @@ export function computePlanState(root) {
 
     if (result.status === 'ok') {
       planBridge.archivePlanIfComplete(root, result.plan);
-      try {
-        fs.copyFileSync(planPath, backupPath);
-      } catch (err) {
-        console.warn('[tycoonagents-standalone] failed to write plan.json.bak backup:', err);
-      }
+      planBridge.writePlanBackup(root, result.plan, console);
       const archivedPlans = planBridge.readArchivedPlans(root);
       return {
         type: MSG_WIRE.PLAN_STATE,
@@ -113,6 +109,55 @@ export function postPlanState(root, broadcast) {
   broadcast('message', computePlanState(root));
 }
 
+/** Mirrors panel.ts's MSG.APPROVE_PHASE branch (panel.ts ~2623-2673): reads
+ * plan.json, sets `phaseId`'s gate to "approved" (+approvedAt), writes
+ * plan.json + plan.json.bak, archives if complete, appends one gate-event
+ * line with source:"standalone", then reposts fresh PLAN_STATE either way.
+ * Unknown/missing phaseId, disabled feature, or an unreadable plan are
+ * no-ops that just repost PLAN_STATE (matching panel.ts's early returns). */
+export function handleApprovePhase(root, phaseId, broadcast) {
+  if (!root || root === '' || typeof phaseId !== 'string' || phaseId === '' || !readProjectPlanEnabled(root)) {
+    postPlanState(root, broadcast);
+    return;
+  }
+  try {
+    const planPath = planBridge.projectPlanFilePath(root);
+    const result = planBridge.readPlanSafe(planPath);
+    if (result.status !== 'ok') {
+      if (result.status === 'corrupt') {
+        console.warn('[tycoonagents-standalone] APPROVE_PHASE aborted, plan.json is corrupt (left untouched):', result.error);
+      }
+      postPlanState(root, broadcast);
+      return;
+    }
+    const phase = result.plan.phases.find((p) => p.id === phaseId);
+    if (!phase) {
+      console.warn('[tycoonagents-standalone] APPROVE_PHASE: unknown phaseId', phaseId);
+      postPlanState(root, broadcast);
+      return;
+    }
+    const updatedPlan = planBridge.approvePhase(result.plan, phaseId);
+    planBridge.writePlan(planPath, updatedPlan);
+    planBridge.writePlanBackup(root, updatedPlan, console);
+    planBridge.archivePlanIfComplete(root, updatedPlan);
+    planBridge.appendGateEvent(
+      root,
+      {
+        ts: new Date().toISOString(),
+        phaseId: phase.id,
+        phaseNum: phase.num,
+        name: phase.name,
+        gate: 'approved',
+        source: 'standalone',
+      },
+      console,
+    );
+  } catch (err) {
+    console.error('[tycoonagents-standalone] APPROVE_PHASE failed:', err);
+  }
+  postPlanState(root, broadcast);
+}
+
 /** Mirrors panel.ts's MSG.RESTORE_PLAN_BACKUP branch: best-effort copy
  * plan.json.bak -> plan.json (no-op if there's no backup or no root), then
  * repost fresh PLAN_STATE either way. */
@@ -124,6 +169,8 @@ export function handleRestorePlanBackup(root, broadcast) {
   try {
     const backupPath = planBridge.projectPlanBackupFilePath(root);
     if (fs.existsSync(backupPath)) {
+      // No text field on the PLAN_STATE wire shape to surface this on — logged only.
+      planBridge.writePreRestoreSnapshot(root, planBridge.projectPlanFilePath(root));
       fs.copyFileSync(backupPath, planBridge.projectPlanFilePath(root));
     }
   } catch (err) {

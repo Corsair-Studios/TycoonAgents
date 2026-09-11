@@ -30,6 +30,8 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
+import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
+import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
@@ -54,6 +56,7 @@ import {
   writeUseMultipleLlms,
   PROVIDER_IDS,
   type ProviderId,
+  type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
@@ -137,6 +140,9 @@ import {
   archivePlanIfComplete,
   readArchivedPlans,
   projectPlanBackupFilePath,
+  writePlanBackup,
+  writePreRestoreSnapshot,
+  appendGateEvent,
 } from "./projectPlan";
 import { buildDiagnosticReport, type DiagnosticReportInput, type SanitizeRoots } from "./diagnosticReport";
 import {
@@ -1197,6 +1203,14 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: setHarness payload rejected:", parsedSetHarness.error.message);
           }
+        } else if (message.type === MSG.INSTALL_CODEX_HOOKS) {
+          this._handleInstallCodexHooks();
+        } else if (message.type === MSG.UNINSTALL_CODEX_HOOKS) {
+          this._handleUninstallCodexHooks();
+        } else if (message.type === MSG.INSTALL_CODEX_DISPATCHER) {
+          this._handleInstallCodexDispatcher();
+        } else if (message.type === MSG.UNINSTALL_CODEX_DISPATCHER) {
+          this._handleUninstallCodexDispatcher();
         } else if (message.type === MSG.SET_USE_MULTIPLE_LLMS) {
           const parsedSetUseMultipleLlms = MSG_SCHEMAS.SET_USE_MULTIPLE_LLMS.safeParse(message);
           if (parsedSetUseMultipleLlms.success) {
@@ -2639,6 +2653,17 @@ export class TycoonPanel {
           const updatedPlan = approvePhase(readApprovePhase.plan, parsedApprovePhase.data.phaseId);
           writePlan(planPath, updatedPlan);
           archivePlanIfComplete(root, updatedPlan);
+          const approvedPhase = updatedPlan.phases.find((p) => p.id === parsedApprovePhase.data.phaseId);
+          if (approvedPhase) {
+            appendGateEvent(root, {
+              ts: new Date().toISOString(),
+              phaseId: approvedPhase.id,
+              phaseNum: approvedPhase.num,
+              name: approvedPhase.name,
+              gate: "approved",
+              source: "panel",
+            });
+          }
           void this._panel.webview.postMessage({
             type: MSG.PLAN_STATE,
             enabled: true,
@@ -2778,6 +2803,9 @@ export class TycoonPanel {
           try {
             const backupPath = projectPlanBackupFilePath(root);
             if (fs.existsSync(backupPath)) {
+              // MSG.PLAN_STATE has no text field to surface this on (see
+              // messages.ts's PLAN_STATE schema) — logged only.
+              writePreRestoreSnapshot(root, projectPlanFilePath(root));
               fs.copyFileSync(backupPath, projectPlanFilePath(root));
             }
           } catch (err) {
@@ -7278,9 +7306,24 @@ export class TycoonPanel {
     options: { id: ProviderId; label: string }[];
     requiresRestart: boolean;
     needsDefaultRoute: boolean;
+    warning?: string;
+    codexHooksInstalled?: boolean;
+    codexDispatcherInstalled?: boolean;
+    codexHooksWarning?: string;
+    codexDispatcherWarning?: string;
   } {
     const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
-    const description = describeProviderSelection({ settingValue, cwd: root });
+    let description: ProviderSelectionDescription;
+    let warning: string | undefined;
+    try {
+      description = describeProviderSelection({ settingValue, cwd: root });
+    } catch (err) {
+      console.error("TycoonAgents: describeProviderSelection failed, falling back to claude-code:", err instanceof Error ? err.message : err);
+      warning = err instanceof Error
+        ? `${err.message} Running on Claude Code. Update the extension or change the setting.`
+        : "Configured provider is not supported by this build; running on Claude Code. Update the extension or change the setting.";
+      description = { effective: "claude-code", source: "default", fileValue: undefined };
+    }
     // Undefined only before any provider has ever started in this window
     // (no _getRunningProviderId wired yet) — treat that as "matches", since
     // there's nothing running to conflict with `effective` yet.
@@ -7300,16 +7343,35 @@ export class TycoonPanel {
     } catch {
       needsDefaultRoute = false;
     }
+    // p23-t11: hook/dispatcher install-state flags, computed only when Codex
+    // is the effective harness (cheap booleans elsewhere would just read as
+    // stale/irrelevant noise for a provider not in use).
+    const codexExtra =
+      description.effective === "codex"
+        ? {
+            codexHooksInstalled: this._detectCodexHooksInstalled(root),
+            codexDispatcherInstalled: this._detectCodexDispatcherInstalled(),
+            ...(this._codexHookWarnings && this._codexHookWarnings.length > 0
+              ? { codexHooksWarning: this._codexHookWarnings.join(" ") }
+              : {}),
+            ...(this._codexDispatcherWarnings && this._codexDispatcherWarnings.length > 0
+              ? { codexDispatcherWarning: this._codexDispatcherWarnings.join(" ") }
+              : {}),
+          }
+        : {};
     return {
       ...description,
       running,
       mismatch,
       options: [
         { id: "claude-code", label: "Claude Code" },
-        { id: "opencode", label: "OpenCode" },
+        { id: "opencode", label: "OpenCode (Experimental)" },
+        { id: "codex", label: "Codex (Experimental)" },
       ],
       requiresRestart: mismatch,
       needsDefaultRoute,
+      ...(warning !== undefined ? { warning } : {}),
+      ...codexExtra,
     };
   }
 
@@ -7337,6 +7399,150 @@ export class TycoonPanel {
       } catch (err) {
         console.error("TycoonAgents: live provider swap failed:", err instanceof Error ? err.message : err);
       }
+    }
+    this._handleGetSettings();
+  }
+
+  // p23-t11: markers mirrored from installCodexHooks.ts's private
+  // TOML_MARKER_START / HOOKS_JSON_MARKER_DESCRIPTION constants (not
+  // exported — that file is owned by another task and must not be edited
+  // here). Keep these two strings byte-identical to that file's if it
+  // changes.
+  private static readonly CODEX_HOOK_TOML_MARKER =
+    "# tycoon-codex-hook: managed notify entry (do not edit by hand)";
+  private static readonly CODEX_HOOKS_JSON_MARKER_DESCRIPTION =
+    "tycoon-codex-hook: managed by TycoonAgents (do not edit by hand)";
+
+  /** Extension-root copies of the Codex hook/dispatcher scripts (shipped
+   * under hooks/, same posture as tycoon-claude-hook.cjs — see
+   * _handleInstallHooks step 2). Never the repo's own hooks/ directory at
+   * runtime; the extension ships its own copy. */
+  private _codexHookScriptPath(): string {
+    return vscode.Uri.joinPath(this._extensionUri, "hooks", "tycoon-codex-hook.cjs").fsPath;
+  }
+  private _codexDispatcherScriptPath(): string {
+    return vscode.Uri.joinPath(this._extensionUri, "hooks", "tycoon-dispatcher-mcp.cjs").fsPath;
+  }
+
+  /** Bounded, never-throwing detection of whether the Codex notify hook is
+   * installed: either CODEX_HOME/config.toml carries the managed marker, or
+   * the project's .codex/hooks.json carries our marker description. */
+  private _detectCodexHooksInstalled(root: string): boolean {
+    try {
+      const { codexHome } = resolveCodexHome({ env: process.env, platform: process.platform });
+      const configTomlPath = path.join(codexHome, "config.toml");
+      const hasToml =
+        fs.existsSync(configTomlPath) &&
+        fs.readFileSync(configTomlPath, "utf8").includes(TycoonPanel.CODEX_HOOK_TOML_MARKER);
+      let hasHooksJson = false;
+      if (root !== "") {
+        const hooksJsonPath = path.join(root, ".codex", "hooks.json");
+        if (fs.existsSync(hooksJsonPath)) {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(hooksJsonPath, "utf8"));
+            hasHooksJson =
+              parsed !== null &&
+              typeof parsed === "object" &&
+              (parsed as Record<string, unknown>).description === TycoonPanel.CODEX_HOOKS_JSON_MARKER_DESCRIPTION;
+          } catch {
+            hasHooksJson = false;
+          }
+        }
+      }
+      return hasToml || hasHooksJson;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Bounded, never-throwing detection of whether the tycoon-dispatcher MCP
+   * server entry is installed in CODEX_HOME/config.toml. Delegates to the
+   * installer module's own exported check so the marker string is never
+   * duplicated here. */
+  private _detectCodexDispatcherInstalled(): boolean {
+    try {
+      return isDispatcherMarkerInConfigToml(process.env, process.platform);
+    } catch {
+      return false;
+    }
+  }
+
+  private _codexHookWarnings?: string[];
+  private _codexDispatcherWarnings?: string[];
+
+  /** Handles MSG.INSTALL_CODEX_HOOKS: installs the Codex notify hook
+   * (CODEX_HOME/config.toml + project .codex/hooks.json), then re-posts
+   * SETTINGS so harness.codexHooksInstalled and any installer warnings
+   * (folded into harness.codexHooksWarning) refresh immediately. */
+  private _handleInstallCodexHooks(): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      console.error("TycoonAgents: installCodexHooks rejected — no workspace folder open.");
+      return;
+    }
+    try {
+      const result = installCodexHooks({
+        projectDir: root,
+        env: process.env,
+        platform: process.platform,
+        hookScriptPath: this._codexHookScriptPath(),
+      });
+      this._codexHookWarnings = result.warnings;
+    } catch (err) {
+      console.error("TycoonAgents: installCodexHooks failed:", err instanceof Error ? err.message : err);
+      this._codexHookWarnings = [err instanceof Error ? err.message : String(err)];
+    }
+    this._handleGetSettings();
+  }
+
+  /** Handles MSG.UNINSTALL_CODEX_HOOKS: removes only what installCodexHooks
+   * added (marker-scoped), then re-posts SETTINGS. */
+  private _handleUninstallCodexHooks(): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      console.error("TycoonAgents: uninstallCodexHooks rejected — no workspace folder open.");
+      return;
+    }
+    try {
+      uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+      this._codexHookWarnings = undefined;
+    } catch (err) {
+      console.error("TycoonAgents: uninstallCodexHooks failed:", err instanceof Error ? err.message : err);
+    }
+    this._handleGetSettings();
+  }
+
+  /** Handles MSG.INSTALL_CODEX_DISPATCHER: registers the tycoon-dispatcher
+   * MCP server entry in CODEX_HOME/config.toml, then re-posts SETTINGS. */
+  private _handleInstallCodexDispatcher(): void {
+    const root = this._projectRoot();
+    if (root === "") {
+      console.error("TycoonAgents: installCodexDispatcher rejected — no workspace folder open.");
+      return;
+    }
+    try {
+      const result = installCodexDispatcher({
+        projectDir: root,
+        env: process.env,
+        platform: process.platform,
+        serverScriptPath: this._codexDispatcherScriptPath(),
+      });
+      this._codexDispatcherWarnings = result.warnings;
+    } catch (err) {
+      console.error("TycoonAgents: installCodexDispatcher failed:", err instanceof Error ? err.message : err);
+      this._codexDispatcherWarnings = [err instanceof Error ? err.message : String(err)];
+    }
+    this._handleGetSettings();
+  }
+
+  /** Handles MSG.UNINSTALL_CODEX_DISPATCHER: removes only the managed
+   * dispatcher block from config.toml, then re-posts SETTINGS. */
+  private _handleUninstallCodexDispatcher(): void {
+    try {
+      uninstallCodexDispatcher({ env: process.env, platform: process.platform });
+      this._codexDispatcherWarnings = undefined;
+    } catch (err) {
+      console.error("TycoonAgents: uninstallCodexDispatcher failed:", err instanceof Error ? err.message : err);
     }
     this._handleGetSettings();
   }
@@ -8548,11 +8754,7 @@ export class TycoonPanel {
 
       if (result.status === "ok") {
         archivePlanIfComplete(root, result.plan);
-        try {
-          fs.copyFileSync(planPath, backupPath);
-        } catch (err) {
-          console.warn("TycoonAgents: failed to write plan.json.bak backup:", err);
-        }
+        writePlanBackup(root, result.plan, console);
         const archivedPlans = readArchivedPlans(root);
         void this._panel.webview.postMessage({
           type: MSG.PLAN_STATE,

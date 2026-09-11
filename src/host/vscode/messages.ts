@@ -96,6 +96,17 @@ export const MSG = {
   // host re-posts SETTINGS. Disabled client-side when settings.harness.source
   // is "env" or "setting" (a higher-precedence layer already decides it).
   SET_HARNESS: "setHarness",
+  // p23-t11: install/uninstall the Codex notify hook (config.toml +
+  // project .codex/hooks.json) and the tycoon-dispatcher MCP server entry
+  // (config.toml only). No payload — always targets the current workspace
+  // root and CODEX_HOME. Host replies with a refreshed SETTINGS payload
+  // (harness.codexHooksInstalled/codexDispatcherInstalled) plus any
+  // installer warnings folded into harness.codexHooksWarning /
+  // harness.codexDispatcherWarning.
+  INSTALL_CODEX_HOOKS: "installCodexHooks",
+  UNINSTALL_CODEX_HOOKS: "uninstallCodexHooks",
+  INSTALL_CODEX_DISPATCHER: "installCodexDispatcher",
+  UNINSTALL_CODEX_DISPATCHER: "uninstallCodexDispatcher",
   // p18-t1: persists execution.json's `useMultipleLlms` boolean, then the
   // host re-posts SETTINGS (routing.visible flips accordingly).
   SET_USE_MULTIPLE_LLMS: "setUseMultipleLlms",
