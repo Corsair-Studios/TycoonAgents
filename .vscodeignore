@@ -83,3 +83,8 @@ opencode.json
 !out/src/core/modelAliases.js
 !out/src/core/routingProfile.js
 !out/src/core/localEnvStore.js
+
+# p23-t11: panel.ts's INSTALL_CODEX_HOOKS/INSTALL_CODEX_DISPATCHER handlers
+# require() these two compiled installer modules at runtime.
+!out/src/providers/codex/installCodexHooks.js
+!out/src/providers/codex/installCodexDispatcher.js
