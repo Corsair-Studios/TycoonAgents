@@ -1404,10 +1404,11 @@
       ? lastSettings.harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode" },
+          { id: "opencode", label: "OpenCode (Experimental)" },
+          { id: "codex", label: "Codex (Experimental)" },
         ];
     var match = harnessOptions.find(function (opt) { return opt.id === harnessEffective; });
-    var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode" : "Claude Code");
+    var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode (Experimental)" : (harnessEffective === "codex" ? "Codex (Experimental)" : "Claude Code"));
     var line = document.createElement("p");
     line.className = "routing-agents-harness-line";
     line.textContent = "Runs on " + harnessLabel + " · ";

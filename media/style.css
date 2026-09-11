@@ -3976,6 +3976,17 @@ td.col-status {
   background: var(--status-idle);
 }
 
+/* Cross-vendor accent bar fill (p24-t2): overrides the plain active/idle
+   background above when this row's agent is foreign/fallback to the
+   current harness — see agentAccent() / .agent-accent-foreign/-fallback. */
+.status-bar-fill.agent-accent-foreign {
+  background: var(--accent-info);
+}
+
+.status-bar-fill.agent-accent-fallback {
+  background: var(--accent);
+}
+
 .status-bar-label {
   position: absolute;
   inset: 0;
@@ -4563,6 +4574,28 @@ td.col-status {
 .theme-review-retry-status {
   color: var(--vscode-descriptionForeground, var(--muted));
   font-size: 11px;
+}
+
+/* Cross-vendor accent (p24-t2): a slot/row's agent name is colored as soon
+   as its assigned vendor is foreign to the current harness — before any run
+   starts — so users learn the color association. Fallback (amber) wins over
+   foreign (light blue); see agentAccent() in 005-agent-accent.js, the single
+   source of truth this class selection mirrors. No inline hex — both reuse
+   the existing --accent-info / --accent tokens. */
+.agent-accent-foreign {
+  color: var(--accent-info);
+}
+
+.agent-accent-fallback {
+  color: var(--accent);
+}
+
+/* Short legend line near the roster / harness footnote explaining the two
+   accent colors above (p24-t2). */
+.agent-accent-legend {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 4px 0 0;
 }
 
 /* Sanitizer-trim notice: same amber accent as .theme-review-generation-error,
@@ -6276,24 +6309,34 @@ button.theme-review-preview:focus-visible::after {
    100-slot-editor-settings.js. */
 .routing-subscription-notice {
   grid-column: 1 / -1;
-  position: relative;
   margin-top: 4px;
-  padding: 8px 26px 8px 10px;
-  border: 1px solid var(--accent, #7aa2f7);
-  border-radius: 6px;
-  background: var(--surface-2, var(--surface));
-  color: var(--text);
 }
 
-.routing-subscription-notice-title {
-  margin: 0 0 4px;
-  font-size: 12px;
-  font-weight: 600;
+/* p27-t4: compact bridge status row (docs/design/slot-editor-redesign.md
+   section 5) — a status line plus, in the bridged-missing state only, one
+   "Copy request" button. Replaces the old boxed notice. */
+.routing-subscription-bridge-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.routing-subscription-notice-body {
-  margin: 0 0 6px;
-  font-size: 11px;
+.routing-subscription-bridge-status {
+  margin: 0;
+}
+
+.routing-subscription-notice-copy {
+  flex: 0 0 auto;
+}
+
+.routing-subscription-request-details {
+  margin-top: 4px;
+}
+
+.routing-subscription-request-details > summary {
+  cursor: pointer;
+  font-size: 10px;
   color: var(--muted);
 }
 
@@ -6305,32 +6348,12 @@ button.theme-review-preview:focus-visible::after {
   font-size: 11px;
   font-family: var(--mono-font, monospace);
   padding: 6px;
+  margin-top: 4px;
   resize: vertical;
   background: var(--surface, #fff);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
-}
-
-.routing-subscription-notice-copy {
-  margin-top: 6px;
-}
-
-.routing-subscription-notice-close {
-  position: absolute;
-  top: 4px;
-  right: 6px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-
-.routing-subscription-notice-close:hover {
-  color: var(--text);
 }
 
 .routing-error-banner {
@@ -6416,17 +6439,32 @@ button.theme-review-preview:focus-visible::after {
   flex-direction: column;
 }
 
+/* p27-t6: each roster card gets a full outline so cards no longer run
+   together, plus a consistent gap before the next card. The top edge
+   carries a 3px accent bar (overridden by .agent-card-accent-fallback/
+   -foreign below) signalling "new agent starts here"; default is the
+   native/neutral --status-active lime already used for roster activity
+   emphasis, since --accent/--accent-info are reserved for fallback/foreign
+   per agentAccent() in 005-agent-accent.js. */
 .routing-agent-card {
-  padding-bottom: 12px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-top: 3px solid var(--status-active);
+  border-radius: 4px;
+  padding: 10px 12px 12px;
   margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
   min-width: 0;
 }
 
 .routing-agent-card:last-child {
   margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: none;
+}
+
+.routing-agent-card.agent-card-accent-fallback {
+  border-top-color: var(--accent);
+}
+
+.routing-agent-card.agent-card-accent-foreign {
+  border-top-color: var(--accent-info);
 }
 
 .routing-agent-name-td,
@@ -6491,6 +6529,48 @@ button.theme-review-preview:focus-visible::after {
   color: var(--muted);
 }
 
+/* p27-t3: always-visible slot identity line — vendor/model/route/billing/
+   fallback-count — replacing the old chip row as a slot's default-visible
+   identity. Route text (not just accent color) carries the native/bridged/
+   endpoint distinction, so this stays legible with no color at all. */
+.routing-slot-summary-line {
+  margin: 2px 0 6px;
+  font-size: 12px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.routing-slot-summary-vendor-model {
+  font-weight: 600;
+}
+
+.routing-slot-summary-rest {
+  color: var(--muted);
+}
+
+/* p27-t3: collapsed-by-default "Connection" section wrapping the vendor..
+   MCP-server field block (buildSlotEditorFields) — open by default only
+   when the slot needs a bridge that isn't set up yet, or carries a hard
+   dispatch warning; absent entirely for a native-vendor slot. */
+.routing-connection-details {
+  margin-top: 6px;
+}
+
+.routing-connection-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+
+.routing-connection-details > summary:focus-visible {
+  outline: 1px solid var(--accent-info);
+  outline-offset: 2px;
+}
+
+.routing-connection-details[open] > summary {
+  color: var(--vscode-foreground, var(--fg));
+}
+
 .routing-fallback-list {
   display: flex;
   flex-direction: column;
@@ -6511,6 +6591,45 @@ button.theme-review-preview:focus-visible::after {
   font-size: 11px;
   color: var(--muted);
   margin-bottom: 4px;
+}
+
+/* p27-t5: one-line compact fallback row — position badge, summary line
+   (flexes to fill), then the up/down/remove controls. The full field block
+   lives below in a closed-by-default <details> (.routing-fallback-entry-
+   details); this row is what stays always-visible. */
+.routing-fallback-item-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.routing-fallback-position-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.routing-fallback-item-line .routing-slot-summary-line {
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
+}
+
+.routing-fallback-item-line .routing-fallback-item-head {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+
+.routing-fallback-entry-details {
+  margin-top: 4px;
+}
+
+.routing-fallback-entry-details > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .routing-inline-link-btn {

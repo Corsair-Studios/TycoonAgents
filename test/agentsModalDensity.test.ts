@@ -800,13 +800,25 @@ test("Subscription notice: mcp transport with openai vendor renders vendor-speci
   assert.ok(notice, "expected a subscription notice to render");
   assert.equal(notice.hidden, false, "notice should be visible for mcp transport");
 
-  const body = notice.querySelector(".routing-subscription-notice-body") || notice;
-  assert.match(body.textContent, /OpenAI/, `expected "OpenAI" in the body, got: "${body.textContent}"`);
-  assert.doesNotMatch(body.textContent, /undefined/, `body must not contain "undefined", got: "${body.textContent}"`);
-  assert.doesNotMatch(body.textContent, /  /, `body must not contain double spaces, got: "${body.textContent}"`);
+  // p27-t4: the boxed notice body/title are gone — bridged-missing now renders
+  // a compact status row (naming the bridging CLI) plus one Copy request
+  // button and a closed-by-default "Show request" details holding the
+  // generated prompt (which still names the vendor, e.g. "OpenAI").
+  const statusLine = notice.querySelector(".routing-subscription-bridge-status");
+  assert.ok(statusLine, "expected a status line in the notice");
+  assert.equal(statusLine.textContent, "Bridge via Codex MCP not installed.", "bridged-missing status line names the CLI");
+
+  const copyBtns = notice.querySelectorAll(".routing-subscription-notice-copy");
+  assert.equal(copyBtns.length, 1, "expected exactly one Copy request button");
+  assert.equal(copyBtns[0].hidden, false, "Copy request button should be visible in bridged-missing state");
+
+  const details = notice.querySelector(".routing-subscription-request-details");
+  assert.ok(details, "expected a Show request details element");
+  assert.equal(details.open, false, "Show request details should be closed by default");
 
   const textarea = notice.querySelector(".routing-subscription-notice-textarea");
-  assert.ok(textarea, "notice should include a textarea");
+  assert.ok(textarea, "notice should include a textarea (inside the closed details)");
+  assert.match(textarea.value, /OpenAI/, `expected "OpenAI" in the generated request, got: "${textarea.value}"`);
   assert.doesNotMatch(textarea.value, /undefined/, `prompt must not contain "undefined", got: "${textarea.value}"`);
   assert.doesNotMatch(textarea.value, /  /, `prompt must not contain double spaces, got: "${textarea.value}"`);
 

@@ -1017,11 +1017,29 @@
 
     const displayName = agent.name || agent.id;
 
+    // Cross-vendor accent (p24-t2): color + " (fb)" suffix decided by the
+    // single pure source of truth in 005-agent-accent.js. harnessEffective
+    // is read live off `lastSettings` (declared just below in this same
+    // file/scope) so the whole metrics table re-accents the next time it's
+    // rebuilt after a harness switch (renderMetrics/renderMetricsTable
+    // already rebuild #metrics-tbody from scratch on every settings/metrics
+    // update — no separate recompute pass needed here).
+    const rowHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    const rowAccentKind = agentAccent({
+      vendor: agent.vendor,
+      costModelClass: agent.costModelClass,
+      fallbackOf: agent.fallbackOf,
+      harness: rowHarness,
+    });
+    const displayNameWithSuffix = displayName + (rowAccentKind === "fallback" ? " (fb)" : "");
+
     const nameTd = document.createElement("td");
     nameTd.className = `col-name${showActive ? " name--active" : ""}`;
 
     const nameText = document.createElement("span");
-    nameText.textContent = displayName;
+    nameText.textContent = displayNameWithSuffix;
+    if (rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
+    else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
     nameTd.appendChild(nameText);
 
     // Worker report disclosure (0.0.562): agent.lastReport is the captured
@@ -1095,7 +1113,12 @@
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
-    fill.className = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+    let fillClass = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+    // Active foreign/fallback agents get the accent bar fill (p24-t2);
+    // native and idle rows keep today's green/gray fill unchanged.
+    if (showActive && rowAccentKind === "foreign") fillClass += " agent-accent-foreign";
+    else if (showActive && rowAccentKind === "fallback") fillClass += " agent-accent-fallback";
+    fill.className = fillClass;
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";

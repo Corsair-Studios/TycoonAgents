@@ -1737,6 +1737,72 @@
   /** Theme id still actually loaded — restored on cancel. */
   let themeSwitchConfirmPreviousId = "";
 
+// Part: 005-agent-accent
+// Pure accent-decision helper for roster/agent nameplates: an agent running
+// on an LLM foreign to the current harness is accented light blue
+// (--accent-info); a fallback agent is accented amber (--accent, the same
+// token .theme-review-retry-warning uses) and its rendered name gets the
+// suffix " (fb)"; fallback wins over foreign. Kept dependency-free and pure
+// so it can be unit-tested directly (see test/agentAccent.test.ts) without
+// booting the full media/main.js webview runtime.
+
+/**
+ * @typedef {"claude-code" | "codex" | "opencode" | string} Harness
+ * @typedef {"fallback" | "foreign" | "native"} AgentAccentKind
+ */
+
+/**
+ * Map of harness id -> its native LLM vendor id. `undefined`/unlisted
+ * harnesses (e.g. "opencode", which has no single native vendor) fall
+ * through to "every non-empty vendor is foreign" below.
+ * @type {Record<string, string>}
+ */
+var AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS = {
+  "claude-code": "anthropic",
+  "codex": "openai",
+};
+
+/**
+ * Decide the accent kind for a roster/agent-metrics entry.
+ *
+ * - `fallbackOf` non-empty string  -> "fallback" (wins over foreign)
+ * - `vendor` missing/unknown       -> "native" (never guess)
+ * - harness has a known native vendor and `vendor` matches it -> "native"
+ * - harness has a known native vendor and `vendor` differs    -> "foreign"
+ * - harness has no known native vendor (e.g. "opencode")      -> "foreign"
+ *   for any non-empty `vendor`
+ *
+ * @param {{ vendor?: string | null, costModelClass?: string | null, fallbackOf?: string | null, harness?: Harness | null }} agent
+ * @returns {AgentAccentKind}
+ */
+function agentAccent(agent) {
+  var a = agent || {};
+  if (typeof a.fallbackOf === "string" && a.fallbackOf.trim() !== "") {
+    return "fallback";
+  }
+  var vendor = typeof a.vendor === "string" ? a.vendor.trim() : "";
+  if (vendor === "") {
+    return "native";
+  }
+  var harness = typeof a.harness === "string" ? a.harness : "";
+  var nativeVendor = Object.prototype.hasOwnProperty.call(AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS, harness)
+    ? AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS[harness]
+    : undefined;
+  if (nativeVendor === undefined) {
+    // Unknown/no-native-vendor harness (e.g. "opencode"): any reported
+    // vendor is foreign.
+    return "foreign";
+  }
+  return vendor === nativeVendor ? "native" : "foreign";
+}
+
+// Node-testable export (no-op in the browser: `module` is undefined there,
+// so this block never runs inside the concatenated media/main.js webview
+// bundle). Lets test/agentAccent.test.ts `require()` this part file
+// directly without booting the full jsdom webview runtime.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { agentAccent: agentAccent, AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS: AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS };
+}
 // Part: 10-modals-badges-rebirth
 // Theme switch/reset confirm modals, badge HUD persistence, trophy/badge rendering, rebirth flow and panel.
   function closeThemeSwitchConfirmModal() {
@@ -3143,10 +3209,11 @@
       ? lastSettings.harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode" },
+          { id: "opencode", label: "OpenCode (Experimental)" },
+          { id: "codex", label: "Codex (Experimental)" },
         ];
     var match = harnessOptions.find(function (opt) { return opt.id === harnessEffective; });
-    var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode" : "Claude Code");
+    var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode (Experimental)" : (harnessEffective === "codex" ? "Codex (Experimental)" : "Claude Code"));
     var line = document.createElement("p");
     line.className = "routing-agents-harness-line";
     line.textContent = "Runs on " + harnessLabel + " · ";
@@ -14917,11 +14984,29 @@
 
     const displayName = agent.name || agent.id;
 
+    // Cross-vendor accent (p24-t2): color + " (fb)" suffix decided by the
+    // single pure source of truth in 005-agent-accent.js. harnessEffective
+    // is read live off `lastSettings` (declared just below in this same
+    // file/scope) so the whole metrics table re-accents the next time it's
+    // rebuilt after a harness switch (renderMetrics/renderMetricsTable
+    // already rebuild #metrics-tbody from scratch on every settings/metrics
+    // update — no separate recompute pass needed here).
+    const rowHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    const rowAccentKind = agentAccent({
+      vendor: agent.vendor,
+      costModelClass: agent.costModelClass,
+      fallbackOf: agent.fallbackOf,
+      harness: rowHarness,
+    });
+    const displayNameWithSuffix = displayName + (rowAccentKind === "fallback" ? " (fb)" : "");
+
     const nameTd = document.createElement("td");
     nameTd.className = `col-name${showActive ? " name--active" : ""}`;
 
     const nameText = document.createElement("span");
-    nameText.textContent = displayName;
+    nameText.textContent = displayNameWithSuffix;
+    if (rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
+    else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
     nameTd.appendChild(nameText);
 
     // Worker report disclosure (0.0.562): agent.lastReport is the captured
@@ -14995,7 +15080,12 @@
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
-    fill.className = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+    let fillClass = `status-bar-fill ${showActive ? "status-bar-fill--active" : "status-bar-fill--idle"}`;
+    // Active foreign/fallback agents get the accent bar fill (p24-t2);
+    // native and idle rows keep today's green/gray fill unchanged.
+    if (showActive && rowAccentKind === "foreign") fillClass += " agent-accent-foreign";
+    else if (showActive && rowAccentKind === "fallback") fillClass += " agent-accent-fallback";
+    fill.className = fillClass;
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
@@ -17522,6 +17612,178 @@
    */
 // Part: 100-slot-editor-settings
 // Slot editor field builders and settings screen wiring.
+
+  // ---------------------------------------------------------------------------
+  // p25-t4: per-harness fallback-target dispatchability check, duplicated
+  // (not imported) from src/core/fallbackTargets.ts's isFallbackTargetDispatchable
+  // — media/main.js is a plain-JS concatenation build (scripts/build-webview.mjs)
+  // with no module loader, so a compiled out/src/core/*.js cannot be required()
+  // into the browser here. Keep this table in sync with fallbackTargets.ts by
+  // hand; both are covered by the same case list (test/fallbackTargets.test.ts,
+  // test/webviewSmoke.test.ts). This webview copy is a soft, UI-only check —
+  // the host's saveRoutingProfile() (src/core/routingHostOps.ts) is the
+  // authoritative gate that actually refuses a save.
+  // ---------------------------------------------------------------------------
+  var FALLBACK_TARGET_ANTHROPIC_LIKE = { anthropic: true };
+  var FALLBACK_TARGET_OPENAI_COMPAT_LIKE = { "openai-compatible": true, local: true, moonshot: true };
+
+  /**
+   * @param {{vendor?: string}} slot
+   * @param {string} harness
+   * @param {boolean} geminiKeyPresent
+   * @returns {{ok: boolean, reason?: string}}
+   */
+  function isFallbackTargetDispatchableWebview(slot, harness, geminiKeyPresent) {
+    var vendor = slot && typeof slot.vendor === "string" ? slot.vendor.trim().toLowerCase() : "";
+    if (!vendor) return { ok: true };
+    if (harness === "codex") {
+      if (FALLBACK_TARGET_ANTHROPIC_LIKE[vendor] || FALLBACK_TARGET_OPENAI_COMPAT_LIKE[vendor] || vendor === "openai") {
+        return { ok: true };
+      }
+      if (vendor === "google") {
+        return geminiKeyPresent
+          ? { ok: true }
+          : { ok: false, reason: 'vendor "google" needs GEMINI_API_KEY set to dispatch under Codex' };
+      }
+      return { ok: false, reason: 'vendor "' + vendor + '" has no Codex dispatcher adapter' };
+    }
+    if (harness === "opencode") {
+      return { ok: true, reason: 'opencode provider availability for "' + vendor + '" is not knowable offline' };
+    }
+    return { ok: true };
+  }
+
+  // Set once per renderRoutingModal() pass so buildFallbackEditor (which
+  // does not otherwise receive the harness) can evaluate warnings without a
+  // signature change at every call site.
+  var routingCurrentHarness = "claude-code";
+  var routingCurrentGeminiKeyPresent = false;
+  // True when the render just produced at least one HARD (ok:false)
+  // dispatchability warning — gates the Save button; a soft ok:true/reason
+  // (e.g. opencode's "not knowable offline" note) never disables Save.
+  var routingHasBlockingDispatchWarning = false;
+
+  /** Amber footnote (reuses the theme-review-retry-warning accent token) for an undispatchable fallback target. Returns null when `check.ok`. */
+  function buildFallbackDispatchWarning(check) {
+    if (!check || check.ok !== false) return null;
+    var note = document.createElement("p");
+    note.className = "routing-fallback-dispatch-warning theme-review-retry-warning";
+    note.textContent = "Not dispatchable under " + routingCurrentHarness + ": " + (check.reason || "unsupported target");
+    return note;
+  }
+
+  /**
+   * `routingDraft.defaultFallback` isn't produced by buildRoutingDraft (owned
+   * by 090-metrics-time-utils.js) — set here, right after every
+   * `routingDraft = buildRoutingDraft(...)` call, so the picker has a working
+   * copy without editing that file. `cloneRoutingSlot` is defined in
+   * 090-metrics-time-utils.js but visible here — media/main.js concatenates
+   * every part into one shared closure (scripts/build-webview.mjs).
+   */
+  function ensureDefaultFallbackDraft(draft, payload) {
+    if (draft) draft.defaultFallback = cloneRoutingSlot((payload && payload.defaultFallback) || {});
+    return draft;
+  }
+
+  /**
+   * p26-t1: the harness's own native vendor (no bridge/MCP needed) —
+   * "anthropic" for claude-code, "openai" for codex, null for opencode
+   * (no single native vendor there). Reuses the same table
+   * AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS (005-agent-accent.js) keys
+   * roster accenting off of — media/main.js concatenates every part into
+   * one shared closure (scripts/build-webview.mjs), so that table is
+   * visible here without a separate import.
+   * @param {string} harness
+   * @returns {string|null}
+   */
+  function nativeVendorForHarness(harness) {
+    return Object.prototype.hasOwnProperty.call(AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS, harness || "")
+      ? AGENT_ACCENT_NATIVE_VENDOR_BY_HARNESS[harness]
+      : null;
+  }
+
+  /**
+   * p27-t3: the always-visible slot identity line — "<vendor> . <model> .
+   * <route> . <billing> . <n> fallback(s)" — built from fields already on
+   * `RoutingSlot` (src/core/routingProfile.ts), replacing the old chip row
+   * as the slot's default-visible identity per docs/design/slot-editor-
+   * redesign.md section 1/10.1. `route` derives from transport/mcpServer:
+   * `transport: "mcp"` reads "bridged via MCP <name>" (name falls back to
+   * "(not installed)" when `mcpServer` is unset, matching the
+   * bridged-missing mockup); `transport: "openai-compatible"` reads
+   * "OpenAI-compatible endpoint"; otherwise "native" ONLY when the vendor
+   * actually matches the harness's native vendor — any other
+   * transport/vendor combination (e.g. a stale "claude-native" transport
+   * left on a foreign-vendor draft) is labeled by the literal transport
+   * value instead, so the route text never contradicts the accent color
+   * (review fix, p27-t3 round 2).
+   * Accent (p24) goes on the vendor/model segment only, via agentAccent()
+   * (005-agent-accent.js) — light blue (`agent-accent-foreign`) when the
+   * vendor is foreign to the running harness; native slots get no accent.
+   * The fallback count stays plain/neutral text (no accent) per the brief.
+   * @param {object} slot
+   * @param {string} harness
+   * @param {{id?:string,name?:string,resolvedVendor?:string,resolvedModel?:string}} [agentInfo]
+   *   `resolvedVendor`/`resolvedModel` are the same fallback values the old
+   *   "Routed to <vendor>/<model>" chip used (`a.vendor || backend.vendor`,
+   *   `a.resolvedModel || a.model`) — consulted only when the draft slot
+   *   itself has no vendor/model yet (review fix, p27-t3 round 2), so an
+   *   empty draft for an already-routed agent never shows "unknown model".
+   * @param {boolean} [isFallbackEntry] p27-t5: true when this slot is itself
+   *   a fallback-chain entry — forces the amber "fallback" accent
+   *   (agentAccent()'s `fallbackOf` path) and appends the " (fb)" suffix
+   *   per docs/design/slot-editor-redesign.md section 6, regardless of the
+   *   entry's own vendor.
+   * @returns {HTMLElement}
+   */
+  function buildSlotSummaryLine(slot, harness, agentInfo, isFallbackEntry) {
+    var s = slot || {};
+    var info = agentInfo || {};
+    // Empty string (not "unknown") when nothing resolves, so agentAccent()
+    // below still reads a genuinely-native/no-vendor slot as native rather
+    // than accenting the "unknown" placeholder as foreign.
+    var resolvedVendor = s.vendor || info.resolvedVendor || "";
+    var nativeVendor = nativeVendorForHarness(harness);
+    var vendor = resolvedVendor || nativeVendor || "unknown";
+    var model = s.model || info.resolvedModel || "unknown model";
+    var isNativeVendor = !!nativeVendor && vendor.toLowerCase() === nativeVendor;
+    var route;
+    if (s.transport === "mcp") {
+      route = "bridged via MCP " + (s.mcpServer ? s.mcpServer : "(not installed)");
+    } else if (s.transport === "openai-compatible") {
+      route = "OpenAI-compatible endpoint";
+    } else if (isNativeVendor) {
+      route = "native";
+    } else {
+      route = s.transport || "claude-native";
+    }
+    var billing = s.costModelClass || "metered";
+    var fallbackCount = Array.isArray(s.fallback) ? s.fallback.length : 0;
+    var fallbackText = fallbackCount + (fallbackCount === 1 ? " fallback" : " fallbacks");
+
+    var line = document.createElement("p");
+    line.className = "routing-slot-summary-line";
+
+    var idSpan = document.createElement("span");
+    idSpan.className = "routing-slot-summary-vendor-model";
+    var accentKind = agentAccent({
+      vendor: resolvedVendor,
+      harness: harness,
+      fallbackOf: isFallbackEntry ? "fallback" : null,
+    });
+    if (accentKind === "foreign") idSpan.className += " agent-accent-foreign";
+    if (accentKind === "fallback") idSpan.className += " agent-accent-fallback";
+    idSpan.textContent = vendor + " · " + model + (isFallbackEntry ? " (fb)" : "");
+    line.appendChild(idSpan);
+
+    var restSpan = document.createElement("span");
+    restSpan.className = "routing-slot-summary-rest";
+    restSpan.textContent = " · " + route + " · " + billing + " · " + fallbackText;
+    line.appendChild(restSpan);
+
+    return line;
+  }
+
   /** "openai" -> "OpenAI", "google" -> "Google", else capitalized vendor id. */
   function subscriptionNoticeVendorLabel(vendor) {
     var v = String(vendor || "");
@@ -17552,71 +17814,125 @@
    * fallback chain's fields too) so the notice stays live without a full
    * modal rebuild.
    * @param {object} slot
-   * @param {{id:string,name:string}|undefined} agentInfo
+   * @param {{id:string,name:string,handWrittenBackend?:boolean}|undefined} agentInfo
    */
   function buildSubscriptionMcpNotice(slot, agentInfo) {
     var wrap = document.createElement("div");
     wrap.className = "routing-subscription-notice";
     wrap.hidden = true;
 
-    var dismissed = false;
+    // p27-t4: the notice box is replaced by a single compact status row per
+    // docs/design/slot-editor-redesign.md section 5. Three states:
+    //   - bridged-connected (needsBridge && bridgeIsSetUp): status line only.
+    //   - bridged-missing (needsBridge && !bridgeIsSetUp): status line plus
+    //     one "Copy request" button; no textarea rendered by default — the
+    //     generated prompt is only visible via the "Show request" <details>
+    //     below, closed by default.
+    //   - native (!needsBridge): nothing (wrap stays hidden).
+    var statusRow = document.createElement("div");
+    statusRow.className = "routing-subscription-bridge-status-row";
+    wrap.appendChild(statusRow);
 
-    var closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className = "routing-subscription-notice-close";
-    closeBtn.setAttribute("aria-label", "Dismiss");
-    closeBtn.innerHTML = "&times;";
-    closeBtn.addEventListener("click", function () {
-      dismissed = true;
-      wrap.hidden = true;
-    });
-    wrap.appendChild(closeBtn);
-
-    var titleEl = document.createElement("p");
-    titleEl.className = "routing-subscription-notice-title";
-    titleEl.textContent = "Subscription providers are set up in chat, not here.";
-    wrap.appendChild(titleEl);
-
-    var bodyEl = document.createElement("p");
-    bodyEl.className = "routing-subscription-notice-body";
-    wrap.appendChild(bodyEl);
-
-    var textarea = document.createElement("textarea");
-    textarea.className = "routing-subscription-notice-textarea";
-    textarea.rows = 3;
-    textarea.readOnly = true;
-    wrap.appendChild(textarea);
+    var statusLine = document.createElement("p");
+    statusLine.className = "routing-subscription-bridge-status delegation-mode-footnote";
+    statusRow.appendChild(statusLine);
 
     var copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "skill-btn settings-btn routing-subscription-notice-copy";
     copyBtn.textContent = "Copy request";
+    copyBtn.hidden = true;
     copyBtn.addEventListener("click", function () {
-      var text = textarea.value;
+      var text = buildPrompt();
       var done = function () {
         var prevText = copyBtn.textContent;
         copyBtn.textContent = "Copied";
         setTimeout(function () { copyBtn.textContent = prevText; }, 2000);
       };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () {
-          textarea.select();
-          try { document.execCommand("copy"); } catch (e) { /* best effort */ }
-          done();
-        });
-      } else {
-        textarea.select();
+      var fallbackCopy = function () {
+        var tmp = document.createElement("textarea");
+        tmp.value = text;
+        tmp.style.position = "fixed";
+        tmp.style.opacity = "0";
+        document.body.appendChild(tmp);
+        tmp.select();
         try { document.execCommand("copy"); } catch (e) { /* best effort */ }
+        document.body.removeChild(tmp);
         done();
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, fallbackCopy);
+      } else {
+        fallbackCopy();
       }
     });
-    wrap.appendChild(copyBtn);
+    statusRow.appendChild(copyBtn);
 
-    function shouldShow() {
+    // "Show request" expander (bridged-missing only) — the same generated
+    // prompt text, kept out of the default layout per section 5's "no
+    // persistent textarea taking up card space".
+    var requestDetails = document.createElement("details");
+    requestDetails.className = "routing-subscription-request-details";
+    requestDetails.hidden = true;
+    var requestSummary = document.createElement("summary");
+    requestSummary.textContent = "Show request";
+    requestDetails.appendChild(requestSummary);
+    var textarea = document.createElement("textarea");
+    textarea.className = "routing-subscription-notice-textarea";
+    textarea.rows = 3;
+    textarea.readOnly = true;
+    requestDetails.appendChild(textarea);
+    wrap.appendChild(requestDetails);
+
+    /**
+     * p27-t1: true when this slot NEEDS a subscription/MCP bridge at all —
+     * vendor foreign to the running harness AND (costModelClass subscription
+     * OR transport mcp). Split out of the old shouldShow() so bridgeIsSetUp()
+     * below can gate on it without re-showing the notice once a bridge
+     * already exists.
+     */
+    function needsBridge() {
       var vendor = String(slot.vendor || "").toLowerCase();
+      // p26-t1: the harness's own native vendor never needs a bridge — no
+      // MCP server, no subscription-CLI notice — regardless of whatever
+      // transport/costModelClass a previously-saved slot still carries.
+      var harnessEff = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      var nativeVendor = nativeVendorForHarness(harnessEff);
+      if (nativeVendor && vendor === nativeVendor) return false;
       var subscriptionMismatch = slot.costModelClass === "subscription" && !!vendor && vendor !== "anthropic" && vendor !== "opencode";
       var mcpWithoutBackend = slot.transport === "mcp";
       return subscriptionMismatch || mcpWithoutBackend;
+    }
+
+    /**
+     * p27-t1: "set up" = a hand-written backend: block (seeded from
+     * .claude/agents/<id>.md, surfaced here as agentInfo.handWrittenBackend)
+     * AND an MCP server name present on the slot. When true, the bridge this
+     * notice would otherwise ask the orchestrator to create already exists.
+     */
+    function bridgeIsSetUp() {
+      return !!(agentInfo && agentInfo.handWrittenBackend) && !!slot.mcpServer;
+    }
+
+    function shouldShow() {
+      return needsBridge() && !bridgeIsSetUp();
+    }
+
+    /**
+     * MCP server install state for slot.mcpServer, when knowable. Reuses the
+     * same catalog list (lastMcpServers — {id, installed}, populated from
+     * the "mcp"/catalog message, see 070-catalog-notices.js) that the "MCP 0"
+     * settings chip and isUefnInstalledInProject() already read.
+     * @returns {boolean|null} true/false when known, null when the server
+     *   isn't in the catalog list — caller keeps the "connected" wording in
+     *   that case (unknown installs are not shown as a problem).
+     */
+    function mcpServerInstallState() {
+      var id = slot.mcpServer;
+      if (!id || typeof lastMcpServers === "undefined" || !Array.isArray(lastMcpServers)) return null;
+      var entry = lastMcpServers.filter(function (s) { return s && s.id === id; })[0];
+      if (!entry) return null;
+      return !!entry.installed;
     }
 
     function buildPrompt() {
@@ -17646,37 +17962,63 @@
       );
     }
 
-    function render() {
-      var vendorLabel = subscriptionNoticeVendorLabel(slot.vendor);
-      var cli = subscriptionNoticeCliName(slot.vendor);
-      bodyEl.textContent = vendorLabel
-        ? ("A " + vendorLabel + " subscription is reached through the " + cli +
-          " CLI bridged as an MCP server, which this form can't create. Ask your orchestrator to set it up — copy this request:")
-        : ("A subscription provider is reached through its CLI bridged as an MCP server, " +
-          "which this form can't create. Ask your orchestrator to set it up — copy this request:");
-      textarea.value = buildPrompt();
-    }
-
     function refresh() {
-      dismissed = false;
       apply();
     }
 
+    // p27-t4: section 5's three bridge states, verbatim wording.
+    //   bridged-connected -> "Bridged via <CLI> MCP - connected." (status row only)
+    //   bridged-missing   -> "Bridge via <CLI> MCP not installed." (status row + Copy request button)
+    //   native            -> wrap stays hidden entirely
     function apply() {
-      var show = shouldShow() && !dismissed;
-      wrap.hidden = !show;
-      if (show) render();
+      var missing = shouldShow();
+      var connected = needsBridge() && bridgeIsSetUp();
+      wrap.hidden = !(missing || connected);
+      copyBtn.hidden = !missing;
+      requestDetails.hidden = !missing;
+      requestDetails.open = false;
+      if (missing) {
+        statusLine.className = "routing-subscription-bridge-status delegation-mode-footnote";
+        var missingCli = subscriptionNoticeCliName(slot.vendor);
+        statusLine.textContent = missingCli
+          ? "Bridge via " + missingCli + " MCP not installed."
+          : "Bridge not installed.";
+        textarea.value = buildPrompt();
+      } else if (connected) {
+        var cli = subscriptionNoticeCliName(slot.vendor);
+        var installState = mcpServerInstallState();
+        var notInstalled = installState === false;
+        statusLine.textContent = "Bridged via " + cli + " MCP - " +
+          (notInstalled ? "MCP server not installed." : "connected.");
+        statusLine.className = "routing-subscription-bridge-status delegation-mode-footnote" +
+          (notInstalled ? " theme-review-retry-warning" : "");
+      }
     }
 
     apply();
 
-    return { el: wrap, refresh: refresh };
+    // needsBridge/bridgeIsSetUp exposed (p27-t3) so buildSlotEditorFields
+    // can decide the Connection <details> open state without duplicating
+    // this logic.
+    return { el: wrap, refresh: refresh, needsBridge: needsBridge, bridgeIsSetUp: bridgeIsSetUp };
   }
 
   function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix, agentInfo) {
     var keyPrefix = fieldKeyPrefix || "";
     var frag = document.createElement("div");
     frag.className = "routing-slot-fields";
+    // p26-t1: this slot's vendor is the current harness's own native vendor
+    // (claude-code -> anthropic, codex -> openai) — no bridge is needed, so
+    // the bridge-only fields (transport, MCP server, credential/endpoint
+    // env) render below only when this is false. Recomputed on every
+    // (re)build, so a vendor or harness change picks it up immediately.
+    var slotHarnessEff = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    var slotNativeVendor = nativeVendorForHarness(slotHarnessEff);
+    var isNativeVendorSlot = !!slotNativeVendor && String(slot.vendor || "").toLowerCase() === slotNativeVendor;
+    // Only the top-level agent slot (not a fallback entry, which has no
+    // "Use another provider" checkbox of its own) auto-collapses back to
+    // the native route when the user picks the native vendor.
+    var isTopLevelAgentSlot = agentInfo && agentInfo.id && keyPrefix.indexOf(".fallback[") === -1;
 
     // Vendor (+ the "Custom endpoint" preset)
     var vendorRow = document.createElement("div");
@@ -17716,6 +18058,31 @@
         // existing mcp slot that already names an mcpServer is preserved,
         // since that's a deliberate, valid combination for any vendor.
         slot.transport = "claude-native";
+      }
+      // p26-t1: picking the harness's own native vendor defaults "Use
+      // another provider for this agent" back to unchecked (collapsed, no
+      // draft override) so the next Save uses the plain native route —
+      // matching what manually unchecking that box already does (see the
+      // providerCheckbox "change" handler above in the card builder).
+      // Setting routingExpandedAgents[id] = false (not delete) is
+      // deliberate: with the key absent, the card recomputes `expanded`
+      // from isRouted/handWrittenBackend and would immediately reopen for
+      // an already-routed agent. This does NOT touch the on-disk profile —
+      // an existing hand-written backend: block is left alone until the
+      // user actually saves the slot with the native route selected.
+      if (isTopLevelAgentSlot) {
+        var newVendorIsNative = !!slotNativeVendor && String(slot.vendor || "").toLowerCase() === slotNativeVendor;
+        if (newVendorIsNative) {
+          routingExpandedAgents[agentInfo.id] = false;
+          // Preserve a previously-picked model/tier across the collapse —
+          // only the bridge fields (transport/mcpServer/credentialEnv/etc.)
+          // are being dropped here, not an explicit model choice the user
+          // already made on this same slot.
+          var prevSlotForNative = routingDraft.agents[agentInfo.id];
+          routingDraft.agents[agentInfo.id] = (prevSlotForNative && prevSlotForNative.model !== undefined)
+            ? { model: prevSlotForNative.model }
+            : {};
+        }
       }
       onStructural();
     });
@@ -17828,25 +18195,29 @@
     }
     frag.appendChild(modelRow);
 
-    // Transport
-    var transportRow = document.createElement("div");
-    transportRow.className = "routing-field-row";
-    var transportLabel = document.createElement("label");
-    transportLabel.textContent = "Transport";
-    transportRow.appendChild(transportLabel);
-    var transportSel = document.createElement("select");
-    transportSel.setAttribute("data-field-key", keyPrefix + ".transport");
-    transportSel.disabled = isCustom; // Custom endpoint forces openai-compatible.
-    ["claude-native", "mcp", "openai-compatible"].forEach(function (t) {
-      var opt = document.createElement("option");
-      opt.value = t;
-      opt.textContent = t;
-      if (t === slot.transport) opt.selected = true;
-      transportSel.appendChild(opt);
-    });
-    transportSel.addEventListener("change", function () { slot.transport = transportSel.value; onStructural(); });
-    transportRow.appendChild(transportSel);
-    frag.appendChild(transportRow);
+    // Transport — bridge-only field (mcp/openai-compatible are how a
+    // foreign vendor gets bridged in); the harness's own native vendor
+    // (p26-t1) has nothing to bridge, so this row is skipped for it.
+    if (!isNativeVendorSlot) {
+      var transportRow = document.createElement("div");
+      transportRow.className = "routing-field-row";
+      var transportLabel = document.createElement("label");
+      transportLabel.textContent = "Transport";
+      transportRow.appendChild(transportLabel);
+      var transportSel = document.createElement("select");
+      transportSel.setAttribute("data-field-key", keyPrefix + ".transport");
+      transportSel.disabled = isCustom; // Custom endpoint forces openai-compatible.
+      ["claude-native", "mcp", "openai-compatible"].forEach(function (t) {
+        var opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        if (t === slot.transport) opt.selected = true;
+        transportSel.appendChild(opt);
+      });
+      transportSel.addEventListener("change", function () { slot.transport = transportSel.value; onStructural(); });
+      transportRow.appendChild(transportSel);
+      frag.appendChild(transportRow);
+    }
 
     // Cost model class
     var costRow = document.createElement("div");
@@ -17880,22 +18251,26 @@
     frag.addEventListener("input", subNotice.refresh);
     frag.addEventListener("change", subNotice.refresh);
 
-    // Endpoint + credential env. For openai-compatible / Custom endpoint,
-    // endpoint comes first and both fields carry connection-specific labels;
-    // other transports only need the credential field.
-    if (slot.transport === "openai-compatible" || isCustom) {
-      frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
-      frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
-    } else {
-      frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
+    // Endpoint + credential env — bridge-only (a native vendor's credential
+    // is whatever the harness/CLI already uses, not a routing-form env var).
+    // For openai-compatible / Custom endpoint, endpoint comes first and both
+    // fields carry connection-specific labels; other transports only need
+    // the credential field.
+    if (!isNativeVendorSlot) {
+      if (slot.transport === "openai-compatible" || isCustom) {
+        frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
+        frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
+      } else {
+        frag.appendChild(buildEnvNameField("Credential env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
+      }
+
+      var envNote = document.createElement("div");
+      envNote.className = "routing-env-note";
+      envNote.textContent = "Names here; the values are stored per user in the TycoonAgents app-data folder, never in this project.";
+      frag.appendChild(envNote);
     }
 
-    var envNote = document.createElement("div");
-    envNote.className = "routing-env-note";
-    envNote.textContent = "Names here; the values are stored per user in the TycoonAgents app-data folder, never in this project.";
-    frag.appendChild(envNote);
-
-    if (slot.transport === "mcp") {
+    if (!isNativeVendorSlot && slot.transport === "mcp") {
       var mcpRow = document.createElement("div");
       mcpRow.className = "routing-field-row";
       var mcpLabel = document.createElement("label");
@@ -17908,6 +18283,36 @@
       mcpInput.addEventListener("input", function () { slot.mcpServer = mcpInput.value; });
       mcpRow.appendChild(mcpInput);
       frag.appendChild(mcpRow);
+    }
+
+    // p27-t3: collapse the vendor..MCP-server field block (everything just
+    // built above) behind a "Connection" <details> — absent entirely for a
+    // native-vendor slot (nothing to configure, per docs/design/slot-editor-
+    // redesign.md section 2/10.1), open by default only when the slot is
+    // bridged-missing (needsBridge && !bridgeIsSetUp, p27-t1) or carries a
+    // hard (ok:false) dispatch warning (isFallbackTargetDispatchableWebview
+    // — the same check buildFallbackDispatchWarning uses for the amber
+    // footnote). Moving frag's existing children into the <details> instead
+    // of rebuilding them keeps every field builder above untouched.
+    if (!isNativeVendorSlot) {
+      var connDetails = document.createElement("details");
+      connDetails.className = "routing-connection-details";
+      // Keyed the same way buildSlotEditorFields' own data-field-key
+      // attributes are (keyPrefix) so snapshotRoutingUiState/
+      // restoreRoutingUiState can find this exact instance again across a
+      // structural rebuild (review fix, p27-t3 round 2) — see
+      // ~1097-1155 below.
+      connDetails.setAttribute("data-connection-key", keyPrefix);
+      var connSummary = document.createElement("summary");
+      connSummary.textContent = "Connection";
+      connDetails.appendChild(connSummary);
+      while (frag.firstChild) {
+        connDetails.appendChild(frag.firstChild);
+      }
+      var slotDispatchCheck = isFallbackTargetDispatchableWebview(slot, routingCurrentHarness, routingCurrentGeminiKeyPresent);
+      var openConnection = (subNotice.needsBridge() && !subNotice.bridgeIsSetUp()) || slotDispatchCheck.ok === false;
+      if (openConnection) connDetails.open = true;
+      frag.appendChild(connDetails);
     }
 
     return frag;
@@ -17936,11 +18341,18 @@
     slot.fallback.forEach(function (fbSlot, idx) {
       var item = document.createElement("div");
       item.className = "routing-fallback-item";
+      var line = document.createElement("div");
+      line.className = "routing-fallback-item-line";
+      // Keyboard order (section 10 item 3): position badge -> summary line
+      // (non-interactive) -> up/down/remove controls.
+      var title = document.createElement("span");
+      title.className = "routing-fallback-position-badge";
+      title.textContent = "#" + (idx + 1);
+      line.appendChild(title);
+      line.appendChild(buildSlotSummaryLine(fbSlot, routingCurrentHarness, agentInfo, true));
+
       var head = document.createElement("div");
       head.className = "routing-fallback-item-head";
-      var title = document.createElement("span");
-      title.textContent = "Fallback #" + (idx + 1);
-      head.appendChild(title);
 
       var upBtn = document.createElement("button");
       upBtn.type = "button";
@@ -17977,9 +18389,39 @@
         onStructural();
       });
       head.appendChild(removeBtn);
+      line.appendChild(head);
+      item.appendChild(line);
 
-      item.appendChild(head);
-      item.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural, keyPrefix + ".fallback[" + idx + "]", agentInfo));
+      var entryKeyPrefix = keyPrefix + ".fallback[" + idx + "]";
+      var fbCheck = isFallbackTargetDispatchableWebview(fbSlot, routingCurrentHarness, routingCurrentGeminiKeyPresent);
+      var fbWarning = buildFallbackDispatchWarning(fbCheck);
+      if (fbWarning) {
+        routingHasBlockingDispatchWarning = true;
+        item.appendChild(fbWarning);
+      }
+
+      // p27-t5: full field block moves into a per-entry <details>, closed
+      // by default — reusing the .routing-fallback-details class and the
+      // data-agent-id snapshot/restore mechanism (~1092-1181) so open/
+      // closed state survives a structural rebuild. Key is the entry's own
+      // field keyPrefix, which is unique per entry/slot and distinct from
+      // the chain-level details' agentKey ("orchestrator"/agent id), so
+      // both kinds coexist safely under the same snapshot map.
+      var fieldsDetails = document.createElement("details");
+      fieldsDetails.className = "routing-fallback-details routing-fallback-entry-details";
+      fieldsDetails.setAttribute("data-agent-id", entryKeyPrefix);
+      var fieldsSummary = document.createElement("summary");
+      fieldsSummary.textContent = "Fields";
+      fieldsDetails.appendChild(fieldsSummary);
+      fieldsDetails.appendChild(buildSlotEditorFields(fbSlot, presets, onStructural, entryKeyPrefix, agentInfo));
+      // Open by default when the entry has a blocking dispatch warning, or
+      // is newly added and still empty (no vendor/model set yet).
+      var entryIsEmpty = !fbSlot.vendor && !fbSlot.model;
+      if (fbCheck.ok === false || entryIsEmpty) {
+        fieldsDetails.open = true;
+      }
+      item.appendChild(fieldsDetails);
+
       list.appendChild(item);
     });
     details.appendChild(list);
@@ -18211,7 +18653,7 @@
     routingRevertBtnEl.className = "skill-btn settings-btn";
     routingRevertBtnEl.textContent = "Revert";
     routingRevertBtnEl.addEventListener("click", function () {
-      routingDraft = buildRoutingDraft(lastRoutingPayload);
+      routingDraft = ensureDefaultFallbackDraft(buildRoutingDraft(lastRoutingPayload), lastRoutingPayload);
       renderRoutingModal();
     });
     footer.appendChild(routingRevertBtnEl);
@@ -18318,10 +18760,21 @@
    */
   function snapshotRoutingUiState() {
     var openMap = {};
+    // p27-t3 round 2: the "Connection" <details> per slot, keyed by its
+    // buildSlotEditorFields keyPrefix (data-connection-key) — a manual
+    // toggle here must survive the same structural rebuilds
+    // .routing-fallback-details already tolerates. Absent from the map
+    // when never snapshotted, so restoreRoutingUiState below leaves the
+    // freshly-computed default (needsBridge/dispatch-warning) alone.
+    var connectionOpenMap = {};
     if (routingContentEl) {
       routingContentEl.querySelectorAll(".routing-fallback-details").forEach(function (d) {
         var key = d.getAttribute("data-agent-id") || "orchestrator";
         openMap[key] = !!d.open;
+      });
+      routingContentEl.querySelectorAll(".routing-connection-details").forEach(function (d) {
+        var key = d.getAttribute("data-connection-key") || "";
+        connectionOpenMap[key] = !!d.open;
       });
     }
     var focus = null;
@@ -18352,7 +18805,7 @@
         }
       });
     }
-    return { openMap: openMap, focus: focus, keywordEdits: keywordEdits };
+    return { openMap: openMap, connectionOpenMap: connectionOpenMap, focus: focus, keywordEdits: keywordEdits };
   }
 
   function restoreRoutingUiState(snapshot) {
@@ -18363,6 +18816,14 @@
         d.open = snapshot.openMap[key];
       }
     });
+    if (snapshot.connectionOpenMap) {
+      routingContentEl.querySelectorAll(".routing-connection-details").forEach(function (d) {
+        var key = d.getAttribute("data-connection-key") || "";
+        if (Object.prototype.hasOwnProperty.call(snapshot.connectionOpenMap, key)) {
+          d.open = snapshot.connectionOpenMap[key];
+        }
+      });
+    }
     if (snapshot.keywordEdits) {
       routingContentEl.querySelectorAll(".keyword-input").forEach(function (inp) {
         var agentId = inp.dataset.agentId;
@@ -18410,7 +18871,8 @@
       ? harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode" },
+          { id: "opencode", label: "OpenCode (Experimental)" },
+          { id: "codex", label: "Codex (Experimental)" },
         ];
     harnessOptions.forEach((opt) => {
       const optEl = document.createElement("option");
@@ -18426,6 +18888,12 @@
       vscode.postMessage({ type: "setHarness", provider: harnessSelect.value });
     });
     harnessRow.appendChild(harnessSelect);
+    if (typeof harness.warning === "string" && harness.warning.length > 0) {
+      const harnessWarning = document.createElement("p");
+      harnessWarning.className = "theme-review-retry-warning harness-select-warning";
+      harnessWarning.textContent = harness.warning;
+      harnessRow.appendChild(harnessWarning);
+    }
     const harnessHint = document.createElement("p");
     harnessHint.className = "delegation-mode-footnote";
     if (overridden) {
@@ -18438,7 +18906,60 @@
     } else {
       harnessHint.textContent = "Applies immediately.";
     }
+    if (harnessSelect.value === "opencode") {
+      harnessHint.textContent +=
+        " OpenCode hosting is experimental and not yet thoroughly tested.";
+    } else if (harnessSelect.value === "codex") {
+      harnessHint.textContent +=
+        " Codex hosting is experimental and not yet thoroughly tested.";
+    }
     harnessRow.appendChild(harnessHint);
+
+    // p23-t11: Codex hook/dispatcher install rows, shown only when Codex is
+    // the effective harness. Uses the same footnote/button classes as the
+    // rest of the Settings screen.
+    if (harness.effective === "codex") {
+      const buildInstallRow = (label, installedFlag, installMsg, uninstallMsg, warning) => {
+        const row = document.createElement("p");
+        row.className = "delegation-mode-footnote harness-codex-install-row";
+        const installed = installedFlag === true;
+        row.textContent = label + ": " + (installed ? "installed " : "not installed ");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "skill-btn settings-btn harness-codex-install-btn";
+        btn.textContent = installed ? "Uninstall" : "Install";
+        btn.addEventListener("click", () => {
+          btn.disabled = true;
+          vscode.postMessage({ type: installed ? uninstallMsg : installMsg });
+        });
+        row.appendChild(btn);
+        if (typeof warning === "string" && warning.length > 0) {
+          const warnEl = document.createElement("span");
+          warnEl.className = "theme-review-retry-warning harness-select-warning";
+          warnEl.textContent = " " + warning;
+          row.appendChild(warnEl);
+        }
+        return row;
+      };
+      harnessRow.appendChild(
+        buildInstallRow(
+          "Codex hooks",
+          harness.codexHooksInstalled,
+          "installCodexHooks",
+          "uninstallCodexHooks",
+          harness.codexHooksWarning
+        )
+      );
+      harnessRow.appendChild(
+        buildInstallRow(
+          "Dispatcher",
+          harness.codexDispatcherInstalled,
+          "installCodexDispatcher",
+          "uninstallCodexDispatcher",
+          harness.codexDispatcherWarning
+        )
+      );
+    }
     return harnessRow;
   }
 
@@ -18596,8 +19117,36 @@
     head.className = "agent-row-head";
 
     const nameEl = document.createElement("span");
-    nameEl.className = "agent-name";
-    nameEl.textContent = a.name || a.id;
+    // Cross-vendor accent (p24-t2): color the slot's agent name as soon as
+    // its assigned vendor is foreign/fallback to the current harness — even
+    // with no run in progress, so users learn the color before they ever
+    // see it live on the canvas. Vendor/costModelClass come from the roster
+    // payload (agentMetrics, via metricsFor) when a run has reported them,
+    // else from the slot editor's own selected backend vendor
+    // (routingAgent.backend). harnessEffective is read live off
+    // lastSettings so switching the harness select and re-running
+    // renderRoutingModal (which rebuilds every card from scratch) always
+    // reflects the new harness immediately — no separate recompute path.
+    const cardHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    const cardBackend = routingAgent && routingAgent.backend;
+    const cardNameVendor = (m && m.vendor) || (cardBackend && cardBackend.vendor) || a.vendor || null;
+    const cardNameCostClass = (m && m.costModelClass) || (cardBackend && cardBackend.costModelClass) || a.costModelClass || null;
+    const cardNameFallbackOf = (m && m.fallbackOf) || null;
+    const cardAccentKind = agentAccent({
+      vendor: cardNameVendor,
+      costModelClass: cardNameCostClass,
+      fallbackOf: cardNameFallbackOf,
+      harness: cardHarness,
+    });
+    // p27-t6: top-of-card accent bar signals "new agent starts here" and
+    // reuses the same fallback/foreign/native classification as the
+    // nameplate above — see agentAccent() in 005-agent-accent.js.
+    card.classList.add("agent-card-accent-" + cardAccentKind);
+    card.dataset.agentAccent = cardAccentKind;
+    nameEl.className = "agent-name"
+      + (cardAccentKind === "foreign" ? " agent-accent-foreign" : "")
+      + (cardAccentKind === "fallback" ? " agent-accent-fallback" : "");
+    nameEl.textContent = (a.name || a.id) + (cardAccentKind === "fallback" ? " (fb)" : "");
     head.appendChild(nameEl);
 
     if (density === "full" && routingAgent && routingAgent.description) {
@@ -18815,9 +19364,15 @@
       // explicit route would — it starts collapsed behind the "Override for
       // this agent" link (p21-t7 Part B) until the user opts in.
       const isRouted = routeSource !== "frontmatter" && routeSource !== "default";
+      // A hand-written backend: block (e.g. codex-reviewer, gemini-reviewer)
+      // always starts expanded — its checkbox is disabled/checked-read-only
+      // below, so the user has no click to opt in with, but the fallback
+      // editor still needs to render for these slots (p25-t1: the setup
+      // notice used to appear INSTEAD of the slot body here since the body
+      // never built at all for handWrittenBackend agents).
       const expanded = Object.prototype.hasOwnProperty.call(routingExpandedAgents, a.id)
         ? !!routingExpandedAgents[a.id]
-        : isRouted;
+        : (isRouted || !!a.handWrittenBackend);
 
       if (routeSource === "default") {
         // Inherited from the Default-for-all-agents route: there is no
@@ -18862,10 +19417,19 @@
         providerRow.setAttribute("data-agent-id", a.id);
         const providerLabel = document.createElement("label");
         providerLabel.className = "delegation-mode-option";
+        // p26-t1 fix: a hand-written-backend slot whose vendor is now
+        // native to the running harness (e.g. codex-reviewer/openai under
+        // Codex) has no bridge to describe — the checkbox stays disabled
+        // (the user still can't opt out through this control) but reads
+        // unchecked, and the help text drops the "via MCP (hand-written)"
+        // bridge language so a native slot never shows a checked "Use
+        // another provider" toggle with no provider fields beneath it.
+        const providerNativeVendor = nativeVendorForHarness(cardHarness);
+        const providerIsNativeVendor = !!providerNativeVendor && String(a.vendor || "").toLowerCase() === providerNativeVendor;
         const providerCheckbox = document.createElement("input");
         providerCheckbox.type = "checkbox";
         providerCheckbox.className = "agent-provider-checkbox";
-        providerCheckbox.checked = !!a.handWrittenBackend || expanded;
+        providerCheckbox.checked = a.handWrittenBackend && providerIsNativeVendor ? false : (!!a.handWrittenBackend || expanded);
         providerCheckbox.disabled = !!a.handWrittenBackend;
         const providerBody = document.createElement("span");
         providerBody.className = "delegation-mode-option-body";
@@ -18875,7 +19439,9 @@
         const providerHelpSpan = document.createElement("span");
         providerHelpSpan.className = "delegation-mode-option-help";
         providerHelpSpan.textContent = a.handWrittenBackend
-          ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`
+          ? (providerIsNativeVendor
+            ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} (native to this harness)`
+            : `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`)
           : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
         providerBody.appendChild(providerLabelSpan);
         providerBody.appendChild(providerHelpSpan);
@@ -18902,9 +19468,15 @@
         });
       }
 
-      if (expanded && !a.handWrittenBackend) {
+      if (expanded) {
+        // p25-t1: render the slot body (fields + fallback editor) for
+        // handWrittenBackend slots too, alongside the subscription/MCP
+        // notice buildSlotEditorFields appends internally — previously this
+        // block was gated `&& !a.handWrittenBackend`, so the notice showed
+        // with no body underneath and buildFallbackEditor never ran for any
+        // subscription-billed non-Anthropic vendor or backend-block slot.
         if (!routingDraft.agents[a.id]) routingDraft.agents[a.id] = {};
-        if (isRouted && !slotHasContent(routingDraft.agents[a.id])) {
+        if ((isRouted || a.handWrittenBackend) && !slotHasContent(routingDraft.agents[a.id])) {
           routingDraft.agents[a.id] = cloneSlotFromBackend(routingAgent.backend) || {};
         }
         const slot = routingDraft.agents[a.id];
@@ -18915,15 +19487,21 @@
           const chipLine = document.createElement("div");
           chipLine.className = "routing-agent-source-line";
           chipLine.appendChild(routingSourceChip(routingAgent.source || routeSource));
-          const routedChip = document.createElement("span");
-          routedChip.className = "stat-chip agent-routed-chip";
-          const routedVendor = a.vendor || (routingAgent.backend && routingAgent.backend.vendor) || "unknown";
-          const routedModel = a.resolvedModel || a.model || "unknown model";
-          routedChip.textContent = `Routed to ${vendorLabelFor(routedVendor)}/${routedModel}`;
-          chipLine.appendChild(routedChip);
           editorWrap.appendChild(chipLine);
         }
-        var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id });
+        // p27-t3: always-visible slot identity line, replacing the old
+        // "Routed to <vendor>/<model>" chip (now folded into this line's
+        // vendor/model/route text) — see buildSlotSummaryLine above.
+        editorWrap.appendChild(buildSlotSummaryLine(slot, routingCurrentHarness, {
+          id: a.id,
+          name: a.name || a.id,
+          // Same fallback values the old "Routed to <vendor>/<model>" chip
+          // used, so an empty draft slot for an already-routed agent shows
+          // the real vendor/model instead of "unknown" (review fix).
+          resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
+          resolvedModel: a.resolvedModel || a.model,
+        }));
+    var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend });
         editorWrap.appendChild(slotFieldsEl);
         editorWrap.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
         if (slotFieldsEl._refreshSubscriptionNotice) {
@@ -19026,7 +19604,13 @@
 
     const slotTd = document.createElement("div");
     slotTd.className = "routing-slot-td";
-    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id });
+    slotTd.appendChild(buildSlotSummaryLine(slot, routingCurrentHarness, {
+      id: a.id,
+      name: a.name || a.id,
+      resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
+      resolvedModel: a.resolvedModel || a.model,
+    }));
+    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend });
     slotTd.appendChild(fullSlotFieldsEl);
     routingRow.appendChild(slotTd);
 
@@ -19058,7 +19642,7 @@
       routingContentEl.appendChild(loading);
       return;
     }
-    if (!routingDraft) routingDraft = buildRoutingDraft(lastRoutingPayload);
+    if (!routingDraft) routingDraft = ensureDefaultFallbackDraft(buildRoutingDraft(lastRoutingPayload), lastRoutingPayload);
 
     var payload = lastRoutingPayload;
     // Density (p20-t2): keyed on the harness itself, not the old
@@ -19069,6 +19653,15 @@
     var isClaudeHarness = harnessEffective !== "opencode";
     var density = isClaudeHarness ? "simple" : "full";
 
+    // p25-t4: harness + GEMINI_API_KEY presence for this render pass, read
+    // by buildFallbackEditor (per-fallback-item warnings) and the Default
+    // fallback picker below; routingHasBlockingDispatchWarning accumulates
+    // across both and gates the Save button at the bottom of this function.
+    routingCurrentHarness = harnessEffective;
+    var geminiProbe = routingEnvProbe["GEMINI_API_KEY"];
+    routingCurrentGeminiKeyPresent = !!(geminiProbe && (geminiProbe.env || geminiProbe.stored));
+    routingHasBlockingDispatchWarning = false;
+
     // Read-only "Runs on <harness> · Change in Settings" line atop the
     // Agents screen (2026-09-05 decision): the harness question is asked
     // ONLY in Settings now — no dropdown here, just a link back to it.
@@ -19076,6 +19669,18 @@
     var agentsHarnessLine = buildAgentsHarnessLine(harnessEffective);
     if (agentsHarnessLine) {
       routingContentEl.appendChild(agentsHarnessLine);
+      // Cross-vendor accent legend (p24-t2): one short line explaining the
+      // two accent colors used on roster/canvas nameplates so users learn
+      // the association before ever hitting it live.
+      var accentLegend = document.createElement("p");
+      accentLegend.className = "agent-accent-legend";
+      accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback";
+      routingContentEl.appendChild(accentLegend);
+      // p25-t4: explicit legend note for the fallback picker/warnings below.
+      var fallbackLegend = document.createElement("p");
+      fallbackLegend.className = "agent-accent-legend";
+      fallbackLegend.textContent = "Fallback renders amber with (fb)";
+      routingContentEl.appendChild(fallbackLegend);
     }
 
     var rawPresets = payload.presets || { vendors: [], models: [] };
@@ -19119,6 +19724,12 @@
         orchMeta.appendChild(orchChip);
       }
       orchSection.appendChild(orchMeta);
+      orchSection.appendChild(buildSlotSummaryLine(routingDraft.orchestrator, routingCurrentHarness, {
+        id: "orchestrator",
+        name: "Orchestrator",
+        resolvedVendor: payload.orchestrator && payload.orchestrator.backend && payload.orchestrator.backend.vendor,
+        resolvedModel: payload.orchestrator && payload.orchestrator.backend && payload.orchestrator.backend.model,
+      }));
       var orchSlotFieldsEl = buildSlotEditorFields(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", { id: "orchestrator", name: "Orchestrator" });
       orchSection.appendChild(orchSlotFieldsEl);
       orchSection.appendChild(buildFallbackEditor(routingDraft.orchestrator, presets, renderRoutingModal, "orchestrator", "orchestrator"));
@@ -19141,6 +19752,7 @@
       defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
       defaultsSection.appendChild(defaultsHelp);
       if (!routingDraft.defaults) routingDraft.defaults = {};
+      defaultsSection.appendChild(buildSlotSummaryLine(routingDraft.defaults, routingCurrentHarness, { id: "defaults", name: "Default for all agents" }));
       var defaultsSlotFieldsEl = buildSlotEditorFields(routingDraft.defaults, presets, renderRoutingModal, "defaults", { id: "defaults", name: "Default for all agents" });
       defaultsSection.appendChild(defaultsSlotFieldsEl);
       defaultsSection.appendChild(buildFallbackEditor(routingDraft.defaults, presets, renderRoutingModal, "defaults", "defaults"));
@@ -19159,6 +19771,43 @@
       });
       defaultsSection.appendChild(clearDefaultsBtn);
       routingContentEl.appendChild(defaultsSection);
+    }
+
+    // ── Default fallback (p25-t4) — full density only. Top-level
+    // `defaultFallback` slot used at RESOLVE time by any slot whose own
+    // `fallback` is empty (see routingProfile.ts's defaultFallback doc
+    // comment). Never preset — an empty draft just means "None".
+    if (density === "full") {
+      var defaultFallbackSection = buildSection("Default fallback");
+      var defaultFallbackHelp = document.createElement("p");
+      defaultFallbackHelp.className = "routing-defaults-help";
+      defaultFallbackHelp.textContent = "Used when an agent's own fallback chain is empty. Choose None to leave it unset.";
+      defaultFallbackSection.appendChild(defaultFallbackHelp);
+      if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
+      defaultFallbackSection.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
+      var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
+      defaultFallbackSection.appendChild(defaultFallbackFieldsEl);
+      if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
+        defaultFallbackSection.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+        defaultFallbackSection.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+      }
+      var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
+      var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
+      if (defaultFallbackWarning) {
+        routingHasBlockingDispatchWarning = true;
+        defaultFallbackSection.appendChild(defaultFallbackWarning);
+      }
+      var clearDefaultFallbackBtn = document.createElement("button");
+      clearDefaultFallbackBtn.type = "button";
+      clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
+      clearDefaultFallbackBtn.textContent = "None";
+      clearDefaultFallbackBtn.disabled = !slotHasContent(routingDraft.defaultFallback);
+      clearDefaultFallbackBtn.addEventListener("click", function () {
+        routingDraft.defaultFallback = {};
+        renderRoutingModal();
+      });
+      defaultFallbackSection.appendChild(clearDefaultFallbackBtn);
+      routingContentEl.appendChild(defaultFallbackSection);
     }
 
     // ── Per-agent cards (unified: simple or full density) ──
@@ -19250,7 +19899,7 @@
     if (routingSaveBtnEl) {
       routingSaveBtnEl.hidden = !showSaveRevert;
       routingSaveBtnEl.textContent = routingSaving ? "Saving…" : "Save";
-      routingSaveBtnEl.disabled = routingSaving;
+      routingSaveBtnEl.disabled = routingSaving || routingHasBlockingDispatchWarning;
     }
     if (routingRevertBtnEl) {
       routingRevertBtnEl.hidden = !showSaveRevert;
@@ -19352,6 +20001,12 @@
     var defaultsCleaned = cleanRoutingSlot(routingDraft.defaults, undefined, presetVendors);
     if (defaultsCleaned) profile.defaults = defaultsCleaned;
 
+    // p25-t4: top-level defaultFallback, same sparse-save posture as
+    // defaults above — an empty/cleared draft (the "None" button) simply
+    // omits the key rather than writing `{}`.
+    var defaultFallbackCleaned = cleanRoutingSlot(routingDraft.defaultFallback, undefined, presetVendors);
+    if (defaultFallbackCleaned) profile.defaultFallback = defaultFallbackCleaned;
+
     var orchCleaned = cleanRoutingSlot(routingDraft.orchestrator, undefined, presetVendors);
     var orchWasInProfile = !!(existingProfile && existingProfile.orchestrator);
     var orchBackend = payload && payload.orchestrator && payload.orchestrator.backend;
@@ -19428,7 +20083,7 @@
       // saved would silently re-collapse it and drop the unsaved edit.
       var prevDraft = routingDraft;
       var prevBaseline = routingDefaultBaseline;
-      routingDraft = buildRoutingDraft(payload);
+      routingDraft = ensureDefaultFallbackDraft(buildRoutingDraft(payload), payload);
       Object.keys(routingExpandedAgents).forEach(function (id) {
         if (!routingExpandedAgents[id]) return;
         if (prevDraft && prevDraft.agents && Object.prototype.hasOwnProperty.call(prevDraft.agents, id)) {
@@ -22863,6 +23518,20 @@
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // Cross-vendor accent (p24-t2): "fallback" | "foreign" | "native",
+      // decided by the single pure source of truth in 005-agent-accent.js.
+      // harnessEffective is read live off the shared `lastSettings` (declared
+      // in 080-packs-events.js, same concatenated webview scope) so switching
+      // the harness select flips accents on the very next render() frame —
+      // no separate recompute pass needed.
+      var accentHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      charEntry.accentKind = agentAccent({
+        vendor: agent.vendor,
+        costModelClass: agent.costModelClass,
+        fallbackOf: agent.fallbackOf,
+        harness: accentHarness,
+      });
+
       // ── Dazed-on-damage: reentry-cooldown decay + ACTIVE override ────
       // Decays unconditionally every frame (not just while dazed) so a
       // just-recovered agent's immunity window keeps counting down even
@@ -24366,7 +25035,8 @@
             x0: drawX, y0: drawY, x1: drawX + spriteSize, y1: drawY + spriteSize,
             yFront: cy,
             kind: "character",
-            name: (rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id,
+            name: ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id)
+              + (charEntry.accentKind === "fallback" ? " (fb)" : ""),
             role: agentRoleLabel(agent),
           });
 
@@ -24384,6 +25054,34 @@
           const shouldFlip = isSeated
             ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
             : (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
+
+          // Cross-vendor active ring (p24-t2): a working (isActive) foreign
+          // or fallback agent gets a colored outline ring around its sprite —
+          // native agents keep today's look (no ring). Drawn in un-flipped
+          // canvas coords, centered on the sprite's own box, so it never
+          // interacts with the flip transform below.
+          if (charEntry.isActive && (charEntry.accentKind === "foreign" || charEntry.accentKind === "fallback")) {
+            var accentRingColor = charEntry.accentKind === "fallback"
+              ? "rgba(255, 176, 32, 0.9)" // --accent amber
+              : "rgba(79, 195, 247, 0.9)"; // --accent-info light blue
+            ctx.save();
+            ctx.strokeStyle = accentRingColor;
+            ctx.lineWidth = Math.max(1.5, 2 * depthScale);
+            ctx.beginPath();
+            ctx.ellipse(cx, cy - spriteSize / 2, spriteSize / 2 + 3, spriteSize / 2 + 3, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            // Thin active-progress arc: a lightweight "working" pulse in the
+            // same accent color, distinct from the ring itself (the Active
+            // indicator light below still marks isActive for native agents).
+            var accentPulseT = (performance.now ? performance.now() : Date.now()) / 900;
+            var accentPulseFrac = 0.5 + 0.5 * Math.sin(accentPulseT);
+            ctx.globalAlpha = 0.35 + 0.5 * accentPulseFrac;
+            ctx.lineWidth = Math.max(2.5, 3.5 * depthScale);
+            ctx.beginPath();
+            ctx.ellipse(cx, cy - spriteSize / 2, spriteSize / 2 + 3, spriteSize / 2 + 3, 0, -Math.PI / 2, -Math.PI / 2 + accentPulseFrac * Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
 
           // Draw the sprite inside its own save/restore so the horizontal-flip
           // transform NEVER leaks into the label below (a flipped+scaled context
@@ -24429,7 +25127,11 @@
           // themeRosterAgents, so this label now updates the same frame instead
           // of requiring a reload. Falls back to agent.name || agent.id when the
           // theme has no roster name for this slot (non-themed-agent case).
-          const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24);
+          // Fallback agents get the " (fb)" suffix on the nameplate (p24-t2);
+          // foreign gets no suffix, only the ring above. slice(0, 24) runs on
+          // the base name first so the suffix is never truncated away.
+          const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24)
+            + (charEntry.accentKind === "fallback" ? " (fb)" : "");
           // Word-wrap: greedily pack whitespace-separated words into lines that
           // fit maxLabelW so long names ("VS Code Integration", "Search &
           // Retrieval") stack onto 2-3 centered lines instead of clipping.

@@ -1469,6 +1469,20 @@
       const isActive = isMetricsAgentActive(agent);
       charEntry.isActive = isActive; // surfaced to the draw pass for the active light
 
+      // Cross-vendor accent (p24-t2): "fallback" | "foreign" | "native",
+      // decided by the single pure source of truth in 005-agent-accent.js.
+      // harnessEffective is read live off the shared `lastSettings` (declared
+      // in 080-packs-events.js, same concatenated webview scope) so switching
+      // the harness select flips accents on the very next render() frame —
+      // no separate recompute pass needed.
+      var accentHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      charEntry.accentKind = agentAccent({
+        vendor: agent.vendor,
+        costModelClass: agent.costModelClass,
+        fallbackOf: agent.fallbackOf,
+        harness: accentHarness,
+      });
+
       // ── Dazed-on-damage: reentry-cooldown decay + ACTIVE override ────
       // Decays unconditionally every frame (not just while dazed) so a
       // just-recovered agent's immunity window keeps counting down even
@@ -2972,7 +2986,8 @@
             x0: drawX, y0: drawY, x1: drawX + spriteSize, y1: drawY + spriteSize,
             yFront: cy,
             kind: "character",
-            name: (rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id,
+            name: ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id)
+              + (charEntry.accentKind === "fallback" ? " (fb)" : ""),
             role: agentRoleLabel(agent),
           });
 
@@ -2990,6 +3005,34 @@
           const shouldFlip = isSeated
             ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
             : (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
+
+          // Cross-vendor active ring (p24-t2): a working (isActive) foreign
+          // or fallback agent gets a colored outline ring around its sprite —
+          // native agents keep today's look (no ring). Drawn in un-flipped
+          // canvas coords, centered on the sprite's own box, so it never
+          // interacts with the flip transform below.
+          if (charEntry.isActive && (charEntry.accentKind === "foreign" || charEntry.accentKind === "fallback")) {
+            var accentRingColor = charEntry.accentKind === "fallback"
+              ? "rgba(255, 176, 32, 0.9)" // --accent amber
+              : "rgba(79, 195, 247, 0.9)"; // --accent-info light blue
+            ctx.save();
+            ctx.strokeStyle = accentRingColor;
+            ctx.lineWidth = Math.max(1.5, 2 * depthScale);
+            ctx.beginPath();
+            ctx.ellipse(cx, cy - spriteSize / 2, spriteSize / 2 + 3, spriteSize / 2 + 3, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            // Thin active-progress arc: a lightweight "working" pulse in the
+            // same accent color, distinct from the ring itself (the Active
+            // indicator light below still marks isActive for native agents).
+            var accentPulseT = (performance.now ? performance.now() : Date.now()) / 900;
+            var accentPulseFrac = 0.5 + 0.5 * Math.sin(accentPulseT);
+            ctx.globalAlpha = 0.35 + 0.5 * accentPulseFrac;
+            ctx.lineWidth = Math.max(2.5, 3.5 * depthScale);
+            ctx.beginPath();
+            ctx.ellipse(cx, cy - spriteSize / 2, spriteSize / 2 + 3, spriteSize / 2 + 3, 0, -Math.PI / 2, -Math.PI / 2 + accentPulseFrac * Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
 
           // Draw the sprite inside its own save/restore so the horizontal-flip
           // transform NEVER leaks into the label below (a flipped+scaled context
@@ -3035,7 +3078,11 @@
           // themeRosterAgents, so this label now updates the same frame instead
           // of requiring a reload. Falls back to agent.name || agent.id when the
           // theme has no roster name for this slot (non-themed-agent case).
-          const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24);
+          // Fallback agents get the " (fb)" suffix on the nameplate (p24-t2);
+          // foreign gets no suffix, only the ring above. slice(0, 24) runs on
+          // the base name first so the suffix is never truncated away.
+          const label = ((rosterAgentInfo && rosterAgentInfo.name) || agent.name || agent.id).slice(0, 24)
+            + (charEntry.accentKind === "fallback" ? " (fb)" : "");
           // Word-wrap: greedily pack whitespace-separated words into lines that
           // fit maxLabelW so long names ("VS Code Integration", "Search &
           // Retrieval") stack onto 2-3 centered lines instead of clipping.
