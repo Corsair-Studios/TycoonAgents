@@ -71,6 +71,13 @@ function makeFakePanel(root: string, extra: Record<string, unknown> = {}): any {
     _providerSwap: undefined,
     _getRunningProviderId: undefined,
     _handleGetSettings: () => {},
+    // p23-t11: real detection/handler methods live on the prototype and are
+    // not reimplemented here — bind them so `this` inside resolves to the
+    // fake object like every other method on it.
+    _detectCodexHooksInstalled: (TycoonPanel.prototype as any)._detectCodexHooksInstalled,
+    _detectCodexDispatcherInstalled: (TycoonPanel.prototype as any)._detectCodexDispatcherInstalled,
+    _codexHookScriptPath: (TycoonPanel.prototype as any)._codexHookScriptPath,
+    _codexDispatcherScriptPath: (TycoonPanel.prototype as any)._codexDispatcherScriptPath,
     ...extra,
   };
 }
@@ -82,7 +89,8 @@ test("_buildHarnessSettings: defaults to claude-code, source default, no mismatc
   const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
   assert.deepEqual(result.options, [
     { id: "claude-code", label: "Claude Code" },
-    { id: "opencode", label: "OpenCode" },
+    { id: "opencode", label: "OpenCode (Experimental)" },
+    { id: "codex", label: "Codex (Experimental)" },
   ]);
   assert.equal(result.effective, "claude-code");
   assert.equal(result.source, "default");
@@ -209,4 +217,109 @@ test("_handleSetHarness: rejects an unknown provider id without writing or calli
 
   assert.equal(settingsCalls, 0);
   assert.throws(() => readExecutionJson(root));
+});
+
+test("_buildHarnessSettings: an unknown provider id in execution.json (e.g. a future build's id this build doesn't know) falls back to claude-code with a warning instead of throwing", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "future-provider" }));
+  const fake = makeFakePanel(root);
+  const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+  assert.equal(result.effective, "claude-code");
+  assert.equal(result.source, "default");
+  assert.equal(typeof result.warning, "string");
+  assert.match(result.warning, /future-provider/i);
+});
+
+// ---------------------------------------------------------------------
+// p23-t11: Codex hooks/dispatcher install-state (harness.codexHooksInstalled
+// / codexDispatcherInstalled) and the INSTALL/UNINSTALL_CODEX_* handlers.
+// Real filesystem, temp CODEX_HOME + temp project dir.
+// ---------------------------------------------------------------------
+
+function withCodexProvider(root: string): void {
+  fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "codex" }));
+}
+
+function tmpCodexHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "codexHome-"));
+}
+
+const codexHookScriptPath = path.join(os.tmpdir(), "tycoon-codex-hook.cjs");
+const codexDispatcherScriptPath = path.join(os.tmpdir(), "tycoon-dispatcher-mcp.cjs");
+
+test("_buildHarnessSettings: omits codexHooksInstalled/codexDispatcherInstalled when the effective provider isn't codex", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  const fake = makeFakePanel(root);
+  const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+  assert.equal(result.effective, "claude-code");
+  assert.equal(result.codexHooksInstalled, undefined);
+  assert.equal(result.codexDispatcherInstalled, undefined);
+});
+
+test("_buildHarnessSettings + INSTALL/UNINSTALL_CODEX_HOOKS: install sets the marker and flips codexHooksInstalled true; uninstall restores byte-identical and flips it back", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  const codexHome = tmpCodexHome();
+  const savedCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    const fake = makeFakePanel(root, {
+      _extensionUri: { fsPath: os.tmpdir() },
+      _codexHookScriptPath: () => codexHookScriptPath,
+    });
+
+    let result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexHooksInstalled, false);
+
+    (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(fake);
+    const configTomlPath = path.join(codexHome, "config.toml");
+    const afterInstall = fs.readFileSync(configTomlPath, "utf8");
+    assert.match(afterInstall, /tycoon-codex-hook: managed notify entry/);
+
+    result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexHooksInstalled, true);
+
+    (TycoonPanel.prototype as any)._handleUninstallCodexHooks.call(fake);
+    const afterUninstall = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : "";
+    assert.doesNotMatch(afterUninstall, /tycoon-codex-hook: managed notify entry/);
+    assert.equal(fs.existsSync(path.join(root, ".codex", "hooks.json")), false, "our own hooks.json (no foreign content) is removed on uninstall");
+
+    result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexHooksInstalled, false);
+  } finally {
+    process.env.CODEX_HOME = savedCodexHome;
+  }
+});
+
+test("_buildHarnessSettings + INSTALL/UNINSTALL_CODEX_DISPATCHER: install sets the dispatcher marker and flips codexDispatcherInstalled true; uninstall clears it", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  const codexHome = tmpCodexHome();
+  const savedCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    const fake = makeFakePanel(root, {
+      _extensionUri: { fsPath: os.tmpdir() },
+      _codexDispatcherScriptPath: () => codexDispatcherScriptPath,
+    });
+
+    let result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexDispatcherInstalled, false);
+
+    (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(fake);
+    result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexDispatcherInstalled, true);
+
+    (TycoonPanel.prototype as any)._handleUninstallCodexDispatcher.call(fake);
+    result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexDispatcherInstalled, false);
+  } finally {
+    process.env.CODEX_HOME = savedCodexHome;
+  }
 });

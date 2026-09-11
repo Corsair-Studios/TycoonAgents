@@ -10,7 +10,13 @@ import type { EventSink } from "./events";
 // local/API model loop) into the normalized event stream. See docs/DESIGN.md section 6.
 // The core consumes only normalized events, so adding a provider never touches the renderer.
 export interface Provider {
-  /** Stable identifier, e.g. "claude-code", "ollama". */
+  /**
+   * Stable identifier, e.g. "claude-code", "ollama". This MUST match the
+   * `provider` string stamped onto every NormalizedEvent this provider
+   * emits (see events.ts) and the provider id keyed in mappingRegistry, so
+   * two live harnesses tailing the same activity source can never complete,
+   * overwrite, or misattribute each other's workers (p22-t1).
+   */
   readonly id: string;
   /** Begin emitting normalized events to the sink. */
   start(emit: EventSink): Promise<void> | void;

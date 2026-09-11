@@ -113,6 +113,45 @@ test("createProvider('opencode', ...) returns an OpenCodeProvider", async () => 
   assert.equal(provider.id, "opencode");
 });
 
+test("createProvider('codex', ...) returns a CodexProvider (p22-t4)", async () => {
+  const { createProvider } = await import("../src/host/vscode/providerFactory");
+  const { CodexProvider } = await import("../src/providers/codex");
+  const provider = createProvider("codex", path.join(os.tmpdir(), "activity.jsonl"));
+  assert.ok(provider instanceof CodexProvider);
+  assert.equal(provider.id, "codex");
+});
+
+test("standalone provider resolution accepts TYCOON_PROVIDER=codex (p22-t4)", async () => {
+  const dir = await makeProjectDir({ provider: "claude-code" });
+  assert.equal(
+    resolveProviderId({ env: { TYCOON_PROVIDER: "codex" }, projectDir: dir }),
+    "codex",
+  );
+});
+
+test("switching Claude->Codex->Claude via resolveProviderId/createProvider leaves settings.local.json bytes unchanged (p22-t4)", async () => {
+  const { createProvider } = await import("../src/host/vscode/providerFactory");
+  const dir = await makeProjectDir({ provider: "claude-code" });
+  const claudeDir = path.join(dir, ".claude");
+  const settingsPath = path.join(claudeDir, "settings.local.json");
+  const settingsContent = JSON.stringify(
+    { hooks: { Stop: [{ hooks: [{ type: "command", command: "node hooks/tycoon-hook.cjs" }] }] } },
+    null,
+    2,
+  );
+  await fsp.writeFile(settingsPath, settingsContent, "utf8");
+  const before = await fsp.readFile(settingsPath);
+
+  for (const id of ["claude-code", "codex", "claude-code"] as const) {
+    assert.equal(resolveProviderId({ settingValue: id, env: {}, projectDir: dir }), id);
+    const provider = createProvider(id, path.join(os.tmpdir(), "activity.jsonl"));
+    assert.equal(provider.id, id);
+  }
+
+  const after = await fsp.readFile(settingsPath);
+  assert.ok(before.equals(after), "settings.local.json bytes must be byte-identical across Claude->Codex->Claude selection");
+});
+
 // --- describeProviderSelection / writeProviderSelection (p13-t7) --------
 
 test("describeProviderSelection: default with nothing set", async () => {

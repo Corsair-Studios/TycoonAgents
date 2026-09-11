@@ -12,7 +12,7 @@
 
 import type { Provider } from "../../core/provider";
 import type { EventSink } from "../../core/events";
-import { registerMapper, tryMapRecord } from "../../core/mappingRegistry";
+import { registerMapper, tryMapRecord, DEFAULT_PROVIDER_ID } from "../../core/mappingRegistry";
 import { mapOpenCodeRecord } from "./mapOpenCodeRecord";
 import { ActivityFileTailer } from "../shared/activityTail";
 import { isProjectPluginInstalled } from "./discovery";
@@ -100,6 +100,19 @@ export class OpenCodeProvider implements Provider {
       } catch {
         return;
       }
+      // Two providers can tail the same physical activity.jsonl (see the
+      // options.activityFile doc comment above). Without this check, every
+      // line — including ones written by a DIFFERENT provider's hook — got
+      // dispatched through tryMapRecord and re-emitted here too, so a
+      // concurrent claude-code+opencode (or opencode+codex) run double
+      // counted every record. Only handle lines whose own `provider` field
+      // (defaulting to DEFAULT_PROVIDER_ID when absent, matching
+      // mappingRegistry's resolution) names this provider.
+      const recordProviderId =
+        record && typeof record === "object" && typeof (record as { provider?: unknown }).provider === "string"
+          ? (record as { provider: string }).provider
+          : DEFAULT_PROVIDER_ID;
+      if (recordProviderId !== this.id) return;
       const events = tryMapRecord(record);
       if (!events) return;
       for (const event of events) emit(event);

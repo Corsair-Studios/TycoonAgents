@@ -216,6 +216,8 @@ export interface PlanPhase {
   goal: string;
   gate: 'pending' | 'approved';
   taskIds: string[];
+  /** ISO timestamp set when the gate transitions to "approved". */
+  approvedAt?: string;
 }
 
 export interface ProjectPlan {

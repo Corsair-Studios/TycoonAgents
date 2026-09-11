@@ -6,6 +6,7 @@
 
 import type { NormalizedEvent, ActivityKind } from "../../core/events";
 import type { HookRecord } from "./hookRecord";
+import { DEFAULT_PROVIDER_ID } from "../../core/mappingRegistry";
 
 const SPAWN_TOOLS = new Set<string>(["Task", "Agent", "Skill"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -51,6 +52,22 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
   // counts (see panel.ts's Delegation Health panel).
   if (record.workerId !== undefined && UUID_RE.test(record.workerId)) return [];
   const workerId = record.workerId ?? "orchestrator";
+  // (p22-t1) provider/sessionId identity, stamped onto every event this
+  // record produces below (via the `.map` at the end of this function).
+  // `provider` mirrors mappingRegistry.resolveProviderId's own fallback
+  // (DEFAULT_PROVIDER_ID = "claude-code") so a legacy record with no
+  // `provider` field is tagged identically to how the registry already
+  // dispatches it. `sessionId` defaults to "" (documented choice: an empty
+  // string, never "unknown", so callers can treat presence/absence with a
+  // simple truthiness check) when the record carries none — legacy hook
+  // versions predating HookRecord.sessionId.
+  const providerId = record.provider ?? DEFAULT_PROVIDER_ID;
+  const sessionId = record.sessionId ?? "";
+  const events = mapHookRecordUntagged(record, workerId);
+  return events.map((e) => ({ ...e, provider: providerId, sessionId }));
+}
+
+function mapHookRecordUntagged(record: HookRecord, workerId: string): NormalizedEvent[] {
   switch (record.event) {
     case "UserPromptSubmit":
       return [{ type: "SessionStart", at: record.at }];
@@ -65,6 +82,28 @@ export function mapHookRecord(record: HookRecord): NormalizedEvent[] {
           ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
         },
       ];
+    case "ProviderError": {
+      // p22-t5 fix round: codex's vendor gate (hooks/codexRouting.cjs's
+      // resolveCodexSpecialist) writes {event:"ProviderError", reason:
+      // "specialist-unavailable", workerId, model, vendor} to activity.jsonl
+      // when a resolved specialist cannot run under the current provider —
+      // never substituted for another model. message prefers an explicit
+      // record.message, else is derived from reason/workerId/model so the
+      // panel always has something readable even from a minimal record.
+      const message =
+        record.message ??
+        (record.reason
+          ? `${record.reason}${record.workerId ? `: ${record.workerId}` : ""}${record.model ? ` (${record.model})` : ""}`
+          : "provider error");
+      return [
+        {
+          type: "ProviderError",
+          at: record.at,
+          message,
+          ...(record.workerId !== undefined ? { workerId: record.workerId } : {}),
+        },
+      ];
+    }
     case "SubagentStop":
       // ORDER MATTERS: TaskCompleted first so task count increments before the
       // worker goes idle; WorkerStopped last so the idle timer is finalized.

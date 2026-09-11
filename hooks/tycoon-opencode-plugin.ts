@@ -77,9 +77,11 @@ interface FallbackChainModule {
   isProviderFailure: (text: string | undefined | null) => boolean;
   resolveNextFallback: (input: {
     slotId: string;
-    chain: { model?: string; vendor?: string }[];
+    chain: { model?: string; vendor?: string; transport?: string }[];
     attemptsSoFar: number;
-  }) => { slot: { model?: string; vendor?: string } | null; index: number; exhausted: boolean };
+    defaultFallback?: { model?: string; vendor?: string; transport?: string };
+    failingSlot?: { model?: string; vendor?: string; transport?: string };
+  }) => { slot: { model?: string; vendor?: string; transport?: string } | null; index: number; exhausted: boolean };
   buildFallbackInstruction: (input: {
     workerId: string;
     failedProvider?: string;
@@ -107,6 +109,43 @@ interface FallbackChainModule {
     endSession: (sessionId: string) => void;
   };
 }
+
+// Plan p29-t3: shared reader for <tycoonDir>/gate-events.jsonl (see
+// hooks/gateEvents.cjs, ported from hooks/tycoon-claude-hook.cjs's own
+// readUnseenGateEvents/sanitizeGateText/formatGateEventLine). Loaded the
+// same lazy/fail-open way as fallbackChain.js below — its absence just means
+// no gate events are surfaced this run, never a crash.
+interface GateEventsModule {
+  readUnseenGateEvents: (tycoonDir: string, cursorFileName?: string) => Record<string, unknown>[];
+  formatGateEventLines: (events: Record<string, unknown>[]) => string;
+}
+
+let gateEventsModule: GateEventsModule | null | undefined; // undefined = not attempted
+
+function getGateEventsModule(): GateEventsModule | null {
+  if (gateEventsModule === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      gateEventsModule = require(path.join(__dirname, "gateEvents.cjs")) as GateEventsModule;
+    } catch {
+      gateEventsModule = null;
+      try {
+        process.stderr.write(
+          "[tycoon-opencode-plugin] gateEvents.cjs not available next to the plugin — plan gate updates are not surfaced to the model.\n"
+        );
+      } catch {
+        /* never let a warning break the plugin */
+      }
+    }
+  }
+  return gateEventsModule;
+}
+
+// OpenCode's own cursor file, distinct from the Claude hook's
+// "gate-events.cursor" and the Codex dispatcher's "gate-events.codex.cursor"
+// so none of the three harnesses consume another's events from the shared
+// gate-events.jsonl file.
+const OPENCODE_GATE_CURSOR_FILE = "gate-events.opencode.cursor";
 
 let fallbackChainModule: FallbackChainModule | null | undefined; // undefined = not attempted
 
@@ -145,6 +184,19 @@ function readFallbackChainForAgent(directory: string, agentId: string): { model?
   const entry = generated?.agents?.[agentId];
   if (!entry || !Array.isArray(entry.fallback)) return [];
   return entry.fallback.map((model) => ({ model }));
+}
+
+// p25-t3: routing.json's top-level `defaultFallback`, when the generator
+// has written it through to the generated config (absent today — see
+// scripts/generate-opencode-config.mjs; reading it here is forward-looking
+// and a no-op — undefined, same as before — until that field exists).
+function readDefaultFallback(
+  directory: string
+): { model?: string; vendor?: string; transport?: string } | undefined {
+  const generated = readJsonSafe<{ defaultFallback?: { model?: string; vendor?: string; transport?: string } }>(
+    path.join(directory, ".opencode", "tycoon-routing.generated.json")
+  );
+  return generated?.defaultFallback;
 }
 
 let delegationEnforcementModule: DelegationEnforcementModule | null | undefined; // undefined = not attempted
@@ -1139,11 +1191,17 @@ export function createPlugin(deps: PluginDeps) {
     if (!fallbackChain || !fallbackState || workerId === "unknown" || !rootSessionId) return;
     if (!fallbackChain.isProviderFailure(errorText)) return;
     const chain = readFallbackChainForAgent(directory, workerId);
+    const defaultFallback = readDefaultFallback(directory);
     const failureRecord = fallbackState.recordFailure(rootSessionId, workerId, chain, model, errorText.slice(0, 300));
+    // Chain entries here only ever carry `model` (full "provider/model"
+    // string, vendor left undefined) — mirror that shape for the
+    // self-loop comparison so it actually matches a same-model entry.
     const result = fallbackChain.resolveNextFallback({
       slotId: workerId,
       chain,
       attemptsSoFar: failureRecord.attemptsSoFar - 1,
+      defaultFallback,
+      failingSlot: { model },
     });
     const instruction = fallbackChain.buildFallbackInstruction({
       workerId,
@@ -1420,10 +1478,29 @@ export function createPlugin(deps: PluginDeps) {
     ) => {
       try {
         const nudges = drainNudges(input?.sessionID);
-        if (nudges.length === 0) return;
-        if (!Array.isArray(output?.system)) return;
-        for (const message of nudges) {
-          output.system.push(`[TycoonAgents delegation nudge] ${message}`);
+        if (nudges.length > 0 && Array.isArray(output?.system)) {
+          for (const message of nudges) {
+            output.system.push(`[TycoonAgents delegation nudge] ${message}`);
+          }
+        }
+      } catch (err) {
+        writePluginError(activityFile, now(), err);
+      }
+      // Plan p29-t3: surface unseen plan-gate events the same way the Claude
+      // hook does via additionalContext — only into the orchestrator's own
+      // (root) session, so a worker session's turn doesn't also re-surface
+      // them; the shared gate-events.jsonl cursor already guarantees each
+      // event is delivered at most once across calls regardless. Fail open:
+      // a missing module, missing tycoonDir, or malformed output.system is a
+      // no-op, never a thrown error.
+      try {
+        if (input?.sessionID && !isOpenCodeChildSession(input.sessionID) && Array.isArray(output?.system)) {
+          const mod = getGateEventsModule();
+          if (mod) {
+            const unseenGateEvents = mod.readUnseenGateEvents(tycoonDir, OPENCODE_GATE_CURSOR_FILE);
+            const gateLines = mod.formatGateEventLines(unseenGateEvents);
+            if (gateLines) output.system.push(gateLines);
+          }
         }
       } catch (err) {
         writePluginError(activityFile, now(), err);

@@ -9,6 +9,7 @@ import type { EventSink } from "../../core/events";
 import type { HookRecord } from "./hookRecord";
 import { mapHookRecord } from "./mapHookRecord";
 import { ActivityFileTailer } from "../shared/activityTail";
+import { DEFAULT_PROVIDER_ID } from "../../core/mappingRegistry";
 
 export interface ClaudeCodeProviderOptions {
   /** Path to the JSONL activity file the hook script appends to. */
@@ -54,6 +55,20 @@ export class ClaudeCodeProvider implements Provider {
       } catch {
         return;
       }
+      // Two providers can tail the same physical activity.jsonl. Without
+      // this check, every line -- including ones written by a DIFFERENT
+      // provider's hook -- got dispatched through mapHookRecord and
+      // re-emitted here too, so a concurrent claude-code+opencode (or
+      // claude-code+codex) run double counted every record. Only handle
+      // lines whose own `provider` field (defaulting to
+      // DEFAULT_PROVIDER_ID when absent, matching mappingRegistry's
+      // resolution) names this provider. Untagged legacy lines still map
+      // as claude-code since DEFAULT_PROVIDER_ID === "claude-code".
+      const recordProviderId =
+        record && typeof record === "object" && typeof (record as { provider?: unknown }).provider === "string"
+          ? (record as { provider: string }).provider
+          : DEFAULT_PROVIDER_ID;
+      if (recordProviderId !== this.id) return;
       for (const event of mapHookRecord(record)) emit(event);
     });
   }

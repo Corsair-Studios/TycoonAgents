@@ -12,6 +12,7 @@
 import type { Provider } from "../../core/provider";
 import { ClaudeCodeProvider } from "../../providers/claude-code";
 import { OpenCodeProvider } from "../../providers/opencode";
+import { CodexProvider } from "../../providers/codex";
 import type { ProviderId } from "../../core/providerSelection";
 // Importing claude-code and opencode above already registers both mappers
 // as a module-load side effect; registerAllMappers.ts is the canonical
@@ -28,6 +29,8 @@ export function createProvider(id: ProviderId, activityFile: string): Provider {
       return new ClaudeCodeProvider({ activityFile });
     case "opencode":
       return new OpenCodeProvider(activityFile);
+    case "codex":
+      return new CodexProvider({ activityFile });
     default: {
       const exhaustive: never = id;
       throw new Error(`TycoonAgents: unknown provider id "${String(exhaustive)}".`);

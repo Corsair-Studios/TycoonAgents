@@ -4,11 +4,16 @@
  * Attribution header - optional; end users may remove it.
  */
 
-export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop";
+export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError";
 
 /** One JSON line the hook script appends to the activity IPC file. Our contract, not Claude's raw schema. */
 export interface HookRecord {
   event: ClaudeHookEventName;
+  provider?: string;         // (p22-t1) harness id, e.g. "claude-code" | "opencode". Absent on
+                              // records from hook versions predating multi-provider support —
+                              // mapHookRecord defaults it to mappingRegistry's DEFAULT_PROVIDER_ID
+                              // ("claude-code") in that case, matching mappingRegistry.resolveProviderId's
+                              // own fallback so a legacy record's provider tag is never ambiguous.
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
@@ -46,5 +51,10 @@ export interface HookRecord {
   reportChars?: number;      // SubagentStop only: the ORIGINAL (pre-truncation) character length of the
                               // extracted report text, so a genuinely short report can be distinguished
                               // from one truncated to fit the 600-char cap. Present iff `report` is.
+  reason?: string;           // ProviderError only: short machine reason code, e.g. "specialist-unavailable"
+                              // (hooks/codexRouting.cjs's resolveCodexSpecialist vendor gate). Combined with
+                              // `workerId`/`model` by mapHookRecord into the NormalizedEvent's `message`.
+  message?: string;          // ProviderError only: free-form message, used verbatim as the NormalizedEvent's
+                              // `message` when present, else derived from `reason`/workerId/model.
   at: number;                // epoch ms
 }

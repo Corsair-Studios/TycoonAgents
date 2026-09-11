@@ -29,6 +29,7 @@ import { join } from "node:path";
 const PLUGIN_SRC_PATH = join(process.cwd(), "hooks", "tycoon-opencode-plugin.ts");
 const AGENT_BACKEND_JS_PATH = join(process.cwd(), "out", "src", "core", "agentBackend.js");
 const MODEL_ALIASES_JS_PATH = join(process.cwd(), "out", "src", "core", "modelAliases.js");
+const GATE_EVENTS_JS_PATH = join(process.cwd(), "hooks", "gateEvents.cjs");
 
 interface ActivityRecord {
   event: string;
@@ -491,4 +492,58 @@ test("every activity line carries provider:'opencode' and a numeric at", async (
     assert.equal(r.provider, "opencode");
     assert.equal(typeof r.at, "number");
   }
+});
+
+// ---------------------------------------------------------------------------
+// Plan p29-t3: unseen plan-gate events surfaced via experimental.chat.system.transform
+// ---------------------------------------------------------------------------
+
+test("chatSystemTransform injects an unseen gate event into the root session's system prompt once, then not again", async () => {
+  const { mod, moduleDir } = requireFreshPlugin();
+  copyFileSync(GATE_EVENTS_JS_PATH, join(moduleDir, "gateEvents.cjs"));
+
+  const directory = setupDirectory();
+  const tycoonDir = join(directory, ".claude", "tycoon");
+  mkdirSync(tycoonDir, { recursive: true });
+  writeFileSync(
+    join(tycoonDir, "gate-events.jsonl"),
+    JSON.stringify({ gate: "approved", phaseNum: 6, name: "Launch", ts: "2026-09-11T02:00:00Z", source: "user" }) + "\n",
+    "utf8"
+  );
+
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+
+  // Mark ses_root as a known root session (no parentID) by pushing session.created.
+  await plugin.dispatchEvent({ type: "session.created", properties: { info: { id: "ses_root" } } });
+
+  const output: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "ses_root" }, output);
+  assert.equal(output.system.length, 1);
+  assert.match(output.system[0], /^Plan gate update: phase 6 Launch approved at 2026-09-11T02:00:00Z \(user\)\.$/);
+
+  const output2: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "ses_root" }, output2);
+  assert.equal(output2.system.length, 0);
+});
+
+test("chatSystemTransform does not inject gate events into a child (worker) session", async () => {
+  const { mod, moduleDir } = requireFreshPlugin();
+  copyFileSync(GATE_EVENTS_JS_PATH, join(moduleDir, "gateEvents.cjs"));
+
+  const directory = setupDirectory();
+  const tycoonDir = join(directory, ".claude", "tycoon");
+  mkdirSync(tycoonDir, { recursive: true });
+  writeFileSync(
+    join(tycoonDir, "gate-events.jsonl"),
+    JSON.stringify({ gate: "approved", phaseNum: 7, name: "Sync", ts: "2026-09-11T03:00:00Z", source: "user" }) + "\n",
+    "utf8"
+  );
+
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+  await plugin.dispatchEvent({ type: "session.created", properties: { info: { id: "ses_root" } } });
+  await plugin.dispatchEvent({ type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_root" } } });
+
+  const output: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "ses_child" }, output);
+  assert.equal(output.system.length, 0);
 });

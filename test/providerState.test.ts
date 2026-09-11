@@ -203,9 +203,11 @@ test("ProviderError for a workerId sets status error", () => {
   const state = fold([
     { event: "UserPromptSubmit", at: T },
     { event: "PreToolUse", tool: "Task", workerId: "w-err", at: T + 100 },
-    // ProviderError has no mapHookRecord mapping; apply directly via applyEvent
   ]);
-  // Apply the ProviderError event directly since mapHookRecord doesn't emit it from a HookRecord
+  // (p22-t5) mapHookRecord DOES map a HookRecord with event:"ProviderError" now
+  // (see src/providers/claude-code/mapHookRecord.ts) — this test predates that
+  // and just applies the NormalizedEvent directly via applyEvent, which is still
+  // valid and kept as-is (see codexHook.test.ts for the HookRecord-through-tryMapRecord path).
   const errState = applyEvent(state, { type: "ProviderError", at: T + 500, workerId: "w-err", message: "oops" });
   const metric = errState.agentMetrics.find((m) => m.id === "w-err");
   assert.ok(metric);
@@ -331,6 +333,31 @@ test("WorkerSpawned without parentId/tier leaves those fields undefined (flat / 
   assert.ok(metric);
   assert.equal(metric!.parentId, undefined);
   assert.equal(metric!.tier, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// vendor/costModelClass/fallbackOf/fallbackDepth propagation (p24-t1: the
+// roster/agent-metrics payload that reaches both host webviews must carry
+// these four fields so the webview's agentAccent() helper can decide
+// fallback/foreign/native accents).
+// ---------------------------------------------------------------------------
+
+test("WorkerSpawned with vendor/costModelClass/fallbackOf/fallbackDepth populates those fields on AgentMetric", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "codex-reviewer",
+    vendor: "openai",
+    costModelClass: "subscription",
+    fallbackOf: "coding-specialist",
+    fallbackDepth: 1,
+  });
+  const metric = state.agentMetrics.find((m) => m.id === "codex-reviewer");
+  assert.ok(metric, "metric should exist for codex-reviewer");
+  assert.equal(metric!.vendor, "openai");
+  assert.equal(metric!.costModelClass, "subscription");
+  assert.equal(metric!.fallbackOf, "coding-specialist");
+  assert.equal(metric!.fallbackDepth, 1);
 });
 
 test("Lead spawn (tier: lead) followed by worker spawn (parentId: lead) both populate AgentMetric", () => {

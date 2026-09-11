@@ -20,7 +20,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export const PROVIDER_IDS = ["claude-code", "opencode"] as const;
+export const PROVIDER_IDS = ["claude-code", "opencode", "codex"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 function isProviderId(value: unknown): value is ProviderId {

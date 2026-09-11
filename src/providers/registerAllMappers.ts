@@ -22,6 +22,7 @@
 
 import "./claude-code";
 import "./opencode";
+import "./codex";
 
 /** No-op function; importing this module is what registers the mappers.
  * Call it anyway (rather than only relying on the bare import) so a bundler

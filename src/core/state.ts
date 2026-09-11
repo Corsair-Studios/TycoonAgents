@@ -36,6 +36,20 @@ export interface Worker {
   id: WorkerId;
   role?: string;
   state: WorkerState;
+  /**
+   * Provider that owns this canvas entry (p22-t8 gap fix). `state.workers`
+   * is still keyed by bare workerId because media/main.js and other host
+   * consumers index it directly as `state.workers[agent.id]` (bare id, not
+   * a composite key) -- see 110-hud-canvas-draw.js, 120-agent-dance-*.js,
+   * media/main.js's `state.workers[agent.id]` reads. Every WorkerActivity /
+   * TaskCompleted / WorkerStopped mutation must check this field against the
+   * event's resolved provider before touching the entry, so a second
+   * provider's worker reusing the same bare id can never flip a live
+   * sprite's state (arrive/build/celebrate/leave) that actually belongs to a
+   * different provider's run. Undefined only for legacy/never-provider-set
+   * entries; treated the same as "claude-code".
+   */
+  provider?: string;
 }
 
 /** Per-agent activity metrics, aggregated from the normalized event stream. */
@@ -154,8 +168,44 @@ export interface AgentMetric {
   lastReportChars?: number;
 }
 
-/** Internal tracking record (kept as an alias now that workStartAt is public). */
-type AgentMetricInternal = AgentMetric;
+/**
+ * Internal tracking record. Extends the public AgentMetric with a composite
+ * roster key so two live harnesses that reuse the same bare workerId (e.g.
+ * two "coding-specialist" runs from different providers/sessions) get
+ * independent roster entries instead of overwriting each other (p22-t8).
+ * `_rosterKey` is stripped before the metric is exposed publicly — see
+ * toPublicMetrics — so `id` stays the bare workerId the UI already expects.
+ */
+interface AgentMetricInternal extends AgentMetric {
+  _rosterKey: string;
+}
+
+/**
+ * Composite roster key: (provider, workerId). Missing provider defaults to
+ * "claude-code" so every existing single-provider record hashes to the same
+ * key it always has, keeping single-provider roster output identical to
+ * before.
+ *
+ * `sessionId` is intentionally NOT part of this key even though it rides
+ * along on every NormalizedEvent (p22-t1). computeStateFromRecords's
+ * cumulative "since last reset" replay (filterSessionId undefined) folds
+ * records from many historical sessionIds into ONE roster entry per
+ * workerId by design (see state.test.ts's "filterSessionId undefined"
+ * suite) -- keying on sessionId would fragment that rollup every time a new
+ * Claude Code session starts, which is not the bug this task fixes. The bug
+ * is two DIFFERENT PROVIDERS (e.g. claude-code and an OpenCode-backed
+ * harness) dispatching a worker under the same bare id and clobbering each
+ * other's roster entry; provider alone distinguishes that case while
+ * leaving same-provider, multi-session accumulation untouched.
+ */
+function rosterKey(workerId: string, provider?: string): string {
+  return `${provider ?? "claude-code"}::${workerId}`;
+}
+
+/** Normalize a possibly-undefined event provider to its default (p22-t8). */
+function resolveProvider(provider?: string): string {
+  return provider ?? "claude-code";
+}
 
 export interface MetricsWorldState {
   sessionActive: boolean;
@@ -217,27 +267,42 @@ const ACTIVITY_TO_STATE: Record<string, WorkerState> = {
 // AgentMetric helpers (pure, no side-effects)
 // ---------------------------------------------------------------------------
 
-/** Find the internal metric for a workerId, or undefined. */
+/** Find the internal metric for a (provider, workerId) pair, or undefined. */
 function findMetric(
   internals: AgentMetricInternal[],
   workerId: string,
+  provider?: string,
 ): AgentMetricInternal | undefined {
-  return internals.find((m) => m.id === workerId);
+  const key = rosterKey(workerId, provider);
+  return internals.find((m) => m._rosterKey === key);
 }
 
-/** Return a new internals array with the metric for workerId replaced/inserted. */
+/**
+ * Return a new internals array with the metric for (provider, workerId)
+ * replaced/inserted. `id` on the resulting metric is always the bare
+ * workerId (never the composite key) so display names, metrics ids shown to
+ * the UI, and single-provider behaviour stay identical to before.
+ *
+ * Accepts (and ignores, for keying purposes) an optional `sessionId` -- call
+ * sites pass `event.sessionId` through for future use and readability, but
+ * it does not participate in `rosterKey`; see rosterKey's doc comment.
+ */
 function upsertMetric(
   internals: AgentMetricInternal[],
   workerId: string,
   updater: (m: AgentMetricInternal) => AgentMetricInternal,
+  provider?: string,
+  _sessionId?: string,
 ): AgentMetricInternal[] {
-  const existing = findMetric(internals, workerId);
+  const key = rosterKey(workerId, provider);
+  const existing = findMetric(internals, workerId, provider);
   if (existing) {
-    return internals.map((m) => (m.id === workerId ? updater(m) : m));
+    return internals.map((m) => (m._rosterKey === key ? updater(m) : m));
   }
   // Create a fresh metric entry then apply the updater.
   const fresh: AgentMetricInternal = {
     id: workerId,
+    _rosterKey: key,
     name: toDisplayName(workerId),
     model: undefined,
     vendor: undefined,
@@ -270,7 +335,7 @@ function upsertMetric(
 
 /** Produce the public AgentMetric list (workStartAt is now part of the public shape). */
 function toPublicMetrics(internals: AgentMetricInternal[]): AgentMetric[] {
-  return internals.map((m) => ({ ...m }));
+  return internals.map(({ _rosterKey, ...rest }) => ({ ...rest }));
 }
 
 /** Compute how many ms have elapsed since workStartAt (0 if not active). */
@@ -325,6 +390,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           workStartAt: event.at,
           lastActivityAt: event.at,
         }),
+        event.provider,
+        event.sessionId,
       );
       // Sweep: clear any non-orchestrator agents that were left active by a prior
       // dead turn. Do NOT credit activeMs — the workStartAt is from a prior turn
@@ -389,6 +456,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
             cacheReadModelBreakdown: nextCacheReadBreakdown,
           };
         },
+        event.provider,
+        event.sessionId,
       );
       // Sweep: finalize any non-orchestrator agents that are still active due to
       // a missed SubagentStop (e.g. process died before the hook fired).
@@ -422,6 +491,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           model: event.model ?? m.model,
           description: event.description ?? m.description,
         }),
+        event.provider,
+        event.sessionId,
       );
       return {
         ...state,
@@ -431,9 +502,23 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
     }
 
     case "WorkerSpawned": {
+      // state.workers is keyed by bare workerId because host consumers (e.g.
+      // media/main.js's `state.workers[agent.id]`) index it directly by the
+      // bare id, not a composite key (p22-t8). If a different provider
+      // reuses the same bare workerId while an existing entry from another
+      // provider is still live, do NOT clobber that entry -- park the new
+      // one under a composite key instead so it exists for bookkeeping but
+      // can never be looked up (and thus never rendered/mutated) via the
+      // bare id path.
+      const spawnProvider = resolveProvider(event.provider);
+      const existingSpawnWorker = state.workers[event.workerId];
+      const spawnWorkerKey =
+        !existingSpawnWorker || resolveProvider(existingSpawnWorker.provider) === spawnProvider
+          ? event.workerId
+          : rosterKey(event.workerId, spawnProvider);
       const nextWorkers = {
         ...state.workers,
-        [event.workerId]: { id: event.workerId, role: event.role, state: "arrive" as WorkerState },
+        [spawnWorkerKey]: { id: event.workerId, role: event.role, state: "arrive" as WorkerState, provider: spawnProvider },
       };
       // Ensure a metric entry exists for this agent and mark it active.
       const afterChild = upsertMetric(
@@ -457,20 +542,28 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
         }),
+        event.provider,
+        event.sessionId,
       );
       const isRealDelegation = event.role === "Task" || event.role === "Agent";
       const nextInternals = isRealDelegation
-        ? upsertMetric(afterChild, ORCHESTRATOR_ID, (m) => ({
-            ...m,
-            delegations: m.delegations + 1,
-            // Keep the orchestrator "alive" when it delegates. This liveness
-            // previously rode on a spawn-time TaskCompleted for the
-            // orchestrator, which was removed to stop double-counting tasks
-            // (see mapHookRecord's Task/Agent branch).
-            status: "active" as const,
-            workStartAt: m.workStartAt ?? event.at,
-            lastActivityAt: event.at,
-          }))
+        ? upsertMetric(
+            afterChild,
+            ORCHESTRATOR_ID,
+            (m) => ({
+              ...m,
+              delegations: m.delegations + 1,
+              // Keep the orchestrator "alive" when it delegates. This liveness
+              // previously rode on a spawn-time TaskCompleted for the
+              // orchestrator, which was removed to stop double-counting tasks
+              // (see mapHookRecord's Task/Agent branch).
+              status: "active" as const,
+              workStartAt: m.workStartAt ?? event.at,
+              lastActivityAt: event.at,
+            }),
+            event.provider,
+            event.sessionId,
+          )
         : afterChild;
       return {
         ...state,
@@ -483,13 +576,20 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
     case "WorkerActivity": {
       // Update the worker's canvas state only if it exists, but ALWAYS update the
       // metric — seeded agents (and the orchestrator) have metrics with no worker.
+      // Only mutate the canvas entry when it belongs to this event's
+      // provider -- otherwise a different provider's worker sharing the
+      // same bare workerId would flip a live sprite that isn't theirs
+      // (p22-t8 gap fix). agentMetrics rows (below) are already correctly
+      // separated by rosterKey; this guard does the same for state.workers.
+      const activityProvider = resolveProvider(event.provider);
       const worker = state.workers[event.workerId];
-      const nextWorkers = worker
-        ? {
-            ...state.workers,
-            [event.workerId]: { ...worker, state: ACTIVITY_TO_STATE[event.kind] ?? "build" },
-          }
-        : state.workers;
+      const nextWorkers =
+        worker && resolveProvider(worker.provider) === activityProvider
+          ? {
+              ...state.workers,
+              [event.workerId]: { ...worker, state: ACTIVITY_TO_STATE[event.kind] ?? "build" },
+            }
+          : state.workers;
       // Update metrics: increment mcpCount for wire activity; keep/start active timer.
       const isMcp = event.kind === "wire";
       // For survey activity, split the genuinely-forbidden Grep/Glob (the delegation
@@ -513,6 +613,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
         }),
+        event.provider,
+        event.sessionId,
       );
       return {
         ...state,
@@ -524,10 +626,13 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
 
     case "TaskCompleted": {
       // Canvas worker is optional; the metric always updates.
+      // Same provider guard as WorkerActivity (p22-t8 gap fix).
+      const completeProvider = resolveProvider(event.provider);
       const worker = state.workers[event.workerId];
-      const nextWorkers = worker
-        ? { ...state.workers, [event.workerId]: { ...worker, state: "celebrate" as WorkerState } }
-        : state.workers;
+      const nextWorkers =
+        worker && resolveProvider(worker.provider) === completeProvider
+          ? { ...state.workers, [event.workerId]: { ...worker, state: "celebrate" as WorkerState } }
+          : state.workers;
       // Increment taskCount; stay active (worker may do more after a task completes).
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
@@ -539,6 +644,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
         }),
+        event.provider,
+        event.sessionId,
       );
       return {
         ...state,
@@ -551,10 +658,15 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
 
     case "WorkerStopped": {
       // Canvas worker is optional; the metric (tokens, activeMs) always finalizes.
+      // Same provider guard as WorkerActivity (p22-t8 gap fix): a
+      // WorkerStopped from provider B must never flip provider A's live
+      // sprite to "leave".
+      const stopProvider = resolveProvider(event.provider);
       const worker = state.workers[event.workerId];
-      const nextWorkers = worker
-        ? { ...state.workers, [event.workerId]: { ...worker, state: "leave" as WorkerState } }
-        : state.workers;
+      const nextWorkers =
+        worker && resolveProvider(worker.provider) === stopProvider
+          ? { ...state.workers, [event.workerId]: { ...worker, state: "leave" as WorkerState } }
+          : state.workers;
       // Finalize activeMs: add elapsed since workStartAt, then clear the timer.
       // Accumulate tokens when the event carries a count.
       const nextInternals = upsertMetric(
@@ -574,6 +686,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           lastReport: event.report !== undefined ? event.report : m.lastReport,
           lastReportChars: event.report !== undefined ? event.reportChars : m.lastReportChars,
         }),
+        event.provider,
+        event.sessionId,
       );
       return {
         ...state,
@@ -597,6 +711,8 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
           workStartAt: null,
         }),
+        event.provider,
+        event.sessionId,
       );
       return {
         ...state,
