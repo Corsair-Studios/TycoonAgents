@@ -27,7 +27,26 @@ import { join } from "node:path";
 const REPO_ROOT = process.cwd();
 const REAL_HOOK_PATH = join(REPO_ROOT, "hooks", "tycoon-claude-hook.cjs");
 const FIXTURE_PATH = join(REPO_ROOT, "test", "fixtures", "codex-offload-before.jsonl");
-const CODEX_REVIEWER_MD = join(REPO_ROOT, ".claude", "agents", "codex-reviewer.md");
+
+// .claude/ is blanket-gitignored (.gitignore:45), so .claude/agents/codex-reviewer.md
+// is a local-only file, absent on a clean clone/CI checkout. Inline a fixture
+// mirroring its real frontmatter shape (backend.vendor openai, transport mcp,
+// mcpServer codex, tools [codex, codex-reply], backend.model openai/gpt-5,
+// costModelClass subscription) instead of copying the real file.
+const FIXTURE_CODEX_REVIEWER_MD = `---
+model: openai/gpt-5
+disallowedTools: Agent
+backend:
+  vendor: openai
+  transport: mcp
+  mcpServer: codex
+  tools: [codex, codex-reply]
+  model: openai/gpt-5
+  costModelClass: subscription
+---
+
+# Codex Reviewer (test fixture)
+`;
 
 interface ActivityRecord {
   event: string;
@@ -49,11 +68,10 @@ function readFixtureRecord(): ActivityRecord {
   return JSON.parse(raw.split("\n")[0]) as ActivityRecord;
 }
 
-/** Reads backend.model out of codex-reviewer.md's frontmatter directly, so this suite tracks whatever model the agent file currently declares (gpt-5 today, Astra when flipped back) instead of hardcoding either id. */
+/** Reads backend.model out of the fixture codex-reviewer.md frontmatter, so the assertion tracks the fixture's own declared model rather than hardcoding it. */
 function readCodexReviewerBackendModel(): string {
-  const raw = readFileSync(CODEX_REVIEWER_MD, "utf8");
-  const match = /^backend:[\s\S]*?^\s*model:\s*(\S+)\s*$/m.exec(raw);
-  if (!match) throw new Error(`could not find backend.model in ${CODEX_REVIEWER_MD} frontmatter`);
+  const match = /^backend:[\s\S]*?^\s*model:\s*(\S+)\s*$/m.exec(FIXTURE_CODEX_REVIEWER_MD);
+  if (!match) throw new Error(`could not find backend.model in fixture codex-reviewer.md frontmatter`);
   return match[1];
 }
 
@@ -157,7 +175,7 @@ test("(b) with agentBackend.js present and the real codex-reviewer.md, a mcp__co
   const fixture = readFixtureRecord();
   const { root, hookPath } = setupProject({ withModule: true });
   try {
-    copyFileSync(CODEX_REVIEWER_MD, join(root, ".claude", "agents", "codex-reviewer.md"));
+    writeFileSync(join(root, ".claude", "agents", "codex-reviewer.md"), FIXTURE_CODEX_REVIEWER_MD, "utf8");
     runHook(hookPath, root, {
       hook_event_name: "PreToolUse",
       tool_name: "mcp__codex__codex",
@@ -260,7 +278,7 @@ test("(e) without agentBackend.js but with codex-reviewer.md present, the legacy
   const { root, hookPath } = setupProject({ withModule: false });
   try {
     mkdirSync(join(root, ".claude", "agents"), { recursive: true });
-    copyFileSync(CODEX_REVIEWER_MD, join(root, ".claude", "agents", "codex-reviewer.md"));
+    writeFileSync(join(root, ".claude", "agents", "codex-reviewer.md"), FIXTURE_CODEX_REVIEWER_MD, "utf8");
     runHook(hookPath, root, {
       hook_event_name: "PreToolUse",
       tool_name: "mcp__codex__codex",

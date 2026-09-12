@@ -21,8 +21,19 @@ const dispatcherAdapters = require("../../hooks/dispatcherAdapters.cjs") as {
   missingVendorEnvMessage: (name: string) => string;
   openaiCompatibleAdapter: (task: string, agentInfo: unknown) => Promise<{ text?: string; error?: string }>;
 };
+// hooks/localEnvStore.js is a build artifact copied by
+// scripts/copy-hook-runtime.mjs (npm run build), NOT produced by `npm test`
+// (tsc -p . only) — so it is absent on a clean clone/CI checkout. Its
+// content is identical to the tsc-compiled out/src/core/localEnvStore.js
+// (same source, src/core/localEnvStore.ts), which `npm test` always
+// produces, so fall back to that when the copied hook artifact is missing —
+// same resilience dispatcherAdapters.cjs's own localEnvStore() lookup uses.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const localEnvStore = require("../../hooks/localEnvStore.js") as {
+const localEnvStore = require(
+  fs.existsSync(path.join(__dirname, "..", "..", "hooks", "localEnvStore.js"))
+    ? "../../hooks/localEnvStore.js"
+    : "../../out/src/core/localEnvStore.js",
+) as {
   setValue: (name: string, value: string, opts?: { env?: Record<string, string | undefined> }) => void;
   clearValue: (name: string, opts?: { env?: Record<string, string | undefined> }) => void;
 };

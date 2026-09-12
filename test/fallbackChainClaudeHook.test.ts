@@ -13,11 +13,46 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const HOOK_PATH = join(process.cwd(), "hooks", "tycoon-claude-hook.cjs");
+const REPO_ROOT = process.cwd();
+const HOOK_PATH = join(REPO_ROOT, "hooks", "tycoon-claude-hook.cjs");
+
+// The PostToolUse mcp__ fallback path (~1944) attributes a failure via
+// buildMcpBackendRouting, which needs agentBackend.js/modelAliases.js next
+// to the hook (getAgentBackendModule, hooks/tycoon-claude-hook.cjs:254-270).
+// hooks/agentBackend.js is a build artifact (scripts/copy-hook-runtime.mjs,
+// `npm run build`), not produced by `npm test` (tsc -p . only), so it is
+// absent on a clean clone/CI checkout — the mcp__ lookup then misses and no
+// FallbackTriggered record is written. Run the "usage-limit failure" case
+// against a scratch copy of the hook with out/src/core/{agentBackend,
+// modelAliases}.js (always produced by tsc) copied next to it — same
+// technique as test/hookBackendRouting.test.ts's setupProject(withModule).
+function runHookWithBackendModule(projectRoot: string, payload: Record<string, unknown>): string {
+  const hookDir = mkdtempSync(join(tmpdir(), "tycoon-hook-fallback-copy-"));
+  const hookPath = join(hookDir, "tycoon-claude-hook.cjs");
+  copyFileSync(HOOK_PATH, hookPath);
+  copyFileSync(join(REPO_ROOT, "out", "src", "core", "agentBackend.js"), join(hookDir, "agentBackend.js"));
+  copyFileSync(join(REPO_ROOT, "out", "src", "core", "modelAliases.js"), join(hookDir, "modelAliases.js"));
+  // fallbackChain.js is tracked (unlike agentBackend/modelAliases) but the
+  // hook still resolves it next to itself (getFallbackChainModule,
+  // hooks/tycoon-claude-hook.cjs:291-294) — needed here too since the copy
+  // lives in its own scratch dir, not the real hooks/ directory.
+  copyFileSync(join(REPO_ROOT, "hooks", "fallbackChain.js"), join(hookDir, "fallbackChain.js"));
+  try {
+    const result = spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
+    });
+    assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
+    return result.stdout;
+  } finally {
+    rmSync(hookDir, { recursive: true, force: true });
+  }
+}
 
 function runHook(projectRoot: string, payload: Record<string, unknown>): { status: number | null; stdout: string } {
   const result = spawnSync(process.execPath, [HOOK_PATH], {
@@ -296,7 +331,7 @@ test("PostToolUse mcp__codex__* result with a usage-limit failure text emits a F
     "utf8",
   );
 
-  runHook(root, {
+  runHookWithBackendModule(root, {
     hook_event_name: "PostToolUse",
     tool_name: "mcp__codex__codex",
     tool_input: {},

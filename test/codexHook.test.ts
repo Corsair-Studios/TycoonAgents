@@ -99,6 +99,18 @@ const PARENT_THREAD_ID = "01a08436-0127-7e42-9ddd-3fa757a819ed";
 const CHILD_THREAD_ID = "01a08437-3da8-78e3-93c8-4a12d9bdd11d"; // Hegel / search_retrieval_1
 
 test("(c) notify for a child (subagent) thread with a matching rollout fixture: WorkerSpawned+WorkerStopped-shaped records, workerId/parentId/provider codex", () => {
+  // mapNotifyPayload resolves workerId via codexRouting.listKnownAgentIds(<CLAUDE_PROJECT_DIR>/.claude/agents),
+  // which without an override falls back to the real repo's .claude/agents —
+  // itself gitignored (.gitignore:45) and absent on a clean clone/CI
+  // checkout, so the agent_path "/root/search_retrieval_1" match against the
+  // roster silently misses and resolveWorkerId falls through to the literal
+  // "codex-agent" default. Point CLAUDE_PROJECT_DIR at an isolated fixture
+  // project containing only the one roster file this case needs.
+  const fixtureProjectDir = fsMod.mkdtempSync(join(os.tmpdir(), "codex-hook-roster-test-"));
+  fsMod.mkdirSync(join(fixtureProjectDir, ".claude", "agents"), { recursive: true });
+  fsMod.writeFileSync(join(fixtureProjectDir, ".claude", "agents", "search-retrieval.md"), "---\nmodel: haiku\n---\n# Search Retrieval\n");
+  const prevProjectDir = process.env.CLAUDE_PROJECT_DIR;
+  process.env.CLAUDE_PROJECT_DIR = fixtureProjectDir;
   const prevHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = ROLLOUT_CODEX_HOME;
   try {
@@ -131,6 +143,9 @@ test("(c) notify for a child (subagent) thread with a matching rollout fixture: 
   } finally {
     if (prevHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = prevHome;
+    if (prevProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = prevProjectDir;
+    fsMod.rmSync(fixtureProjectDir, { recursive: true, force: true });
   }
 });
 
