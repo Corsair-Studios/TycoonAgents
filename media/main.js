@@ -3158,6 +3158,11 @@ if (typeof module !== "undefined" && module.exports) {
     // every live "routing" repush while the modal stays open, see
     // handleRoutingPayload).
     routingExpandedAgents = {};
+    // p35-t1: a fresh open starts with no clipboard/undo/paste-note state
+    // from a prior session — same reasoning as routingExpandedAgents above.
+    routingSettingsClipboard = null;
+    routingPasteUndoByAgent = {};
+    routingPasteNoticeByAgent = {};
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
@@ -19160,9 +19165,82 @@ if (typeof module !== "undefined" && module.exports) {
    * buildUnifiedAgentCard so Remove always ends up below the keyword/slot/
    * fallback content regardless of which density/branch built it.
    */
+  // p35-t1: single-slot "clipboard" for Copy/Paste settings between agent
+  // cards — last Copy wins, held only in webview memory (no host message:
+  // this is pure UI state, nothing persisted). `slot` is a RoutingSlot-
+  // shaped snapshot built via cloneRoutingSlot (SLOT_SCALAR_FIELDS +
+  // fallback, 090-metrics-time-utils.js) so it can never carry id/name/
+  // keywords or anything else identifying the source card — those aren't
+  // part of the RoutingSlot shape at all.
+  var routingSettingsClipboard = null; // { sourceName: string, slot: object } | null
+  // Per-agent one-level undo: agent id -> the slot exactly as it was right
+  // before the most recent Paste onto that card. Cleared by Undo.
+  var routingPasteUndoByAgent = {};
+  // Per-agent "Pasted from <name>" note text, shown under that card's
+  // footer until Undo is clicked (or a fresh "routing" payload rebuilds
+  // the draft — see handleRoutingPayload).
+  var routingPasteNoticeByAgent = {};
+
   function appendCardRemoveFooter(card, a) {
     const footer = document.createElement("div");
     footer.className = "agent-remove-footer";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "link-button routing-copy-settings-link";
+    copyBtn.textContent = "Copy settings";
+    copyBtn.addEventListener("click", () => {
+      const slot = (routingDraft && routingDraft.agents && routingDraft.agents[a.id]) || {};
+      const snapshot = cloneRoutingSlot(slot);
+      routingSettingsClipboard = { sourceName: a.name || a.id, slot: snapshot };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(JSON.stringify(snapshot)).catch(() => {});
+      }
+      renderRoutingModal();
+    });
+    footer.appendChild(copyBtn);
+
+    const pasteBtn = document.createElement("button");
+    pasteBtn.type = "button";
+    pasteBtn.className = "link-button routing-paste-settings-link";
+    pasteBtn.textContent = "Paste settings";
+    const hasClipboard = !!(routingSettingsClipboard && routingSettingsClipboard.slot);
+    pasteBtn.disabled = !hasClipboard;
+    pasteBtn.title = hasClipboard ? "" : "Copy settings from another agent first";
+    pasteBtn.addEventListener("click", () => {
+      if (!routingSettingsClipboard || !routingSettingsClipboard.slot) return;
+      if (!routingDraft.agents) routingDraft.agents = {};
+      routingPasteUndoByAgent[a.id] = cloneRoutingSlot(routingDraft.agents[a.id] || {});
+      routingDraft.agents[a.id] = cloneRoutingSlot(routingSettingsClipboard.slot);
+      // Expand the card so the pasted fields (and any dispatchability
+      // warning they trigger) are immediately visible, matching what
+      // "Override for this agent" already does on a fresh edit.
+      routingExpandedAgents[a.id] = true;
+      routingPasteNoticeByAgent[a.id] = routingSettingsClipboard.sourceName;
+      renderRoutingModal();
+    });
+    footer.appendChild(pasteBtn);
+
+    if (routingPasteNoticeByAgent[a.id]) {
+      const note = document.createElement("p");
+      note.className = "routing-paste-note delegation-mode-footnote";
+      note.appendChild(document.createTextNode("Pasted from " + routingPasteNoticeByAgent[a.id] + " · "));
+      const undoBtn = document.createElement("button");
+      undoBtn.type = "button";
+      undoBtn.className = "routing-inline-link-btn routing-paste-undo-btn";
+      undoBtn.textContent = "Undo";
+      undoBtn.addEventListener("click", () => {
+        if (Object.prototype.hasOwnProperty.call(routingPasteUndoByAgent, a.id)) {
+          routingDraft.agents[a.id] = routingPasteUndoByAgent[a.id];
+          delete routingPasteUndoByAgent[a.id];
+        }
+        delete routingPasteNoticeByAgent[a.id];
+        renderRoutingModal();
+      });
+      note.appendChild(undoBtn);
+      footer.appendChild(note);
+    }
+
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "link-button agent-remove-link";

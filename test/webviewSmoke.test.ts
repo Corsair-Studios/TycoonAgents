@@ -5432,3 +5432,184 @@ test('p27-t3 round 2: an empty draft slot falls back to the resolved vendor/mode
     h.win.close();
   }
 });
+
+test('p35-t1: Copy/Paste settings reproduces routing fields on another card, keeps id/name/keywords untouched, supports Undo, and saves the pasted values', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [
+          { id: 'codex-reviewer', name: 'Codex Reviewer', keywords: 'codex|second-opinion', claudeTier: null },
+          { id: 'coding-specialist', name: 'Coding Specialist', keywords: 'implement|code|fix', claudeTier: null },
+        ],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const routingPayload = {
+      orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+      agents: [
+        {
+          id: 'codex-reviewer',
+          name: 'Codex Reviewer',
+          provenance: 'explicit',
+          handWrittenBackend: true,
+          keywords: 'codex|second-opinion',
+          backend: {
+            vendor: 'openai', transport: 'mcp', mcpServer: 'codex',
+            model: 'gpt-5', costModelClass: 'subscription',
+            apiKeyEnv: 'OPENAI_API_KEY',
+          },
+          source: 'file',
+        },
+        {
+          id: 'coding-specialist',
+          name: 'Coding Specialist',
+          provenance: 'frontmatter',
+          handWrittenBackend: false,
+          keywords: 'implement|code|fix',
+          backend: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'subscription' },
+          source: 'frontmatter',
+        },
+      ],
+      presets: { vendors: ['anthropic', 'openai'], models: [] },
+      errors: [],
+    };
+    h.dispatch({ type: 'routing', payload: routingPayload });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    // Paste is disabled before any Copy has happened, on every card.
+    let targetCard = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    let pasteBtn = targetCard.querySelector('.routing-paste-settings-link') as any;
+    assert.ok(pasteBtn, 'Paste settings button should render');
+    assert.equal(pasteBtn.disabled, true, 'Paste is disabled before any Copy');
+    assert.match(pasteBtn.title, /Copy settings from another agent first/);
+
+    // Give codex-reviewer's already-populated (handWrittenBackend, cloned
+    // from backend on first expand) slot a one-entry fallback chain and
+    // flip its default-fallback opt-out, via real UI controls, so Copy has
+    // more than the bare scalar fields to carry across.
+    let sourceCard = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    const addFallbackBtn = sourceCard.querySelector('.routing-add-fallback-btn') as any;
+    assert.ok(addFallbackBtn, 'Add fallback button should render on the expanded codex-reviewer card');
+    addFallbackBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    sourceCard = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    const fbVendorSel = sourceCard.querySelector('[data-field-key$=".fallback[0].vendor"]') as any;
+    assert.ok(fbVendorSel, 'fallback entry 0 vendor select should render');
+    fbVendorSel.value = 'anthropic';
+    fbVendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    sourceCard = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    const useDefaultCheckbox = sourceCard.querySelector('.routing-use-default-fallback-checkbox') as any;
+    assert.ok(useDefaultCheckbox, 'use-default-fallback checkbox should render');
+    useDefaultCheckbox.checked = false;
+    useDefaultCheckbox.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    sourceCard = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
+    const copyBtn = sourceCard.querySelector('.routing-copy-settings-link') as any;
+    assert.ok(copyBtn, 'Copy settings button should render');
+
+    const clipboardCalls: string[] = [];
+    (h.win.navigator as any).clipboard = {
+      writeText: (text: string) => { clipboardCalls.push(text); return Promise.resolve(); },
+    };
+    copyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    assert.equal(clipboardCalls.length, 1, 'navigator.clipboard.writeText should be called once (best-effort)');
+    const snapshot = JSON.parse(clipboardCalls[0]);
+    // No secret-looking value key anywhere in the snapshot except the env
+    // var NAME fields (credentialEnv/endpointEnv), which only ever hold a
+    // NAME, never a value.
+    for (const key of Object.keys(snapshot)) {
+      if (key === 'credentialEnv' || key === 'endpointEnv') continue;
+      assert.ok(!/key|token|secret/i.test(key), `snapshot key "${key}" looks secret-related`);
+    }
+    assert.equal(snapshot.vendor, 'openai');
+    assert.equal(snapshot.model, 'gpt-5');
+    assert.equal(snapshot.costModelClass, 'subscription');
+    assert.equal(snapshot.transport, 'mcp');
+    assert.equal(snapshot.mcpServer, 'codex');
+    assert.equal(snapshot.credentialEnv, 'OPENAI_API_KEY');
+    assert.equal(snapshot.useDefaultFallback, false);
+    assert.equal(snapshot.fallback.length, 1);
+    assert.equal(snapshot.fallback[0].vendor, 'anthropic');
+    assert.ok(!('id' in snapshot) && !('name' in snapshot) && !('keywords' in snapshot), 'snapshot must exclude id/name/keywords');
+
+    targetCard = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    pasteBtn = targetCard.querySelector('.routing-paste-settings-link') as any;
+    assert.equal(pasteBtn.disabled, false, 'Paste enables once the clipboard holds a snapshot');
+
+    pasteBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    targetCard = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    const targetVendorSel = targetCard.querySelector('.routing-vendor-select') as any;
+    assert.equal(targetVendorSel.value, 'openai', 'vendor pasted onto target');
+    const targetTransportSel = targetCard.querySelector('[data-field-key="agent:coding-specialist.transport"]') as any;
+    assert.equal(targetTransportSel.value, 'mcp', 'transport pasted onto target');
+    const targetMcpInput = targetCard.querySelector('[data-field-key="agent:coding-specialist.mcpServer"]') as any;
+    assert.equal(targetMcpInput.value, 'codex', 'mcp server pasted onto target');
+    const targetUseDefaultCheckbox = targetCard.querySelector('.routing-use-default-fallback-checkbox') as any;
+    assert.equal(targetUseDefaultCheckbox.checked, false, 'useDefaultFallback pasted onto target');
+    const targetFbRows = targetCard.querySelectorAll('.routing-fallback-item-line');
+    assert.equal(targetFbRows.length, 1, 'fallback chain pasted onto target');
+
+    // id/name/keywords on the roster entry and the target card stay untouched.
+    const kwInput = targetCard.querySelector('.keyword-input') as any;
+    assert.equal(kwInput.value, 'implement|code|fix', 'keyword field on the target card is unaffected by paste');
+    assert.equal(targetCard.getAttribute('data-agent-id'), 'coding-specialist', 'target card id unaffected by paste');
+    assert.ok(targetCard.querySelector('.agent-name').textContent.includes('Coding Specialist'), 'target card name unaffected by paste');
+
+    const note = targetCard.querySelector('.routing-paste-note');
+    assert.ok(note, 'a "Pasted from …" note should render on the target card');
+    assert.match(note.textContent, /Pasted from Codex Reviewer/);
+    const undoBtn = note.querySelector('.routing-paste-undo-btn');
+    assert.ok(undoBtn, 'Undo control should render in the paste note');
+
+    // Save after paste posts the pasted values.
+    const cardSaveBtn = targetCard.querySelector('.agent-card-save-btn');
+    assert.ok(cardSaveBtn, 'per-card Save button should render');
+    cardSaveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted');
+    const savedSlot = saveMsg.profile.agents['coding-specialist'];
+    assert.ok(savedSlot, 'the pasted slot should be written to the outgoing profile');
+    assert.equal(savedSlot.vendor, 'openai');
+    assert.equal(savedSlot.model, 'gpt-5');
+    assert.equal(savedSlot.costModelClass, 'subscription');
+    assert.equal(savedSlot.transport, 'mcp');
+    assert.equal(savedSlot.mcpServer, 'codex');
+    assert.equal(savedSlot.credentialEnv, 'OPENAI_API_KEY');
+    assert.equal(savedSlot.useDefaultFallback, false);
+    assert.ok(Array.isArray(savedSlot.fallback) && savedSlot.fallback.length === 1);
+
+    // Undo restores the previous draft.
+    const undoBtnLive = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"] .routing-paste-undo-btn');
+    undoBtnLive.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    const restoredCard = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
+    const restoredVendorSel = restoredCard.querySelector('.routing-vendor-select') as any;
+    assert.notEqual(restoredVendorSel && restoredVendorSel.value, 'openai', 'Undo should restore the pre-paste draft (no openai vendor)');
+    const noteAfterUndo = restoredCard.querySelector('.routing-paste-note');
+    assert.ok(!noteAfterUndo, 'paste note should be gone after Undo');
+  } finally {
+    h.win.close();
+  }
+});

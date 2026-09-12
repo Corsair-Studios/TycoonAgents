@@ -1353,6 +1353,11 @@
     // every live "routing" repush while the modal stays open, see
     // handleRoutingPayload).
     routingExpandedAgents = {};
+    // p35-t1: a fresh open starts with no clipboard/undo/paste-note state
+    // from a prior session — same reasoning as routingExpandedAgents above.
+    routingSettingsClipboard = null;
+    routingPasteUndoByAgent = {};
+    routingPasteNoticeByAgent = {};
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
