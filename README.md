@@ -166,6 +166,17 @@ repeats an agent already tried in the chain, and total chain depth stays at
 most 3. Fallback targets must be dispatchable in the current harness — the
 existing amber warning flags one that isn't.
 
+### Copy and paste agent settings
+
+Each agent card's footer has **Copy settings** and **Paste settings**.
+**Copy** captures that card's routing setup — vendor, model, cost class,
+transport and MCP server, endpoint and credential environment variable
+names, fallback chain, and the default-fallback switch — but never the
+agent's id, display name, keywords, or any secret value. **Paste** applies
+it to another card and shows a one-step "Pasted from <agent> · Undo"
+banner; nothing is written until **Save**. Useful for repeating a
+VM-hosted or local-model setup across agents.
+
 See [`docs/ROUTING-PROFILE.md`](docs/ROUTING-PROFILE.md) for the full `routing.json` schema.
 
 See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).
