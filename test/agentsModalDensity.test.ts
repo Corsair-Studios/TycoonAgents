@@ -783,12 +783,12 @@ test("Subscription notice: mcp transport with no vendor renders a generic notice
 
   const body = notice.querySelector(".routing-subscription-notice-body") || notice;
   assert.doesNotMatch(body.textContent, /undefined/, `body must not contain "undefined", got: "${body.textContent}"`);
-  assert.doesNotMatch(body.textContent, /  /, `body must not contain double spaces, got: "${body.textContent}"`);
+  assert.doesNotMatch(body.textContent, / {2}/, `body must not contain double spaces, got: "${body.textContent}"`);
 
   const textarea = notice.querySelector(".routing-subscription-notice-textarea");
   assert.ok(textarea, "notice should include a textarea");
   assert.doesNotMatch(textarea.value, /undefined/, `prompt must not contain "undefined", got: "${textarea.value}"`);
-  assert.doesNotMatch(textarea.value, /  /, `prompt must not contain double spaces, got: "${textarea.value}"`);
+  assert.doesNotMatch(textarea.value, / {2}/, `prompt must not contain double spaces, got: "${textarea.value}"`);
 
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -826,7 +826,7 @@ test("Subscription notice: mcp transport with openai vendor renders vendor-speci
   assert.ok(textarea, "notice should include a textarea (inside the closed details)");
   assert.match(textarea.value, /OpenAI/, `expected "OpenAI" in the generated request, got: "${textarea.value}"`);
   assert.doesNotMatch(textarea.value, /undefined/, `prompt must not contain "undefined", got: "${textarea.value}"`);
-  assert.doesNotMatch(textarea.value, /  /, `prompt must not contain double spaces, got: "${textarea.value}"`);
+  assert.doesNotMatch(textarea.value, / {2}/, `prompt must not contain double spaces, got: "${textarea.value}"`);
 
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

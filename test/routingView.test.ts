@@ -609,7 +609,7 @@ test('Routing panel: fallback chip, Totals block, and state-update preserves an 
 
     // ── State update while editing preserves the unsaved slot input value ──
     const codingSlotTd = codingRow.querySelector('.routing-slot-td');
-    let modelInput = codingSlotTd.querySelector('.routing-model-input, .routing-model-select') as any;
+    const modelInput = codingSlotTd.querySelector('.routing-model-input, .routing-model-select') as any;
     assert.ok(modelInput, 'coding-specialist slot should render a model field');
     if (modelInput.tagName.toLowerCase() === 'select') {
       const opt = Array.from(modelInput.options).find((o: any) => o.value && o.value !== modelInput.value) as any;
@@ -1392,7 +1392,7 @@ test('Routing panel: reported scenario — Coding Specialist Custom endpoint, en
     vendorSelect.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
 
-    let card2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
+    const card2 = doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]') as any;
     const nameInput = card2.querySelector('.routing-vendor-name-input') as any;
     nameInput.value = 'ollama-windows';
     nameInput.dispatchEvent(new win.Event('input', { bubbles: true }));

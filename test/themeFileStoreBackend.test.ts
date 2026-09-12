@@ -31,7 +31,7 @@ function makeUri(fsPath: string, scheme: string): StubUri {
 }
 
 let workspaceFsCalls = 0;
-let realFsTouchedByStub = false; // set true only inside the "unsupported scheme" branch's real-fs-backed stub
+const realFsTouchedByStub = false; // set true only inside the "unsupported scheme" branch's real-fs-backed stub
 
 const vscodeStub = {
   __esModule: true,

@@ -536,7 +536,7 @@ test("_postStateUpdate: no project folder open -> sessionMetrics is {available:f
 
 test("_postStateUpdate: a project folder with no recorded activity yet -> sessionMetrics unavailable with its own non-empty reason", () => {
   const root = tmpRoot(); // .claude/tycoon exists but no activity.jsonl written
-  let state = initialWorldState();
+  const state = initialWorldState();
 
   const { fake, posted } = makeFakePanelForPostState(root);
   (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);
@@ -929,7 +929,7 @@ test("_postStateUpdate: the posted MSG.STATE payload carries toolCompliance comp
     { event: "PreToolUse", tool: "Grep", workerId: "orchestrator", at: T },
     { event: "PreToolUse", tool: "Edit", workerId: "coding-specialist", at: T + 1 },
   ]);
-  let state = initialWorldState();
+  const state = initialWorldState();
 
   const { fake, posted } = makeFakePanelForPostState(root);
   (TycoonPanel.prototype as any)._postStateUpdate.call(fake, state);

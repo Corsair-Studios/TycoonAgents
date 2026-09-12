@@ -121,7 +121,7 @@ export function isAlreadyReleased(subject, currentVersion) {
 export function bumpVersion(version, level) {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
   if (!match) throw new Error(`Cannot parse semver version "${version}"`);
-  let major = Number(match[1]);
+  const major = Number(match[1]);
   let minor = Number(match[2]);
   let patch = Number(match[3]);
   if (level === "minor") {

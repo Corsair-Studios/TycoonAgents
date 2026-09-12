@@ -74,7 +74,7 @@ function isValidName(name: string): boolean {
   return typeof name === "string" && ENV_NAME_PATTERN.test(name);
 }
 
-export interface LocalEnvStoreOptions extends ResolveStoreDirOptions {}
+export type LocalEnvStoreOptions = ResolveStoreDirOptions;
 
 /** Absolute path a value for `name` would live at — never checks existence. */
 export function filePath(name: string, opts: LocalEnvStoreOptions = {}): string | undefined {

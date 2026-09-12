@@ -138,7 +138,7 @@
     "project planning"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run build && npm run copy:hookruntime && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run test:python && npm run test:standalone && npm run test:compiled",
+    "vscode:prepublish": "npm run build && npm run copy:hookruntime && npm run bundle:designdoc && npm run bundle:themebuilder && npm run bundle:host && npm run check:paths && npm run check:webview && npm run lint && npm run test:python && npm run test:standalone && npm run test:compiled",
     "copy:hookruntime": "node scripts/copy-hook-runtime.mjs",
     "opencode:config": "node scripts/generate-opencode-config.mjs",
     "generate:codex-config": "node scripts/generate-codex-config.mjs",

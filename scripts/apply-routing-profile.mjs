@@ -302,7 +302,7 @@ function restoreOrStripManagedBackendBlock(raw, backupDoc, agentId) {
   if (!range) return undefined;
   const backupEntry = agentId ? backupDoc.agents[agentId] : undefined;
   const replacement = backupEntry ? backupEntry.lines : [];
-  let fmLines = [...split.fmLines.slice(0, range.start), ...replacement, ...split.fmLines.slice(range.end)];
+  const fmLines = [...split.fmLines.slice(0, range.start), ...replacement, ...split.fmLines.slice(range.end)];
   if (backupEntry) {
     const currentModelIdx = fmLines.findIndex((l) => /^model:\s*.*$/.test(l.replace(/\r$/, "")) && !/^\s/.test(l));
     if (backupEntry.topModelLine) {

@@ -177,7 +177,7 @@ test("runConsensusExchange: a thrown non-Error value resolves to provider-failur
   const call: ConsensusCaller = async () => {
     callCount++;
     if (callCount === 1) return mismatchResult(1);
-    // eslint-disable-next-line @typescript-eslint/no-throw-literal
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
     throw "raw string transport failure";
   };
 

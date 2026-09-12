@@ -192,8 +192,8 @@ test("override marker is case-insensitive", () => {
   const root = setupProject();
   try {
     runHook(root, spawnTaskPayload("agent:codex-reviewer please review this."));
-    let records = readActivity(root);
-    let spawn = records.find((r) => r.event === "PreToolUse");
+    const records = readActivity(root);
+    const spawn = records.find((r) => r.event === "PreToolUse");
     assert.ok(spawn, "expected a spawn record for lowercase marker");
     assert.equal(spawn!.workerId, "codex-reviewer");
     assert.equal(spawn!.routingMethod, "override");
