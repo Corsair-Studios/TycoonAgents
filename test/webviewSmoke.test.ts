@@ -5495,6 +5495,11 @@ test('p35-t1: Copy/Paste settings reproduces routing fields on another card, kee
     assert.ok(pasteBtn, 'Paste settings button should render');
     assert.equal(pasteBtn.disabled, true, 'Paste is disabled before any Copy');
     assert.match(pasteBtn.title, /Copy settings from another agent first/);
+    // p35-t3: Copy/Paste/Remove each render an inline aria-hidden icon
+    // alongside their text label.
+    assert.ok(pasteBtn.querySelector('svg[aria-hidden="true"]'), 'Paste settings should render an svg icon');
+    const removeBtnIcon = targetCard.querySelector('.agent-remove-link');
+    assert.ok(removeBtnIcon && removeBtnIcon.querySelector('svg[aria-hidden="true"]'), 'Remove should render an svg icon');
 
     // Give codex-reviewer's already-populated (handWrittenBackend, cloned
     // from backend on first expand) slot a one-entry fallback chain and
@@ -5523,6 +5528,7 @@ test('p35-t1: Copy/Paste settings reproduces routing fields on another card, kee
     sourceCard = h.doc.querySelector('.routing-agent-card[data-agent-id="codex-reviewer"]');
     const copyBtn = sourceCard.querySelector('.routing-copy-settings-link') as any;
     assert.ok(copyBtn, 'Copy settings button should render');
+    assert.ok(copyBtn.querySelector('svg[aria-hidden="true"]'), 'Copy settings should render an svg icon');
 
     const clipboardCalls: string[] = [];
     (h.win.navigator as any).clipboard = {

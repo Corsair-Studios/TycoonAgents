@@ -19181,6 +19181,44 @@ if (typeof module !== "undefined" && module.exports) {
   // the draft — see handleRoutingPayload).
   var routingPasteNoticeByAgent = {};
 
+  // p35-t3: inline SVG icons for the three footer actions (Copy/Paste/
+  // Remove). 14px, stroke/fill "currentColor" so each icon inherits its
+  // button's link color (including the muted Copy/Paste links, the
+  // muted-danger Remove link, and the dimmed disabled-Paste state) with no
+  // separate icon-font or asset dependency — standalone hosts have no
+  // codicon font available. aria-hidden because the button's existing text
+  // label remains the accessible name.
+  var FOOTER_ACTION_ICONS = {
+    copy:
+      '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<rect x="8" y="8" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '<path d="M5.5 15.5H4.5A1.5 1.5 0 0 1 3 14V4.5A1.5 1.5 0 0 1 4.5 3H14a1.5 1.5 0 0 1 1.5 1.5v1" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      "</svg>",
+    paste:
+      '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<rect x="5" y="4" width="14" height="17" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '<rect x="9" y="2.5" width="6" height="3" rx="1" fill="currentColor"/>' +
+      '<path d="M8.5 11h7M8.5 14.5h7M8.5 18h4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>' +
+      "</svg>",
+    remove:
+      '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 12H8L7 9Zm3 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" fill="currentColor"/>' +
+      "</svg>",
+  };
+
+  /**
+   * Prefixes a footer action button's accessible text label with its icon,
+   * keeping the label as the button's accessible name (icon is aria-hidden).
+   */
+  function setFooterActionIcon(btn, iconKey, label) {
+    btn.innerHTML = "";
+    const icon = document.createElement("span");
+    icon.className = "agent-footer-action-icon";
+    icon.innerHTML = FOOTER_ACTION_ICONS[iconKey];
+    btn.appendChild(icon);
+    btn.appendChild(document.createTextNode(label));
+  }
+
   function appendCardRemoveFooter(card, a) {
     const footer = document.createElement("div");
     footer.className = "agent-remove-footer";
@@ -19188,7 +19226,7 @@ if (typeof module !== "undefined" && module.exports) {
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
     copyBtn.className = "link-button routing-copy-settings-link";
-    copyBtn.textContent = "Copy settings";
+    setFooterActionIcon(copyBtn, "copy", "Copy settings");
     copyBtn.addEventListener("click", () => {
       const slot = (routingDraft && routingDraft.agents && routingDraft.agents[a.id]) || {};
       const snapshot = cloneRoutingSlot(slot);
@@ -19203,7 +19241,7 @@ if (typeof module !== "undefined" && module.exports) {
     const pasteBtn = document.createElement("button");
     pasteBtn.type = "button";
     pasteBtn.className = "link-button routing-paste-settings-link";
-    pasteBtn.textContent = "Paste settings";
+    setFooterActionIcon(pasteBtn, "paste", "Paste settings");
     const hasClipboard = !!(routingSettingsClipboard && routingSettingsClipboard.slot);
     pasteBtn.disabled = !hasClipboard;
     pasteBtn.title = hasClipboard ? "" : "Copy settings from another agent first";
@@ -19244,7 +19282,7 @@ if (typeof module !== "undefined" && module.exports) {
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "link-button agent-remove-link";
-    removeBtn.textContent = "Remove";
+    setFooterActionIcon(removeBtn, "remove", "Remove");
     removeBtn.dataset.removeAgentId = a.id;
     removeBtn.addEventListener("click", () => {
       openRemoveAgentConfirmModal(a.id, a.name, () => {

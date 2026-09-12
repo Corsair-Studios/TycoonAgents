@@ -6842,6 +6842,29 @@ button.theme-review-preview:focus-visible::after {
   cursor: default;
 }
 
+/* p35-t3: icon glyph inside the Copy/Paste/Remove footer links — inherits
+   the button's currentColor (muted, muted-danger, or dimmed-disabled) via
+   the SVG's stroke/fill="currentColor", so no separate color rules needed. */
+.routing-copy-settings-link,
+.routing-paste-settings-link,
+.agent-remove-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-footer-action-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.agent-footer-action-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ── Remove-agent confirm modal — identical structure/z-index language to
    #theme-switch-confirm-modal, reused for the removeAgent destructive
    action since window.confirm isn't available in VS Code webviews. ── */
