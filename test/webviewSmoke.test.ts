@@ -4631,6 +4631,109 @@ test('p32-t1: Default fallback section stays open across a structural rebuild af
   }
 });
 
+test('p32-t3: Default fallback section has its own Save, live summary tracks the picker, and Remove clears it', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'opencode', source: 'execution', fileValue: 'opencode', running: 'opencode', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.doc.getElementById('menu-routing').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    h.dispatch({
+      type: 'routing',
+      payload: {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [],
+        presets: {
+          vendors: ['anthropic', 'openai'],
+          models: [{ id: 'anthropic/claude-sonnet-4-6', vendor: 'anthropic', costModelClass: 'subscription', label: 'Anthropic · Sonnet' }],
+        },
+        errors: [],
+      },
+    });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const dfDetails = h.doc.querySelector('details.routing-default-fallback-section');
+    dfDetails.querySelector('summary').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    dfDetails.open = true;
+    await h.flush();
+
+    const saveBtn = dfDetails.querySelector('.routing-default-fallback-save-btn');
+    assert.ok(saveBtn, 'Default fallback section should have its own Save button');
+
+    const removeLink = dfDetails.querySelector('.routing-clear-defaults-btn');
+    assert.ok(removeLink, 'Remove link should be present');
+    assert.equal(removeLink.textContent, 'Remove default fallback', 'Remove link should be labeled');
+    assert.equal(removeLink.disabled, true, 'Remove should be disabled with nothing set');
+
+    const vendorSel = dfDetails.querySelector('[data-field-key="defaultFallback.vendor"]');
+    vendorSel.value = 'anthropic';
+    vendorSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    const modelSel = h.doc.querySelector('details.routing-default-fallback-section [data-field-key="defaultFallback.model"]');
+    assert.ok(modelSel, 'model picker should render once a vendor is chosen');
+    modelSel.value = 'anthropic/claude-sonnet-4-6';
+    modelSel.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+
+    // p32-t3: summary must reflect the live picker (model included) before
+    // Save is ever clicked — the bug was the summary staying stuck on
+    // whatever the vendor picker last set.
+    const summaryAfterPick = h.doc.querySelector('details.routing-default-fallback-section > summary');
+    assert.equal(summaryAfterPick.textContent, 'Default fallback: anthropic · anthropic/claude-sonnet-4-6 · claude-native · subscription');
+    const summaryLine = h.doc.querySelector('details.routing-default-fallback-section .routing-slot-summary-line');
+    assert.ok(!/fallback(s)?\b/.test(summaryLine.textContent), `default's own summary line must omit the fallback count: "${summaryLine.textContent}"`);
+
+    const saveBtnAgain = h.doc.querySelector('details.routing-default-fallback-section .routing-default-fallback-save-btn');
+    saveBtnAgain.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'a saveRouting message should have been posted from the section Save button');
+    assert.equal(saveMsg.profile.defaultFallback && saveMsg.profile.defaultFallback.vendor, 'anthropic');
+    assert.equal(saveMsg.profile.defaultFallback.model, 'anthropic/claude-sonnet-4-6');
+
+    // Reset routingSaving so the section's Save button re-enables for the
+    // second save below — mirrors the host's real post-save reply.
+    h.dispatch({ type: 'routingSaved', ok: true, errors: [], check: {}, write: {} });
+    await h.flush();
+
+    const dfDetailsAfterSave = h.doc.querySelector('details.routing-default-fallback-section');
+    assert.equal(dfDetailsAfterSave.open, true, 'section should stay open after Save');
+
+    const removeLinkAfter = dfDetailsAfterSave.querySelector('.routing-clear-defaults-btn');
+    assert.equal(removeLinkAfter.disabled, false, 'Remove should be enabled once a default is set');
+    removeLinkAfter.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const summaryAfterClear = h.doc.querySelector('details.routing-default-fallback-section > summary');
+    assert.equal(summaryAfterClear.textContent, 'Set up a default fallback?');
+
+    const saveBtnAfterClear = h.doc.querySelector('details.routing-default-fallback-section .routing-default-fallback-save-btn');
+    saveBtnAfterClear.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const clearSaveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(clearSaveMsg, 'a saveRouting message should have been posted after clearing');
+    assert.ok(!clearSaveMsg.profile.defaultFallback, 'cleared default fallback should be omitted from the saved profile');
+  } finally {
+    h.win.close();
+  }
+});
+
 test('p31-t2: every slot shows the Default row + opt-out checkbox, unchecking persists useDefaultFallback=false, summary line reflects it', async () => {
   const h = await bootObjScaleHarness();
   try {

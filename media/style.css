@@ -6666,6 +6666,18 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 2px;
 }
 
+/* p32-t3: Save + Remove footer, mirrors .agent-remove-footer's right-aligned
+   danger link but keeps the primary Save action visible alongside it. */
+.routing-default-fallback-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
 /* p31-t2: read-only "Default: <label>" row + opt-out checkbox at the end
    of every slot's fallback editor. */
 .routing-default-fallback-row {

@@ -17734,9 +17734,14 @@ if (typeof module !== "undefined" && module.exports) {
    *   (agentAccent()'s `fallbackOf` path) and appends the " (fb)" suffix
    *   per docs/design/slot-editor-redesign.md section 6, regardless of the
    *   entry's own vendor.
+   * @param {boolean} [omitFallbackCount] p32-t3: true for the default
+   *   fallback's own summary line — a "N fallbacks" count on the default
+   *   itself reads as nonsense (nothing "defaults" onto the default), so
+   *   it's dropped from the trailing segment entirely rather than shown as
+   *   "0 fallbacks".
    * @returns {HTMLElement}
    */
-  function buildSlotSummaryLine(slot, harness, agentInfo, isFallbackEntry) {
+  function buildSlotSummaryLine(slot, harness, agentInfo, isFallbackEntry, omitFallbackCount) {
     var s = slot || {};
     var info = agentInfo || {};
     // Empty string (not "unknown") when nothing resolves, so agentAccent()
@@ -17792,7 +17797,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     var restSpan = document.createElement("span");
     restSpan.className = "routing-slot-summary-rest";
-    restSpan.textContent = " · " + route + " · " + billing + " · " + fallbackText;
+    restSpan.textContent = " · " + route + " · " + billing + (omitFallbackCount ? "" : " · " + fallbackText);
     line.appendChild(restSpan);
 
     return line;
@@ -19833,47 +19838,104 @@ if (typeof module !== "undefined" && module.exports) {
     var defaultFallbackDetails = document.createElement("details");
     defaultFallbackDetails.className = "routing-default-fallback-section";
     var defaultFallbackSummary = document.createElement("summary");
-    if (defaultFallbackIsSet) {
-      defaultFallbackSummary.className = "agent-accent-fallback";
-      defaultFallbackSummary.textContent = "Default fallback: " + (routingDraft.defaultFallback.vendor || "unknown") + " · " + (routingDraft.defaultFallback.model || "unknown model");
-      defaultFallbackDetails.open = true;
-    } else {
-      defaultFallbackSummary.textContent = "Set up a default fallback?";
-    }
+    if (defaultFallbackIsSet) defaultFallbackDetails.open = true;
     defaultFallbackDetails.appendChild(defaultFallbackSummary);
-    if (!defaultFallbackIsSet) {
-      var defaultFallbackSummaryHint = document.createElement("p");
-      defaultFallbackSummaryHint.className = "routing-defaults-help routing-default-fallback-summary-hint";
-      defaultFallbackSummaryHint.textContent = "Catches any agent that runs out of tokens or is unreachable after its own chain.";
-      defaultFallbackDetails.appendChild(defaultFallbackSummaryHint);
-    }
+    var defaultFallbackSummaryHint = document.createElement("p");
+    defaultFallbackSummaryHint.className = "routing-defaults-help routing-default-fallback-summary-hint";
+    defaultFallbackSummaryHint.textContent = "Catches any agent that runs out of tokens or is unreachable after its own chain.";
+    defaultFallbackDetails.appendChild(defaultFallbackSummaryHint);
     var defaultFallbackHelp = document.createElement("p");
     defaultFallbackHelp.className = "routing-defaults-help";
     defaultFallbackHelp.textContent = "Fires for any agent after its own fallback chain when it runs out of tokens or is unreachable. Agents can opt out below.";
     defaultFallbackDetails.appendChild(defaultFallbackHelp);
-    defaultFallbackDetails.appendChild(buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }));
+    var defaultFallbackSummaryLineEl = buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }, false, true);
+    defaultFallbackDetails.appendChild(defaultFallbackSummaryLineEl);
     var defaultFallbackFieldsEl = buildSlotEditorFields(routingDraft.defaultFallback, presets, renderRoutingModal, "defaultFallback", { id: "defaultFallback", name: "Default fallback" });
     defaultFallbackDetails.appendChild(defaultFallbackFieldsEl);
-    if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
-      defaultFallbackDetails.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-      defaultFallbackDetails.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
-    }
     var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
     var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
     if (defaultFallbackWarning) {
       routingHasBlockingDispatchWarning = true;
       defaultFallbackDetails.appendChild(defaultFallbackWarning);
     }
+
+    // p32-t3: live summary refresh. The toggle <summary> and the
+    // buildSlotSummaryLine row above are built once per renderRoutingModal
+    // pass, but buildSlotEditorFields' model/cost-class <select> "change"
+    // handlers mutate routingDraft.defaultFallback in place WITHOUT calling
+    // onStructural (only vendor/transport changes trigger a full rebuild —
+    // see buildSlotEditorFields) — so without this, the summary froze at
+    // whatever the vendor picker last set (root cause of the "anthropic ·
+    // unknown model" report: vendor was live, model wasn't). Recomputing
+    // both text nodes from the live routingDraft.defaultFallback object on
+    // every input/change inside the section (and once more right after
+    // Save) keeps them honest without forcing a full DOM rebuild.
+    function refreshDefaultFallbackSummary() {
+      var isSet = slotHasContent(routingDraft.defaultFallback);
+      if (isSet) {
+        defaultFallbackSummary.className = "agent-accent-fallback";
+        var s = routingDraft.defaultFallback;
+        var nativeVendor = nativeVendorForHarness(routingCurrentHarness);
+        var vendor = s.vendor || nativeVendor || "unknown";
+        var model = s.model || "unknown model";
+        var isNativeVendor = !!nativeVendor && vendor.toLowerCase() === nativeVendor;
+        var route = s.transport === "mcp" ? "bridged via MCP " + (s.mcpServer || "(not installed)")
+          : s.transport === "openai-compatible" ? "OpenAI-compatible endpoint"
+          : isNativeVendor ? "native" : (s.transport || "claude-native");
+        var billing = s.costModelClass || "metered";
+        defaultFallbackSummary.textContent = "Default fallback: " + vendor + " · " + model + " · " + route + " · " + billing;
+      } else {
+        defaultFallbackSummary.textContent = "Set up a default fallback?";
+      }
+      defaultFallbackSummaryHint.hidden = isSet;
+      var freshLine = buildSlotSummaryLine(routingDraft.defaultFallback, routingCurrentHarness, { id: "defaultFallback", name: "Default fallback" }, false, true);
+      defaultFallbackSummaryLineEl.replaceWith(freshLine);
+      defaultFallbackSummaryLineEl = freshLine;
+      // clearDefaultFallbackBtn is created below (after this function is
+      // declared and first invoked, since its own disabled state depends on
+      // defaultFallbackIsSet computed up top) — guard against the var not
+      // being assigned yet on that very first call.
+      if (clearDefaultFallbackBtn) clearDefaultFallbackBtn.disabled = !isSet;
+    }
+    refreshDefaultFallbackSummary();
+    defaultFallbackDetails.addEventListener("input", refreshDefaultFallbackSummary);
+    defaultFallbackDetails.addEventListener("change", refreshDefaultFallbackSummary);
+    if (defaultFallbackFieldsEl._refreshSubscriptionNotice) {
+      defaultFallbackDetails.addEventListener("input", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+      defaultFallbackDetails.addEventListener("change", defaultFallbackFieldsEl._refreshSubscriptionNotice);
+    }
+
+    // p32-t3: per-section Save, identical persistence path to the per-agent
+    // card Save button (doCardSave in buildUnifiedAgentCard) — both simply
+    // call the shared saveRoutingProfile(), which assembles the WHOLE
+    // routingDraft (including defaultFallback, see assembleRoutingProfile)
+    // and posts ROUTING_MSG.SAVE. Gated the same way the footer Save button
+    // is (routingSaving / routingHasBlockingDispatchWarning, p25-t4).
+    var defaultFallbackFooter = document.createElement("div");
+    defaultFallbackFooter.className = "routing-default-fallback-footer";
+    var defaultFallbackSaveBtn = document.createElement("button");
+    defaultFallbackSaveBtn.type = "button";
+    defaultFallbackSaveBtn.className = "skill-btn settings-btn agent-card-save-btn routing-default-fallback-save-btn";
+    defaultFallbackSaveBtn.textContent = "Save";
+    defaultFallbackSaveBtn.title = "Save the default fallback";
+    defaultFallbackSaveBtn.disabled = routingSaving || routingHasBlockingDispatchWarning;
+    defaultFallbackSaveBtn.addEventListener("click", function () {
+      refreshDefaultFallbackSummary();
+      saveRoutingProfile();
+      showToast("Saving…", "info");
+    });
+    defaultFallbackFooter.appendChild(defaultFallbackSaveBtn);
     var clearDefaultFallbackBtn = document.createElement("button");
     clearDefaultFallbackBtn.type = "button";
-    clearDefaultFallbackBtn.className = "routing-inline-link-btn routing-inline-link-btn--danger routing-clear-defaults-btn";
-    clearDefaultFallbackBtn.textContent = "None";
+    clearDefaultFallbackBtn.className = "link-button agent-remove-link routing-clear-defaults-btn";
+    clearDefaultFallbackBtn.textContent = "Remove default fallback";
     clearDefaultFallbackBtn.disabled = !defaultFallbackIsSet;
     clearDefaultFallbackBtn.addEventListener("click", function () {
       routingDraft.defaultFallback = {};
       renderRoutingModal();
     });
-    defaultFallbackDetails.appendChild(clearDefaultFallbackBtn);
+    defaultFallbackFooter.appendChild(clearDefaultFallbackBtn);
+    defaultFallbackDetails.appendChild(defaultFallbackFooter);
     routingContentEl.appendChild(defaultFallbackDetails);
 
     // ── Defaults (p17-t3) — full density only. One slot applied to every
