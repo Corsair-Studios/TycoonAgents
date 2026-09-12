@@ -140,13 +140,32 @@ function platformFolderForThisProcess(): string {
   return "linux-x86_64";
 }
 
+/**
+ * The env var os.homedir() actually reads on this platform — win32 reads
+ * USERPROFILE, posix reads HOME. A test fixture that only sets USERPROFILE
+ * (Windows-only semantics) leaves os.homedir() on posix pointed at
+ * whatever the real CI runner's HOME is, so the VS Code extension signal
+ * (which globs under `<home>/.vscode/extensions`) silently finds nothing —
+ * this is what made the extension-signal test fail on ubuntu-latest while
+ * passing on windows-latest.
+ */
+const HOME_ENV_KEY = IS_WIN ? "USERPROFILE" : "HOME";
+
+/** Builds the { USERPROFILE } or { HOME } override for scrubbedEnv()'s `overrides`, whichever this platform's os.homedir() actually reads. */
+function homeOverride(dir: string): NodeJS.ProcessEnv {
+  return { [HOME_ENV_KEY]: dir };
+}
+
 function scrubbedEnv(overrides: NodeJS.ProcessEnv, emptyProjectRoot: string): NodeJS.ProcessEnv {
   const passthrough = ["SystemRoot", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "SystemDrive"];
   const env: NodeJS.ProcessEnv = {};
   for (const key of passthrough) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
-  env["PATH"] = NODE_BIN_DIR;
+  // Every fixture shim on posix is `#!/bin/sh` + `exec node "<fixture.js>" "$@"`,
+  // so PATH must resolve both `node` (this process's own execPath dir) and
+  // `sh` itself (via /bin, /usr/bin) inside the spawned child's env.
+  env["PATH"] = IS_WIN ? NODE_BIN_DIR : `${NODE_BIN_DIR}:/bin:/usr/bin`;
   delete env["USERPROFILE"];
   delete env["HOME"];
   delete env["APPDATA"];
@@ -187,7 +206,7 @@ test(
         mkdirSync(dir, { recursive: true });
         selfPaths[v] = writeFixtureStub(dir, "codex");
       }
-      const env = scrubbedEnv({ USERPROFILE: home }, emptyProjectRoot);
+      const env = scrubbedEnv({ ...homeOverride(home) }, emptyProjectRoot);
       const result = runLauncher(["marker-arg"], env);
 
       assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
@@ -214,7 +233,7 @@ test("(override) CODEX_CLI_PATH pointing at a content-verified binary wins over 
   const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
   try {
     const overridePath = writeFixtureStub(home, IS_WIN ? "codex.cmd" : "codex");
-    const env = scrubbedEnv({ USERPROFILE: home, CODEX_CLI_PATH: overridePath }, emptyProjectRoot);
+    const env = scrubbedEnv({ ...homeOverride(home), CODEX_CLI_PATH: overridePath }, emptyProjectRoot);
     const result = runLauncher(["hello"], env);
 
     assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
@@ -235,7 +254,7 @@ test("(passthrough) launcher args reach the resolved binary as distinct, unmangl
   const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
   try {
     const overridePath = writeFixtureStub(home, IS_WIN ? "codex.cmd" : "codex");
-    const env = scrubbedEnv({ USERPROFILE: home, CODEX_CLI_PATH: overridePath }, emptyProjectRoot);
+    const env = scrubbedEnv({ ...homeOverride(home), CODEX_CLI_PATH: overridePath }, emptyProjectRoot);
     const result = runLauncher(["-c", 'model="gpt-5"', "mcp-server"], env);
 
     assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
@@ -291,7 +310,7 @@ test(
 
       const env = scrubbedEnv(
         {
-          USERPROFILE: projectRoot,
+          ...homeOverride(projectRoot),
           CODEX_LAUNCHER_PROJECT_ROOT: projectRoot,
           PATH: `${pathDir}${IS_WIN ? ";" : ":"}${NODE_BIN_DIR}`,
         },
@@ -319,7 +338,7 @@ test("(override) a nonexistent CODEX_CLI_PATH is reported to stderr and discover
   const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
   try {
     const missing = join(home, "does-not-exist-codex-binary");
-    const env = scrubbedEnv({ USERPROFILE: home, CODEX_CLI_PATH: missing }, emptyProjectRoot);
+    const env = scrubbedEnv({ ...homeOverride(home), CODEX_CLI_PATH: missing }, emptyProjectRoot);
     const result = runLauncher(["--version"], env);
 
     assert.notEqual(result.status, 0, "no real codex is reachable after the override fails, so overall discovery still fails");
@@ -338,7 +357,7 @@ test("(not-found) no candidates anywhere: non-zero exit, empty stdout, stderr li
   const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));
   const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
   try {
-    const env = scrubbedEnv({ USERPROFILE: home }, emptyProjectRoot);
+    const env = scrubbedEnv({ ...homeOverride(home) }, emptyProjectRoot);
     const result = runLauncher(["--version"], env);
 
     assert.equal(result.status, 1, "launcher explicitly exits 1 on total discovery failure");

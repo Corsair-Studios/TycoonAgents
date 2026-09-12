@@ -33,10 +33,11 @@ const ENV_KEYS = ["CODEX_BINARY_PATH", "PATH", "Path", "APPDATA", "HOME", "USERP
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverCodexBinary, CodexDiscoveryError } from "../src/providers/codex/codexDiscovery";
+import { writeVersionStub } from "./helpers/fakeCli";
 
 function snapshotEnv(): Record<string, string | undefined> {
   const snap: Record<string, string | undefined> = {};
@@ -61,11 +62,9 @@ function sandboxEnv(emptyDir: string): void {
   process.env["USERPROFILE"] = emptyDir;
 }
 
-/** Writes a throwaway stub that `codex --version` would produce if it matched (or didn't match) the real CLI's signature. Windows-only .cmd form, matching this project's dev/CI platform. */
+/** Writes a throwaway stub that `codex --version` would produce if it matched (or didn't match) the real CLI's signature. Platform-appropriate (see test/helpers/fakeCli.ts): a .cmd batch shim on win32, a chmod'd #!/bin/sh script on posix — both are plain text, never a compiled or renamed executable. */
 function writeStub(dir: string, name: string, versionOutput: string): string {
-  const script = join(dir, name);
-  writeFileSync(script, `@echo off\r\necho ${versionOutput}\r\n`);
-  return script;
+  return writeVersionStub(dir, name, versionOutput);
 }
 
 const IS_WIN = process.platform === "win32";

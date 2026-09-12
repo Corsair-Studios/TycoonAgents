@@ -712,25 +712,34 @@ test("MCP handshake: initialize/tools.list/tools.call round-trip over stdio in a
 test("anthropicAdapter: exit-1 error includes stderr tail and argv, never the prompt text", async () => {
   const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-claude-"));
   const secretPrompt = "SECRET-PROMPT-MARKER-should-never-appear-in-error";
-  const jsEntryPath = path.join(fakeDir, "fake-claude.js").replace(/\\/g, "\\\\");
-  // Mirrors an npm .cmd shim: dispatcherAdapters' resolveCmdShimJsEntry parses
-  // a quoted *.js path out of the .cmd file and spawns it with node directly.
-  fs.writeFileSync(
-    path.join(fakeDir, "fake-claude.cmd"),
-    `@echo off\r\nnode "${jsEntryPath}" %*\r\n`,
-  );
-  fs.writeFileSync(
-    path.join(fakeDir, "fake-claude.js"),
-    [
-      "process.stdin.resume();",
-      "process.stdin.on('end', () => {",
-      "  process.stderr.write('fake claude: simulated failure, out of budget\\n');",
-      "  process.exit(1);",
-      "});",
-    ].join("\n"),
-  );
+  const IS_WIN = process.platform === "win32";
+  const fakeClaudeBody = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stderr.write('fake claude: simulated failure, out of budget\\n');",
+    "  process.exit(1);",
+    "});",
+  ].join("\n");
+  let claudeBin: string;
+  if (IS_WIN) {
+    // Mirrors an npm .cmd shim: dispatcherAdapters' resolveCmdShimJsEntry
+    // parses a quoted *.js path out of the .cmd file and spawns it with node
+    // directly — this rung of resolveSpawnTarget only fires on win32 for a
+    // .cmd/.bat path, so this shape is win32-only.
+    const jsEntryPath = path.join(fakeDir, "fake-claude.js").replace(/\\/g, "\\\\");
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.cmd"), `@echo off\r\nnode "${jsEntryPath}" %*\r\n`);
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.js"), fakeClaudeBody);
+    claudeBin = path.join(fakeDir, "fake-claude.cmd");
+  } else {
+    // On posix, resolveSpawnTarget spawns CLAUDE_CLI_BIN directly (no shim
+    // resolution) — a chmod'd #!/usr/bin/env node script, never a compiled
+    // or renamed executable.
+    claudeBin = path.join(fakeDir, "fake-claude");
+    fs.writeFileSync(claudeBin, `#!/usr/bin/env node\n${fakeClaudeBody}\n`, "utf8");
+    fs.chmodSync(claudeBin, 0o755);
+  }
   const prevBin = process.env.CLAUDE_CLI_BIN;
-  process.env.CLAUDE_CLI_BIN = path.join(fakeDir, "fake-claude.cmd");
+  process.env.CLAUDE_CLI_BIN = claudeBin;
   try {
     const result = await dispatcherAdapters.anthropicAdapter(secretPrompt, { model: "sonnet" });
     assert.ok(result.error, "expected an error result");
