@@ -485,6 +485,19 @@ const FEEDBACK_TICKET_MAX_ENTRIES = 5;
 const FEEDBACK_TICKET_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
+ * p33-t2: the exact H1 heading and description/role text `primary-agent.md`
+ * carried before the "Fallback Agent" -> "Wildcard Agent" rename. Pinned
+ * here as literal strings (not derived from the current `REGULAR_AGENTS`
+ * catalog entry) so `_installWorkerAgents`'s refresh-if-still-default check
+ * keeps working after this rename ships, and so any FUTURE rename of this
+ * agent must add its own new pair rather than silently comparing the
+ * current default against itself.
+ */
+const PRIMARY_AGENT_OLD_DEFAULT_H1 = "Fallback Agent";
+const PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION =
+  "The catch-all worker that receives tasks when none of the specialist agents' keywords matched. Its presence in the work log is a signal that the orchestrator should refine its keyword routing.";
+
+/**
  * Evidence-based detection of which ignore file(s) the Setup Wizard's
  * "Add Tycoon logs to ignore file" checkbox should target — content
  * signals only, never a guessed VCS (Path & Environment Discovery: an
@@ -866,7 +879,7 @@ export class TycoonPanel {
 
     // Auto-heal a missing project-appropriate worker roster once per panel
     // open (see _ensureWorkerAgentsInstalled doc comment) — fixes
-    // search-retrieval, primary-agent (the Fallback Agent), and (for
+    // search-retrieval, primary-agent (the Wildcard Agent), and (for
     // non-UEFN projects) coding-specialist + ux-ui-designer never being
     // installed, which left delegated work (and keyword-unmatched work) with
     // no matching agent file to route to. Runs BEFORE
@@ -5172,7 +5185,7 @@ export class TycoonPanel {
    * orchestrator doing it directly. This is the self-heal rail for a
    * project installed at an EARLIER version (e.g. one with only
    * coding-specialist/reviewer/search-retrieval/ux-ui-designer on disk and
-   * no Fallback Agent) — it runs every panel open, not just on a fresh
+   * no Wildcard Agent) — it runs every panel open, not just on a fresh
    * install. Delegates the actual file-write decision to
    * `_installWorkerAgents`, which is strictly create-if-absent (never
    * overwrites a user's own or a UEFN pack's same-named agent).
@@ -6312,13 +6325,13 @@ export class TycoonPanel {
   /**
    * Install the project-appropriate worker roster (see
    * `workerAgentsForProject`): always `search-retrieval` and `primary-agent`
-   * (the Fallback Agent — the id must match the `fallback_agent` default,
+   * (the Wildcard Agent — the id must match the `fallback_agent` default,
    * see `_readKeywordsConfig`'s fallback return value); for non-UEFN projects also
    * `coding-specialist` and `ux-ui-designer`. Called both from
    * `_ensureWorkerAgentsInstalled` (panel-open auto-heal, gated on
    * `_hooksInstalledForRoot`) and from `_handleInstallHooks` (explicit
    * Install/Repair), so both a fresh install and an upgraded older project
-   * end up with the Fallback Agent on disk. Unlike
+   * end up with the Wildcard Agent on disk. Unlike
    * `_installAgentFiles` (which refreshes a file it recognizes as its own
    * via a matching `tier:`), this is strictly create-if-absent — it NEVER
    * overwrites an existing `.claude/agents/<id>.md`, whether that file is a
@@ -6338,6 +6351,32 @@ export class TycoonPanel {
           if (!fs.existsSync(agentPath)) {
             fs.mkdirSync(agentsDir, { recursive: true });
             fs.writeFileSync(agentPath, buildAgentMarkdown(a, "worker"));
+          } else if (a.id === "primary-agent") {
+            // p33-t2 narrow refresh: an existing primary-agent.md that
+            // still carries BOTH the old default H1 heading and the old
+            // default description/role line is a stock file nobody has
+            // customized — rewrite it to the current template so the
+            // "Fallback Agent" -> "Wildcard Agent" rename reaches already
+            // installed projects. Anything else (a different H1, a
+            // different description, or a mix) is left byte-for-byte
+            // untouched — that mismatch is the signal a user edited it.
+            // The old strings are pinned as constants here (not derived
+            // from the current catalog) so a FUTURE rename of this agent
+            // must explicitly decide what counts as "old default" rather
+            // than silently matching itself.
+            try {
+              const existing = fs.readFileSync(agentPath, "utf8");
+              const h1Match = /^# (.+)$/m.exec(existing);
+              const descMatch = /^description: (".*")$/m.exec(existing);
+              const isOldH1 = h1Match !== null && h1Match[1] === PRIMARY_AGENT_OLD_DEFAULT_H1;
+              const isOldDescription =
+                descMatch !== null && descMatch[1] === JSON.stringify(PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION);
+              if (isOldH1 && isOldDescription) {
+                fs.writeFileSync(agentPath, buildAgentMarkdown(a, "worker"));
+              }
+            } catch {
+              /* best-effort; leave the file alone on any read/parse error */
+            }
           }
         } catch {
           /* best-effort per-file; never blocks the rest of the roster */

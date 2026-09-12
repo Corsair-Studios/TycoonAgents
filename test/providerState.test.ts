@@ -256,7 +256,7 @@ test("WorkerStopped with tokens is reflected in agentMetrics.tokens", () => {
 // Name override map and new AgentMetric fields
 // ---------------------------------------------------------------------------
 
-test("primary-agent id yields name 'Fallback Agent' via override map", () => {
+test("primary-agent id yields name 'Wildcard Agent' via override map", () => {
   const state = applyEvent(initialWorldState(), {
     type: "WorkerSpawned",
     at: T,
@@ -264,7 +264,7 @@ test("primary-agent id yields name 'Fallback Agent' via override map", () => {
   });
   const metric = state.agentMetrics.find((m) => m.id === "primary-agent");
   assert.ok(metric, "metric should exist for primary-agent");
-  assert.equal(metric!.name, "Fallback Agent");
+  assert.equal(metric!.name, "Wildcard Agent");
 });
 
 test("WorkerSpawned with explicit name overrides the computed name", () => {
@@ -272,11 +272,11 @@ test("WorkerSpawned with explicit name overrides the computed name", () => {
     type: "WorkerSpawned",
     at: T,
     workerId: "primary-agent",
-    name: "Fallback Agent",
+    name: "Wildcard Agent",
   });
   const metric = state.agentMetrics.find((m) => m.id === "primary-agent");
   assert.ok(metric);
-  assert.equal(metric!.name, "Fallback Agent");
+  assert.equal(metric!.name, "Wildcard Agent");
 });
 
 test("WorkerSpawned with model and description populates those fields on AgentMetric", () => {

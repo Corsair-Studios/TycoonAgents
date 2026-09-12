@@ -408,7 +408,7 @@ test("description is YAML-safe (JSON-quoted) even when role contains a colon and
 // stubs, so model/keywords/role stay in sync with the roster of record.
 // ---------------------------------------------------------------------------
 
-test("workerAgentsForProject(true) returns exactly search-retrieval and primary-agent (the Fallback Agent)", () => {
+test("workerAgentsForProject(true) returns exactly search-retrieval and primary-agent (the Wildcard Agent)", () => {
   const result = workerAgentsForProject(true);
   assert.equal(result.length, 2);
   assert.deepEqual(
@@ -426,7 +426,7 @@ test("workerAgentsForProject(false) returns search-retrieval, primary-agent, cod
   );
 });
 
-test("workerAgentsForProject includes primary-agent (the Fallback Agent) for BOTH UEFN and non-UEFN projects, matching search-retrieval's project-agnostic install", () => {
+test("workerAgentsForProject includes primary-agent (the Wildcard Agent) for BOTH UEFN and non-UEFN projects, matching search-retrieval's project-agnostic install", () => {
   for (const isUefn of [true, false]) {
     const result = workerAgentsForProject(isUefn);
     assert.ok(
@@ -463,14 +463,14 @@ test("workerAgentsForProject returns the real REGULAR_AGENTS objects (not stubs/
 });
 
 // ---------------------------------------------------------------------------
-// Fallback Agent (primary-agent) install semantics: create-if-absent, never
+// Wildcard Agent (primary-agent) install semantics: create-if-absent, never
 // overwrite. Mirrors panel.ts's `_installWorkerAgents` write loop exactly
 // (existsSync -> write; else leave untouched) since that private method
 // isn't independently exported/testable — this proves the exact algorithm
 // panel.ts runs, applied to the now-updated `workerAgentsForProject` roster,
 // both creates a missing primary-agent.md AND never clobbers a
 // user-customized one. This is the auto-heal rail that self-heals a project
-// installed at an earlier version (e.g. one with no Fallback Agent on disk)
+// installed at an earlier version (e.g. one with no Wildcard Agent on disk)
 // on every panel open, gated on hooks-installed, same as the doctrine and
 // keyword auto-heal rails.
 // ---------------------------------------------------------------------------
@@ -487,7 +487,7 @@ function simulateInstallWorkerAgents(agentsDir: string, agents: PackAgent[]): vo
   }
 }
 
-test("simulated _installWorkerAgents creates a missing primary-agent.md (Fallback Agent) for a non-UEFN project", () => {
+test("simulated _installWorkerAgents creates a missing primary-agent.md (Wildcard Agent) for a non-UEFN project", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "workerAgents-"));
   try {
     const agentsDir = path.join(root, ".claude", "agents");
@@ -497,10 +497,22 @@ test("simulated _installWorkerAgents creates a missing primary-agent.md (Fallbac
     const content = fs.readFileSync(primaryAgentPath, "utf8");
     const expected = REGULAR_AGENTS.find((a) => a.id === "primary-agent")!;
     assert.equal(content, buildAgentMarkdown(expected), "created content must match buildAgentMarkdown output");
-    assert.ok(/model:\s*sonnet/.test(content), "Fallback Agent must be seeded on the sonnet model");
+    assert.ok(/model:\s*sonnet/.test(content), "Wildcard Agent must be seeded on the sonnet model");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("primary-agent template writes 'Wildcard Agent' heading and the new catch-all description", () => {
+  const agent = REGULAR_AGENTS.find((a) => a.id === "primary-agent")!;
+  assert.equal(agent.name, "Wildcard Agent");
+  const content = buildAgentMarkdown(agent);
+  assert.match(content, /^# Wildcard Agent$/m, "H1 heading must read 'Wildcard Agent'");
+  assert.match(
+    content,
+    /description: "Handles tasks that don't match any other agent's keywords\."/,
+    "description frontmatter must carry the new catch-all wording"
+  );
 });
 
 test("simulated _installWorkerAgents NEVER overwrites an existing primary-agent.md, even a user-customized one", () => {

@@ -347,10 +347,9 @@ export const REGULAR_AGENTS: PackAgent[] = [
   },
   {
     id: "primary-agent",
-    name: "Fallback Agent",
+    name: "Wildcard Agent",
     model: "sonnet",
-    role:
-      "The catch-all worker that receives tasks when none of the specialist agents' keywords matched. Its presence in the work log is a signal that the orchestrator should refine its keyword routing.",
+    role: "Handles tasks that don't match any other agent's keywords.",
     keywords: "general|fallback|default|misc|primary|generalist",
   },
   {
@@ -462,7 +461,7 @@ export const REVIEWER_AGENTS: PackAgent[] = [
 /**
  * The project-appropriate worker roster to install, given whether the
  * project is a UEFN project. `search-retrieval` and `primary-agent` (the
- * Fallback Agent) are ALWAYS included, in every project type — both are
+ * Wildcard Agent) are ALWAYS included, in every project type — both are
  * project-agnostic: search/retrieval work and keyword-unmatched catch-all
  * work exist regardless of tech stack. Prior to this, `primary-agent` had no
  * install path at all despite being the documented default

@@ -50,9 +50,9 @@ export function runDemo(runtime: Runtime): { dispose(): void } {
       at: now(),
       workerId: "primary-agent",
       role: "Task",
-      name: "Fallback Agent",
+      name: "Wildcard Agent",
       model: "Sonnet",
-      description: "Fallback for tasks that don't match a specialist.",
+      description: "Handles tasks that don't match any other agent's keywords.",
     })
   );
   after(t++, () =>

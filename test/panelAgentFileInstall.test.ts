@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildAgentMarkdown, LEAD_AGENTS, type PackAgent } from "../src/host/vscode/packCatalog";
+import { buildAgentMarkdown, LEAD_AGENTS, REGULAR_AGENTS, type PackAgent } from "../src/host/vscode/packCatalog";
 
 // panel.ts does `import * as vscode from "vscode"` at module scope (needed by
 // the rest of the class), but the two private methods under test here —
@@ -176,6 +176,96 @@ test("_installAgentFiles still writes the keyword routing entry for every agent,
     const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
     const cfg = JSON.parse(fs.readFileSync(keywordsPath, "utf8"));
     assert.equal(cfg.agents[leadAgent.id].pattern, leadAgent.keywords);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// p33-t2: _installWorkerAgents's narrow, value-conditional refresh of an
+// already-installed primary-agent.md — rewrites it ONLY when it still
+// carries the exact old-default "Fallback Agent" H1 + description; any
+// other content (a user edit) is left byte-for-byte alone. Exercises the
+// REAL production method (not a reimplementation), same technique as
+// `callInstallAgentFiles` above.
+// ---------------------------------------------------------------------------
+
+const primaryAgent: PackAgent = REGULAR_AGENTS.find((a) => a.id === "primary-agent")!;
+
+function callInstallWorkerAgents(root: string): void {
+  const fakeThis = {
+    _isUefnPackInstalled: (TycoonPanel.prototype as any)._isUefnPackInstalled,
+  };
+  (TycoonPanel.prototype as any)._installWorkerAgents.call(fakeThis, root);
+}
+
+function primaryAgentPath(root: string): string {
+  return path.join(root, ".claude", "agents", "primary-agent.md");
+}
+
+test("_installWorkerAgents creates a missing primary-agent.md with the current template", () => {
+  const root = tmpRoot();
+  try {
+    callInstallWorkerAgents(root);
+    const p = primaryAgentPath(root);
+    assert.ok(fs.existsSync(p), "primary-agent.md must be created");
+    const content = fs.readFileSync(p, "utf8");
+    assert.match(content, /^# Wildcard Agent$/m);
+    assert.equal(content, buildAgentMarkdown(primaryAgent, "worker"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_installWorkerAgents refreshes an existing primary-agent.md that still carries the old default H1 + description", () => {
+  const root = tmpRoot();
+  try {
+    const p = primaryAgentPath(root);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const oldDefault =
+      "---\nname: primary-agent\n" +
+      'description: "The catch-all worker that receives tasks when none of the specialist agents\' keywords matched. Its presence in the work log is a signal that the orchestrator should refine its keyword routing."\n' +
+      "model: sonnet\n---\n\n# Fallback Agent\n\n## Role\nold role text\n";
+    fs.writeFileSync(p, oldDefault);
+
+    callInstallWorkerAgents(root);
+
+    const content = fs.readFileSync(p, "utf8");
+    assert.equal(content, buildAgentMarkdown(primaryAgent, "worker"), "old-default file must be rewritten to the current template");
+    assert.match(content, /^# Wildcard Agent$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_installWorkerAgents leaves a user-edited primary-agent.md untouched (different H1)", () => {
+  const root = tmpRoot();
+  try {
+    const p = primaryAgentPath(root);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const userEdited = "---\nname: primary-agent\ndescription: \"my own customization\"\nmodel: opus\n---\n\n# My Custom Name\n\nbody\n";
+    fs.writeFileSync(p, userEdited);
+
+    callInstallWorkerAgents(root);
+
+    assert.equal(fs.readFileSync(p, "utf8"), userEdited, "a file with a non-default H1 must never be rewritten");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_installWorkerAgents leaves a user-edited primary-agent.md untouched (old H1 but edited description)", () => {
+  const root = tmpRoot();
+  try {
+    const p = primaryAgentPath(root);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const userEdited =
+      '---\nname: primary-agent\ndescription: "my own customization"\nmodel: opus\n---\n\n# Fallback Agent\n\nbody\n';
+    fs.writeFileSync(p, userEdited);
+
+    callInstallWorkerAgents(root);
+
+    assert.equal(fs.readFileSync(p, "utf8"), userEdited, "old H1 alone (edited description) must not trigger a rewrite");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

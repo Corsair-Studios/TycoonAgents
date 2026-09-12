@@ -230,7 +230,7 @@ export interface MetricsWorldState {
 
 /** Override map: workerId values that should not use the default title-case formatter. */
 const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
-  "primary-agent": "Fallback Agent",
+  "primary-agent": "Wildcard Agent",
 };
 
 /** Convert a workerId / kebab-case string to Title Case display name. */
