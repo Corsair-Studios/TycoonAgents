@@ -6024,13 +6024,19 @@ export class TycoonPanel {
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
 
-      // 6b. Backfill routing keywords for any already-present hand-authored
-      // agent (see _ensureAgentKeywordsSeeded) so a fresh install populates
-      // keyword routing immediately rather than waiting for a panel reopen.
-      // Must run AFTER step 6 — its hooks-installed gate reads the settings
-      // file just written above. Best-effort — internally try/caught, never
-      // fails the hook install.
-      this._ensureAgentKeywordsSeeded();
+      // 6b. (Backfill routing keywords for any already-present hand-authored
+      // agent moved to after step 7's agent-file installs below — see the
+      // call right before step 8. Running it here, before
+      // _installWorkerAgents/_installLeadAgents/_installReviewerAgent write
+      // their .md files, meant a brand-new project's just-created worker
+      // roster didn't exist on disk yet when this seed pass read
+      // `.claude/agents/*.md`, so those agents got no agent-keywords.json
+      // entry and the panel rendered their Keywords field as the empty
+      // "kw1|kw2|kw3" placeholder until the next panel open re-ran the
+      // constructor's own _ensureAgentKeywordsSeeded call and finally saw
+      // the full roster. The reviewer agent was unaffected because
+      // _installAgentFiles/_installReviewerAgent calls setKeywordPattern
+      // directly as part of writing its file, independent of this pass.)
 
       // 6c. Stage the always-on core skills (tycoon-ready-test,
       // tycoon-diagnose) — same content-diff copy _ensureCoreSkillsFresh
@@ -6126,6 +6132,14 @@ export class TycoonPanel {
       } catch (err) {
         claudeMdError = claudeMdError ?? String(err);
       }
+
+      // 7f. Backfill routing keywords for the roster now fully on disk (see
+      // the comment where step 6b used to call this, above) — runs after
+      // every agent-file install (7c/7d2/7e) so a fresh install's
+      // agent-keywords.json entries cover the whole roster on the very
+      // first render, not just whatever existed before this install ran.
+      // Best-effort — internally try/caught, never fails the hook install.
+      this._ensureAgentKeywordsSeeded();
 
       // 8. Success.
       void this._panel.webview.postMessage({
