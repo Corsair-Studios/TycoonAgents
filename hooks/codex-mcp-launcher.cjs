@@ -633,7 +633,7 @@ function main() {
   });
 }
 
-module.exports = { discoverCodexBinary, main };
+module.exports = { discoverCodexBinary, main, needsShell };
 
 if (require.main === module) {
   main();
