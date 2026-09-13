@@ -38,6 +38,22 @@ const FORBIDDEN_ENTRIES = [
   "extension/opencode.json",
 ];
 
+// Stray untracked working-tree dirs that must never ship (found leaking into
+// 0.0.603's VSIX). Any entry under these prefixes fails the check, except
+// paths explicitly whitelisted as intentionally shipped below.
+const FORBIDDEN_PREFIXES = [
+  "extension/.codex/",
+  "extension/.vitest/",
+  "extension/Microsoft/",
+  "extension/node_modules/",
+  "extension/.claude/",
+];
+
+// .claude/skills/tycoon-diagnose is force-added and ships on purpose.
+const FORBIDDEN_PREFIX_WHITELIST = [
+  "extension/.claude/skills/tycoon-diagnose/",
+];
+
 function findVsix(): string {
   const distDir = path.join(REPO_ROOT, "dist");
   if (!fs.existsSync(distDir)) {
@@ -104,6 +120,24 @@ test("packaged VSIX does not ship media/src (source parts for media/main.js)", (
     `VSIX ${path.basename(vsixPath)} ships media/src/* source parts — these ` +
       `are build-time-only inputs concatenated into media/main.js (plan ` +
       `p21-t1) and must be excluded via .vscodeignore.`
+  );
+});
+
+test("packaged VSIX does not ship stray untracked working-tree dirs (.codex, .vitest, Microsoft, node_modules, .claude)", () => {
+  const vsixPath = findVsix();
+  const entries = listVsixEntries(vsixPath);
+
+  const leaked = entries.filter(
+    (e) =>
+      FORBIDDEN_PREFIXES.some((prefix) => e.startsWith(prefix)) &&
+      !FORBIDDEN_PREFIX_WHITELIST.some((allowed) => e.startsWith(allowed))
+  );
+  assert.deepEqual(
+    leaked,
+    [],
+    `VSIX ${path.basename(vsixPath)} ships stray entries under a forbidden ` +
+      `prefix (.codex/.vitest/Microsoft/node_modules/.claude): ` +
+      `${leaked.join(", ")} — exclude these via .vscodeignore.`
   );
 });
 

@@ -47,6 +47,13 @@ eslint.config.mjs
 **/*.pyc
 **/*.pyo
 
+# Stray untracked working-tree dirs that must never ship (found leaking into
+# 0.0.603's VSIX): Codex CLI hooks config, vitest JSON reporter output, and
+# Windows PowerShell's module analysis cache.
+.codex/**
+.vitest/**
+Microsoft/**
+
 # TycoonAgents no longer bundles or installs Trashbyrd's Power Tools.
 # Exclude the whole directory so it never ships, even if it's ever
 # repopulated locally for dev/testing.
