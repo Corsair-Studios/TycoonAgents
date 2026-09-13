@@ -563,7 +563,10 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
         event.workerId,
         (m) => ({
           ...m,
-          name: event.name ?? m.name,
+          name:
+            event.workerId in DISPLAY_NAME_OVERRIDES
+              ? DISPLAY_NAME_OVERRIDES[event.workerId]
+              : event.name ?? m.name,
           model: event.model ?? m.model,
           description: event.description ?? m.description,
         }),
@@ -602,8 +605,16 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
         event.workerId,
         (m) => ({
           ...m,
-          // If the event provides an explicit name, use it; otherwise keep computed name.
-          name: event.name ?? m.name,
+          // If this workerId has a display-name override (e.g. primary-agent
+          // -> "Wildcard Agent"), it always wins over both a stale event.name
+          // (a spawn record carrying the old agent-file H1, whether live or
+          // replayed from a persisted activity log) and any previously
+          // persisted metric name. Otherwise, an explicit event name wins;
+          // failing that, keep the computed name.
+          name:
+            event.workerId in DISPLAY_NAME_OVERRIDES
+              ? DISPLAY_NAME_OVERRIDES[event.workerId]
+              : event.name ?? m.name,
           model: event.model ?? m.model,
           description: event.description ?? m.description,
           tier: event.tier ?? m.tier,

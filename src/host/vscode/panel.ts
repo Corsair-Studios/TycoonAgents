@@ -498,6 +498,62 @@ const PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION =
   "The catch-all worker that receives tasks when none of the specialist agents' keywords matched. Its presence in the work log is a signal that the orchestrator should refine its keyword routing.";
 
 /**
+ * Two content anchors carried by every known phrasing of the old default
+ * description — the literal frontmatter `description:` string above, AND
+ * the even-older pre-frontmatter `## Role` prose (e.g. "You are the
+ * Fallback Agent — the catch-all worker that receives tasks when none of
+ * the specialist agents' keywords matched. Your presence in the work log
+ * is a signal that the orchestrator should refine its keyword routing.").
+ * Both phrasings share these two clauses verbatim (case aside), so a
+ * substring check on them is a content-over-name-match that survives the
+ * "You are the X — " preamble and the Its/Your pronoun swap the older
+ * prose form uses. Lowercased once here to keep call sites cheap.
+ */
+const PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION_ANCHORS = [
+  "catch-all worker that receives tasks when none of the specialist agents' keywords matched",
+  "is a signal that the orchestrator should refine its keyword routing",
+].map((s) => s.toLowerCase());
+
+/**
+ * Tolerant check for whether `existing` (a `primary-agent.md`'s full text)
+ * is still the stock "Fallback Agent" default nobody has customized.
+ * Tolerant on purpose (p33-t2 follow-up): trims whitespace and ignores
+ * case throughout, accepts a description that STARTS WITH the old default
+ * (so a file with an appended sentence still refreshes), and — since some
+ * already-installed files predate the `description:` frontmatter field
+ * entirely — falls back to the prose under `## Role` as the description
+ * source when no frontmatter `description:` line is present, matched via
+ * the content anchors above rather than an exact string.
+ */
+function primaryAgentIsStockDefault(existing: string): boolean {
+  const h1Match = /^#\s*(.+?)\s*$/m.exec(existing);
+  if (h1Match === null || h1Match[1].trim().toLowerCase() !== PRIMARY_AGENT_OLD_DEFAULT_H1.toLowerCase()) {
+    return false;
+  }
+
+  const descMatch = /^description:\s*"((?:[^"\\]|\\.)*)"\s*$/m.exec(existing);
+  if (descMatch !== null) {
+    let frontmatterDesc: string;
+    try {
+      frontmatterDesc = JSON.parse(`"${descMatch[1]}"`);
+    } catch {
+      frontmatterDesc = descMatch[1];
+    }
+    const normalized = frontmatterDesc.trim().toLowerCase();
+    const oldDefault = PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION.trim().toLowerCase();
+    return normalized === oldDefault || normalized.startsWith(oldDefault);
+  }
+
+  // No frontmatter `description:` field at all -> fall back to the `## Role`
+  // section's prose (the pre-frontmatter-description file shape) and match
+  // on content anchors instead of an exact string.
+  const roleMatch = /^##\s*Role\s*$\r?\n+([^\n]+(?:\r?\n[^\n#][^\n]*)*)/m.exec(existing);
+  if (roleMatch === null) return false;
+  const roleText = roleMatch[1].trim().toLowerCase();
+  return PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION_ANCHORS.every((anchor) => roleText.includes(anchor));
+}
+
+/**
  * Evidence-based detection of which ignore file(s) the Setup Wizard's
  * "Add Tycoon logs to ignore file" checkbox should target — content
  * signals only, never a guessed VCS (Path & Environment Discovery: an
@@ -6366,12 +6422,7 @@ export class TycoonPanel {
             // than silently matching itself.
             try {
               const existing = fs.readFileSync(agentPath, "utf8");
-              const h1Match = /^# (.+)$/m.exec(existing);
-              const descMatch = /^description: (".*")$/m.exec(existing);
-              const isOldH1 = h1Match !== null && h1Match[1] === PRIMARY_AGENT_OLD_DEFAULT_H1;
-              const isOldDescription =
-                descMatch !== null && descMatch[1] === JSON.stringify(PRIMARY_AGENT_OLD_DEFAULT_DESCRIPTION);
-              if (isOldH1 && isOldDescription) {
+              if (primaryAgentIsStockDefault(existing)) {
                 fs.writeFileSync(agentPath, buildAgentMarkdown(a, "worker"));
               }
             } catch {

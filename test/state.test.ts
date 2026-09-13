@@ -453,3 +453,33 @@ test("applyEvent: overlapping spawns of one agent are credited per-spawn, not do
   assert.equal(m?.activeMs, 60, "spawn-A (30ms) + spawn-B's own window [10,40] (30ms) = 60ms, not 70");
   assert.equal(m?.status, "idle");
 });
+
+// ---------------------------------------------------------------------------
+// DISPLAY_NAME_OVERRIDES: primary-agent must always show "Wildcard Agent",
+// even when a WorkerSpawned event (live, or replayed from a persisted
+// activity log written before the rename) still carries the stale
+// agent-file H1 as event.name.
+// ---------------------------------------------------------------------------
+
+test("applyEvent: WorkerSpawned with event.name 'Fallback Agent' for primary-agent yields display name 'Wildcard Agent'", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "primary-agent",
+    name: "Fallback Agent",
+  });
+  const m = metric(state.agentMetrics, "primary-agent");
+  assert.equal(m?.name, "Wildcard Agent", "override must win over a stale event.name");
+
+  // A second spawn still carrying the stale name (e.g. replayed from an
+  // older activity.jsonl record) must not reintroduce the old label via
+  // the persisted `m.name` fallback either.
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 10,
+    workerId: "primary-agent",
+    name: "Fallback Agent",
+  });
+  assert.equal(metric(state.agentMetrics, "primary-agent")?.name, "Wildcard Agent");
+});

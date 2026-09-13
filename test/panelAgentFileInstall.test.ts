@@ -238,6 +238,56 @@ test("_installWorkerAgents refreshes an existing primary-agent.md that still car
   }
 });
 
+test("_installWorkerAgents refreshes an old-default primary-agent.md whose description has an appended sentence", () => {
+  const root = tmpRoot();
+  try {
+    const p = primaryAgentPath(root);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const appended =
+      "---\nname: primary-agent\n" +
+      'description: "The catch-all worker that receives tasks when none of the specialist agents\' keywords matched. Its presence in the work log is a signal that the orchestrator should refine its keyword routing. (Auto-installed by TycoonAgents.)"\n' +
+      "model: sonnet\n---\n\n# Fallback Agent\n\n## Role\nold role text\n";
+    fs.writeFileSync(p, appended);
+
+    callInstallWorkerAgents(root);
+
+    const content = fs.readFileSync(p, "utf8");
+    assert.equal(
+      content,
+      buildAgentMarkdown(primaryAgent, "worker"),
+      "a description that starts with the old default plus an appended sentence must still refresh"
+    );
+    assert.match(content, /^# Wildcard Agent$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("_installWorkerAgents refreshes a pre-frontmatter-description primary-agent.md via ## Role content anchors", () => {
+  const root = tmpRoot();
+  try {
+    const p = primaryAgentPath(root);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy =
+      "---\nmodel: anthropic/haiku\ndisallowedTools: Agent\n---\n\n# Fallback Agent\n\n## Role\n" +
+      "You are the Fallback Agent — the catch-all worker that receives tasks when none of the specialist agents' keywords matched. " +
+      "Your presence in the work log is a signal that the orchestrator should refine its keyword routing.\n\n## When You're Used\nbody\n";
+    fs.writeFileSync(p, legacy);
+
+    callInstallWorkerAgents(root);
+
+    const content = fs.readFileSync(p, "utf8");
+    assert.equal(
+      content,
+      buildAgentMarkdown(primaryAgent, "worker"),
+      "a legacy file with no frontmatter description field must still refresh via the ## Role content anchors"
+    );
+    assert.match(content, /^# Wildcard Agent$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("_installWorkerAgents leaves a user-edited primary-agent.md untouched (different H1)", () => {
   const root = tmpRoot();
   try {
