@@ -341,7 +341,7 @@ test("Contract 2: the resulting SubagentStop record in activity.jsonl carries th
   }
 });
 
-test("Contract 2: with no agent_id on the SubagentStop payload, existing fallback priorities (subagentType / LIFO) still work unchanged", () => {
+test("Contract 2: with no agent_id on the SubagentStop payload, and neither same-subagentType candidate bound to an instanceId, the fallback now prefers the OLDEST (FIFO), not stack-top (LIFO)", () => {
   const root = setupProject();
   try {
     seedStack(root, [
@@ -349,18 +349,25 @@ test("Contract 2: with no agent_id on the SubagentStop payload, existing fallbac
       { agentId: "coding-specialist", model: "sonnet", timestamp: Date.now(), subagentType: "coding-specialist" },
     ]);
 
-    // No agent_id field at all — legacy behavior: subagentType match, LIFO
-    // (top-most matching entry) among matches.
+    // No agent_id field at all, and neither candidate has ever bound an
+    // instanceId. This is the exact ambiguous case the concurrent-same-type
+    // SubagentStop fix addresses: when two same-subagentType entries are
+    // both still unbound, LIFO (stack-top) tie-break used to pop whichever
+    // spawned MOST RECENTLY regardless of which one is actually stopping —
+    // the direct cause of a same-type spawn's SubagentStop removing the
+    // WRONG spawn's spawnId. The fix breaks the tie FIFO (oldest first)
+    // instead, matching natural stop order for two spawns that both
+    // started before either bound an instanceId.
     runHook(root, { hook_event_name: "SubagentStop", tool_input: { subagent_type: "coding-specialist" }, session_id: "attr-session" });
 
     const records = readActivity(root);
     const stop = records.find((r) => r.event === "SubagentStop");
     assert.ok(stop, "expected a SubagentStop record");
-    assert.equal(stop!.workerId, "coding-specialist", "legacy subagentType/LIFO match must still pop the top-most matching entry");
+    assert.equal(stop!.workerId, "search-retrieval", "unbound same-subagentType fallback must now pop the OLDEST (FIFO) entry");
 
     const stack = readActiveAgent(root).stack;
     assert.equal(stack.length, 1, "one entry must remain");
-    assert.equal(stack[0].agentId, "search-retrieval");
+    assert.equal(stack[0].agentId, "coding-specialist");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

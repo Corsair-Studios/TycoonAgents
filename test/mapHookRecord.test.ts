@@ -528,3 +528,74 @@ test("toolToActivityKind: mcp__server__tool -> wire", () => {
 test("toolToActivityKind: unknown tool -> build (default)", () => {
   assert.equal(toolToActivityKind("SomeFutureTool"), "build");
 });
+
+// ---------------------------------------------------------------------------
+// spawnId / roleInferred / description (per-spawn instance tracking)
+// ---------------------------------------------------------------------------
+
+test("PreToolUse Task with spawnId/roleInferred/description maps onto WorkerSpawned's spawnId/roleInferred/currentDescription", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    spawnId: "spawn-abc",
+    roleInferred: true,
+    description: "implement the widget",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].spawnId, "spawn-abc");
+    assert.equal(events[0].roleInferred, true);
+    assert.equal(events[0].currentDescription, "implement the widget");
+  }
+});
+
+test("PreToolUse Task without spawnId/roleInferred/description emits WorkerSpawned with none of those fields set", () => {
+  const record: HookRecord = { event: "PreToolUse", tool: "Task", workerId: "coding-specialist", at: T };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].spawnId, undefined);
+    assert.equal(events[0].roleInferred, undefined);
+    assert.equal(events[0].currentDescription, undefined);
+  }
+});
+
+test("PreToolUse Task with an explicit (non-inferred) spawn carries spawnId but no roleInferred", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "codex-reviewer",
+    spawnId: "spawn-explicit-1",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].spawnId, "spawn-explicit-1");
+    assert.equal(events[0].roleInferred, undefined);
+  }
+});
+
+test("SubagentStop with a spawnId propagates it to WorkerStopped", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "coding-specialist", spawnId: "spawn-abc", at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.spawnId, "spawn-abc");
+  }
+});
+
+test("SubagentStop without a spawnId emits WorkerStopped with no spawnId field", () => {
+  const record: HookRecord = { event: "SubagentStop", workerId: "coding-specialist", at: T };
+  const events = mapHookRecord(record);
+  const ws = events[1];
+  assert.equal(ws.type, "WorkerStopped");
+  if (ws.type === "WorkerStopped") {
+    assert.equal(ws.spawnId, undefined);
+  }
+});

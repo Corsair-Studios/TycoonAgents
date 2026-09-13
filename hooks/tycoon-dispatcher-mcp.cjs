@@ -73,6 +73,7 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const crypto = require("crypto");
 
 const codexRouting = require("./codexRouting.cjs");
 const codexRollout = require("./codexRollout.cjs");
@@ -363,6 +364,13 @@ async function handleDelegateTool(args) {
       } catch { /* never let a stderr write break a dispatch */ }
     }
   }
+  // Per-call spawn id — parity with hooks/tycoon-claude-hook.cjs's
+  // generateSpawnId. This dispatcher call is synchronous end-to-end (await
+  // adapterFn, then write the matching SubagentStop below), so one id per
+  // call is always exact — no cross-call binding is needed as it is on the
+  // Claude Code hook.
+  const spawnId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `spawn-${Date.now()}`;
+
   const preRecord = {
     event: "PreToolUse",
     provider: "codex",
@@ -372,6 +380,7 @@ async function handleDelegateTool(args) {
     sessionId: threadId,
     vendor,
     model,
+    spawnId,
     at: Date.now(),
   };
   if (costModelClass) preRecord.costModelClass = costModelClass;
@@ -413,7 +422,7 @@ async function handleDelegateTool(args) {
         result.usage && (typeof result.usage.input_tokens === "number" || typeof result.usage.output_tokens === "number")
           ? (result.usage.input_tokens || 0) + (result.usage.output_tokens || 0)
           : undefined;
-      const stopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, at: Date.now() };
+      const stopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, at: Date.now() };
       if (fallbackDepth > 0) {
         stopRecord.fallbackOf = workerId;
         stopRecord.fallbackDepth = fallbackDepth;
@@ -503,6 +512,7 @@ async function handleDelegateTool(args) {
       fallbackOf: workerId,
       fallbackDepth,
       fallbackIsDefault,
+      spawnId,
       at: Date.now(),
     };
     if (next.slot.costModelClass) fbPreRecord.costModelClass = next.slot.costModelClass;

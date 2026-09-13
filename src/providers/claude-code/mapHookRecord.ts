@@ -118,6 +118,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           ...(record.report !== undefined ? { report: record.report } : {}),
           ...(record.reportChars !== undefined ? { reportChars: record.reportChars } : {}),
           ...(record.usageReported !== undefined ? { usageReported: record.usageReported } : {}),
+          ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
         },
       ];
     case "PreToolUse": {
@@ -139,6 +140,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
             role: record.tool,
             ...(record.model !== undefined ? { model: record.model } : {}),
             ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
+            ...(record.description !== undefined ? { currentDescription: record.description } : {}),
             ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
             ...(record.tier !== undefined ? { tier: record.tier } : {}),
             ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),
@@ -147,6 +149,8 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
             ...(record.fallbackOf !== undefined ? { fallbackOf: record.fallbackOf } : {}),
             ...(record.fallbackDepth !== undefined ? { fallbackDepth: record.fallbackDepth } : {}),
             ...(record.fallbackIsDefault !== undefined ? { fallbackIsDefault: record.fallbackIsDefault } : {}),
+            ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
+            ...(record.roleInferred !== undefined ? { roleInferred: record.roleInferred } : {}),
           },
         ];
       }

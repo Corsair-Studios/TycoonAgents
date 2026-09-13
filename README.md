@@ -42,6 +42,8 @@ Because searches run on Haiku and implementation on Sonnet instead of everything
 
 **When savings aren't shown.** The counterfactual, billed, and estimated-avoided figures only appear when every delegated worker in the run shares one vendor with a shipped price table and reported real token usage. In mixed-vendor setups — say a Codex, Gemini, or Kimi reviewer alongside Claude workers — or when a worker returns no usage at all, the panel shows *"Savings not shown: <reason>"* instead; per-agent token and call counts still display. Separately, because TycoonAgents delegation spawns Claude Code subagents, VS Code's own Agent map also lists them — the two views agree only in a pure Claude setup, since foreign-harness workers never appear in the Agent map.
 
+**Concurrent spawns of the same specialist.** When more than one instance of a specialist is live at once, the metrics table tracks each spawn separately: the row picks up a **"×N"** badge and an extra character appears on the scene for as long as more than one instance is running. The active row shows the spawn's task description under the agent name, matching the label used in the VS Code Agent map. An **"(inferred)"** marker next to the name means the spawn used a built-in subagent type rather than an explicit agent name, so the role shown was guessed from keywords in the brief — treat it as a cue to tighten keyword routing or name the agent directly.
+
 Figures are **dimensionless ratios** from measured tokens × approximate per-model rates — not a billed dollar amount, and not applicable to subscription plans (which bill by plan, not per token). The point is the *ratio*: the same work on a bigger model would cost multiples more.
 
 ## Project plan

@@ -967,6 +967,78 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('dazed-bookkeeping-render');
     });
 
+    // ── Step 9d: per-spawn instance tracking (liveSpawns/roleInferred/currentDescription) ──
+    // Guards buildMetricsRow's new instance-count badge, inferred-role
+    // marker, and live spawn description line (media/src/main/080-packs-
+    // events.js ~1109-1141): a liveSpawns array of length > 1 renders the
+    // ×N ".agent-instance-count" badge; roleInferred renders
+    // ".agent-role-inferred"; an ACTIVE agent's currentDescription renders
+    // ".agent-spawn-desc" and an idle agent's does not, even when set.
+    await t.test('9d. metrics row: ×N instance badge, roleInferred marker, active spawn description line', async () => {
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true,
+          completedTasks: 0,
+          idleFreezeMs: 180000,
+          sanityCapMs: 900000,
+          workers: {},
+          agentMetrics: [
+            {
+              id: 'coding-specialist', name: 'Coding Specialist', status: 'active', model: 'sonnet',
+              tokens: 100, activeMs: 5000, liveSpawns: ['spawn-1', 'spawn-2'], roleInferred: true,
+              currentDescription: 'implement the widget', lastActivityAt: Date.now(),
+            },
+            {
+              id: 'workspace-monitor', name: 'Workspace Monitor', status: 'idle', model: 'sonnet',
+              tokens: 50, activeMs: 2000, currentDescription: 'should not show while idle',
+              lastActivityAt: Date.now() - 5000,
+            },
+          ],
+        },
+      });
+      tick(5);
+      await flush();
+      assertNoErrors('spawnid-instance-render');
+
+      const tbody = doc.getElementById('metrics-tbody');
+      assert.ok(tbody, 'metrics-tbody should exist');
+      const rows = [...tbody.querySelectorAll('tr')].filter((r: any) => !r.classList.contains('metrics-footer-row'));
+      const codingRow = rows.find((r: any) => r.querySelector('td.col-name')?.textContent?.includes('Coding Specialist'));
+      const monitorRow = rows.find((r: any) => r.querySelector('td.col-name')?.textContent?.includes('Workspace Monitor'));
+      assert.ok(codingRow, 'Coding Specialist row should exist');
+      assert.ok(monitorRow, 'Workspace Monitor row should exist');
+
+      const badge = codingRow.querySelector('.agent-instance-count');
+      assert.ok(badge, 'liveSpawns.length > 1 should render the ×N instance badge');
+      assert.equal(badge.textContent, '×2');
+
+      const marker = codingRow.querySelector('.agent-role-inferred');
+      assert.ok(marker, 'roleInferred:true should render the inferred-role marker');
+
+      const descLine = codingRow.querySelector('.agent-spawn-desc');
+      assert.ok(descLine, 'an ACTIVE agent with currentDescription should render the spawn-desc line');
+      assert.equal(descLine.textContent, 'implement the widget');
+
+      assert.equal(monitorRow.querySelector('.agent-instance-count'), null, 'idle single-spawn agent should have no instance badge');
+      assert.equal(monitorRow.querySelector('.agent-role-inferred'), null, 'agent without roleInferred should have no marker');
+      assert.equal(
+        monitorRow.querySelector('.agent-spawn-desc'),
+        null,
+        'an IDLE agent must not render its currentDescription line even though the field is set',
+      );
+    });
+
+    // NOTE (per test brief, item 5 canvas half): media/src/main/120-agent-
+    // dance-render-init.js's sceneAgentList "#n" expansion for extra
+    // liveSpawns instances is computed in a closure-scoped variable
+    // (lastAgentList) inside main.js's render loop with no exposed unit
+    // seam (no window.__ debug hook, no exported function) reachable from
+    // this jsdom harness or any other test file in this repo — canvas
+    // output itself is not inspectable either. Skipping a direct
+    // `id#2`-is-produced assertion for that reason; 9b/9c above are the
+    // existing precedent for treating that render path as smoke-only.
+
     // ── Step 10: pre-install delegation chooser visibility (Phase 2 bugfix) ──────
     // The install-screen #delegation-mode-group must be hidden on every
     // installState path EXCEPT installed === false (fresh install), and the

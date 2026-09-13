@@ -48,7 +48,15 @@ export type NormalizedEvent =
   // delegationMode (Team Lead Mode Phase 4) is the delegation topology active at spawn
   // time ("flat"|"team_leads"); undefined on legacy records — treated as "flat" by
   // computeDelegationModeStats in core/state.ts.
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; fallbackIsDefault?: boolean; provider?: string; sessionId?: string }
+  // spawnId (per-spawn instance tracking): the hook's own per-spawn id
+  // (generateSpawnId in hooks/tycoon-claude-hook.cjs / tycoon-dispatcher-mcp.cjs),
+  // distinct from any provider-native instance id. Undefined on legacy records —
+  // treated as the single-instance path (AgentMetric.liveSpawns reducer in
+  // core/state.ts). currentDescription is this spawn's own task brief
+  // (HookRecord.description, toolInput.description) — NOT the agent's static
+  // .md frontmatter `description` above. roleInferred is true when workerId was
+  // resolved via keyword scoring rather than an explicit agent name/subagent_type.
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; currentDescription?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; fallbackIsDefault?: boolean; provider?: string; sessionId?: string; spawnId?: string; roleInferred?: boolean }
   | {
       type: "WorkerActivity";
       at: number;
@@ -68,7 +76,7 @@ export type NormalizedEvent =
   // transcript was unavailable — never an empty string standing in for that.
   // reportChars: the report's ORIGINAL (pre-truncation) length, present iff
   // report is — lets consumers tell a short report from a truncated one.
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string; usageReported?: boolean }
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string; usageReported?: boolean; spawnId?: string }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string; provider?: string; sessionId?: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

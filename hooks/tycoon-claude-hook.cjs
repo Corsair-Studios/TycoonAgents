@@ -8,6 +8,23 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+
+// Per-spawn instance identifier, generated at push time (independent of
+// Claude Code's own payload.agent_id, which is only bound to a stack entry
+// lazily on that instance's first non-spawn tool call — see
+// resolveAgainstStack's doc comment). Lets the panel tell two concurrent
+// spawns of the same agentId apart from the moment the Task tool fires,
+// without waiting on that later bind. Falls back to a counter-based id if
+// crypto.randomUUID is unavailable (older Node).
+let spawnIdCounter = 0;
+function generateSpawnId() {
+  try {
+    if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch { /* fall through to counter fallback */ }
+  spawnIdCounter += 1;
+  return "spawn-" + Date.now() + "-" + spawnIdCounter;
+}
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -858,11 +875,27 @@ function popMatchedAgent(activeAgentFile, opts) {
       }
     }
 
-    // Priority 1: match by subagentType embedded in the stack entry.
+    // Priority 1: match by subagentType embedded in the stack entry. When
+    // exactly one candidate matches, use it. When several concurrent
+    // same-type spawns are live and none has bound an instanceId yet (the
+    // exact-instanceId Priority -1 above already failed, so any candidate
+    // that DOES have a bound instanceId is confirmed to be a DIFFERENT,
+    // still-live spawn — never this one), prefer an UNBOUND candidate
+    // (instanceId not yet set) over a bound one, then break remaining ties
+    // FIFO (oldest/lowest stack index first) rather than LIFO — the stack's
+    // natural push order is spawn order, so the oldest same-type entry is
+    // the most likely one to be stopping first.
     if (removedIdx < 0 && subagentType) {
-      for (let i = stack.length - 1; i >= 0; i--) {
+      const candidates = [];
+      for (let i = 0; i < stack.length; i++) {
         const e = stack[i];
-        if (e.subagentType && e.subagentType.toLowerCase() === subagentType) { removedIdx = i; break; }
+        if (e.subagentType && e.subagentType.toLowerCase() === subagentType) candidates.push(i);
+      }
+      if (candidates.length === 1) {
+        removedIdx = candidates[0];
+      } else if (candidates.length > 1) {
+        const unbound = candidates.filter((i) => !stack[i].instanceId);
+        removedIdx = unbound.length > 0 ? unbound[0] : candidates[0];
       }
     }
 
@@ -1434,6 +1467,13 @@ function main(raw) {
     if (popped && typeof popped.instanceId === "string" && popped.instanceId !== "") {
       record.instanceId = popped.instanceId;
     }
+    // spawnId: the same per-spawn id stamped on this instance's PreToolUse
+    // spawn record (generateSpawnId), carried on the stack entry and
+    // returned by popMatchedAgent — lets the panel remove exactly this
+    // instance from AgentMetric.liveSpawns instead of guessing.
+    if (popped && typeof popped.spawnId === "string" && popped.spawnId !== "") {
+      record.spawnId = popped.spawnId;
+    }
 
     if (popped && popped.model) record.model = popped.model;
     if (popped && popped.fallbackOf !== undefined) {
@@ -1741,8 +1781,17 @@ function main(raw) {
         ? parentEntry.agentId
         : undefined;
 
-      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId, fallbackOf, fallbackDepth, fallbackIsDefault };
+      const spawnId = generateSpawnId();
+      const stackEntry = { agentId, model, timestamp: at, subagentType, parentId, fallbackOf, fallbackDepth, fallbackIsDefault, spawnId };
       pushActiveAgent(activeAgentFile, stackEntry);
+
+      // roleInferred: true when this spawn's agentId came from keyword
+      // scoring (routingMethod "keyword") rather than an explicit agent
+      // name/subagent_type match — i.e. subagent_type was a built-in
+      // (general-purpose/Explore) and the description/prompt text was
+      // scored against agent-keywords.json. Lets the panel flag a spawn
+      // that landed on an agent by guesswork instead of direct routing.
+      const roleInferred = routingMethod === "keyword";
 
       /** @type {Record<string, unknown>} */
       const record = {
@@ -1753,6 +1802,7 @@ function main(raw) {
         description,
         routingMethod,
         matchedKeyword,
+        spawnId,
         at,
       };
       if (agentDescription) record.agentDescription = agentDescription;
@@ -1760,6 +1810,7 @@ function main(raw) {
       if (parentId) record.parentId = parentId;
       if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
+      if (roleInferred) record.roleInferred = true;
       if (fallbackOf !== undefined) {
         record.fallbackOf = fallbackOf;
         record.fallbackDepth = fallbackDepth;

@@ -828,3 +828,45 @@ test("handleDelegateTool: agent on a different vendor than defaults does not inh
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Per-call spawnId (parity with hooks/tycoon-claude-hook.cjs's generateSpawnId)
+// ---------------------------------------------------------------------------
+
+test("handleDelegateTool: PreToolUse and SubagentStop of one delegate call share a spawnId", async () => {
+  const dir = makeProjectDir();
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    const result = await mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" });
+    assert.equal(result.isError, undefined);
+
+    const records = readActivityRecords(mod.resolveActivityFile());
+    const pre = records.find((r) => r.event === "PreToolUse");
+    const stop = records.find((r) => r.event === "SubagentStop");
+    assert.ok(pre, "expected a PreToolUse record");
+    assert.ok(stop, "expected a SubagentStop record");
+    assert.equal(typeof pre!.spawnId, "string");
+    assert.ok((pre!.spawnId as string).length > 0, "spawnId must be a non-empty string");
+    assert.equal(stop!.spawnId, pre!.spawnId, "PreToolUse and SubagentStop of the same dispatch call must share one spawnId");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleDelegateTool: two separate delegate calls get distinct spawnIds", async () => {
+  const dir = makeProjectDir();
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    await mod.handleDelegateTool({ specialist: "coding-specialist", task: "first thing" });
+    await mod.handleDelegateTool({ specialist: "coding-specialist", task: "second thing" });
+
+    const records = readActivityRecords(mod.resolveActivityFile());
+    const pres = records.filter((r) => r.event === "PreToolUse");
+    assert.equal(pres.length, 2);
+    assert.notEqual(pres[0].spawnId, pres[1].spawnId, "each dispatch call must get its own spawnId");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -181,6 +181,30 @@ export interface AgentMetric {
    * eligibility computed in media/src/main/080-packs-events.js.
    */
   usageReported?: boolean;
+  /**
+   * Per-spawn instance ids currently live for this agent (WorkerSpawned's
+   * spawnId, pushed on spawn / removed on the matching WorkerStopped by
+   * spawnId). Lets two concurrent spawns routed to the same agent id show
+   * as distinct instances instead of collapsing into one active card.
+   * Undefined when no event for this agent has ever carried a spawnId
+   * (legacy hook records) — treated as the single-instance path: status
+   * flips active/idle on every spawn/stop exactly as before this field
+   * existed, regardless of liveSpawns.
+   */
+  liveSpawns?: string[];
+  /**
+   * True when the MOST RECENT spawn for this agent had its role guessed
+   * from keyword scoring (HookRecord.roleInferred) rather than an explicit
+   * agent name/subagent_type match. Undefined/false otherwise.
+   */
+  roleInferred?: boolean;
+  /**
+   * The most recent spawn's own task brief (HookRecord.description /
+   * WorkerSpawned.currentDescription) — distinct from the static
+   * `description` field above, which is the agent's .md frontmatter
+   * description. Undefined when never reported.
+   */
+  currentDescription?: string;
 }
 
 /**
@@ -421,7 +445,19 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
       // and the elapsed time is untrustworthy.
       const nextInternals = afterOrchestrator.map((m) =>
         m.id !== ORCHESTRATOR_ID && (m.status === "active" || m.workStartAt !== null)
-          ? { ...m, status: "idle" as const, workStartAt: null }
+          ? {
+              ...m,
+              status: "idle" as const,
+              workStartAt: null,
+              // Clear any spawn-instance bookkeeping left over from the dead
+              // turn — an orphaned liveSpawns/currentDescription would
+              // otherwise produce a false "xN" badge/phantom canvas clone on
+              // the NEXT real spawn for this agent id. Conditional so an
+              // agent that never had these fields (legacy fixtures) is
+              // untouched.
+              ...(m.liveSpawns !== undefined ? { liveSpawns: [] } : {}),
+              ...(m.currentDescription !== undefined ? { currentDescription: undefined } : {}),
+            }
           : m,
       );
       return {
@@ -491,6 +527,10 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
               status: "idle" as const,
               activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
               workStartAt: null,
+              // Same orphan-sweep cleanup as SessionStart's sweep above — see
+              // its comment.
+              ...(m.liveSpawns !== undefined ? { liveSpawns: [] } : {}),
+              ...(m.currentDescription !== undefined ? { currentDescription: undefined } : {}),
             }
           : m,
       );
@@ -565,6 +605,14 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
+          // liveSpawns: only touched when this event carries a spawnId — a
+          // legacy event (no spawnId) leaves it exactly as it was (undefined
+          // stays undefined), so old fixtures/deepEqual tests are unaffected.
+          ...(event.spawnId !== undefined
+            ? { liveSpawns: [...(m.liveSpawns ?? []), event.spawnId] }
+            : {}),
+          ...(event.roleInferred !== undefined ? { roleInferred: event.roleInferred } : {}),
+          ...(event.currentDescription !== undefined ? { currentDescription: event.currentDescription } : {}),
         }),
         event.provider,
         event.sessionId,
@@ -696,27 +744,42 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
-        (m) => ({
-          ...m,
-          status: "idle" as const,
-          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
-          tokens: m.tokens + (event.tokens ?? 0),
-          cacheReadTokens: m.cacheReadTokens + (event.cacheReadTokens ?? 0),
-          workStartAt: null,
-          // Most-recent report only (never accumulated). A WorkerStopped
-          // event without a report (older hook version, or the transcript
-          // had no report to extract) must NOT clobber a previously captured
-          // report — only overwrite when this event actually carries one.
-          lastReport: event.report !== undefined ? event.report : m.lastReport,
-          lastReportChars: event.report !== undefined ? event.reportChars : m.lastReportChars,
-          // Overwritten only when this event explicitly carries the field
-          // (foreign-harness dispatch records always do); a native Claude
-          // Code SubagentStop never sets it, so the key stays absent and
-          // readers fall back to their own true default (see
-          // AgentMetric.usageReported's doc comment) rather than this
-          // reducer materializing it.
-          ...(event.usageReported !== undefined ? { usageReported: event.usageReported } : {}),
-        }),
+        (m) => {
+          // liveSpawns: only touched when this event carries a spawnId AND
+          // the metric already has a liveSpawns list (legacy events, or an
+          // agent that has never had a spawnId recorded, leave it untouched
+          // — single-instance path). When a spawnId is removed and the list
+          // becomes empty, the agent truly has no more live instances; when
+          // it is still non-empty, another concurrent spawn is still
+          // running and status must stay "active", not flip to idle.
+          const nextLiveSpawns =
+            event.spawnId !== undefined && m.liveSpawns !== undefined
+              ? m.liveSpawns.filter((id) => id !== event.spawnId)
+              : m.liveSpawns;
+          const stillLive = nextLiveSpawns !== undefined && nextLiveSpawns.length > 0;
+          return {
+            ...m,
+            status: stillLive ? ("active" as const) : ("idle" as const),
+            ...(nextLiveSpawns !== undefined ? { liveSpawns: nextLiveSpawns } : {}),
+            activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+            tokens: m.tokens + (event.tokens ?? 0),
+            cacheReadTokens: m.cacheReadTokens + (event.cacheReadTokens ?? 0),
+            workStartAt: stillLive ? m.workStartAt : null,
+            // Most-recent report only (never accumulated). A WorkerStopped
+            // event without a report (older hook version, or the transcript
+            // had no report to extract) must NOT clobber a previously captured
+            // report — only overwrite when this event actually carries one.
+            lastReport: event.report !== undefined ? event.report : m.lastReport,
+            lastReportChars: event.report !== undefined ? event.reportChars : m.lastReportChars,
+            // Overwritten only when this event explicitly carries the field
+            // (foreign-harness dispatch records always do); a native Claude
+            // Code SubagentStop never sets it, so the key stays absent and
+            // readers fall back to their own true default (see
+            // AgentMetric.usageReported's doc comment) rather than this
+            // reducer materializing it.
+            ...(event.usageReported !== undefined ? { usageReported: event.usageReported } : {}),
+          };
+        },
         event.provider,
         event.sessionId,
       );

@@ -280,3 +280,138 @@ test("applyEvent: WorkerStopped without a usageReported field leaves the key abs
   assert.equal(m?.usageReported, undefined);
   assert.ok(m && !("usageReported" in m), "the conditional spread must leave the key entirely absent, not present-and-undefined");
 });
+
+// ---------------------------------------------------------------------------
+// liveSpawns: per-spawn instance tracking (WorkerSpawned/WorkerStopped spawnId)
+// ---------------------------------------------------------------------------
+
+test("applyEvent: two WorkerSpawned for the same workerId with different spawnIds -> liveSpawns length 2, status active", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 1,
+    workerId: "coding-specialist",
+    spawnId: "spawn-2",
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.deepEqual(m?.liveSpawns, ["spawn-1", "spawn-2"]);
+  assert.equal(m?.status, "active");
+});
+
+test("applyEvent: one WorkerStopped of a two-spawn agent removes only that spawnId and stays active", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 1,
+    workerId: "coding-specialist",
+    spawnId: "spawn-2",
+  });
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 2,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.deepEqual(m?.liveSpawns, ["spawn-2"], "only spawn-1 should be removed");
+  assert.equal(m?.status, "active", "a second concurrent spawn is still live, so status must stay active");
+});
+
+test("applyEvent: the second WorkerStopped empties liveSpawns and flips the agent idle", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 1,
+    workerId: "coding-specialist",
+    spawnId: "spawn-2",
+  });
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 2,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+  });
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 3,
+    workerId: "coding-specialist",
+    spawnId: "spawn-2",
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.deepEqual(m?.liveSpawns, [], "both spawns removed -> empty array");
+  assert.equal(m?.status, "idle");
+});
+
+test("applyEvent: legacy WorkerSpawned/WorkerStopped without spawnId keep the old single-instance behaviour and produce no liveSpawns key", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+  });
+  let m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.status, "active");
+  assert.equal(m?.liveSpawns, undefined, "no spawnId ever recorded -> liveSpawns key absent");
+  assert.ok(m && !("liveSpawns" in m), "the conditional spread must leave the key entirely absent");
+
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 1,
+    workerId: "coding-specialist",
+  });
+  m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.status, "idle", "legacy path: a single WorkerStopped with no spawnId still flips the agent idle");
+  assert.equal(m?.liveSpawns, undefined);
+});
+
+test("applyEvent: SessionStop's orphan sweep clears liveSpawns (and currentDescription) on an abandoned agent, so the NEXT spawn starts with liveSpawns length 1, not a stale ×N badge", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+    currentDescription: "abandoned task A",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 1,
+    workerId: "coding-specialist",
+    spawnId: "spawn-2",
+    currentDescription: "abandoned task B",
+  });
+  // Neither spawn got a matching WorkerStopped (process died before the hook
+  // fired) — SessionStop's orphan sweep must reset status AND clear the
+  // leftover spawn bookkeeping, not just status/workStartAt.
+  state = applyEvent(state, { type: "SessionStop", at: T + 2 });
+  let m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.status, "idle");
+  assert.deepEqual(m?.liveSpawns, [], "orphan sweep must clear liveSpawns, not leave it populated");
+  assert.equal(m?.currentDescription, undefined, "orphan sweep must also clear currentDescription");
+
+  // A genuinely new spawn afterward must start fresh at length 1 -- if the
+  // sweep had left the old spawnIds in place, this would wrongly show 3.
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 3,
+    workerId: "coding-specialist",
+    spawnId: "spawn-3",
+    currentDescription: "new task",
+  });
+  m = metric(state.agentMetrics, "coding-specialist");
+  assert.deepEqual(m?.liveSpawns, ["spawn-3"], "liveSpawns must be exactly the new spawn, length 1");
+  assert.equal(m?.status, "active");
+});

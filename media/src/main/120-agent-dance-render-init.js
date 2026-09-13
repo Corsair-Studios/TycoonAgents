@@ -1026,6 +1026,31 @@
     if (orchIdx > 0) {
       sceneAgentList = [agentList[orchIdx], ...agentList.slice(0, orchIdx), ...agentList.slice(orchIdx + 1)];
     }
+    // Per-spawn instance actors (AgentMetric.liveSpawns, src/core/state.ts):
+    // when two or more concurrent Task spawns are routed to the same agent
+    // id, add one extra scene entry per instance beyond the first so each
+    // concurrent spawn gets its own on-stage actor instead of sharing one.
+    // Extras are shallow clones of the primary agent's metric row, keyed as
+    // "<id>#<n>" (n >= 2) so they flow through every existing per-agent
+    // system below (isoSlotHome placement, agentCharMap init/prune, worker
+    // state lookup) exactly like a normal roster entry — sharing the same
+    // sprite/accent (all fields except id/name are copied verbatim) and
+    // labeled with a "#n" suffix. Retired automatically the frame liveSpawns
+    // shrinks: they simply stop being emitted here, and the existing
+    // agentCharMap prune step (agentIds derived from sceneAgentList, just
+    // below) deletes the now-absent id like any other agent leaving the roster.
+    if (sceneAgentList.some((a) => Array.isArray(a.liveSpawns) && a.liveSpawns.length > 1)) {
+      const expanded = [];
+      for (const a of sceneAgentList) {
+        expanded.push(a);
+        const count = Array.isArray(a.liveSpawns) ? a.liveSpawns.length : 1;
+        for (let n = 2; n <= count; n++) {
+          expanded.push({ ...a, id: `${a.id}#${n}`, name: `${a.name || a.id} #${n}` });
+        }
+      }
+      sceneAgentList = expanded;
+    }
+
     lastAgentList = sceneAgentList; // expose to off-loop debug hotkeys (conga leader = orchestrator)
 
     // Rebirth (B2): track the high-water mark of concurrently-ACTIVE agents

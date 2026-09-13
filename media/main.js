@@ -15078,6 +15078,42 @@ if (typeof module !== "undefined" && module.exports) {
     else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
     nameTd.appendChild(nameText);
 
+    // Per-spawn instance count (liveSpawns, src/core/state.ts AgentMetric):
+    // two or more concurrent Task spawns routed to the same agent id show a
+    // small "xN" badge instead of collapsing into one indistinguishable
+    // active card. Absent entirely when liveSpawns is undefined/<=1 (legacy
+    // hook records / single live instance) — no new DOM for today's common case.
+    if (Array.isArray(agent.liveSpawns) && agent.liveSpawns.length > 1) {
+      const countBadge = document.createElement("span");
+      countBadge.className = "agent-instance-count";
+      countBadge.textContent = `×${agent.liveSpawns.length}`;
+      countBadge.title = `${agent.liveSpawns.length} concurrent spawns currently routed to this agent.`;
+      nameTd.appendChild(countBadge);
+    }
+
+    // Inferred-role marker (roleInferred, HookRecord.roleInferred): this
+    // agent's most recent spawn had its role guessed from keyword scoring
+    // rather than an explicit agent name/subagent_type match.
+    if (agent.roleInferred) {
+      const inferredMark = document.createElement("span");
+      inferredMark.className = "agent-role-inferred";
+      inferredMark.textContent = "(inferred)";
+      inferredMark.title = "Role guessed from keywords; give the spawn an explicit agent name to route it directly.";
+      nameTd.appendChild(inferredMark);
+    }
+
+    // Live spawn description (currentDescription, WorkerSpawned.currentDescription):
+    // this spawn's own task brief, shown as a muted secondary line only while
+    // the agent is active — a stale brief under an idle/done row would read
+    // as "still doing this", which it no longer is.
+    if (showActive && typeof agent.currentDescription === "string" && agent.currentDescription.length > 0) {
+      const descLine = document.createElement("div");
+      descLine.className = "agent-spawn-desc";
+      descLine.textContent = agent.currentDescription;
+      descLine.title = agent.currentDescription;
+      nameTd.appendChild(descLine);
+    }
+
     // Worker report disclosure (0.0.562): agent.lastReport is the captured
     // final assistant-message text from this agent's transcript (see
     // AgentMetric.lastReport, src/core/state.ts ~123) — up to ~2000 chars of
@@ -23427,6 +23463,31 @@ if (typeof module !== "undefined" && module.exports) {
     if (orchIdx > 0) {
       sceneAgentList = [agentList[orchIdx], ...agentList.slice(0, orchIdx), ...agentList.slice(orchIdx + 1)];
     }
+    // Per-spawn instance actors (AgentMetric.liveSpawns, src/core/state.ts):
+    // when two or more concurrent Task spawns are routed to the same agent
+    // id, add one extra scene entry per instance beyond the first so each
+    // concurrent spawn gets its own on-stage actor instead of sharing one.
+    // Extras are shallow clones of the primary agent's metric row, keyed as
+    // "<id>#<n>" (n >= 2) so they flow through every existing per-agent
+    // system below (isoSlotHome placement, agentCharMap init/prune, worker
+    // state lookup) exactly like a normal roster entry — sharing the same
+    // sprite/accent (all fields except id/name are copied verbatim) and
+    // labeled with a "#n" suffix. Retired automatically the frame liveSpawns
+    // shrinks: they simply stop being emitted here, and the existing
+    // agentCharMap prune step (agentIds derived from sceneAgentList, just
+    // below) deletes the now-absent id like any other agent leaving the roster.
+    if (sceneAgentList.some((a) => Array.isArray(a.liveSpawns) && a.liveSpawns.length > 1)) {
+      const expanded = [];
+      for (const a of sceneAgentList) {
+        expanded.push(a);
+        const count = Array.isArray(a.liveSpawns) ? a.liveSpawns.length : 1;
+        for (let n = 2; n <= count; n++) {
+          expanded.push({ ...a, id: `${a.id}#${n}`, name: `${a.name || a.id} #${n}` });
+        }
+      }
+      sceneAgentList = expanded;
+    }
+
     lastAgentList = sceneAgentList; // expose to off-loop debug hotkeys (conga leader = orchestrator)
 
     // Rebirth (B2): track the high-water mark of concurrently-ACTIVE agents

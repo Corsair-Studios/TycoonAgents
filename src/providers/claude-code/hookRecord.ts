@@ -33,6 +33,11 @@ export interface HookRecord {
   costModelClass?: "metered" | "subscription" | "local"; // from agentBackend.ts's Backend.costModelClass,
                               // set alongside `vendor` (p2-t2). Absent on older records.
   agentDescription?: string; // description from agent .md frontmatter, if found
+  description?: string;     // PreToolUse (Task) only: the SPAWN's own toolInput.description (the
+                              // task brief text, e.g. "Review vendor-pure savings change") — distinct
+                              // from agentDescription above, which is the agent's static .md frontmatter
+                              // description. Mapped onto WorkerSpawned as `currentDescription` so the
+                              // panel can show what THIS instance was actually asked to do.
   tier?: string;             // agent tier from .md frontmatter, e.g. "lead" (PreToolUse spawn only)
   parentId?: string;         // agentId on top of the active-agent stack at spawn time, if any
                               // (approximate — stack-based inference can misattribute concurrent spawns)
@@ -60,6 +65,17 @@ export interface HookRecord {
   reportChars?: number;      // SubagentStop only: the ORIGINAL (pre-truncation) character length of the
                               // extracted report text, so a genuinely short report can be distinguished
                               // from one truncated to fit the 600-char cap. Present iff `report` is.
+  spawnId?: string;          // PreToolUse (Task)/SubagentStop only: per-spawn instance id, generated at
+                              // push time in the hook script (generateSpawnId) — distinct from Claude
+                              // Code's own payload.agent_id, which binds lazily. Lets the panel track
+                              // multiple concurrent live spawns of the SAME agentId separately instead
+                              // of collapsing them into one card. Absent on records from hook versions
+                              // predating this field.
+  roleInferred?: boolean;    // PreToolUse (Task) only: true when workerId was resolved via keyword
+                              // scoring (routingMethod "keyword" in the hook script) rather than an
+                              // explicit agent name/subagent_type match — i.e. the spawn's subagent_type
+                              // was a built-in (general-purpose/Explore) and the agent was guessed from
+                              // description/prompt text. Absent/false otherwise.
   reason?: string;           // ProviderError only: short machine reason code, e.g. "specialist-unavailable"
                               // (hooks/codexRouting.cjs's resolveCodexSpecialist vendor gate). Combined with
                               // `workerId`/`model` by mapHookRecord into the NormalizedEvent's `message`.

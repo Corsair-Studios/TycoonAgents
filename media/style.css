@@ -3159,6 +3159,42 @@ td.col-name.name--active {
   opacity: 1;
 }
 
+/* Per-spawn instance tracking (AgentMetric.liveSpawns/roleInferred/
+   currentDescription, src/core/state.ts) — parity between the Task tool's
+   per-spawn view and the panel's per-agent-id metrics row. */
+.agent-instance-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--surface-alt, rgba(127, 127, 127, 0.2));
+  color: var(--text-muted, #9aa0a6);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.agent-role-inferred {
+  margin-left: 6px;
+  color: var(--text-muted, #9aa0a6);
+  font-weight: 400;
+  font-style: italic;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.agent-spawn-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted, #9aa0a6);
+  font-weight: 400;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
 tr.report-disclosure-row td.report-disclosure-cell {
   white-space: normal;
   background: var(--surface);
