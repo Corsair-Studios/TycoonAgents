@@ -14340,6 +14340,8 @@ if (typeof module !== "undefined" && module.exports) {
       avoidedUsd = Math.max(0, counterfactualUsd - billedUsd);
     }
 
+    const savings = buildSavingsEligibility(list, table, orchestratorRate);
+
     return {
       metered,
       subscription,
@@ -14349,7 +14351,69 @@ if (typeof module !== "undefined" && module.exports) {
       billedUsd,
       avoidedUsd,
       billableTokens,
+      savings,
     };
+  }
+
+  /**
+   * The three savings lines (counterfactual/billed/avoided) are only honest
+   * when every delegated agent shares one vendor with a real, non-fallback
+   * PRICE_TABLE entry, reported real vendor-usage token counts, AND the
+   * orchestrator's own price resolved. Any other mix (mixed vendors, a
+   * foreign-harness worker whose usage wasn't vendor-reported, an unpriced
+   * vendor, or an unpriced orchestrator model) makes the ratio fabricated,
+   * so buildDelegationLedger's caller must hide those three lines rather
+   * than show a misleading number — see renderDelegationStats.
+   * @param {Array<{id?:string, vendor?:string, model?:string, usageReported?:boolean}>} list
+   * @param {Record<string, {perMtok:number, weight:number}>} table
+   * @param {number|null} orchestratorRate
+   * @returns {{eligible:boolean, reason:string|null, agents:string[]}}
+   */
+  function buildSavingsEligibility(list, table, orchestratorRate) {
+    const agentName = (a) => a.id || a.model || a.vendor || "agent";
+    const agents = list.map(agentName);
+
+    // Prefer the row's own explicit vendor; a legacy row that only carries a
+    // bare model string ("sonnet", "opus" — no `vendor` field, matching the
+    // pre-multi-vendor telemetry shape) resolves its implied vendor the same
+    // way pricing does, via resolvePriceKey's provider prefix, so those rows
+    // are never wrongly flagged as an unpriced "unknown" vendor.
+    const effectiveVendor = (a) => {
+      if (a.vendor) return a.vendor;
+      const cls = costModelClass(a.model, a.costModelClass);
+      const key = resolvePriceKey(a.model, cls);
+      const slash = key.indexOf("/");
+      return slash >= 0 ? key.slice(0, slash) : key;
+    };
+
+    const vendors = new Set(list.map(effectiveVendor));
+    if (vendors.size > 1) {
+      return { eligible: false, reason: "mixed vendors", agents };
+    }
+
+    const unreported = list.filter((a) => a.usageReported === false).map(agentName);
+    if (unreported.length > 0) {
+      return { eligible: false, reason: `usage not reported by ${unreported.join(", ")}`, agents: unreported };
+    }
+
+    if (list.length > 0) {
+      const vendor = effectiveVendor(list[0]);
+      const allPriced = list.every((a) => {
+        const cls = costModelClass(a.model, a.costModelClass);
+        if (cls === "subscription" || cls === "local") return true; // no per-token price expected
+        const key = resolvePriceKey(a.model, cls);
+        return key !== DEFAULT_PRICE_KEY && Boolean(table[key]);
+      });
+      if (!allPriced) {
+        return { eligible: false, reason: `no price table for ${vendor}`, agents };
+      }
+    }
+
+    if (orchestratorRate == null) {
+      return { eligible: false, reason: "orchestrator model unpriced", agents };
+    }
+
+    return { eligible: true, reason: null, agents };
   }
 
   /**
@@ -15686,12 +15750,25 @@ if (typeof module !== "undefined" && module.exports) {
 
     // ── Counterfactual ── what it would have cost to run the same billable
     // (non-cache-read) delegated tokens on the orchestrator's own model.
+    const savings = ledger.savings || { eligible: false, reason: "unavailable", agents: [] };
     const counterSection = document.createElement("div");
-    counterSection.className = "delegation-stats-detail";
     if (ledger.counterfactualUsd == null) {
+      // Already honest with no eligibility gate needed: no fabricated number
+      // is shown here, just an explanation that a rate is missing.
+      counterSection.className = "delegation-stats-detail";
       counterSection.textContent = `If all delegated work had run on the orchestrator's model: estimate needs a rate (orchestrator model not detected yet). ${fmtTokens(ledger.billableTokens)} billable tokens delegated so far.`;
       hero.appendChild(counterSection);
+    } else if (!savings.eligible) {
+      // The three savings lines below assume one shared, priced vendor with
+      // real vendor-reported usage and a resolved orchestrator price — any
+      // other mix (a foreign-harness worker, mixed vendors, an unpriced
+      // model) makes the ratio fabricated, so show why instead of a number.
+      counterSection.className = "delegation-stats-detail delegation-savings-hidden";
+      counterSection.textContent = `Savings not shown: ${savings.reason}`;
+      if (savings.agents.length > 0) counterSection.title = savings.agents.join(", ");
+      hero.appendChild(counterSection);
     } else {
+      counterSection.className = "delegation-stats-detail";
       counterSection.textContent = `If all delegated work had run on the orchestrator's model: ~${fmtUSD(ledger.counterfactualUsd, false)} (estimate)`;
       hero.appendChild(counterSection);
 

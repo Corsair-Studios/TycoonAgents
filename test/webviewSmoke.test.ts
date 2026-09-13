@@ -5619,3 +5619,92 @@ test('p35-t1: Copy/Paste settings reproduces routing fields on another card, kee
     h.win.close();
   }
 });
+
+// ── Savings eligibility render coverage (media/src/main/080-packs-events.js
+// buildSavingsEligibility ~363-419, rendered ~1720-1750): when a
+// counterfactual rate resolves but ledger.savings.eligible is false, the
+// panel must show ONLY the ".delegation-stats-detail.delegation-savings-hidden"
+// line with the reason (and a title listing the implicated agents), and must
+// NOT render the counterfactual/billed/avoided lines. When eligible, the
+// three lines render and the hidden line is absent. Drives buildDelegationLedger
+// indirectly through the orchestrator's real agentMetrics rows the same way
+// the compliance tests above do, rather than reaching into main.js's
+// closures.
+function buildSavingsEligibilityStatePayload(agentMetrics: unknown[]) {
+  return {
+    type: 'state',
+    state: {
+      sessionActive: true,
+      completedTasks: agentMetrics.length,
+      workers: {},
+      agentMetrics,
+    },
+  };
+}
+
+test('Savings not shown: mixed-vendor delegated agents hide the counterfactual lines and show the reason', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    // Orchestrator priced (anthropic/sonnet) + two delegated agents on
+    // different vendors (anthropic, openai) -> buildSavingsEligibility
+    // returns eligible:false, reason:"mixed vendors".
+    h.dispatch(
+      buildSavingsEligibilityStatePayload([
+        { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'sonnet', tokens: 500, activeMs: 30000 },
+        { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', vendor: 'anthropic', model: 'sonnet', tokens: 4000, activeMs: 90000, taskCount: 2, usageReported: true },
+        { id: 'codex-reviewer', name: 'Codex Reviewer', status: 'idle', vendor: 'openai', model: 'gpt-5', tokens: 3000, activeMs: 60000, taskCount: 1, usageReported: true },
+      ])
+    );
+    await h.flush();
+    assert.equal(h.errors.length, 0, `post-dispatch errors: ${h.errors.map(String).join('; ')}`);
+    openDelegationTab(h);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors after opening the Delegation tab: ${h.errors.map(String).join('; ')}`);
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    assert.ok(delegationBody, 'delegation-stats body should exist');
+
+    const hiddenLine = delegationBody.querySelector('.delegation-stats-detail.delegation-savings-hidden');
+    assert.ok(hiddenLine, 'the hidden-savings line should render when savings.eligible is false');
+    assert.match(hiddenLine.textContent, /^Savings not shown: mixed vendors$/);
+    assert.ok(hiddenLine.title && hiddenLine.title.length > 0, 'the hidden-savings line should carry a title listing the implicated agents');
+
+    const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
+    assert.ok(!details.some((t: string) => /^If all delegated work had run/.test(t)), 'counterfactual line must not render when savings are hidden');
+    assert.ok(!details.some((t: string) => /^Actually billed for delegated work/.test(t)), 'billed line must not render when savings are hidden');
+    assert.ok(!details.some((t: string) => /^Estimated avoided/.test(t)), 'avoided line must not render when savings are hidden');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Eligible savings: pure priced Anthropic delegated agents render the three counterfactual lines and no hidden line', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch(
+      buildSavingsEligibilityStatePayload([
+        { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'sonnet', tokens: 500, activeMs: 30000 },
+        { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', vendor: 'anthropic', model: 'sonnet', tokens: 4000, activeMs: 90000, taskCount: 2, usageReported: true },
+        { id: 'search-retrieval', name: 'Search Retrieval', status: 'idle', vendor: 'anthropic', model: 'haiku', tokens: 1000, activeMs: 30000, taskCount: 1, usageReported: true },
+      ])
+    );
+    await h.flush();
+    assert.equal(h.errors.length, 0, `post-dispatch errors: ${h.errors.map(String).join('; ')}`);
+    openDelegationTab(h);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors after opening the Delegation tab: ${h.errors.map(String).join('; ')}`);
+
+    const delegationBody = h.doc.getElementById('delegation-stats');
+    assert.ok(delegationBody, 'delegation-stats body should exist');
+
+    const hiddenLine = delegationBody.querySelector('.delegation-stats-detail.delegation-savings-hidden');
+    assert.ok(!hiddenLine, 'the hidden-savings line must be absent when savings.eligible is true');
+
+    const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
+    assert.ok(details.some((t: string) => /^If all delegated work had run/.test(t)), 'counterfactual line must render when savings are eligible');
+    assert.ok(details.some((t: string) => /^Actually billed for delegated work/.test(t)), 'billed line must render when savings are eligible');
+    assert.ok(details.some((t: string) => /^Estimated avoided/.test(t)), 'avoided line must render when savings are eligible');
+  } finally {
+    h.win.close();
+  }
+});

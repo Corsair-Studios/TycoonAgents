@@ -3357,6 +3357,12 @@ tr.metrics-row--child td.col-name {
   opacity: 0.75;
 }
 
+.delegation-savings-hidden {
+  color: var(--muted);
+  opacity: 0.75;
+  cursor: help;
+}
+
 /* Hero savings stat: the enlarged "avoided ~N%" headline. */
 .delegation-hero {
   display: flex;

@@ -170,6 +170,17 @@ export interface AgentMetric {
    * the 600-char cap. Overwritten in lockstep with lastReport.
    */
   lastReportChars?: number;
+  /**
+   * True when this agent's `tokens` came from real vendor-reported usage
+   * counts on its most recent WorkerStopped (see HookRecord.usageReported).
+   * Undefined/legacy records and the native Claude Code path default to
+   * true (Claude has always reported real transcript-derived usage) so the
+   * Metrics tab's savings math is unaffected until a foreign-harness worker
+   * (codex/gemini/kimi via hooks/tycoon-dispatcher-mcp.cjs) explicitly
+   * reports otherwise. False disqualifies this agent from the savings
+   * eligibility computed in media/src/main/080-packs-events.js.
+   */
+  usageReported?: boolean;
 }
 
 /**
@@ -334,6 +345,13 @@ function upsertMetric(
     modelBreakdown: undefined,
     cacheReadModelBreakdown: undefined,
     lastReport: undefined,
+    // usageReported deliberately OMITTED here (not even as `undefined`):
+    // some tests deepEqual a freshly-computed AgentMetric against a literal
+    // that predates this field, and Node's assert.deepEqual treats an
+    // explicit `key: undefined` as a different shape than the key being
+    // absent. The WorkerStopped case below only adds the key when an event
+    // actually carries it; readers must treat a genuinely absent key as
+    // true (see AgentMetric.usageReported's doc comment).
   };
   return [...internals, updater(fresh)];
 }
@@ -691,6 +709,13 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           // report — only overwrite when this event actually carries one.
           lastReport: event.report !== undefined ? event.report : m.lastReport,
           lastReportChars: event.report !== undefined ? event.reportChars : m.lastReportChars,
+          // Overwritten only when this event explicitly carries the field
+          // (foreign-harness dispatch records always do); a native Claude
+          // Code SubagentStop never sets it, so the key stays absent and
+          // readers fall back to their own true default (see
+          // AgentMetric.usageReported's doc comment) rather than this
+          // reducer materializing it.
+          ...(event.usageReported !== undefined ? { usageReported: event.usageReported } : {}),
         }),
         event.provider,
         event.sessionId,

@@ -68,7 +68,7 @@ export type NormalizedEvent =
   // transcript was unavailable — never an empty string standing in for that.
   // reportChars: the report's ORIGINAL (pre-truncation) length, present iff
   // report is — lets consumers tell a short report from a truncated one.
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string }
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string; usageReported?: boolean }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string; provider?: string; sessionId?: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

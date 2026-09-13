@@ -117,6 +117,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           ...(record.cacheReadTokens !== undefined ? { cacheReadTokens: record.cacheReadTokens } : {}),
           ...(record.report !== undefined ? { report: record.report } : {}),
           ...(record.reportChars !== undefined ? { reportChars: record.reportChars } : {}),
+          ...(record.usageReported !== undefined ? { usageReported: record.usageReported } : {}),
         },
       ];
     case "PreToolUse": {

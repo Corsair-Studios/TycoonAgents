@@ -240,3 +240,43 @@ test("an agent with no report ever captured has lastReport undefined", () => {
   const m = metric(agentMetrics, "coding-specialist");
   assert.equal(m?.lastReport, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// WorkerStopped -> AgentMetric.usageReported (conditional-spread reducer)
+// ---------------------------------------------------------------------------
+
+test("applyEvent: WorkerStopped carrying usageReported:false sets AgentMetric.usageReported to false", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerStopped",
+    at: T,
+    workerId: "coding-specialist",
+    tokens: 50,
+    usageReported: false,
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.usageReported, false, "usageReported:false must be carried into AgentMetric, not dropped as falsy");
+});
+
+test("applyEvent: WorkerStopped carrying usageReported:true sets AgentMetric.usageReported to true", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerStopped",
+    at: T,
+    workerId: "coding-specialist",
+    tokens: 50,
+    usageReported: true,
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.usageReported, true);
+});
+
+test("applyEvent: WorkerStopped without a usageReported field leaves the key absent on AgentMetric (native harness, no fabricated default)", () => {
+  const state = applyEvent(initialWorldState(), {
+    type: "WorkerStopped",
+    at: T,
+    workerId: "coding-specialist",
+    tokens: 50,
+  });
+  const m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.usageReported, undefined);
+  assert.ok(m && !("usageReported" in m), "the conditional spread must leave the key entirely absent, not present-and-undefined");
+});

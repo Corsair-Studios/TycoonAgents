@@ -17,6 +17,13 @@ export interface HookRecord {
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
+  usageReported?: boolean;   // SubagentStop only: true when `tokens` came from real vendor-reported
+                              // usage counts (e.g. claude -p json's usage block, an OpenAI-compatible
+                              // chat-completions response's usage field), false when the dispatch
+                              // succeeded without any vendor-reported usage (tokens absent/estimated).
+                              // Absent on records from hook versions predating this field — callers
+                              // should treat absent as true for the native Claude Code path, where
+                              // tokens have always been real transcript-derived counts.
   cacheReadTokens?: number;  // SubagentStop/Stop: cache-read tokens, tracked separately from `tokens`
                               // because they price at ~0.1x the model's input rate rather than full rate.
   model?: string;            // full model id resolved at spawn time, e.g. "claude-sonnet-4-6"

@@ -420,6 +420,13 @@ async function handleDelegateTool(args) {
         stopRecord.fallbackIsDefault = fallbackIsDefault;
       }
       if (typeof tokens === "number") stopRecord.tokens = tokens;
+      // p-savings-eligibility: tokens above are real vendor-reported counts
+      // (result.usage.input_tokens/output_tokens from the adapter's own API
+      // response — claude -p json for anthropic, the chat-completions
+      // response body for openai-compatible/moonshot/local) whenever
+      // present; there is no estimate/synthesized fallback in this file, so
+      // usageReported is simply whether that number was available at all.
+      stopRecord.usageReported = typeof tokens === "number";
       appendRecord(activityFile, stopRecord);
 
       // Plan p29-t3: prefix any unseen plan-gate events onto the delegate
