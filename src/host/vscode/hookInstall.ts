@@ -27,6 +27,11 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   // re-dispatch instruction — see hooks/tycoon-claude-hook.cjs's PostToolUse
   // branch and src/core/fallbackChain.ts.
   { event: "PostToolUse", matcher: "mcp__.*" },
+  // Runs after a Task/Agent spawn completes so the hook can surface unseen
+  // plan-gate approvals/rejections back to the orchestrator (see
+  // hooks/tycoon-claude-hook.cjs's PostToolUse Task/Agent branch). "Task" is
+  // a deprecated alias for "Agent" — both are matched.
+  { event: "PostToolUse", matcher: "Task|Agent" },
   { event: "SubagentStop", matcher: "" },
   { event: "Stop", matcher: "" },
   { event: "TaskCompleted", matcher: "" },

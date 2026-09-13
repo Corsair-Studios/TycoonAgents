@@ -520,8 +520,10 @@ test("Compliance nudge: orchestrator Grep gets additionalContext pointing to sea
     assert.ok(stdout.includes("additionalContext"), "expected additionalContext in stdout");
     assert.ok(stdout.includes("search-retrieval"), "expected search-retrieval mention");
     const parsed = JSON.parse(stdout);
-    assert.ok(typeof parsed.additionalContext === "string" && parsed.additionalContext.length > 0);
-    assert.equal(parsed.permissionDecision, undefined, "must never set permissionDecision");
+    const hso = parsed.hookSpecificOutput;
+    assert.equal(hso.hookEventName, "PreToolUse");
+    assert.ok(typeof hso.additionalContext === "string" && hso.additionalContext.length > 0);
+    assert.equal(hso.permissionDecision, undefined, "must never set permissionDecision");
 
     const records = readActivity(root);
     const rec = records.find((r) => r.event === "PreToolUse" && r.tool === "Grep");

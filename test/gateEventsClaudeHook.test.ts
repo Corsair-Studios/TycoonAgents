@@ -72,8 +72,10 @@ test("UserPromptSubmit: a gate event produces additionalContext once, then none 
   const first = runHook(root, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "continue" });
   const out1 = parsedOutput(first.stdout);
   assert.ok(out1, "first call should emit additionalContext");
+  const hso1 = out1!.hookSpecificOutput as Record<string, unknown>;
+  assert.equal(hso1.hookEventName, "UserPromptSubmit");
   assert.match(
-    String(out1!.additionalContext),
+    String(hso1.additionalContext),
     /Plan gate update: phase 28 Codex MCP launcher with runtime discovery approved at 2026-09-11T12:00:00Z \(panel\)\./,
   );
 
@@ -142,7 +144,9 @@ test("UserPromptSubmit: a multi-line 500-char name is sanitized to a single line
   const result = runHook(root, { hook_event_name: "UserPromptSubmit", session_id: "s4", prompt: "go" });
   const out = parsedOutput(result.stdout);
   assert.ok(out, "should emit additionalContext");
-  const ctx = String(out!.additionalContext);
+  const hso = out!.hookSpecificOutput as Record<string, unknown>;
+  assert.equal(hso.hookEventName, "UserPromptSubmit");
+  const ctx = String(hso.additionalContext);
 
   assert.equal(ctx.split("\n").length, 1, "context must be exactly one line despite the multi-line input name");
   assert.doesNotMatch(ctx, /[\r\n\t]/, "no raw control chars (CR/LF/TAB) may survive into the line");
@@ -162,4 +166,57 @@ test("PostToolUse for a non-Task tool with no mcp__ prefix is unaffected by gate
 
   const result = runHook(root, { hook_event_name: "PostToolUse", tool_name: "Read", session_id: "s3" });
   assert.equal(result.stdout.trim(), "", "non-Task, non-mcp__ PostToolUse must emit nothing, as before");
+});
+
+test("PostToolUse Agent: the current tool name (Task's alias) also surfaces gate events", () => {
+  const root = setupProject();
+  writeFileSync(
+    gateEventsPath(root),
+    JSON.stringify({ ts: "2026-09-13T10:00:00Z", type: "gate", phaseId: "p33", phaseNum: 33, name: "Agent alias", gate: "approved", source: "panel" }) + "\n",
+    "utf8",
+  );
+
+  const result = runHook(root, { hook_event_name: "PostToolUse", tool_name: "Agent", session_id: "s5" });
+  const out = parsedOutput(result.stdout);
+  assert.ok(out, "should emit hookSpecificOutput for Agent PostToolUse");
+  const hso = out!.hookSpecificOutput as Record<string, unknown>;
+  assert.equal(hso.hookEventName, "PostToolUse");
+  assert.match(String(hso.additionalContext), /phase 33 Agent alias approved/);
+});
+
+test("a subagent invocation (agent_id set) leaves the gate-events cursor untouched and emits nothing", () => {
+  const root = setupProject();
+  writeFileSync(
+    gateEventsPath(root),
+    JSON.stringify({ ts: "2026-09-13T11:00:00Z", type: "gate", phaseId: "p34", phaseNum: 34, name: "Subagent guard", gate: "approved", source: "panel" }) + "\n",
+    "utf8",
+  );
+
+  // UserPromptSubmit from inside a subagent session must not consume the
+  // shared cursor - only the orchestrator (no agent_id) may.
+  const subResult = runHook(root, {
+    hook_event_name: "UserPromptSubmit",
+    session_id: "s6",
+    prompt: "continue",
+    agent_id: "worker-instance-123",
+  });
+  assert.equal(subResult.stdout.trim(), "", "subagent UserPromptSubmit must emit no additionalContext");
+  assert.ok(!existsSync(gateCursorPath(root)), "subagent call must not create/advance the cursor file");
+
+  // Same guard on the PostToolUse Task/Agent branch.
+  const subPost = runHook(root, {
+    hook_event_name: "PostToolUse",
+    tool_name: "Agent",
+    session_id: "s6",
+    agent_id: "worker-instance-123",
+  });
+  assert.equal(subPost.stdout.trim(), "", "subagent PostToolUse Agent must emit no additionalContext");
+  assert.ok(!existsSync(gateCursorPath(root)), "subagent PostToolUse must not create/advance the cursor file");
+
+  // The orchestrator (no agent_id) still sees the event afterward.
+  const orchResult = runHook(root, { hook_event_name: "UserPromptSubmit", session_id: "s6", prompt: "continue" });
+  const out = parsedOutput(orchResult.stdout);
+  assert.ok(out, "orchestrator call should still surface the untouched event");
+  const hso = out!.hookSpecificOutput as Record<string, unknown>;
+  assert.match(String(hso.additionalContext), /phase 34 Subagent guard approved/);
 });

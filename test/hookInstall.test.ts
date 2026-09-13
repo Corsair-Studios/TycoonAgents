@@ -24,7 +24,7 @@ import {
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
 
-test("empty settings produces all 9 hook slots", () => {
+test("empty settings produces all 10 hook slots", () => {
   const result = mergeTycoonHooks({}, cmd);
   const hooks = result.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>>;
 
@@ -47,6 +47,16 @@ test("empty settings produces all 9 hook slots", () => {
   const ptu3 = hooks["PreToolUse"].find((e) => e.matcher === "mcp__.*");
   assert.ok(ptu3, "PreToolUse mcp__.* entry must exist");
   assert.ok(ptu3!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
+
+  // PostToolUse - mcp__.* (fallback detection) and Task|Agent (gate events)
+  assert.ok(Array.isArray(hooks["PostToolUse"]), "PostToolUse should be an array");
+  const ptu4 = hooks["PostToolUse"].find((e) => e.matcher === "mcp__.*");
+  assert.ok(ptu4, "PostToolUse mcp__.* entry must exist");
+  assert.ok(ptu4!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
+
+  const ptu5 = hooks["PostToolUse"].find((e) => e.matcher === "Task|Agent");
+  assert.ok(ptu5, "PostToolUse Task|Agent entry must exist");
+  assert.ok(ptu5!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
 
   // SubagentStop
   const sas = hooks["SubagentStop"]?.find((e) => e.matcher === "");
@@ -81,6 +91,8 @@ test("idempotency: running twice produces no duplicates", () => {
 
   // PreToolUse should still have exactly 3 entries
   assert.equal(hooks["PreToolUse"].length, 3, "PreToolUse must have exactly 3 entries after two merges");
+  // PostToolUse should still have exactly 2 entries (mcp__.* and Task|Agent)
+  assert.equal(hooks["PostToolUse"].length, 2, "PostToolUse must have exactly 2 entries after two merges");
   // All other multi-matcher-free events should still have exactly 1 entry
   assert.equal(hooks["UserPromptSubmit"].length, 1);
   assert.equal(hooks["SubagentStop"].length, 1);
@@ -88,6 +100,33 @@ test("idempotency: running twice produces no duplicates", () => {
   assert.equal(hooks["TaskCompleted"].length, 1);
   assert.equal(hooks["TeammateIdle"].length, 1);
   assert.equal(hooks["TaskCreated"].length, 1);
+});
+
+test("mergeTycoonHooks: PostToolUse Task|Agent slot is added to an existing settings object and not duplicated on a second merge", () => {
+  const existing: Record<string, unknown> = {
+    hooks: {
+      PostToolUse: [
+        { matcher: "mcp__.*", hooks: [{ type: "command", command: cmd }] },
+        { matcher: "SomeForeignTool", hooks: [{ type: "command", command: "node /other/hook.js" }] },
+      ],
+    },
+  };
+
+  const once = mergeTycoonHooks(existing, cmd);
+  const hooksOnce = once.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+  const taskAgentOnce = hooksOnce["PostToolUse"].filter((e) => e.matcher === "Task|Agent");
+  assert.equal(taskAgentOnce.length, 1, "Task|Agent slot must be added exactly once");
+  assert.ok(taskAgentOnce[0].hooks[0].command.includes("tycoon-claude-hook.cjs"));
+  // Pre-existing entries are preserved.
+  assert.ok(hooksOnce["PostToolUse"].some((e) => e.matcher === "mcp__.*"));
+  assert.ok(hooksOnce["PostToolUse"].some((e) => e.matcher === "SomeForeignTool"));
+  assert.equal(hooksOnce["PostToolUse"].length, 3);
+
+  const twice = mergeTycoonHooks(once, cmd);
+  const hooksTwice = twice.hooks as Record<string, Array<{ matcher: string }>>;
+  const taskAgentTwice = hooksTwice["PostToolUse"].filter((e) => e.matcher === "Task|Agent");
+  assert.equal(taskAgentTwice.length, 1, "re-merge must not duplicate the Task|Agent slot");
+  assert.equal(hooksTwice["PostToolUse"].length, 3, "re-merge must not change the entry count");
 });
 
 test("preserves unrelated hooks in PreToolUse", () => {

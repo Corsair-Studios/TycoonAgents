@@ -164,7 +164,7 @@ test("Rule 1 [full parity]: orchestrator direct Grep produces the identical nudg
       session_id: "rule1-session",
     });
     const hookParsed = JSON.parse(stdout);
-    const hookMessage: string = hookParsed.additionalContext;
+    const hookMessage: string = hookParsed.hookSpecificOutput.additionalContext;
     assert.ok(hookMessage.includes("search-retrieval"));
 
     // Separate roster copy for the plugin side — the hook run above already

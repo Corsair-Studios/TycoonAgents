@@ -1969,7 +1969,12 @@ function main(raw) {
 
       if (nudge) {
         try {
-          process.stdout.write(JSON.stringify({ additionalContext: nudge }));
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              additionalContext: nudge,
+            },
+          }));
         } catch { /* never let output construction break the hook */ }
       }
     }
@@ -2060,11 +2065,21 @@ function main(raw) {
             } catch { /* never let output construction break the hook */ }
           }
         }
-      } else if (toolName === "Task") {
+      } else if (toolName === "Task" || toolName === "Agent") {
         // Surface unseen plan-gate approvals/rejections (plan p29-t2). Only
-        // this hook's own PostToolUse output for the Task tool - the mcp__
-        // branch above is mutually exclusive (toolName can't match both).
-        const gateEvents = readUnseenGateEvents(tycoonDir);
+        // this hook's own PostToolUse output for the Task/Agent tool ("Task"
+        // is a deprecated alias for "Agent") - the mcp__ branch above is
+        // mutually exclusive (toolName can't match both).
+        //
+        // Orchestrator-only: this hook also runs inside spawned subagent
+        // sessions, and a subagent's own Task/Agent spawn would otherwise
+        // consume the shared gate-events cursor before the orchestrator ever
+        // sees those events. payload.agent_id is present only inside a
+        // spawned subagent (absent/empty for the main-session orchestrator —
+        // see the PreToolUse spawn guard's identical convention above), so
+        // only read/advance the cursor when it is absent/empty.
+        const isOrchestrator = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
+        const gateEvents = isOrchestrator ? readUnseenGateEvents(tycoonDir) : [];
         if (gateEvents.length > 0) {
           const additionalContext = mergeGateEventContext(gateEvents);
           if (additionalContext) {
@@ -2143,13 +2158,22 @@ function main(raw) {
     }
 
     // Surface unseen plan-gate approvals/rejections (plan p29-t2).
+    // Orchestrator-only: see the matching guard in the PostToolUse Task/Agent
+    // branch above — a subagent session must never consume the shared
+    // gate-events cursor.
     try {
-      const gateEvents = readUnseenGateEvents(tycoonDir);
+      const isOrchestrator = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
+      const gateEvents = isOrchestrator ? readUnseenGateEvents(tycoonDir) : [];
       if (gateEvents.length > 0) {
         const additionalContext = mergeGateEventContext(gateEvents);
         if (additionalContext) {
           try {
-            process.stdout.write(JSON.stringify({ additionalContext }));
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "UserPromptSubmit",
+                additionalContext,
+              },
+            }));
           } catch { /* never let output construction break the hook */ }
         }
       }
