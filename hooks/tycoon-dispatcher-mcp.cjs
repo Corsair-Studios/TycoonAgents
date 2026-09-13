@@ -369,7 +369,8 @@ async function handleDelegateTool(args) {
   // adapterFn, then write the matching SubagentStop below), so one id per
   // call is always exact — no cross-call binding is needed as it is on the
   // Claude Code hook.
-  const spawnId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `spawn-${Date.now()}`;
+  const genSpawnId = () => (typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `spawn-${Date.now()}`);
+  let spawnId = genSpawnId();
 
   const preRecord = {
     event: "PreToolUse",
@@ -475,6 +476,20 @@ async function handleDelegateTool(args) {
     }
     appendRecord(activityFile, errorRecord);
 
+    // p-dispatcher-leak: a failed attempt must close out its own spawnId
+    // with a SubagentStop (tokens absent, usageReported false) exactly like
+    // a successful attempt does -- otherwise this attempt's PreToolUse
+    // leaves a phantom entry in liveSpawns forever (no matching stop ever
+    // arrives), whether this failure is terminal or about to retry.
+    const failedStopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, at: Date.now() };
+    if (fallbackDepth > 0) {
+      failedStopRecord.fallbackOf = workerId;
+      failedStopRecord.fallbackDepth = fallbackDepth;
+      failedStopRecord.fallbackIsDefault = fallbackIsDefault;
+    }
+    failedStopRecord.usageReported = false;
+    appendRecord(activityFile, failedStopRecord);
+
     if (!isDispatchFailure(fallbackChainModule, result.error) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
       return isErrorResult(`delegate: ${workerId} failed: ${result.error}`);
     }
@@ -499,6 +514,10 @@ async function handleDelegateTool(args) {
     fallbackIsDefault = next.isDefault === true;
     currentVendor = next.slot.vendor || currentVendor;
     currentModel = next.slot.model || currentModel;
+    // New spawn instance for the retry -- the failed attempt's spawnId was
+    // just closed out above via failedStopRecord, so reusing it here would
+    // re-open an id the panel already considers stopped.
+    spawnId = genSpawnId();
 
     const fbPreRecord = {
       event: "PreToolUse",

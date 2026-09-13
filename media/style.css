@@ -3174,15 +3174,6 @@ td.col-name.name--active {
   vertical-align: middle;
 }
 
-.agent-role-inferred {
-  margin-left: 6px;
-  color: var(--text-muted, #9aa0a6);
-  font-weight: 400;
-  font-style: italic;
-  font-size: 11px;
-  vertical-align: middle;
-}
-
 .agent-spawn-desc {
   display: block;
   margin-top: 2px;

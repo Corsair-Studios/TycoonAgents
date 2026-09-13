@@ -1119,17 +1119,6 @@
       nameTd.appendChild(countBadge);
     }
 
-    // Inferred-role marker (roleInferred, HookRecord.roleInferred): this
-    // agent's most recent spawn had its role guessed from keyword scoring
-    // rather than an explicit agent name/subagent_type match.
-    if (agent.roleInferred) {
-      const inferredMark = document.createElement("span");
-      inferredMark.className = "agent-role-inferred";
-      inferredMark.textContent = "(inferred)";
-      inferredMark.title = "Role guessed from keywords; give the spawn an explicit agent name to route it directly.";
-      nameTd.appendChild(inferredMark);
-    }
-
     // Live spawn description (currentDescription, WorkerSpawned.currentDescription):
     // this spawn's own task brief, shown as a muted secondary line only while
     // the agent is active — a stale brief under an idle/done row would read

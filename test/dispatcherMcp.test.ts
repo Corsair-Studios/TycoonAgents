@@ -346,7 +346,8 @@ test("handleDelegateTool: usage-limit adapter failure advances through the speci
     const records = readActivityRecords(mod.resolveActivityFile());
     const errorRec = records.find((r) => r.event === "ProviderError");
     const fallbackPre = records.find((r) => r.event === "PreToolUse" && r.fallbackDepth === 1);
-    const stop = records.find((r) => r.event === "SubagentStop");
+    const failedStop = records.find((r) => r.event === "SubagentStop" && r.fallbackDepth === undefined);
+    const stop = records.find((r) => r.event === "SubagentStop" && r.fallbackDepth === 1);
     assert.ok(errorRec, "expected a ProviderError for the failed first attempt");
     assert.equal(errorRec!.vendor, "anthropic");
     assert.ok(fallbackPre, "expected a fallback PreToolUse");
@@ -354,10 +355,14 @@ test("handleDelegateTool: usage-limit adapter failure advances through the speci
     assert.equal(fallbackPre!.vendor, "moonshot");
     assert.equal(fallbackPre!.model, "moonshot/kimi-k2");
     assert.equal(fallbackPre!.fallbackIsDefault, false);
+    assert.ok(failedStop, "expected a SubagentStop closing out the failed first attempt's spawnId");
+    assert.equal(failedStop!.usageReported, false);
     assert.ok(stop, "expected a SubagentStop after the fallback succeeded");
     assert.equal(stop!.fallbackOf, "coding-specialist");
     assert.equal(stop!.fallbackDepth, 1);
     assert.equal(stop!.fallbackIsDefault, false);
+    assert.notEqual(failedStop!.spawnId, fallbackPre!.spawnId, "the retry must get a new spawnId, not reuse the failed attempt's");
+    assert.equal(fallbackPre!.spawnId, stop!.spawnId, "the retry's PreToolUse and its SubagentStop share the new spawnId");
   } finally {
     restore();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -493,7 +498,12 @@ test("handleDelegateTool: fallback chain exhaustion returns the last error, neve
     const vendorsSeen = new Set(errorRecs.map((r) => r.vendor));
     assert.equal(errorRecs.length, 2, "primary attempt + the one chain entry, then exhausted — no more attempts");
     assert.deepEqual([...vendorsSeen].sort(), ["anthropic", "moonshot"]);
-    assert.equal(records.some((r) => r.event === "SubagentStop"), false);
+    // Every failed attempt (including the terminal one) still gets its own
+    // SubagentStop to close out that attempt's spawnId — otherwise the
+    // final failed attempt's liveSpawns entry would leak forever.
+    const stopRecs = records.filter((r) => r.event === "SubagentStop");
+    assert.equal(stopRecs.length, 2, "both the primary and the exhausted fallback attempt get a closing SubagentStop");
+    assert.ok(stopRecs.every((r) => r.usageReported === false));
   } finally {
     restore();
     fs.rmSync(dir, { recursive: true, force: true });

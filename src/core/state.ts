@@ -193,6 +193,17 @@ export interface AgentMetric {
    */
   liveSpawns?: string[];
   /**
+   * Per-spawn start timestamps (WorkerSpawned's spawnId -> event.at), keyed
+   * the same way as liveSpawns. Lets WorkerStopped credit exactly the
+   * elapsed window for THAT spawn instead of crediting the whole
+   * multi-spawn window from workStartAt (the first spawn's start) on every
+   * stop, which double-credits overlapping concurrent spawns of one agent.
+   * Undefined when no event for this agent has ever carried a spawnId
+   * (legacy hook records) — treated as the single-instance path exactly as
+   * before this field existed.
+   */
+  spawnStartAt?: Record<string, number>;
+  /**
    * True when the MOST RECENT spawn for this agent had its role guessed
    * from keyword scoring (HookRecord.roleInferred) rather than an explicit
    * agent name/subagent_type match. Undefined/false otherwise.
@@ -456,6 +467,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
               // agent that never had these fields (legacy fixtures) is
               // untouched.
               ...(m.liveSpawns !== undefined ? { liveSpawns: [] } : {}),
+              ...(m.spawnStartAt !== undefined ? { spawnStartAt: {} } : {}),
               ...(m.currentDescription !== undefined ? { currentDescription: undefined } : {}),
             }
           : m,
@@ -530,6 +542,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
               // Same orphan-sweep cleanup as SessionStart's sweep above — see
               // its comment.
               ...(m.liveSpawns !== undefined ? { liveSpawns: [] } : {}),
+              ...(m.spawnStartAt !== undefined ? { spawnStartAt: {} } : {}),
               ...(m.currentDescription !== undefined ? { currentDescription: undefined } : {}),
             }
           : m,
@@ -609,7 +622,10 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           // legacy event (no spawnId) leaves it exactly as it was (undefined
           // stays undefined), so old fixtures/deepEqual tests are unaffected.
           ...(event.spawnId !== undefined
-            ? { liveSpawns: [...(m.liveSpawns ?? []), event.spawnId] }
+            ? {
+                liveSpawns: [...(m.liveSpawns ?? []), event.spawnId],
+                spawnStartAt: { ...(m.spawnStartAt ?? {}), [event.spawnId]: event.at },
+              }
             : {}),
           ...(event.roleInferred !== undefined ? { roleInferred: event.roleInferred } : {}),
           ...(event.currentDescription !== undefined ? { currentDescription: event.currentDescription } : {}),
@@ -757,14 +773,39 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
               ? m.liveSpawns.filter((id) => id !== event.spawnId)
               : m.liveSpawns;
           const stillLive = nextLiveSpawns !== undefined && nextLiveSpawns.length > 0;
+          // Per-spawn credit: when this stop names a spawnId we have a
+          // recorded start for, credit exactly that spawn's elapsed window
+          // (and drop its entry) instead of the shared workStartAt, which
+          // would double-credit overlapping concurrent spawns of the same
+          // agent. Stops without a spawnId, or naming an unknown spawnId
+          // (legacy hook records, or a spawnId we never saw a Spawned for),
+          // fall back to the original whole-window behaviour.
+          const hasSpawnCredit =
+            event.spawnId !== undefined && m.spawnStartAt !== undefined && event.spawnId in m.spawnStartAt;
+          const creditedMs = hasSpawnCredit
+            ? creditedElapsed(m.spawnStartAt![event.spawnId!], m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs)
+            : creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs);
+          let nextSpawnStartAt = m.spawnStartAt;
+          let nextWorkStartAt = stillLive ? m.workStartAt : null;
+          if (hasSpawnCredit) {
+            nextSpawnStartAt = { ...m.spawnStartAt };
+            delete nextSpawnStartAt[event.spawnId!];
+            if (stillLive) {
+              const remaining = Object.values(nextSpawnStartAt);
+              nextWorkStartAt = remaining.length > 0 ? Math.min(...remaining) : m.workStartAt;
+            } else {
+              nextWorkStartAt = null;
+            }
+          }
           return {
             ...m,
             status: stillLive ? ("active" as const) : ("idle" as const),
             ...(nextLiveSpawns !== undefined ? { liveSpawns: nextLiveSpawns } : {}),
-            activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+            ...(nextSpawnStartAt !== m.spawnStartAt ? { spawnStartAt: nextSpawnStartAt } : {}),
+            activeMs: m.activeMs + creditedMs,
             tokens: m.tokens + (event.tokens ?? 0),
             cacheReadTokens: m.cacheReadTokens + (event.cacheReadTokens ?? 0),
-            workStartAt: stillLive ? m.workStartAt : null,
+            workStartAt: nextWorkStartAt,
             // Most-recent report only (never accumulated). A WorkerStopped
             // event without a report (older hook version, or the transcript
             // had no report to extract) must NOT clobber a previously captured

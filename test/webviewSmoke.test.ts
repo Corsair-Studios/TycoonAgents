@@ -968,13 +968,14 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
     });
 
     // ── Step 9d: per-spawn instance tracking (liveSpawns/roleInferred/currentDescription) ──
-    // Guards buildMetricsRow's new instance-count badge, inferred-role
-    // marker, and live spawn description line (media/src/main/080-packs-
-    // events.js ~1109-1141): a liveSpawns array of length > 1 renders the
-    // ×N ".agent-instance-count" badge; roleInferred renders
-    // ".agent-role-inferred"; an ACTIVE agent's currentDescription renders
-    // ".agent-spawn-desc" and an idle agent's does not, even when set.
-    await t.test('9d. metrics row: ×N instance badge, roleInferred marker, active spawn description line', async () => {
+    // Guards buildMetricsRow's instance-count badge and live spawn
+    // description line (media/src/main/080-packs-events.js ~1109-1131): a
+    // liveSpawns array of length > 1 renders the ×N ".agent-instance-count"
+    // badge; an ACTIVE agent's currentDescription renders ".agent-spawn-desc"
+    // and an idle agent's does not, even when set. roleInferred still flows
+    // through hook/mapping/state (untouched) but the panel no longer renders
+    // an "(inferred)" marker for it — assert its absence even when set.
+    await t.test('9d. metrics row: ×N instance badge, no inferred-role marker, active spawn description line', async () => {
       dispatch({
         type: 'state',
         state: {
@@ -1013,8 +1014,11 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(badge, 'liveSpawns.length > 1 should render the ×N instance badge');
       assert.equal(badge.textContent, '×2');
 
-      const marker = codingRow.querySelector('.agent-role-inferred');
-      assert.ok(marker, 'roleInferred:true should render the inferred-role marker');
+      assert.equal(
+        codingRow.querySelector('.agent-role-inferred'),
+        null,
+        'roleInferred:true must NOT render an inferred-role marker (marker removed)',
+      );
 
       const descLine = codingRow.querySelector('.agent-spawn-desc');
       assert.ok(descLine, 'an ACTIVE agent with currentDescription should render the spawn-desc line');

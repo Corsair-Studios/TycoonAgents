@@ -415,3 +415,41 @@ test("applyEvent: SessionStop's orphan sweep clears liveSpawns (and currentDescr
   assert.deepEqual(m?.liveSpawns, ["spawn-3"], "liveSpawns must be exactly the new spawn, length 1");
   assert.equal(m?.status, "active");
 });
+
+test("applyEvent: overlapping spawns of one agent are credited per-spawn, not double-counted off the shared workStartAt", () => {
+  // A starts at T+0, B starts at T+10, A stops at T+30 (30ms), B stops at
+  // T+40 (30ms) -- total should be exactly 60ms, not 70ms (which is what
+  // crediting the whole [workStartAt, event.at] window on every stop would
+  // produce: (30-0) + (40-0) = 70).
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-A",
+  });
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 10,
+    workerId: "coding-specialist",
+    spawnId: "spawn-B",
+  });
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 30,
+    workerId: "coding-specialist",
+    spawnId: "spawn-A",
+  });
+  let m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.activeMs, 30, "spawn-A's own window [0,30] = 30ms");
+  assert.equal(m?.status, "active", "spawn-B is still live");
+
+  state = applyEvent(state, {
+    type: "WorkerStopped",
+    at: T + 40,
+    workerId: "coding-specialist",
+    spawnId: "spawn-B",
+  });
+  m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.activeMs, 60, "spawn-A (30ms) + spawn-B's own window [10,40] (30ms) = 60ms, not 70");
+  assert.equal(m?.status, "idle");
+});
