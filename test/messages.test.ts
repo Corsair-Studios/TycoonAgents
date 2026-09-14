@@ -421,3 +421,60 @@ test('OPEN_THEME_BUILDER schema: extra fields are tolerated (passthrough)', () =
     assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
   }
 });
+
+// ── THEME_SERVICE_* schemas (p42-t1/p42-t5) ─────────────────────────────────
+
+test('THEME_SERVICE_GET_STATUS / THEME_SERVICE_GOOGLE_START / THEME_SERVICE_SIGN_OUT accept empty payloads', () => {
+  for (const key of ['THEME_SERVICE_GET_STATUS', 'THEME_SERVICE_GOOGLE_START', 'THEME_SERVICE_SIGN_OUT'] as const) {
+    const result = MSG_SCHEMAS[key].safeParse({});
+    assert.equal(result.success, true, `${key} should accept an empty payload`);
+  }
+});
+
+test('THEME_SERVICE_REQUEST_MAGIC_LINK schema: requires non-empty email', () => {
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({ email: 'a@b.com' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({ email: '' }).success, false);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({}).success, false);
+});
+
+test('THEME_SERVICE_VERIFY schema: requires email and code', () => {
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@b.com', code: '123456' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@b.com' }).success, false);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ code: '123456' }).success, false);
+});
+
+test('THEME_SERVICE_GOOGLE_COMPLETE schema: code is optional (empty-submit guard)', () => {
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse({}).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse({ code: 'abc' }).success, true);
+});
+
+test('THEME_SERVICE_BUY_CREDITS schema: requires non-empty pack id', () => {
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({ pack: 'mini30' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({ pack: '' }).success, false);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({}).success, false);
+});
+
+test('THEME_SERVICE_STATUS schema: minimal signed-out and full signed-in payloads pass, non-boolean signedIn fails', () => {
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse({ signedIn: false }).success, true);
+  const full = {
+    signedIn: true,
+    email: 'a@b.com',
+    provider: 'email',
+    credits: 12,
+    pricing: { typicalTheme: { min: 8, max: 20 }, packs: [] },
+    pendingCheckout: false,
+    error: { kind: 'unreachable', message: 'down' },
+  };
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse(full).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse({ signedIn: 'yes' }).success, false);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse({}).success, false);
+});
+
+test('THEME_SERVICE_STATUS schema payload never needs to carry token fields (accessToken/refreshToken not required or special-cased)', () => {
+  const withTokenLikeExtra = { signedIn: true, accessToken: 'should-not-be-here' };
+  const result = MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse(withTokenLikeExtra);
+  // passthrough() means the schema itself doesn't strip it — the contract that
+  // no token ever reaches this payload is enforced by themeServiceHost.ts
+  // (see test/themeServiceHost.test.ts assertNoTokenLeak), not by this schema.
+  assert.equal(result.success, true);
+});

@@ -175,3 +175,60 @@ test("dispose clears timers", async () => {
   assert.equal(timers.activeCount(), 0);
   void advanceTime;
 });
+
+test("pending-checkout polling stops on dispose and posts nothing further", async () => {
+  const now = 1_000_000;
+  const { host, posted, timers, advanceTime } = setup(() => now);
+  await host.handleRequestMagicLink("stopper@example.com");
+  await host.handleVerify("stopper@example.com", "123456");
+  await host.handleBuyCredits("mini30");
+  assert.equal(timers.activeCount(), 1);
+
+  host.dispose();
+  posted.length = 0;
+  advanceTime(60_000);
+  await timers.tick(); // no-op: dispose() cleared the handle map
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(timers.activeCount(), 0, "poll handle must be gone after dispose");
+  assert.equal(posted.length, 0, "no further status should post once disposed");
+});
+
+test("posted payloads never contain accessToken/refreshToken across the full sign-in + checkout flow", async () => {
+  const now = 1_000_000;
+  const { fake, host, posted, opened, timers, advanceTime } = setup(() => now);
+  await host.handleGetStatus();
+  await host.handleRequestMagicLink("secure@example.com");
+  await host.handleVerify("secure@example.com", "123456");
+  await host.handleGoogleStart();
+  await fake.fetch(opened[opened.length - 1]);
+  const authCode = await fake.helpers.completeGoogleInBrowser();
+  await host.handleGoogleComplete(authCode);
+  await host.handleBuyCredits("mini30");
+  advanceTime(5_000);
+  await timers.tick();
+  await new Promise((r) => setTimeout(r, 0));
+  await host.handleSignOut();
+
+  assert.ok(posted.length > 0);
+  assertNoTokenLeak(posted);
+});
+
+// onDidChangeViewState wiring (src/host/vscode/panel.ts ~958-964) refreshes
+// status whenever the webview panel becomes visible again. panel.ts is a
+// vscode-dependent host file not importable in this unit-test harness, so
+// this is a source guard on the exact wiring rather than a live mock —
+// guards against the visible-refresh call being dropped or misplaced.
+test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGetStatus", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src: string = fs.readFileSync(
+    path.join(process.cwd(), "src", "host", "vscode", "panel.ts"),
+    "utf8",
+  );
+  const idx = src.indexOf("onDidChangeViewState");
+  assert.ok(idx >= 0, "panel.ts should register an onDidChangeViewState listener");
+  const snippet = src.slice(idx, idx + 300);
+  assert.match(snippet, /webviewPanel\.visible/, "listener should check webviewPanel.visible");
+  assert.match(snippet, /_themeServiceHost\.handleGetStatus\(\)/, "visible branch should call themeServiceHost.handleGetStatus()");
+});
