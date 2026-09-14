@@ -1,16 +1,17 @@
-// Transport intentionally uses Node's built-in fetch so theme planning stays
-// provider-neutral and does not add another runtime SDK dependency.
+// p43-t7: theme planning/description generation now routes through the
+// Corsair Theme Service's POST /api/plan (docs/theme-service-api.md "Plan /
+// description generation"), the same way p43-t1 rerouted board-image
+// generation through POST /api/generate. No direct OpenAI/Gemini call and no
+// API key handling remain in this module.
 
 import type { ThemeManifest } from '../shared/types';
+import type { ThemeServiceClient, ThemeServiceError, ThemeServiceErrorKind } from '../core/themeServiceClient';
 /**
- * Local, text-LLM-only settings type (p43-t1). Previously imported from
- * imageClient.ts, which was deleted when direct-provider IMAGE generation
- * moved to the Corsair Theme Service — theme planning/description generation
- * here still calls the OpenAI/Gemini chat-completions endpoints directly
- * (unaffected by that migration; see docs/theme-service-api.md's Generation
- * section, which only covers image attempts), so this keeps its own
- * provider/apiKey/model shape rather than sharing themeService.ts's
- * (image-only) ThemeImageGenerationOptions.
+ * Legacy options shape (p43-t1/p43-t7). `provider`/`apiKey`/`model`/`quality`
+ * are DEAD — nothing in this module reads them any more; the type is kept
+ * only so callers upstream (themeService.ts's `ThemeTextGenerationOptions`
+ * alias, panel.ts, the standalone bridge) keep compiling unchanged. New
+ * callers should just pass `{}` or omit the argument.
  */
 export interface ThemeImageGenerationOptions {
   provider?: 'gemini' | 'openai';
@@ -18,6 +19,90 @@ export interface ThemeImageGenerationOptions {
   model?: string;
   quality?: string;
 }
+
+/**
+ * One planning/description-regeneration attempt against the Corsair Theme
+ * Service's POST /api/plan. Mirrors themeService.ts's ThemeImageGenerator
+ * seam exactly (see createServiceImageGenerator/setThemeImageGenerator) so
+ * the host wires this up the same way, next to the image generator.
+ */
+export interface ThemePlanRequest {
+  kind: 'plan' | 'descriptions';
+  /** Already-built prompt text (see buildThemePlanningPrompt/buildThemeDescriptionsPrompt) plus any other structured fields the service needs. */
+  input: Record<string, unknown>;
+}
+
+export interface ThemePlanRequestValue {
+  output: Record<string, unknown>;
+  attemptCost: number;
+  credits: number;
+  refunded: boolean;
+}
+
+export type ThemePlanRequestResult =
+  | { ok: true; value: ThemePlanRequestValue }
+  | { ok: false; error: ThemeServiceError };
+
+/** Injectable seam (p43-t7) so translator.ts never imports `vscode` or a provider SDK directly. */
+export interface ThemePlanRequester {
+  request(req: ThemePlanRequest): Promise<ThemePlanRequestResult>;
+}
+
+let planAttemptCounter = 0;
+/** `plan:${kind}:${timestamp}:${counter}:${randomSuffix}` — generated once per attempt; mirrors themeService.ts's nextThemeImageIdempotencyKey. */
+function nextPlanIdempotencyKey(kind: 'plan' | 'descriptions'): string {
+  planAttemptCounter += 1;
+  const suffix = `${Date.now().toString(36)}${planAttemptCounter.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return `plan:${kind}:${suffix}`;
+}
+
+/** Build a {@link ThemePlanRequester} backed by a real ThemeServiceClient's planRequest. */
+export function createServicePlanRequester(client: ThemeServiceClient): ThemePlanRequester {
+  return {
+    async request(req) {
+      return client.planRequest({
+        idempotencyKey: nextPlanIdempotencyKey(req.kind),
+        kind: req.kind,
+        input: req.input,
+      });
+    },
+  };
+}
+
+let currentThemePlanRequester: ThemePlanRequester | undefined;
+
+/** Host wiring point (panel.ts) — call once at startup with `createServicePlanRequester(themeServiceHost.getClient())`, next to setThemeImageGenerator; tests inject a fake directly. */
+export function setThemePlanRequester(requester: ThemePlanRequester | undefined): void {
+  currentThemePlanRequester = requester;
+}
+
+/** Thrown by expandThemePlan/regenerateThemeDescriptionsFromPlan on any non-ok ThemeServiceClient result, or when no requester has been configured. `kind` mirrors ThemeServiceErrorKind exactly so callers can surface a distinct, non-generic message per docs/theme-service-api.md's error table. */
+export class ThemePlanServiceError extends Error {
+  readonly kind: ThemeServiceErrorKind;
+  readonly refunded?: boolean;
+  readonly credits?: number;
+  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number }) {
+    super(error.message);
+    this.name = 'ThemePlanServiceError';
+    this.kind = error.kind;
+    this.refunded = error.refunded;
+    this.credits = error.credits;
+  }
+}
+
+export function isThemePlanServiceError(error: unknown): error is ThemePlanServiceError {
+  return error instanceof ThemePlanServiceError;
+}
+
+async function requestPlan(kind: 'plan' | 'descriptions', input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!currentThemePlanRequester) {
+    throw new ThemePlanServiceError({ kind: 'unavailable', message: 'Theme Service is not configured.' });
+  }
+  const result = await currentThemePlanRequester.request({ kind, input });
+  if (!result.ok) throw new ThemePlanServiceError(result.error);
+  return result.value.output;
+}
+
 import {
   FIXED_EXPRESSION_LABELS,
   normalizeThemePlan,
@@ -104,55 +189,11 @@ export function buildThemePlanningPrompt(userPrompt: string): string {
  */
 export async function expandThemePlan(
   rawUserInput: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site compatibility; see ThemeImageGenerationOptions doc comment.
   options: ThemeImageGenerationOptions = {},
 ): Promise<ThemePlan> {
-  const { provider, apiKey } = resolvePlannerSettings(options);
-  if (!apiKey) {
-    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
-    throw new Error(`${label} API key is required. Add one in Themes > Theme Builder.`);
-  }
-
   const planningPrompt = buildThemePlanningPrompt(rawUserInput);
-
-  const response = provider === 'openai'
-    ? await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4.1-mini',
-          messages: [{ role: 'user', content: planningPrompt }],
-          response_format: { type: 'json_object' },
-        }),
-      })
-    : await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: planningPrompt }] }],
-            generationConfig: { responseMimeType: 'application/json' },
-          }),
-        },
-      );
-
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new Error(`${provider === 'openai' ? 'OpenAI' : 'Gemini'} API error ${response.status}: ${apiErrorDetail(rawBody)}`);
-  }
-
-  const modelText = extractModelText(rawBody, provider);
-  let model: PlannerModelOutput;
-  try {
-    model = JSON.parse(stripMarkdownFences(modelText)) as PlannerModelOutput;
-  } catch (err) {
-    throw new Error(
-      `Failed to parse ${provider === 'openai' ? 'OpenAI' : 'Gemini'} theme plan as JSON: ${(err as Error).message}`,
-    );
-  }
+  const model = await requestPlan('plan', { prompt: planningPrompt }) as PlannerModelOutput;
 
   return normalizeThemePlan({
     display_name: model.display_name,
@@ -264,59 +305,15 @@ interface DescriptionsOnlyModelOutput {
  */
 export async function regenerateThemeDescriptionsFromPlan(
   plan: ThemePlan,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site compatibility; see ThemeImageGenerationOptions doc comment.
   options: ThemeImageGenerationOptions = {},
 ): Promise<Pick<ThemePlan,
   | 'character_descriptions' | 'object_descriptions' | 'crate_description' | 'poof_description'
   | 'projectile_description' | 'decor_descriptions' | 'enemy_descriptions' | 'expression_descriptions'
   | 'achievement_descriptions' | 'descriptions_direction'
 >> {
-  const { provider, apiKey } = resolvePlannerSettings(options);
-  if (!apiKey) {
-    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
-    throw new Error(`${label} API key is required. Add one in Themes > Theme Builder.`);
-  }
-
   const descriptionsPrompt = buildThemeDescriptionsPrompt(plan);
-
-  const response = provider === 'openai'
-    ? await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4.1-mini',
-          messages: [{ role: 'user', content: descriptionsPrompt }],
-          response_format: { type: 'json_object' },
-        }),
-      })
-    : await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: descriptionsPrompt }] }],
-            generationConfig: { responseMimeType: 'application/json' },
-          }),
-        },
-      );
-
-  const rawBody = await response.text();
-  if (!response.ok) {
-    throw new Error(`${provider === 'openai' ? 'OpenAI' : 'Gemini'} API error ${response.status}: ${apiErrorDetail(rawBody)}`);
-  }
-
-  const modelText = extractModelText(rawBody, provider);
-  let model: DescriptionsOnlyModelOutput;
-  try {
-    model = JSON.parse(stripMarkdownFences(modelText)) as DescriptionsOnlyModelOutput;
-  } catch (err) {
-    throw new Error(
-      `Failed to parse ${provider === 'openai' ? 'OpenAI' : 'Gemini'} description regeneration as JSON: ${(err as Error).message}`,
-    );
-  }
+  const model = await requestPlan('descriptions', { prompt: descriptionsPrompt }) as DescriptionsOnlyModelOutput;
 
   return {
     character_descriptions: requireDescriptionsArray('character_descriptions', model.character_descriptions, plan.characters.length),
@@ -387,62 +384,3 @@ export async function expandThemePrompt(
   };
 }
 
-/**
- * Resolve which image provider/API key to use for a planning call.
- *
- * Pre-pC-t1 this fell back to reading `tycoonagents.themeImageProvider` /
- * `openaiApiKey` / `geminiApiKey` straight out of the VS Code settings API
- * when `options` didn't carry an explicit value. That was the only reason
- * this module needed a load-time editor-API import. It is DEAD CODE for
- * every real call path today: the extension host (panel.ts) always resolves
- * provider/apiKey
- * itself first — via `resolveThemeImageSettings` in themeImageSettings.ts,
- * which already checks the SAME settings keys (plus SecretStorage, checked
- * first) — and passes them in explicitly before calling `planTheme` /
- * `generateTheme`. So dropping the VS Code settings read here changes
- * nothing in practice; the env-var fallback (unaffected by VS Code) is kept.
- * Flagged as a behavior note in case some future caller invoked
- * `expandThemePlan`/`planTheme` with no explicit provider/apiKey while
- * relying purely on raw VS Code settings outside `resolveThemeImageSettings`.
- */
-function resolvePlannerSettings(options: ThemeImageGenerationOptions): {
-  provider: 'gemini' | 'openai';
-  apiKey?: string;
-} {
-  const provider = options.provider ?? 'openai';
-  const apiKey = options.apiKey || (provider === 'openai'
-    ? process.env.OPENAI_API_KEY
-    : process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
-  return { provider, apiKey };
-}
-
-function extractModelText(rawBody: string, provider: 'gemini' | 'openai'): string {
-  try {
-    if (provider === 'openai') {
-      const envelope = JSON.parse(rawBody) as { choices?: Array<{ message?: { content?: string } }> };
-      return envelope.choices?.[0]?.message?.content ?? rawBody;
-    }
-    const envelope = JSON.parse(rawBody) as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    };
-    return envelope.candidates?.[0]?.content?.parts?.[0]?.text ?? rawBody;
-  } catch {
-    return rawBody;
-  }
-}
-
-function apiErrorDetail(rawBody: string): string {
-  try {
-    const parsed = JSON.parse(rawBody) as { error?: { message?: string } };
-    return parsed.error?.message ?? rawBody;
-  } catch {
-    return rawBody;
-  }
-}
-
-function stripMarkdownFences(raw: string): string {
-  return raw
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```\s*$/, '')
-    .trim();
-}

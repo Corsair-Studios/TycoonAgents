@@ -100,6 +100,8 @@ export interface ThemeServicePack {
 
 export interface ThemeServicePricing {
   attemptCostByBoardType: Record<string, number>;
+  /** Credit cost of one /api/plan attempt (either `kind`); see docs/theme-service-api.md "Plan / description generation". */
+  planCost: number;
   typicalTheme: { min: number; max: number };
   packs: ThemeServicePack[];
 }
@@ -123,6 +125,26 @@ export interface GenerateAttemptResponse {
   refunded: boolean;
 }
 
+/**
+ * Request body for POST /api/plan — see docs/theme-service-api.md "Plan /
+ * description generation". `kind` distinguishes a full theme plan from a
+ * descriptions-only re-derive; `input` carries the already-built prompt
+ * text (and any other structured fields the caller needs) so the service
+ * never has to reconstruct it.
+ */
+export interface PlanRequest {
+  idempotencyKey: string;
+  kind: "plan" | "descriptions";
+  input: Record<string, unknown>;
+}
+
+export interface PlanRequestResponse {
+  output: Record<string, unknown>;
+  attemptCost: number;
+  credits: number;
+  refunded: boolean;
+}
+
 export interface GoogleSignInStart {
   browserUrl: string;
   codeVerifier: string;
@@ -139,6 +161,7 @@ export interface ThemeServiceClient {
   getPricing(): Promise<ThemeServiceResult<ThemeServicePricing>>;
   createCheckoutSession(pack: string): Promise<ThemeServiceResult<CheckoutSession>>;
   generateAttempt(req: GenerateAttemptRequest): Promise<ThemeServiceResult<GenerateAttemptResponse>>;
+  planRequest(req: PlanRequest): Promise<ThemeServiceResult<PlanRequestResponse>>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -620,6 +643,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       if (
         !isRecord(json) ||
         !isRecord(json.attemptCostByBoardType) ||
+        typeof json.planCost !== "number" ||
         !isRecord(json.typicalTheme) ||
         typeof json.typicalTheme.min !== "number" ||
         typeof json.typicalTheme.max !== "number" ||
@@ -647,7 +671,12 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       }
       return {
         ok: true,
-        value: { attemptCostByBoardType, typicalTheme: { min: json.typicalTheme.min, max: json.typicalTheme.max }, packs },
+        value: {
+          attemptCostByBoardType,
+          planCost: json.planCost,
+          typicalTheme: { min: json.typicalTheme.min, max: json.typicalTheme.max },
+          packs,
+        },
       };
     },
 
@@ -677,6 +706,25 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       return {
         ok: true,
         value: { image: json.image, attemptCost: json.attemptCost, credits: json.credits, refunded: json.refunded },
+      };
+    },
+
+    async planRequest(req) {
+      const res = await serviceRequest("/api/plan", { method: "POST", body: req, auth: true });
+      if (!res.ok) return res;
+      const json = res.value;
+      if (
+        !isRecord(json) ||
+        !isRecord(json.output) ||
+        typeof json.attemptCost !== "number" ||
+        typeof json.credits !== "number" ||
+        typeof json.refunded !== "boolean"
+      ) {
+        return { ok: false, error: invalidResponse("malformed /api/plan response") };
+      }
+      return {
+        ok: true,
+        value: { output: json.output, attemptCost: json.attemptCost, credits: json.credits, refunded: json.refunded },
       };
     },
   };

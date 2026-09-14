@@ -21,6 +21,7 @@ export interface PricingPack {
 
 export interface Pricing {
   attemptCostByBoardType: Record<string, number>;
+  planCost: number;
   typicalTheme: { min: number; max: number };
   packs: PricingPack[];
 }
@@ -43,6 +44,11 @@ interface GenerateRecord {
   response: { status: number; body: unknown };
 }
 
+interface PlanRecord {
+  ref: string;
+  response: { status: number; body: unknown };
+}
+
 export interface FakeThemeServiceState {
   accounts: Map<string, Account>; // accountId -> Account
   accountsByEmail: Map<string, string>;
@@ -57,6 +63,7 @@ export interface FakeThemeServiceState {
   // checkout
   checkoutSessions: Map<string, { accountId: string; pack: string; completed: boolean }>;
   generateRequests: GenerateRecord[];
+  planRequests: PlanRecord[];
   pricing: Pricing;
 }
 
@@ -77,6 +84,7 @@ const DEFAULT_PRICING: Pricing = {
     expressions: 1,
     achievements: 1,
   },
+  planCost: 1,
   typicalTheme: { min: 12, max: 30 },
   packs: [
     { id: "mini30", credits: 30, priceCents: 299, currency: "usd" },
@@ -135,6 +143,7 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
     createAccount(email: string, role?: string): Account;
     grant(accountId: string, credits: number, ref?: string): LedgerRow | undefined;
     failNextGenerate(): void;
+    failNextPlan(): void;
     setUnavailable(unavailable: boolean): void;
     completeGoogleInBrowser(): Promise<string>;
     completeCheckout(sessionId: string): LedgerRow | undefined;
@@ -150,6 +159,7 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       ...DEFAULT_PRICING.attemptCostByBoardType,
       ...(options.pricing?.attemptCostByBoardType ?? {}),
     },
+    planCost: options.pricing?.planCost ?? DEFAULT_PRICING.planCost,
     typicalTheme: { ...DEFAULT_PRICING.typicalTheme, ...(options.pricing?.typicalTheme ?? {}) },
     packs: options.pricing?.packs ?? DEFAULT_PRICING.packs,
   };
@@ -166,11 +176,13 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
     pendingGoogleChallenges: new Map(),
     checkoutSessions: new Map(),
     generateRequests: [],
+    planRequests: [],
     pricing,
   };
 
   let unavailable = false;
   let failNextGenerateOnce = false;
+  let failNextPlanOnce = false;
   // sessionId used by startGoogleSignIn's authorize call, held so
   // completeGoogleInBrowser (no args) can find the most recent one.
   let lastGoogleAuthCode: string | null = null;
@@ -395,6 +407,60 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         return jsonResponse(200, respBody);
       }
 
+      if (path === "/api/plan" && method === "POST") {
+        const account = accountForBearer(headers.get("Authorization"));
+        if (!account) return jsonResponse(401, { error: "not_signed_in" });
+        const body = await readJsonBody(init);
+        if (
+          !isRecord(body) ||
+          typeof body.idempotencyKey !== "string" ||
+          (body.kind !== "plan" && body.kind !== "descriptions") ||
+          !isRecord(body.input)
+        ) {
+          return jsonResponse(400, { error: "invalid request" });
+        }
+        const planRef = `plan:${body.idempotencyKey}`;
+        const existingPlan = state.planRequests.find((r) => r.ref === planRef);
+        if (existingPlan) {
+          return jsonResponse(existingPlan.response.status, existingPlan.response.body);
+        }
+        const cost = state.pricing.planCost;
+        const balance = balanceOf(account.id);
+        if (balance < cost) {
+          const respBody = { error: "insufficient_credits", credits: balance };
+          state.planRequests.push({ ref: planRef, response: { status: 402, body: respBody } });
+          return jsonResponse(402, respBody);
+        }
+        // Debit.
+        state.balances.set(account.id, balance - cost);
+        recordLedger({ userId: account.id, delta: -cost, reason: "spend-theme-attempt", ref: planRef });
+
+        if (failNextPlanOnce) {
+          failNextPlanOnce = false;
+          // Refund.
+          const refunded = balanceOf(account.id) + cost;
+          state.balances.set(account.id, refunded);
+          const refundRef = `refund:${body.idempotencyKey}`;
+          recordLedger({ userId: account.id, delta: cost, reason: "refund-theme-attempt", ref: refundRef });
+          const respBody = { error: "provider_failed", refunded: true, credits: refunded };
+          state.planRequests.push({ ref: planRef, response: { status: 502, body: respBody } });
+          return jsonResponse(502, respBody);
+        }
+
+        const newBalance = balanceOf(account.id);
+        // Fake "output": echoes back the kind/input it was given so tests can
+        // assert on what the caller sent, without hardcoding a plan shape
+        // here — real plan/description shapes are the caller's concern.
+        const respBody = {
+          output: { kind: body.kind, echo: body.input },
+          attemptCost: cost,
+          credits: newBalance,
+          refunded: false,
+        };
+        state.planRequests.push({ ref: planRef, response: { status: 200, body: respBody } });
+        return jsonResponse(200, respBody);
+      }
+
       return jsonResponse(404, { error: "not_found" });
     }
 
@@ -422,6 +488,9 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       },
       failNextGenerate() {
         failNextGenerateOnce = true;
+      },
+      failNextPlan() {
+        failNextPlanOnce = true;
       },
       setUnavailable(value) {
         unavailable = value;

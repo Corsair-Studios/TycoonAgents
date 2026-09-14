@@ -117,6 +117,7 @@ Response `200`:
     "expressions": 1,
     "achievements": 1
   },
+  "planCost": 1,
   "typicalTheme": { "min": 12, "max": 30 },
   "packs": [
     { "id": "mini30",     "credits": 30,   "priceCents": 299,  "currency": "usd" },
@@ -130,7 +131,9 @@ Pack ids mirror Speciary's `StoreItem`/`STORE_ITEM_PRICE_CENTS` map
 (`packages/service/src/stripe-store.ts:42`) and its four `STRIPE_PRICE_*` env
 names, renamed to the theme service's own four packs. Actual credit counts
 and prices are set by the service (Stripe Price objects, dashboard-managed);
-the values above are illustrative.
+the values above are illustrative. `planCost` is the credit cost of one
+`POST /api/plan` attempt (either `kind`) — assumed `1` unless the operator
+sets it to `0`; see Plan / description generation below.
 
 ## Checkout
 
@@ -177,6 +180,51 @@ Response `502` (provider failure, auto-refunded atomically server-side):
 { "error": "provider_failed", "refunded": true, "credits": 42 }
 ```
 
+## Plan / description generation
+
+### `POST /api/plan`
+
+Theme planning (the initial full plan) and description-only regeneration
+(re-deriving `*_descriptions` under a possibly-updated creative direction)
+both route through this one endpoint — same shape, distinguished only by
+`kind`. The client builds the complete prompt text client-side (see
+`src/extension/translator.ts`'s `buildThemePlanningPrompt` /
+`buildThemeDescriptionsPrompt`) and sends it as `input.prompt`; the service
+never reconstructs the prompt itself.
+
+```json
+{
+  "idempotencyKey": "uuid-v4",
+  "kind": "plan",
+  "input": { "prompt": "string — the fully-built planning or description-regeneration prompt" }
+}
+```
+
+`kind` is `"plan"` for a full new theme plan, or `"descriptions"` for a
+descriptions-only re-derive. `idempotencyKey` follows the same client-
+generated-per-attempt rule as `/api/generate`'s.
+
+Response `200`:
+```json
+{ "output": { "...": "the parsed JSON object the prompt asked for" }, "attemptCost": 1, "credits": 41, "refunded": false }
+```
+
+`output` is the model's response already parsed into a JSON object (no
+markdown fences, no envelope) — for `kind: "plan"` this is the full
+`display_name`/`creative_direction`/`characters`/... shape
+`buildThemePlanningPrompt` requests; for `kind: "descriptions"` it is just
+the `*_descriptions` fields `buildThemeDescriptionsPrompt` requests. The
+client never sees which underlying provider/model produced it.
+
+Response `502` (provider failure, auto-refunded atomically server-side):
+```json
+{ "error": "provider_failed", "refunded": true, "credits": 42 }
+```
+
+Same auth (`Authorization: Bearer <access_token>`) and error codes as
+`/api/generate` (see the Error shape table below). Cost is `planCost` from
+`GET /api/pricing` (assumed `1` credit; the service may set it to `0`).
+
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 
 Append-only rows, keyed by `(user_id, created_at)`
@@ -186,12 +234,15 @@ partial index on `ref` where `ref is not null`**
 let the unique constraint reject a duplicate" guarantee Speciary's webhook
 handler relies on, not a check-then-insert race.
 
-- Spend: `delta = -attemptCost`, `reason = "spend-theme-attempt"`,
-  `ref = "attempt:<idempotencyKey>"`. Replaying the same idempotency key
-  hits the unique `ref` index and is a no-op — never a double debit.
-- Refund: `delta = +attemptCost`, `reason = "refund-theme-attempt"`,
-  `ref = "refund:<idempotencyKey>"`. Fires only on outright provider
-  failure, never on a successfully returned image.
+- Spend (`/api/generate`): `delta = -attemptCost`, `reason =
+  "spend-theme-attempt"`, `ref = "attempt:<idempotencyKey>"`. Replaying the
+  same idempotency key hits the unique `ref` index and is a no-op — never a
+  double debit.
+- Spend (`/api/plan`): same shape, `ref = "plan:<idempotencyKey>"`.
+- Refund: `delta = +attemptCost` (or `+planCost` for a `/api/plan` spend),
+  `reason = "refund-theme-attempt"`, `ref = "refund:<idempotencyKey>"`.
+  Fires only on outright provider failure, never on a successfully returned
+  image/plan.
 - Grant (from Stripe webhook only): `ref = "stripe:<eventId>:<pack>"`.
 
 ## Stripe webhook

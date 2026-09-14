@@ -265,3 +265,96 @@ test("setUnavailable makes service routes return 503", async () => {
   assert.equal(res.status, 503);
 });
 
+
+// --- /api/plan (p43-t7) -----------------------------------------------------
+
+test("plan debits planCost and echoes kind/input as output", async () => {
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("plan@example.com");
+  const { body } = await signInByEmail(fakeFetch, "plan@example.com");
+  helpers.grant(account.id, 5);
+
+  const res = await fakeFetch(`${ENDPOINT}/api/plan`, {
+    method: "POST",
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "plan-key-1", kind: "plan", input: { prompt: "a chair shop" } }),
+  });
+  assert.equal(res.status, 200);
+  const planBody = (await res.json()) as { output: unknown; attemptCost: number; credits: number; refunded: boolean };
+  assert.deepEqual(planBody.output, { kind: "plan", echo: { prompt: "a chair shop" } });
+  assert.equal(planBody.attemptCost, 1);
+  assert.equal(planBody.credits, 4);
+  assert.equal(planBody.refunded, false);
+});
+
+test("failed plan refunds with zero net ledger effect", async () => {
+  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("planfail@example.com");
+  const { body } = await signInByEmail(fakeFetch, "planfail@example.com");
+  helpers.grant(account.id, 5);
+  helpers.failNextPlan();
+
+  const res = await fakeFetch(`${ENDPOINT}/api/plan`, {
+    method: "POST",
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "plan-key-fail", kind: "descriptions", input: { prompt: "x" } }),
+  });
+  assert.equal(res.status, 502);
+  const respBody = (await res.json()) as { error: string; refunded: boolean; credits: number };
+  assert.equal(respBody.error, "provider_failed");
+  assert.equal(respBody.refunded, true);
+  assert.equal(respBody.credits, 5); // net zero — balance restored
+
+  const rows = state.ledger.filter((r) => r.ref?.includes("plan-key-fail"));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].reason, "spend-theme-attempt");
+  assert.equal(rows[1].reason, "refund-theme-attempt");
+});
+
+test("idempotent plan replay returns the original response with no new ledger row", async () => {
+  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("planreplay@example.com");
+  const { body } = await signInByEmail(fakeFetch, "planreplay@example.com");
+  helpers.grant(account.id, 5);
+
+  const req = () =>
+    fakeFetch(`${ENDPOINT}/api/plan`, {
+      method: "POST",
+      headers: authHeaders(body.access_token),
+      body: JSON.stringify({ idempotencyKey: "plan-replay-key", kind: "plan", input: { prompt: "x" } }),
+    });
+
+  const first = await req();
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  const second = await req();
+  assert.equal(second.status, 200);
+  const secondBody = await second.json();
+  assert.deepEqual(firstBody, secondBody);
+
+  const rows = state.ledger.filter((r) => r.ref === "plan:plan-replay-key");
+  assert.equal(rows.length, 1);
+});
+
+test("plan insufficient credits returns 402", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "planpoor@example.com");
+  const res = await fakeFetch(`${ENDPOINT}/api/plan`, {
+    method: "POST",
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "plan-poor-key", kind: "plan", input: { prompt: "x" } }),
+  });
+  assert.equal(res.status, 402);
+  const respBody = (await res.json()) as { error: string; credits: number };
+  assert.equal(respBody.error, "insufficient_credits");
+  assert.equal(respBody.credits, 0);
+});
+
+test("plan requires auth", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const res = await fakeFetch(`${ENDPOINT}/api/plan`, {
+    method: "POST",
+    body: JSON.stringify({ idempotencyKey: "no-auth", kind: "plan", input: { prompt: "x" } }),
+  });
+  assert.equal(res.status, 401);
+});

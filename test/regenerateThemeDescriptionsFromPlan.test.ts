@@ -38,7 +38,10 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { regenerateThemeDescriptionsFromPlan } = require('../src/extension/translator') as typeof import('../src/extension/translator');
+const {
+  regenerateThemeDescriptionsFromPlan,
+  setThemePlanRequester,
+} = require('../src/extension/translator') as typeof import('../src/extension/translator');
 import { normalizeThemePlan } from '../src/extension/themePlan';
 import type { ThemePlan } from '../src/extension/themePlan';
 
@@ -54,18 +57,16 @@ function basePlan(): ThemePlan {
   });
 }
 
-function mockFetchOnce(responseObject: unknown) {
-  const original = (global as unknown as { fetch: typeof fetch }).fetch;
-  (global as unknown as { fetch: typeof fetch }).fetch = (async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({
-      choices: [{ message: { content: JSON.stringify(responseObject) } }],
-    }),
-  })) as unknown as typeof fetch;
-  return () => {
-    (global as unknown as { fetch: typeof fetch }).fetch = original;
-  };
+// Stubs translator.ts's ThemePlanRequester seam (p43-t7) — regenerate now
+// routes through this instead of a direct fetch call, so tests inject a
+// fake requester that returns the given output object as-is.
+function stubPlanRequesterOnce(output: unknown) {
+  setThemePlanRequester({
+    async request() {
+      return { ok: true, value: { output: output as Record<string, unknown>, attemptCost: 1, credits: 1, refunded: false } };
+    },
+  });
+  return () => setThemePlanRequester(undefined);
 }
 
 function fullValidResponse(plan: ThemePlan) {
@@ -86,10 +87,10 @@ test('regenerateThemeDescriptionsFromPlan: fewer entries than the plan\'s name a
   const plan = basePlan();
   const response = fullValidResponse(plan);
   response.character_descriptions = response.character_descriptions.slice(0, plan.characters.length - 1);
-  const restore = mockFetchOnce(response);
+  const restore = stubPlanRequesterOnce(response);
   try {
     await assert.rejects(
-      () => regenerateThemeDescriptionsFromPlan(plan, { provider: 'openai', apiKey: 'test-key' }),
+      () => regenerateThemeDescriptionsFromPlan(plan, {}),
       /character_descriptions.*returned \d+ entries.*plan has \d+/s,
     );
   } finally {
@@ -101,10 +102,10 @@ test('regenerateThemeDescriptionsFromPlan: extra entries beyond the plan\'s name
   const plan = basePlan();
   const response = fullValidResponse(plan);
   response.object_descriptions = [...response.object_descriptions, 'one too many'];
-  const restore = mockFetchOnce(response);
+  const restore = stubPlanRequesterOnce(response);
   try {
     await assert.rejects(
-      () => regenerateThemeDescriptionsFromPlan(plan, { provider: 'openai', apiKey: 'test-key' }),
+      () => regenerateThemeDescriptionsFromPlan(plan, {}),
       /object_descriptions.*returned \d+ entries.*plan has \d+/s,
     );
   } finally {
@@ -115,9 +116,9 @@ test('regenerateThemeDescriptionsFromPlan: extra entries beyond the plan\'s name
 test('regenerateThemeDescriptionsFromPlan: exact-count entries are accepted', async () => {
   const plan = basePlan();
   const response = fullValidResponse(plan);
-  const restore = mockFetchOnce(response);
+  const restore = stubPlanRequesterOnce(response);
   try {
-    const result = await regenerateThemeDescriptionsFromPlan(plan, { provider: 'openai', apiKey: 'test-key' });
+    const result = await regenerateThemeDescriptionsFromPlan(plan, {});
     assert.deepEqual(result.character_descriptions, response.character_descriptions);
     assert.deepEqual(result.object_descriptions, response.object_descriptions);
     assert.deepEqual(result.decor_descriptions, response.decor_descriptions);
@@ -137,10 +138,10 @@ test('regenerateThemeDescriptionsFromPlan: a blank entry in an otherwise correct
   const plan = basePlan();
   const response = fullValidResponse(plan);
   response.enemy_descriptions = plan.enemies.map(() => '   ');
-  const restore = mockFetchOnce(response);
+  const restore = stubPlanRequesterOnce(response);
   try {
     await assert.rejects(
-      () => regenerateThemeDescriptionsFromPlan(plan, { provider: 'openai', apiKey: 'test-key' }),
+      () => regenerateThemeDescriptionsFromPlan(plan, {}),
       /enemy_descriptions.*blank or non-string entry/s,
     );
   } finally {

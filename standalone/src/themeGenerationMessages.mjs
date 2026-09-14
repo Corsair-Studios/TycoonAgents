@@ -198,10 +198,19 @@ export async function handlePlanTheme(store, broadcast, getThemeImageConfig, pay
     }
     const prompt = (payload?.prompt ?? '').trim();
     if (!prompt) throw new Error('Enter a theme name or description first.');
-    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider);
-    requireApiKey(imageOptions);
-    const plan = await genBridge.planTheme(prompt, imageOptions);
-    broadcast('message', { type: MSG_WIRE.THEME_PLAN_READY, payload: { plan } });
+    // p43-t7 rerouted theme planning through the Corsair Theme Service's
+    // POST /api/plan (translator.ts's ThemePlanRequester seam) — the
+    // extension host wires that up (panel.ts's setThemePlanRequester); the
+    // standalone never does. No provider API key applies here any more —
+    // the image-generation-only key/quality resolution helpers further
+    // below in this file are a separate call path (see
+    // docs/theme-service-api.md's Generation section). Fail fast with the
+    // same p44-parity message handleGenerateTheme already uses for images,
+    // rather than restoring a provider secret-env-var read.
+    throw new Error(
+      'Theme Service planning not wired in standalone yet (see plan p44 for parity work). ' +
+        'Use the VS Code extension host to plan a theme for now.',
+    );
   } catch (err) {
     broadcast('message', { type: MSG_WIRE.THEME_PLAN_ERROR, payload: { message: String(err) } });
   }
@@ -679,14 +688,13 @@ export async function handleRegenerateThemeDescriptions(store, broadcast, getThe
   const themeId = payload?.theme_id ?? '';
   if (!isThemeId(themeId)) return;
   try {
-    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider);
-    requireApiKey(imageOptions);
-    await genBridge.regenerateThemeDescriptions(store, themeId, imageOptions);
-    await handleGetThemeImageReview(store, broadcast, themeId);
-    broadcast('message', {
-      type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT,
-      payload: { ok: true, theme_id: themeId },
-    });
+    // p43-t7: same Theme Service /api/plan reroute as handlePlanTheme above
+    // — not wired in standalone yet (plan p44). Fail fast instead of
+    // reading a provider API key.
+    throw new Error(
+      'Theme Service description regeneration not wired in standalone yet (see plan p44 for parity work). ' +
+        'Use the VS Code extension host for now.',
+    );
   } catch (err) {
     broadcast('message', {
       type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT,

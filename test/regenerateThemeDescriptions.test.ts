@@ -77,6 +77,8 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { regenerateThemeDescriptions } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { setThemePlanRequester } = require('../src/extension/translator') as typeof import('../src/extension/translator');
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'regenerateThemeDescriptions-'));
@@ -168,22 +170,22 @@ function storageUri(root: string) {
   return makeUri(root);
 }
 
+// Stubs translator.ts's ThemePlanRequester seam (p43-t7) — regenerate now
+// routes through Theme Service /api/plan instead of a direct provider
+// fetch, so this injects a fake requester rather than mocking global.fetch.
 function stubFetchWithDescriptions() {
-  const originalFetch = global.fetch;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (global as any).fetch = async () => ({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({
-      choices: [{
-        message: {
-          // regenerateThemeDescriptionsFromPlan now requires each *_descriptions
-          // array to match the NORMALIZED plan's fixed slot count exactly (see
-          // requireDescriptionsArray in translator.ts) — normalizeThemePlan pads
-          // characters/objects/enemies/achievements up to their fixed contract
-          // counts (16/21/4/25) before this call, so the stub must return that
-          // many entries, not just the handful testPlan() seeds.
-          content: JSON.stringify({
+  setThemePlanRequester({
+    async request() {
+      // regenerateThemeDescriptionsFromPlan now requires each *_descriptions
+      // array to match the NORMALIZED plan's fixed slot count exactly (see
+      // requireDescriptionsArray in translator.ts) — normalizeThemePlan pads
+      // characters/objects/enemies/achievements up to their fixed contract
+      // counts (16/21/4/25) before this call, so the stub must return that
+      // many entries, not just the handful testPlan() seeds.
+      return {
+        ok: true,
+        value: {
+          output: {
             character_descriptions: ['a fresh spec', 'another fresh spec', ...new Array(14).fill('a fresh spec')],
             object_descriptions: ['a fresh crate spec', 'a fresh tower spec', ...new Array(19).fill('a fresh object spec')],
             crate_description: 'a fresh crate',
@@ -193,12 +195,15 @@ function stubFetchWithDescriptions() {
             enemy_descriptions: ['a fresh enemy spec', ...new Array(3).fill('a fresh enemy spec')],
             expression_descriptions: new Array(8).fill('a fresh icon'),
             achievement_descriptions: ['a fresh badge spec', ...new Array(24).fill('a fresh badge spec')],
-          }),
+          },
+          attemptCost: 1,
+          credits: 1,
+          refunded: false,
         },
-      }],
-    }),
+      };
+    },
   });
-  return () => { global.fetch = originalFetch; };
+  return () => setThemePlanRequester(undefined);
 }
 
 test('regenerateThemeDescriptions snapshots the old descriptions into previous_descriptions, writes fresh descriptions, and sets descriptions_direction to the current creative_direction', async () => {
@@ -210,7 +215,7 @@ test('regenerateThemeDescriptions snapshots the old descriptions into previous_d
     const { plan } = await regenerateThemeDescriptions(
       storageUri(root) as never,
       'test_theme',
-      { provider: 'openai', apiKey: 'test-key' },
+      {},
     );
 
     // normalizeThemePlan pads character_descriptions to the fixed 16-slot
@@ -240,7 +245,7 @@ test('regenerateThemeDescriptions throws on an invalid theme id before touching 
   const restoreFetch = stubFetchWithDescriptions();
   try {
     await assert.rejects(
-      regenerateThemeDescriptions(storageUri(root) as never, 'Not A Valid Id!', { provider: 'openai', apiKey: 'test-key' }),
+      regenerateThemeDescriptions(storageUri(root) as never, 'Not A Valid Id!', {}),
       /Invalid theme ID/,
     );
     assert.equal(fs.existsSync(path.join(root, 'themes')), false);
@@ -260,7 +265,7 @@ test('regenerateThemeDescriptions throws when no plan.json exists for the theme'
     fs.writeFileSync(path.join(dir, 'frames.json'), JSON.stringify({}, null, 2));
 
     await assert.rejects(
-      regenerateThemeDescriptions(storageUri(root) as never, 'test_theme', { provider: 'openai', apiKey: 'test-key' }),
+      regenerateThemeDescriptions(storageUri(root) as never, 'test_theme', {}),
       /no saved plan/,
     );
   } finally {

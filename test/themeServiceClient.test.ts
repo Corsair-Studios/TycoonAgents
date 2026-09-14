@@ -475,3 +475,83 @@ test("signOut clears the token store", async () => {
   assert.equal(tokenStore.value, null);
   void fake;
 });
+
+// --- planRequest (p43-t7) ---------------------------------------------------
+
+test("getPricing surfaces planCost", async () => {
+  const { client } = setupClient();
+  const res = await client.getPricing();
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value.planCost, 1);
+});
+
+test("planRequest debits planCost and echoes the requester's kind/input as output", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("plan@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("plan@example.com");
+  await client.verifyMagicLink("plan@example.com", "123456");
+
+  const res = await client.planRequest({
+    idempotencyKey: "plan-k1",
+    kind: "plan",
+    input: { prompt: "a cozy noodle shop" },
+  });
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.credits, 4);
+    assert.equal(res.value.attemptCost, 1);
+    assert.equal(res.value.refunded, false);
+    assert.deepEqual(res.value.output, { kind: "plan", echo: { prompt: "a cozy noodle shop" } });
+  }
+  const rows = fake.state.ledger.filter((r) => r.ref === "plan:plan-k1");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].delta, -1);
+});
+
+test("planRequest: failNextPlan refunds with zero net and reports provider_failed", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("planfail@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("planfail@example.com");
+  await client.verifyMagicLink("planfail@example.com", "123456");
+
+  fake.helpers.failNextPlan();
+  const res = await client.planRequest({
+    idempotencyKey: "plan-k2",
+    kind: "descriptions",
+    input: { prompt: "re-derive descriptions" },
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "provider_failed");
+    assert.equal(res.error.refunded, true);
+    assert.equal(res.error.credits, 5); // net zero vs pre-attempt balance
+  }
+});
+
+test("idempotent replay of planRequest adds no new ledger row", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("planreplay@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("planreplay@example.com");
+  await client.verifyMagicLink("planreplay@example.com", "123456");
+
+  const req = { idempotencyKey: "plan-replay-key", kind: "plan" as const, input: { prompt: "x" } };
+  const first = await client.planRequest(req);
+  const second = await client.planRequest(req);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (first.ok && second.ok) {
+    assert.deepEqual(first.value, second.value);
+  }
+  const rows = fake.state.ledger.filter((r) => r.ref === "plan:plan-replay-key");
+  assert.equal(rows.length, 1);
+});
+
+test("planRequest requires auth (401 -> not_signed_in when no session)", async () => {
+  const { client } = setupClient();
+  const res = await client.planRequest({ idempotencyKey: "no-auth", kind: "plan", input: { prompt: "x" } });
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "not_signed_in");
+});

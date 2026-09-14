@@ -12,7 +12,14 @@
  * this file is the one place to touch, nothing else needs to change.
  */
 
-import type { ThemeImageProvider } from './themeImageSettings';
+// ThemeImageProvider used to be imported from themeImageSettings.ts, which
+// was deleted (p43-t7) once its only consumer (resolveThemeImageSettings)
+// became unused — theme planning/descriptions now route through the Theme
+// Service (see translator.ts) and image generation options no longer carry
+// a provider (see themeService.ts's ThemeImageGenerationOptions). This type
+// only labels which provider a *model id* belongs to in the table below, so
+// it's defined locally instead of resurrecting that file.
+export type ThemeImageProvider = 'gemini' | 'openai';
 
 export interface ImageModelOption {
   id: string;

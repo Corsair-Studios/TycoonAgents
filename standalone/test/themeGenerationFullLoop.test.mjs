@@ -93,17 +93,15 @@ test('GENERATE_THEME fails fast with a clear message instead of hanging (standal
     'error names the standalone-specific gap, not a generic failure',
   );
 
-  // PLAN_THEME is unaffected by the guard — only GENERATE_THEME's image
-  // pipeline is unwired — so it still requires (and reports the absence of)
-  // a real network call; here it simply confirms handlePlanTheme was never
-  // touched by this change by exercising its unrelated API-key validation
-  // path deterministically (no fetch mock needed since a missing key fails
-  // before any network call).
+  // PLAN_THEME (p43-t7) now routes through the same Theme Service
+  // /api/plan reroute as GENERATE_THEME's images — also unwired in
+  // standalone (plan p44) — so it fails fast with the same style of
+  // message rather than any provider API-key check (that check is gone).
   const planCalls = [];
   await handlePlanTheme(store, fakeBroadcast(planCalls), () => ({ provider: 'openai', openaiApiKey: undefined }), {
     prompt: 'A cozy pixel-art bakery tycoon',
   });
   const planError = callsOfType(planCalls, 'THEME_PLAN_ERROR')[0];
-  assert.ok(planError, 'THEME_PLAN_ERROR broadcast for a missing API key');
-  assert.match(planError.data.payload.message, /No OpenAI API key/);
+  assert.ok(planError, 'THEME_PLAN_ERROR broadcast');
+  assert.match(planError.data.payload.message, /not wired in standalone/i);
 });

@@ -127,15 +127,14 @@ import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../exten
 import { configureThemeFileStore } from "../../extension/themeFileStore";
 import { createVscodeThemeFileStore } from "../../extension/themeFileStoreVscode";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
-// getConfiguredThemeImageProvider / getThemeImageConfigurationStatus /
-// saveThemeImageSettings / saveThemeImagePreference / IMAGE_MODELS /
-// IMAGE_QUALITY_OPTIONS removed (p43-t1, direct-provider image settings UI
-// retired). resolveThemeImageSettings stays: PLAN_THEME and
-// REGENERATE_THEME_DESCRIPTIONS still resolve a provider/apiKey for their
-// TEXT (chat-completions) calls via translator.ts, unaffected by the
-// image-generation migration — see docs/theme-service-api.md's Generation
-// section, which only covers image attempts.
-import { resolveThemeImageSettings } from "../../extension/themeImageSettings";
+// Every direct-provider theme-image-settings helper (provider/model/quality
+// getters+setters, the API-key resolver, the module that held them) is
+// removed (p43-t1 retired the direct-provider image settings UI; p43-t7
+// finished the job — PLAN_THEME and REGENERATE_THEME_DESCRIPTIONS now route
+// their TEXT calls through the Theme Service's POST /api/plan via
+// translator.ts's ThemePlanRequester seam, same as image generation — see
+// docs/theme-service-api.md's "Plan / description generation" section).
+import { createServicePlanRequester, setThemePlanRequester } from "../../extension/translator";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
   readPlanSafe,
@@ -964,6 +963,10 @@ export class TycoonPanel {
     // session and refresh-in-flight coordination rather than building a
     // second client.
     setThemeImageGenerator(createServiceImageGenerator(this._themeServiceHost.getClient()));
+    // Same wiring for theme planning/description-regeneration text calls
+    // (p43-t7) — reuses the same authenticated client/session as image
+    // generation and status/checkout above.
+    setThemePlanRequester(createServicePlanRequester(this._themeServiceHost.getClient()));
     // Refresh status whenever the panel becomes visible again (tab
     // switch/restore) — cheap (one getStatus call) and keeps a stale
     // signed-out/balance view from lingering after e.g. completing sign-in
@@ -2146,9 +2149,7 @@ export class TycoonPanel {
           const themeId = parsedRegenerate.data.theme_id;
           if (!/^[a-z0-9_]+$/.test(themeId)) return;
           try {
-            const imageSettings = await resolveThemeImageSettings(this._secrets);
-            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
-            await regenerateThemeDescriptions(this._globalStorageUri, themeId, imageSettings);
+            await regenerateThemeDescriptions(this._globalStorageUri, themeId, {});
             // Same ordering as SET_THEME_ITEM_DESCRIPTIONS: refresh the review
             // payload (now carrying the new descriptions and a cleared
             // descriptionsStale flag) BEFORE the *_RESULT reply.
@@ -2445,17 +2446,9 @@ export class TycoonPanel {
             if (this._themeGenerationActive) throw new Error("Wait for the current theme generation to finish before planning another theme.");
             const prompt = payload?.prompt?.trim() ?? "";
             if (!prompt) throw new Error("Enter a theme name or description first.");
-            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
-            if (!imageSettings.apiKey) {
-              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
-              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
-            }
-            const plan = await planTheme(prompt, {
-              provider: imageSettings.provider,
-              apiKey: imageSettings.apiKey,
-              model: imageSettings.model,
-              quality: imageSettings.quality,
-            });
+            // payload.image_provider is unused now — planning routes through
+            // the Theme Service (p43-t7), not a user-chosen text provider.
+            const plan = await planTheme(prompt, {});
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_ERROR, payload: { message: String(err) } });
