@@ -102,6 +102,7 @@ import {
   resumeThemeGeneration,
   saveThemeTuning,
   updateThemeCreativeDirection,
+  regenerateThemeDescriptions,
   updateThemeImageReviewStatus,
   updateThemeItemDescriptionsBatch,
   upgradeInstalledThemes,
@@ -110,7 +111,7 @@ import {
 } from "../../extension/themeService";
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
-import { themePlanCreativeDirection } from "../../extension/themePlan";
+import { themePlanCreativeDirection, themeDescriptionsStale } from "../../extension/themePlan";
 import type { ThemePlan } from "../../extension/themePlan";
 import type {
   BoardKind,
@@ -2134,6 +2135,29 @@ export class TycoonPanel {
               payload: { ok: false, theme_id: themeId, error: errorMessage(err) },
             });
           }
+        } else if (message.type === MSG.REGENERATE_THEME_DESCRIPTIONS) {
+          const parsedRegenerate = MSG_SCHEMAS.REGENERATE_THEME_DESCRIPTIONS.safeParse((message as any).payload);
+          if (!parsedRegenerate.success) return;
+          const themeId = parsedRegenerate.data.theme_id;
+          if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          try {
+            const imageSettings = await resolveThemeImageSettings(this._secrets);
+            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
+            await regenerateThemeDescriptions(this._globalStorageUri, themeId, imageSettings);
+            // Same ordering as SET_THEME_ITEM_DESCRIPTIONS: refresh the review
+            // payload (now carrying the new descriptions and a cleared
+            // descriptionsStale flag) BEFORE the *_RESULT reply.
+            await this._postThemeImageReview(themeId);
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_DESCRIPTIONS_REGENERATE_RESULT,
+              payload: { ok: true, theme_id: themeId },
+            });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_DESCRIPTIONS_REGENERATE_RESULT,
+              payload: { ok: false, theme_id: themeId, error: errorMessage(err) },
+            });
+          }
         } else if (message.type === MSG.RESET_THEME_BADGE_NAMES) {
           const parsedReset = MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse((message as any).payload);
           if (!parsedReset.success) return;
@@ -3342,6 +3366,11 @@ export class TycoonPanel {
           // in media/main.js). Sourced from the same currentPlan this function
           // already loads for currentPrompt, so it's always the freshest saved value.
           creative_direction: currentPlan?.creative_direction,
+          // Lets the webview show a stale-descriptions marker + re-derive
+          // button (media/main.js) when the direction has been edited since
+          // descriptions were last (re)generated — see themeDescriptionsStale.
+          descriptionsStale: currentPlan ? themeDescriptionsStale(currentPlan) : false,
+          descriptionsDirection: currentPlan?.descriptions_direction,
           items,
         },
       });

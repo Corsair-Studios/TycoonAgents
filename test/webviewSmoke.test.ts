@@ -3376,6 +3376,79 @@ test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from t
   }
 });
 
+// Regression: a THEME_IMAGE_REVIEW push arriving while the user is mid-edit
+// in the Creative Direction textarea used to rebuild the panel straight from
+// payload.creative_direction, silently discarding the unsaved typed text
+// (captureThemeReviewUiState captured per-item drafts but not this textarea).
+// captureThemeReviewUiState now also captures a dirty CD textarea's value,
+// and buildThemeReviewCreativeDirectionSection restores it (and re-applies
+// the dirty Save-button highlight) instead of using the fresh payload value.
+test('THEME_IMAGE_REVIEW: an in-progress Creative Direction edit survives a re-push of the review payload', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline over a rain-slicked outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    let textarea = list.querySelector('.theme-review-creative-direction-input');
+    assert.ok(textarea, 'Creative Direction textarea should render');
+
+    // Type an unsaved edit.
+    textarea.value = 'a sunlit meadow with drifting pollen';
+    textarea.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    const saveBtn = list.querySelector('.theme-review-creative-direction-save');
+    assert.ok(
+      saveBtn.classList.contains('theme-review-creative-direction-save-dirty'),
+      'Save button should highlight once the field is dirty'
+    );
+
+    // A fresh review push (e.g. from an unrelated per-item Apply) arrives
+    // while the edit is still unsaved — the payload still carries the OLD
+    // creative_direction since this edit was never saved.
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline over a rain-slicked outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `re-push threw: ${h.errors.map(String).join('; ')}`);
+
+    textarea = list.querySelector('.theme-review-creative-direction-input');
+    assert.equal(
+      textarea.value,
+      'a sunlit meadow with drifting pollen',
+      'the unsaved typed edit should survive a re-render, not be overwritten by the payload value'
+    );
+    const saveBtnAfter = list.querySelector('.theme-review-creative-direction-save');
+    assert.ok(
+      saveBtnAfter.classList.contains('theme-review-creative-direction-save-dirty'),
+      'Save button should still be highlighted as dirty after the re-render'
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
 // ── Review "Names & descriptions" editor: projectile description row ────────
 // New: the background_decor board's post-generation review editor
 // (themeReviewDescriptionRows in media/main.js) now carries a describe-only
@@ -3445,6 +3518,252 @@ test('THEME_IMAGE_REVIEW: background_decor board renders a prefilled "Ranged pro
     assert.ok(change, 'the posted changes should include a projectile entry');
     assert.equal(change.id, 'projectile');
     assert.equal(change.description, 'A rewritten violet plasma bolt.');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+// ── Stale descriptions notice + Re-derive descriptions (creative-direction
+// re-derive feature) ─────────────────────────────────────────────────────────
+// THEME_IMAGE_REVIEW payload carries descriptionsStale/descriptionsDirection
+// (see themeDescriptionsStale in src/extension/themePlan.ts and panel.ts's
+// THEME_IMAGE_REVIEW handler). buildThemeReviewCreativeDirectionSection in
+// media/src/main/020-theme-plan-editor.js renders a stale notice + "Re-derive
+// descriptions" button when descriptionsStale is true, and
+// buildThemeReviewNamesDescriptionsSection renders a `.theme-desc-stale` pill
+// next to each description row's label.
+test('THEME_IMAGE_REVIEW: descriptionsStale:true renders the stale notice + Re-derive button + stale pills, and clicking the button posts REGENERATE_THEME_DESCRIPTIONS', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'background_decor', filename: 'background_decor.png', label: 'Background decor', kind: 'background_decor_atlas',
+        status: 'pending', prompt: 'A base decor prompt.', revision: 0, frame_keys: [], updated_at: '',
+        decor_rows: [],
+        projectile_description: 'A crackling blue energy bolt',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline over a rain-slicked outpost',
+        descriptionsStale: true,
+        descriptionsDirection: 'gritty outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_IMAGE_REVIEW threw: ${h.errors.map(String).join('; ')}`);
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    assert.ok(list, 'theme-image-review-list should exist');
+
+    const notice = list.querySelector('.theme-desc-stale-notice');
+    assert.ok(notice, 'the stale notice should render when descriptionsStale is true');
+
+    const rederiveBtn = list.querySelector('.theme-review-rederive-descriptions');
+    assert.ok(rederiveBtn, 'the Re-derive descriptions button should render');
+
+    const pills = list.querySelectorAll('.theme-desc-stale');
+    assert.ok(pills.length > 0, 'at least one stale pill should render next to a description row');
+
+    // Show/hide the previous direction.
+    const showPrevBtn = list.querySelector('.theme-review-show-previous-direction');
+    assert.ok(showPrevBtn, 'the Show previous direction button should render since descriptionsDirection is set');
+    const prevText = list.querySelector('.theme-desc-previous-direction');
+    assert.ok(prevText, 'the previous-direction text element should render');
+    assert.equal(prevText.hidden, true, 'previous direction text starts hidden');
+    showPrevBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    assert.equal(prevText.hidden, false, 'clicking Show previous direction reveals it');
+    assert.equal(prevText.textContent, 'gritty outpost');
+
+    rederiveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    const posted = [...h.posted].reverse().find((m: any) => m.type === 'REGENERATE_THEME_DESCRIPTIONS');
+    assert.ok(posted, 'clicking Re-derive descriptions should post REGENERATE_THEME_DESCRIPTIONS');
+    assert.equal(posted.payload.theme_id, 'smoke_theme');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('THEME_IMAGE_REVIEW: descriptionsStale:false (or absent) renders no stale notice, no Re-derive button, no stale pills', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'background_decor', filename: 'background_decor.png', label: 'Background decor', kind: 'background_decor_atlas',
+        status: 'pending', prompt: 'A base decor prompt.', revision: 0, frame_keys: [], updated_at: '',
+        decor_rows: [],
+        projectile_description: 'A crackling blue energy bolt',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'gritty outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_IMAGE_REVIEW threw: ${h.errors.map(String).join('; ')}`);
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    assert.equal(list.querySelector('.theme-desc-stale-notice'), null);
+    assert.equal(list.querySelector('.theme-review-rederive-descriptions'), null);
+    assert.equal(list.querySelectorAll('.theme-desc-stale').length, 0);
+  } finally {
+    h.win.close();
+  }
+});
+
+// ── Dirty creative-direction textarea saves before Generate/Retry/Normalize
+// (saveCreativeDirectionIfDirtyThenSend) ─────────────────────────────────────
+test('a dirty creative-direction edit posts SET_THEME_CREATIVE_DIRECTION before REGENERATE_THEME_DESCRIPTIONS when Re-derive is clicked', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'gritty outpost',
+        descriptionsStale: true,
+        descriptionsDirection: 'old direction',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    const textarea = list.querySelector('.theme-review-creative-direction-input');
+    assert.ok(textarea, 'the creative-direction textarea should render');
+    textarea.value = 'a freshly edited direction';
+    textarea.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    const rederiveBtn = list.querySelector('.theme-review-rederive-descriptions');
+    assert.ok(rederiveBtn, 'the Re-derive descriptions button should render');
+    rederiveBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+    const setDirectionIndex = h.posted.findIndex((m: any) => m.type === 'SET_THEME_CREATIVE_DIRECTION');
+    const regenerateIndex = h.posted.findIndex((m: any) => m.type === 'REGENERATE_THEME_DESCRIPTIONS');
+    assert.ok(setDirectionIndex !== -1, 'a dirty edit should post SET_THEME_CREATIVE_DIRECTION');
+    assert.ok(regenerateIndex !== -1, 'clicking Re-derive should post REGENERATE_THEME_DESCRIPTIONS');
+    assert.ok(setDirectionIndex < regenerateIndex, 'SET_THEME_CREATIVE_DIRECTION must be posted before REGENERATE_THEME_DESCRIPTIONS');
+    assert.equal(h.posted[setDirectionIndex].payload.creative_direction, 'a freshly edited direction');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('a dirty creative-direction edit posts SET_THEME_CREATIVE_DIRECTION before GENERATE_THEME on Start generation', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const plan = buildFullThemePlan();
+    dispatchThemePlanReady(h, plan);
+    h.tick(2);
+    await h.flush();
+
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'gritty outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    const textarea = list.querySelector('.theme-review-creative-direction-input');
+    assert.ok(textarea, 'the creative-direction textarea should render');
+    textarea.value = 'an edited-but-unsaved direction';
+    textarea.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+    const setDirectionIndex = h.posted.findIndex((m: any) => m.type === 'SET_THEME_CREATIVE_DIRECTION');
+    const generateIndex = h.posted.findIndex((m: any) => m.type === 'GENERATE_THEME');
+    assert.ok(setDirectionIndex !== -1, 'a dirty edit should post SET_THEME_CREATIVE_DIRECTION before Start generation sends GENERATE_THEME');
+    assert.ok(generateIndex !== -1, 'Start generation should post GENERATE_THEME');
+    assert.ok(setDirectionIndex < generateIndex, 'SET_THEME_CREATIVE_DIRECTION must be posted before GENERATE_THEME');
+    assert.equal(h.posted[setDirectionIndex].payload.creative_direction, 'an edited-but-unsaved direction');
+
+    assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('Start generation with a clean (never-dirtied) creative-direction textarea posts only GENERATE_THEME, no SET_THEME_CREATIVE_DIRECTION', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const plan = buildFullThemePlan();
+    dispatchThemePlanReady(h, plan);
+    h.tick(2);
+    await h.flush();
+
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'gritty outpost',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+
+    // Never touch the textarea — it stays clean (matches its dataset.original).
+    const startBtn = h.doc.getElementById('theme-start-generation-btn');
+    assert.ok(startBtn, 'theme-start-generation-btn should exist');
+    startBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+    assert.equal(
+      h.posted.filter((m: any) => m.type === 'SET_THEME_CREATIVE_DIRECTION').length,
+      0,
+      'a clean textarea must not post SET_THEME_CREATIVE_DIRECTION',
+    );
+    assert.equal(
+      h.posted.filter((m: any) => m.type === 'GENERATE_THEME').length,
+      1,
+      'a clean textarea should still post GENERATE_THEME',
+    );
 
     assert.equal(h.errors.length, 0, `errors after the full flow: ${h.errors.map(String).join('; ')}`);
   } finally {

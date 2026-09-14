@@ -97,6 +97,8 @@ The scene is **user-authored data** — you can generate your own theme (charact
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
 
+If you change the creative direction after descriptions already exist, those character and object descriptions are marked stale — under the field and beside each description — since they were generated under the previous direction and images follow the descriptions more than the direction line. Use **Re-derive descriptions** to regenerate the text from the new direction before generating or retrying images; the previous descriptions are kept on the plan for one level of undo. Generate and Retry now save an unsaved creative-direction edit first, and image prompts open with the art direction rather than ending with it.
+
 Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or `node src/cli.mjs watch <project-path>`.
 
 > Image generation happens **only at authoring time** and uses your own API key. The shipped plugin still makes zero runtime AI calls — themes are just data.

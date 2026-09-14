@@ -100,6 +100,34 @@
     vscode.postMessage({ type: 'CANCEL_THEME_GENERATION' });
   }
 
+  /**
+   * Save-before-generate: if the creative-direction textarea currently
+   * rendered in the review (buildThemeReviewCreativeDirectionSection) holds
+   * an unsaved edit, posts SET_THEME_CREATIVE_DIRECTION for it first, marks
+   * the field clean, THEN invokes sendFn() to post the caller's own
+   * generate/regenerate/retry message. No-ops straight to sendFn() when the
+   * textarea isn't present (e.g. the initial Start Generation click, before
+   * any review exists) or holds no unsaved edit.
+   * @param {() => void} sendFn
+   */
+  function saveCreativeDirectionIfDirtyThenSend(sendFn) {
+    const textarea = themeImageReviewList
+      && themeImageReviewList.querySelector(".theme-review-creative-direction-input");
+    if (textarea) {
+      const value = textarea.value.trim();
+      if (value && value !== textarea.dataset.original) {
+        vscode.postMessage({
+          type: "SET_THEME_CREATIVE_DIRECTION",
+          payload: { theme_id: reviewThemeId, creative_direction: value },
+        });
+        textarea.dataset.original = value;
+        const saveBtn = themeImageReviewList.querySelector(".theme-review-creative-direction-save");
+        if (saveBtn) saveBtn.classList.remove("theme-review-creative-direction-save-dirty");
+      }
+    }
+    sendFn();
+  }
+
   function disableThemeRetryButtons() {
     if (!themeImageReviewList) return;
     for (const button of themeImageReviewList.querySelectorAll(".theme-review-retry")) {
@@ -124,6 +152,7 @@
   }
 
   if (themeStartGenerationBtn) {
+    themeStartGenerationBtn.title = "Saves your creative-direction edit first";
     themeStartGenerationBtn.addEventListener("click", () => {
       if (themeGenerationRunning) {
         requestThemeGenerationStop();
@@ -151,13 +180,15 @@
             : "Preparing the first image. Generation will pause for approval after each one.";
           themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
         }
-        vscode.postMessage({
-          type: 'GENERATE_THEME',
-          payload: {
-            plan,
-            image_provider: imageProvider,
-            pause_for_review: themePauseForReview?.checked !== false,
-          },
+        saveCreativeDirectionIfDirtyThenSend(() => {
+          vscode.postMessage({
+            type: 'GENERATE_THEME',
+            payload: {
+              plan,
+              image_provider: imageProvider,
+              pause_for_review: themePauseForReview?.checked !== false,
+            },
+          });
         });
       } catch (error) {
         if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
@@ -170,6 +201,7 @@
   }
 
   if (themeReviewResumeGeneration) {
+    themeReviewResumeGeneration.title = "Saves your creative-direction edit first";
     themeReviewResumeGeneration.addEventListener("click", () => {
       if (!reviewThemeId || themeGenerationRunning) return;
       const imageProvider = selectedThemeImageProvider();
@@ -190,13 +222,15 @@
         themeBuildStatus.textContent = "Resuming unfinished image generations...";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
-      vscode.postMessage({
-        type: 'GENERATE_THEME',
-        payload: {
-          resume_theme_id: reviewThemeId,
-          image_provider: imageProvider,
-          pause_for_review: themePauseForReview?.checked !== false,
-        },
+      saveCreativeDirectionIfDirtyThenSend(() => {
+        vscode.postMessage({
+          type: 'GENERATE_THEME',
+          payload: {
+            resume_theme_id: reviewThemeId,
+            image_provider: imageProvider,
+            pause_for_review: themePauseForReview?.checked !== false,
+          },
+        });
       });
     });
   }
@@ -366,8 +400,14 @@
         });
       }
     }
+    let creativeDirectionDraft = null;
+    const cdTextarea = themeImageReviewList?.querySelector(".theme-review-creative-direction-input");
+    if (cdTextarea && cdTextarea.value !== cdTextarea.dataset.original) {
+      creativeDirectionDraft = { value: cdTextarea.value, dirty: true };
+    }
     return {
       drafts,
+      creativeDirectionDraft,
       scrollTop: themesScrollEl?.scrollTop || 0,
     };
   }
@@ -838,8 +878,10 @@
    * @param {{names?: Record<string,string>, descriptions?: Record<string,string>}|undefined} savedDraft
    * @param {boolean} busy true while a previous Apply for this board is in flight
    * @param {boolean} disabledForGeneration true while an unrelated active generation run blocks edits
+   * @param {boolean} descriptionsStale true when saved descriptions were generated under a previous
+   *   creative direction — shows a "stale" pill next to each description row's header
    */
-  function buildThemeReviewNamesDescriptionsSection(item, savedDraft, busy, disabledForGeneration) {
+  function buildThemeReviewNamesDescriptionsSection(item, savedDraft, busy, disabledForGeneration, descriptionsStale) {
     const rows = themeReviewNamesDescriptionsRows(item);
     if (!rows.length) return null;
     const section = document.createElement("div");
@@ -879,6 +921,12 @@
       labelEl.className = "theme-review-names-descriptions-label";
       labelEl.textContent = row.label;
       rowEl.appendChild(labelEl);
+      if (row.descRow && descriptionsStale) {
+        const stalePill = document.createElement("span");
+        stalePill.className = "theme-desc-stale";
+        stalePill.textContent = "stale";
+        rowEl.appendChild(stalePill);
+      }
       if (row.nameRow) {
         const input = document.createElement("input");
         input.type = "text";
@@ -1065,8 +1113,14 @@
    * @param {string} themeId
    * @param {string|undefined} currentDirection the plan's current creative_direction (THEME_IMAGE_REVIEW payload)
    * @param {boolean} busy true while a previous Save for this theme is in flight
+   * @param {boolean} descriptionsStale true when the saved item descriptions were generated under a
+   *   different creative direction than the current one (THEME_IMAGE_REVIEW payload)
+   * @param {string|undefined} descriptionsDirection the direction the current descriptions were generated under
+   * @param {{value: string, dirty: boolean}|null} draft an unsaved edit captured (captureThemeReviewUiState)
+   *   from the textarea before this render's rebuild — restored here instead of the payload value so a
+   *   THEME_IMAGE_REVIEW push arriving mid-edit never discards what the user typed
    */
-  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy) {
+  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy, descriptionsStale, descriptionsDirection, draft) {
     const section = document.createElement("div");
     section.className = "theme-review-names-descriptions theme-review-creative-direction-panel";
 
@@ -1078,14 +1132,14 @@
     const textarea = document.createElement("textarea");
     textarea.className = "theme-review-creative-direction-input";
     textarea.rows = 4;
-    textarea.value = currentDirection || "";
+    textarea.value = draft?.dirty ? draft.value : (currentDirection || "");
     textarea.dataset.original = currentDirection || "";
     textarea.disabled = busy;
     section.appendChild(textarea);
 
     const warning = document.createElement("div");
     warning.className = "theme-review-feedback-hint theme-review-custom-warning";
-    warning.textContent = "Rewrites the creative direction for the whole theme. This re-grounds any board you regenerate or retry from now on — it does NOT change art you've already generated until you regenerate it.";
+    warning.textContent = "Rewrites the creative direction for the whole theme. This re-grounds any board you regenerate or retry from now on — it does NOT change art you've already generated until you regenerate it. Re-derive descriptions after changing it so new images follow the new direction.";
     section.appendChild(warning);
 
     const statusEl = document.createElement("div");
@@ -1096,6 +1150,61 @@
     saveBtn.className = "skill-btn theme-review-creative-direction-save";
     saveBtn.textContent = busy ? "Saving…" : "Save creative direction";
     saveBtn.disabled = busy;
+
+    const markDirty = () => {
+      const isDirty = textarea.value !== textarea.dataset.original;
+      saveBtn.classList.toggle("theme-review-creative-direction-save-dirty", isDirty);
+    };
+    textarea.addEventListener("input", markDirty);
+    markDirty();
+
+    if (descriptionsStale) {
+      const staleNotice = document.createElement("div");
+      staleNotice.className = "theme-review-notice theme-desc-stale-notice";
+      const staleText = document.createElement("span");
+      staleText.textContent = "Descriptions were generated under a previous creative direction. Images will follow the old descriptions until you re-derive them.";
+      staleNotice.appendChild(staleText);
+      const rederiveBtn = document.createElement("button");
+      rederiveBtn.type = "button";
+      rederiveBtn.className = "skill-btn theme-review-rederive-descriptions";
+      rederiveBtn.textContent = "Re-derive descriptions";
+      rederiveBtn.title = "Saves your creative-direction edit first";
+      rederiveBtn.addEventListener("click", () => {
+        rederiveBtn.disabled = true;
+        rederiveBtn.textContent = "Re-deriving…";
+        rederiveError.hidden = true;
+        rederiveError.textContent = "";
+        saveCreativeDirectionIfDirtyThenSend(() => {
+          vscode.postMessage({
+            type: "REGENERATE_THEME_DESCRIPTIONS",
+            payload: { theme_id: themeId },
+          });
+        });
+      });
+      staleNotice.appendChild(rederiveBtn);
+      const rederiveError = document.createElement("div");
+      rederiveError.className = "theme-review-error theme-desc-rederive-error";
+      rederiveError.hidden = true;
+      staleNotice.appendChild(rederiveError);
+      if (descriptionsDirection) {
+        const showPrevBtn = document.createElement("button");
+        showPrevBtn.type = "button";
+        showPrevBtn.className = "theme-review-show-previous-direction";
+        showPrevBtn.textContent = "Show previous direction";
+        const prevText = document.createElement("div");
+        prevText.className = "theme-review-feedback-hint theme-desc-previous-direction";
+        prevText.textContent = descriptionsDirection;
+        prevText.hidden = true;
+        showPrevBtn.addEventListener("click", () => {
+          prevText.hidden = !prevText.hidden;
+          showPrevBtn.textContent = prevText.hidden ? "Show previous direction" : "Hide previous direction";
+        });
+        staleNotice.appendChild(showPrevBtn);
+        staleNotice.appendChild(prevText);
+      }
+      section.appendChild(staleNotice);
+    }
+
     saveBtn.addEventListener("click", () => {
       const value = textarea.value.trim();
       if (!value) {
@@ -1106,6 +1215,7 @@
       themeReviewCreativeDirectionBusy = true;
       saveBtn.disabled = true;
       saveBtn.textContent = "Saving…";
+      saveBtn.classList.remove("theme-review-creative-direction-save-dirty");
       textarea.disabled = true;
       statusEl.textContent = "";
       statusEl.classList.remove("theme-review-error");
@@ -1148,6 +1258,25 @@
         statusEl.textContent = "Save failed: " + (payload.error || "Unknown error.");
         statusEl.classList.add("theme-review-error");
       }
+    }
+  }
+
+  /** Handles a THEME_DESCRIPTIONS_REGENERATE_RESULT reply. On success there is
+   * nothing to do here — the host already re-posted THEME_IMAGE_REVIEW (with
+   * descriptionsStale cleared) before this reply, which rebuilt the stale
+   * notice away. On failure, re-enable the "Re-derive descriptions" button,
+   * restore its label, and show the error inline in the stale notice. */
+  function applyThemeDescriptionsRegenerateResult(payload) {
+    if (!themeImageReviewList || payload.ok) return;
+    const rederiveBtn = themeImageReviewList.querySelector(".theme-review-rederive-descriptions");
+    if (rederiveBtn) {
+      rederiveBtn.disabled = false;
+      rederiveBtn.textContent = "Re-derive descriptions";
+    }
+    const rederiveError = themeImageReviewList.querySelector(".theme-desc-rederive-error");
+    if (rederiveError) {
+      rederiveError.textContent = "Re-derive failed: " + (payload.error || "Unknown error.");
+      rederiveError.hidden = false;
     }
   }
 
@@ -1399,6 +1528,9 @@
         reviewThemeId,
         payload.creative_direction,
         themeReviewCreativeDirectionBusy,
+        Boolean(payload.descriptionsStale),
+        payload.descriptionsDirection,
+        reviewUiState.creativeDirectionDraft,
       ),
     );
 
@@ -1630,7 +1762,7 @@
         normalizeBtn.dataset.idleText = "Normalize size";
         normalizeBtn.textContent = "Normalize size";
         normalizeBtn.disabled = !item.image_src || Boolean(payload.generation_active && !isCurrentReviewGate);
-        normalizeBtn.title = "Regenerate this character, then fit every frame to the shared production scale.";
+        normalizeBtn.title = "Regenerate this character, then fit every frame to the shared production scale. Saves your creative-direction edit first.";
         if (themeReviewBusyItems.get(item.id) === "normalize") {
           normalizeBtn.disabled = true;
           normalizeBtn.textContent = "Regenerating...";
@@ -1640,13 +1772,15 @@
           normalizeBtn.textContent = "Regenerating...";
           acceptBtn.disabled = true;
           themeReviewBusyItems.set(item.id, "normalize");
-          vscode.postMessage({
-            type: 'NORMALIZE_THEME_CHARACTER',
-            payload: {
-              theme_id: reviewThemeId,
-              item_id: item.id,
-              image_provider: selectedThemeImageProvider(),
-            },
+          saveCreativeDirectionIfDirtyThenSend(() => {
+            vscode.postMessage({
+              type: 'NORMALIZE_THEME_CHARACTER',
+              payload: {
+                theme_id: reviewThemeId,
+                item_id: item.id,
+                image_provider: selectedThemeImageProvider(),
+              },
+            });
           });
         });
         decisionRow.appendChild(normalizeBtn);
@@ -1700,6 +1834,7 @@
         savedDraft,
         themeReviewBusyItems.get(item.id) === "names_descriptions",
         Boolean(payload.generation_active && !isCurrentReviewGate),
+        Boolean(payload.descriptionsStale),
       );
       const frameGridSection = buildThemeReviewFrameGrid(
         item,
@@ -1731,11 +1866,12 @@
       // exact item paused at the review gate may issue a replacement request.
       const retryBtnBaseDisabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
       retryBtn.disabled = retryBtnBaseDisabled;
-      retryBtn.title = !item.image_src && !payload.generation_active
+      retryBtn.title = (!item.image_src && !payload.generation_active
         ? "Generate this unfinished image using the current visual description."
         : payload.generation_active && !isCurrentReviewGate
           ? "This image is generating or queued in the active run."
-          : "Generate a replacement using the current visual description.";
+          : "Generate a replacement using the current visual description.")
+        + " Saves your creative-direction edit first.";
       retryBtn.addEventListener("click", () => {
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";
@@ -1749,16 +1885,18 @@
         // full-board replace, unchanged from before this feature existed.
         const selectedSlots = themeReviewSelectedFrameSlots.get(item.id);
         const slots = selectedSlots && selectedSlots.size ? Array.from(selectedSlots) : undefined;
-        vscode.postMessage({
-          type: 'RETRY_THEME_IMAGE',
-          payload: {
-            theme_id: reviewThemeId,
-            item_id: item.id,
-            mode: "retry",
-            image_provider: selectedThemeImageProvider(),
-            character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
-            ...(slots ? { slots } : {}),
-          },
+        saveCreativeDirectionIfDirtyThenSend(() => {
+          vscode.postMessage({
+            type: 'RETRY_THEME_IMAGE',
+            payload: {
+              theme_id: reviewThemeId,
+              item_id: item.id,
+              mode: "retry",
+              image_provider: selectedThemeImageProvider(),
+              character_name: characterNameInput ? characterNameInput.value.trim() : undefined,
+              ...(slots ? { slots } : {}),
+            },
+          });
         });
         // Clear the selection now that it has been sent — the next render
         // (once the retry resolves) will reflect the regenerated board fresh,

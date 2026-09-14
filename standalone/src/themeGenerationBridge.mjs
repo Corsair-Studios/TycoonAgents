@@ -202,6 +202,11 @@ export function updateThemeCreativeDirection(storageRoot, themeId, creativeDirec
   return themeServiceModule().updateThemeCreativeDirection(storageRoot, themeId, creativeDirection);
 }
 
+/** Re-derive every *_descriptions field from the plan's current creative_direction. */
+export function regenerateThemeDescriptions(storageRoot, themeId, imageGenerationOptions) {
+  return themeServiceModule().regenerateThemeDescriptions(storageRoot, themeId, imageGenerationOptions);
+}
+
 /** Approves every reviewable image at once; throws if any image is still missing. */
 export function approveAllThemeImages(storageRoot, themeId) {
   return themeServiceModule().approveAllThemeImages(storageRoot, themeId);

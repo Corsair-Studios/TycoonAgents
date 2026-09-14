@@ -313,6 +313,8 @@ export const MSG_WIRE = {
   THEME_ITEM_DESCRIPTIONS_RESULT: 'THEME_ITEM_DESCRIPTIONS_RESULT',
   SET_THEME_CREATIVE_DIRECTION: 'SET_THEME_CREATIVE_DIRECTION',
   THEME_CREATIVE_DIRECTION_RESULT: 'THEME_CREATIVE_DIRECTION_RESULT',
+  REGENERATE_THEME_DESCRIPTIONS: 'REGENERATE_THEME_DESCRIPTIONS',
+  THEME_DESCRIPTIONS_REGENERATE_RESULT: 'THEME_DESCRIPTIONS_REGENERATE_RESULT',
   RENAME_THEME_CHARACTER: 'RENAME_THEME_CHARACTER',
   THEME_CHARACTER_RENAME_STATE: 'THEME_CHARACTER_RENAME_STATE',
   APPROVE_ALL_THEME_IMAGES: 'APPROVE_ALL_THEME_IMAGES',
@@ -509,6 +511,21 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
     }
     const items = Array.isArray(effectiveReviewDoc?.items) ? effectiveReviewDoc.items : [];
 
+    // Prefill the same stale-descriptions signal panel.ts sends (see
+    // themeDescriptionsStale in themePlan.ts) so both hosts' webviews can
+    // show the re-derive affordance identically.
+    let currentPlan;
+    if (manifest) {
+      const { normalizeThemePlan, themePlanPath, legacyPlanPath } = (() => {
+        const mod = themePlanModule();
+        const fileStore = themeFileStoreModule();
+        return { normalizeThemePlan: mod.normalizeThemePlan, themePlanPath: fileStore.themePlanPath, legacyPlanPath: fileStore.legacyPlanPath };
+      })();
+      const savedPlan = (await readJsonSafe(store, themePlanPath(themeId)))
+        ?? (await readJsonSafe(store, legacyPlanPath(themeId)));
+      if (savedPlan) currentPlan = normalizeThemePlan(savedPlan, manifest.display_name);
+    }
+
     let existingFilenames = new Set();
     try {
       const entries = await store.readdir(themeImagesDirectoryPath(themeId));
@@ -559,6 +576,9 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
         generation_active: false,
         pause_for_review: true,
         waiting_for_review_item_id: undefined,
+        creative_direction: currentPlan?.creative_direction,
+        descriptionsStale: currentPlan ? themePlanModule().themeDescriptionsStale(currentPlan) : false,
+        descriptionsDirection: currentPlan?.descriptions_direction,
         items: outItems,
       },
     });

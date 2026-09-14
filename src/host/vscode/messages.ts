@@ -287,6 +287,15 @@ export const MSG = {
   // from the current plan at retry time (see selectThemeImageRetryPrompt's freshBasePrompt).
   SET_THEME_CREATIVE_DIRECTION: "SET_THEME_CREATIVE_DIRECTION",
   THEME_CREATIVE_DIRECTION_RESULT: "THEME_CREATIVE_DIRECTION_RESULT",
+  // Re-derive every *_descriptions field from the plan's CURRENT
+  // creative_direction, leaving every name array untouched — the fix for
+  // "descriptionsStale" on the THEME_IMAGE_REVIEW payload (see
+  // themeDescriptionsStale in themePlan.ts and regenerateThemeDescriptions in
+  // themeService.ts). Reuses the same review-refresh path as
+  // SET_THEME_ITEM_DESCRIPTIONS: a fresh THEME_IMAGE_REVIEW post precedes the
+  // *_RESULT reply.
+  REGENERATE_THEME_DESCRIPTIONS: "REGENERATE_THEME_DESCRIPTIONS",
+  THEME_DESCRIPTIONS_REGENERATE_RESULT: "THEME_DESCRIPTIONS_REGENERATE_RESULT",
   RESET_THEME_BADGE_NAMES: "RESET_THEME_BADGE_NAMES",
   NORMALIZE_THEME_CHARACTER: "NORMALIZE_THEME_CHARACTER",
   THEME_CHARACTER_NORMALIZE_STATE: "THEME_CHARACTER_NORMALIZE_STATE",
@@ -603,6 +612,14 @@ export const MSG_SCHEMAS = {
     .object({
       theme_id: z.string().min(1),
       creative_direction: z.string(),
+    })
+    .passthrough(),
+
+  // Re-derive descriptions from the current creative direction — see
+  // MSG.REGENERATE_THEME_DESCRIPTIONS.
+  REGENERATE_THEME_DESCRIPTIONS: z
+    .object({
+      theme_id: z.string().min(1),
     })
     .passthrough(),
 

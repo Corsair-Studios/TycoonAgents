@@ -233,6 +233,8 @@ export function buildRivalAtlasPrompt(
   );
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one compact rival (enemy) sprite board for the "${themeName}" theme.`,
     boardContract(5, rows.length, background),
     `Each of the ${rows.length} ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:`,
@@ -248,8 +250,6 @@ export function buildRivalAtlasPrompt(
     `The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear ${spaceWord} padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.`,
     `Center each enemy in its cell with its feet just above the cell bottom (leave a thin strip of empty ${spaceWord} background below the feet — never touching the cell's bottom edge) and generous ${spaceWord} padding; nothing crosses a cell boundary.`,
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -276,6 +276,21 @@ export function buildRivalAtlasPrompt(
 // so nothing clips. PERCENT (72) stays comfortably below (118/128)*100 = ~92%.
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 118;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
+
+/**
+ * Governing creative-direction block, placed at the OPEN of a prompt so the
+ * art direction frames everything the model reads afterward rather than
+ * arriving as an easily-deprioritized afterthought at the end. Single shared
+ * helper so the wording lives in one place — every board/item prompt builder
+ * that used to append `Creative direction: ${creativeDirection}` as its last
+ * line now opens with this instead (see buildRivalAtlasPrompt,
+ * buildEnvironmentPrompt, buildObjectBoard1Prompt, buildObjectBoard2Prompt,
+ * buildBackgroundDecorPrompt, buildExpressionAtlasPrompt,
+ * buildAchievementAtlasPrompt, buildEmoteAtlasPrompt).
+ */
+function creativeDirectionHeader(creativeDirection: string): string {
+  return `Art direction (governs everything below): ${creativeDirection}`;
+}
 
 function boardContract(columns: number, rows: number, background: BoardBackgroundMode = 'magenta'): string {
   // Geometry is stated in canvas FRACTIONS, not absolute pixels: image models
@@ -655,6 +670,8 @@ export function buildEnvironmentPrompt(
   themeName: string,
 ): string {
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create a single isometric game-stage environment for the "${themeName}" theme.`,
     'CAMERA — match the object and decor sprites EXACTLY: a classic 2:1 pixel-art isometric view. Vertical structures (walls, towers, posts, doors) stay perfectly vertical; all horizontal surfaces — especially the open ground/floor, plus ledges and wall tops — recede along a shallow 2:1 diagonal of about 25 degrees, with the viewer looking down at about 30 degrees. The open floor MUST read as a single flat 2:1 isometric plane at exactly this angle. ISOMETRIC DIRECTION — identical to the objects: the ground baseline rises from lower-LEFT to upper-RIGHT (the floor\'s left side sits lower on the canvas than its right side, about a 25-degree tilt), so objects standing on the floor sit flush and share the floor\'s angle. Do not use a steeper 3D/architectural perspective, a head-on flat elevation, or any other camera — only this 2:1 isometric.',
     'The attached image is an OPAQUE GEOMETRY GUIDE, not an art-style reference.',
@@ -669,8 +686,6 @@ export function buildEnvironmentPrompt(
     'No characters, vehicles, UI, HUD, captions, logos, floating text, or square city-map composition.',
     'Do not extend scenery into the cyan area and do not change the silhouette.',
     'The final pipeline will chroma-key the outside region and enforce the silhouette mask.',
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -753,6 +768,8 @@ export function buildObjectBoard1Prompt(
       + (row.visual_description ? ` — ${row.visual_description}` : '');
   });
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one static buildable-object sprite board for the "${themeName}" theme.`,
     boardContract(4, 4, background),
     `${OBJECT_BOARD1_STATIC_COUNT} distinct STATIC buildable objects, one per cell in row-major order (Cell 1 through Cell ${OBJECT_BOARD1_STATIC_COUNT}), each a fully-built theme structure:`,
@@ -761,8 +778,6 @@ export function buildObjectBoard1Prompt(
     'Each cell shows exactly ONE finished, fully-built object as a single static frame — no animation, no motion, no partial construction. Every object is complete and ready to use.',
     'Draw every object LARGE within its cell: fill most of the cell with only a small, uniform margin on all sides, and keep the same consistent visual size across all 16 cells — no object may be left small or floating in a sea of empty background.',
     ...objectSizingAndCameraLines(),
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -798,6 +813,8 @@ export function buildObjectBoard2Prompt(
       + (row.visual_description ? ` — ${row.visual_description}` : '')
   ));
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one animated-object + build-effects sprite board for the "${themeName}" theme.`,
     boardContract(4, 4, background),
     'The 16 cells (4 columns x 4 rows, row-major) carry FOUR distinct roles:',
@@ -825,8 +842,6 @@ export function buildObjectBoard2Prompt(
     'CRATE (Cell 16): draw one closed themed shipping crate. The crate is one static ready-to-build frame.'
       + (crateRow.visual_description ? ` Appearance — depict this exact design: ${crateRow.visual_description}` : ''),
     ...objectSizingAndCameraLines(),
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -863,6 +878,8 @@ export function buildBackgroundDecorPrompt(
     });
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one background-decor sprite board for the "${themeName}" theme.`,
     boardContract(4, 4, background),
     'The 16 cells form four rows. Each row has a distinct role described below.',
@@ -906,8 +923,6 @@ export function buildBackgroundDecorPrompt(
     'A naturally TALL item (a banner, tower, rack, standing screen, or any top-heavy subject) must be SCALED DOWN to fit entirely inside its cell with the required top and bottom margins intact — never stretch it to fill the cell height, and never let it reach a cell edge to preserve height. Prefer a smaller, fully-contained item over a taller one that crowds or touches a boundary; compact staging beats height. A tall item that touches or crosses any cell edge is an incorrect result.',
     'Do not draw characters, people, UI, captions, letters, numbers, or grid lines. No object may straddle two cells.',
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -923,6 +938,8 @@ export function buildExpressionAtlasPrompt(
       + (descriptions?.[index] ? ` — ${descriptions[index]}` : ''),
   );
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one expression-icon sprite sheet for the "${themeName}" theme.`,
     boardContract(4, 2, background),
     'Draw exactly one bold, simple ICON in each cell, in row-major order. Every cell must instantly READ as the emotion named for it, even at very small sizes:',
@@ -935,8 +952,6 @@ export function buildExpressionAtlasPrompt(
       ? 'Flat, bold, high-contrast icon art on a fully transparent background; centered in its cell.'
       : 'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
     'No words, letters, numbers, or punctuation glyphs.',
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -952,14 +967,14 @@ export function buildAchievementAtlasPrompt(
       + (descriptions?.[index] ? ` — ${descriptions[index]}` : ''),
   );
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one achievement-badge sprite sheet for the "${themeName}" theme.`,
     boardContract(5, 5, background),
     'Draw exactly one distinct, polished badge emblem in each cell, in row-major order:',
     ...cells,
     'Keep a consistent badge silhouette and rendering system while making every central emblem distinct.',
     'These are visual badge concepts only. Do not include unlock requirements, words, letters, or numbers.',
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }
 
@@ -970,6 +985,8 @@ export function buildEmoteAtlasPrompt(
   background: BoardBackgroundMode = 'magenta',
 ): string {
   return [
+    creativeDirectionHeader(creativeDirection),
+    '',
     `Create one animated emote-icon sprite board for the "${themeName}" theme.`,
     boardContract(5, 4, background),
     'Each row is one emote animation with five left-to-right frames.',
@@ -979,7 +996,5 @@ export function buildEmoteAtlasPrompt(
     'Row 4: team action / rally, five-frame animation.',
     'Draw icon-only speech-bubble contents, not full characters. Keep one centered icon in each cell.',
     'No words, letters, numbers, or punctuation glyphs.',
-    '',
-    `Creative direction: ${creativeDirection}`,
   ].join('\n');
 }

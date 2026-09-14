@@ -337,3 +337,50 @@ test('MSG.REPAIR_HOOK no longer exists', () => {
     'REPAIR_HOOK was deleted as dead code and must not be reintroduced',
   );
 });
+
+// --- REGENERATE_THEME_DESCRIPTIONS ------------------------------------------
+// Re-derive every *_descriptions field from the plan's current
+// creative_direction (see themeDescriptionsStale in themePlan.ts and
+// regenerateThemeDescriptions in themeService.ts).
+
+test('MSG.REGENERATE_THEME_DESCRIPTIONS and MSG.THEME_DESCRIPTIONS_REGENERATE_RESULT are stable, unique wire strings', () => {
+  assert.equal(MSG.REGENERATE_THEME_DESCRIPTIONS, 'REGENERATE_THEME_DESCRIPTIONS');
+  assert.equal(MSG.THEME_DESCRIPTIONS_REGENERATE_RESULT, 'THEME_DESCRIPTIONS_REGENERATE_RESULT');
+});
+
+test('media/main.js still posts REGENERATE_THEME_DESCRIPTIONS', () => {
+  const src = readMainJs();
+  assert.ok(
+    src.includes(`"${MSG.REGENERATE_THEME_DESCRIPTIONS}"`) || src.includes(`'${MSG.REGENERATE_THEME_DESCRIPTIONS}'`),
+    'media/main.js has drifted — expected literal REGENERATE_THEME_DESCRIPTIONS not found',
+  );
+});
+
+test('REGENERATE_THEME_DESCRIPTIONS schema: valid payload round-trips', () => {
+  const result = MSG_SCHEMAS.REGENERATE_THEME_DESCRIPTIONS.safeParse({ theme_id: 'test_theme' });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.data.theme_id, 'test_theme');
+  }
+});
+
+test('REGENERATE_THEME_DESCRIPTIONS schema: missing theme_id fails', () => {
+  const result = MSG_SCHEMAS.REGENERATE_THEME_DESCRIPTIONS.safeParse({});
+  assert.equal(result.success, false);
+});
+
+test('REGENERATE_THEME_DESCRIPTIONS schema: empty theme_id fails', () => {
+  const result = MSG_SCHEMAS.REGENERATE_THEME_DESCRIPTIONS.safeParse({ theme_id: '' });
+  assert.equal(result.success, false);
+});
+
+test('REGENERATE_THEME_DESCRIPTIONS schema: extra fields are tolerated (passthrough)', () => {
+  const result = MSG_SCHEMAS.REGENERATE_THEME_DESCRIPTIONS.safeParse({
+    theme_id: 'test_theme',
+    futureField: 'ignored-by-older-hosts',
+  });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
+  }
+});

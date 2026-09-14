@@ -5207,6 +5207,54 @@ button.theme-review-preview:focus-visible::after {
   align-self: flex-start;
 }
 
+.theme-review-creative-direction-save-dirty {
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.theme-desc-stale-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: rgba(255, 176, 32, 0.1);
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+  border-radius: 4px;
+}
+
+.theme-review-show-previous-direction {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vscode-descriptionForeground, var(--muted));
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.theme-desc-previous-direction {
+  width: 100%;
+  white-space: pre-wrap;
+}
+
+.theme-desc-stale {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: rgba(255, 176, 32, 0.15);
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+}
+
 .theme-review-description-input {
   min-width: 0;
   width: 100%;

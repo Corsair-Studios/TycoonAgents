@@ -218,6 +218,58 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   achievement_descriptions?: string[];
+  /**
+   * The trimmed `creative_direction` text that was in effect the last time
+   * every `*_descriptions` array was (re)generated. Compared against the
+   * CURRENT `creative_direction` by `themeDescriptionsStale` to detect when
+   * a user has edited the direction but not yet re-derived descriptions from
+   * it. Undefined on legacy plans (pre-dating this field) or plans that have
+   * never had descriptions generated — both are treated as "not stale".
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  descriptions_direction?: string;
+  /**
+   * One-level undo snapshot of the per-slot `*_descriptions` arrays as they
+   * stood immediately before the most recent REGENERATE_THEME_DESCRIPTIONS
+   * re-derive. Absent until a re-derive has happened at least once.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  previous_descriptions?: {
+    character_descriptions?: string[];
+    object_descriptions?: string[];
+    crate_description?: string;
+    poof_description?: string;
+    projectile_description?: string;
+    decor_descriptions?: string[];
+    enemy_descriptions?: string[];
+    expression_descriptions?: string[];
+    achievement_descriptions?: string[];
+  };
+}
+
+/**
+ * True only when this plan HAS generated descriptions AND those descriptions
+ * were generated under a creative_direction that differs from the plan's
+ * current creative_direction (both compared trimmed). A plan that has never
+ * recorded `descriptions_direction` (legacy plan, or one whose descriptions
+ * were never (re)generated through a direction-aware path) is never stale —
+ * there is nothing to compare against.
+ */
+export function themeDescriptionsStale(plan: ThemePlan): boolean {
+  if (plan.descriptions_direction === undefined) return false;
+  const hasAnyDescriptions = Boolean(
+    plan.character_descriptions?.length
+    || plan.object_descriptions?.length
+    || plan.decor_descriptions?.length
+    || plan.enemy_descriptions?.length
+    || plan.expression_descriptions?.length
+    || plan.achievement_descriptions?.length
+    || plan.crate_description
+    || plan.poof_description
+    || plan.projectile_description,
+  );
+  if (!hasAnyDescriptions) return false;
+  return plan.descriptions_direction.trim() !== plan.creative_direction.trim();
 }
 
 /**
@@ -293,6 +345,8 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     expression_descriptions: normalizePositionalDescriptions(input.expression_descriptions, THEME_EXPRESSION_COUNT),
     achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
     achievement_descriptions: normalizeAchievementDescriptions(input.achievement_descriptions),
+    descriptions_direction: cleanValue(input.descriptions_direction) || undefined,
+    previous_descriptions: input.previous_descriptions,
   };
 }
 

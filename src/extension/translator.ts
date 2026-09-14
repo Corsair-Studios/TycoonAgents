@@ -174,7 +174,179 @@ export async function expandThemePlan(
     achievement_descriptions: Array.isArray(model.achievement_descriptions)
       ? model.achievement_descriptions as string[]
       : undefined,
+    // Descriptions above were just generated under model.creative_direction
+    // (falling back to the same default normalizeThemePlan will apply to
+    // creative_direction itself when the model omitted it) — record it so
+    // themeDescriptionsStale has a baseline to compare future edits against.
+    descriptions_direction: model.creative_direction,
   }, rawUserInput);
+}
+
+/**
+ * Focused re-derive prompt: given a plan's EXISTING names (characters,
+ * objects, decor, enemies, expressions, achievements — never regenerated
+ * here) and its CURRENT creative_direction, ask for fresh `*_descriptions`
+ * only. Extracted as a pure function so it's unit-testable without a network
+ * call, mirroring buildThemePlanningPrompt.
+ */
+export function buildThemeDescriptionsPrompt(plan: ThemePlan): string {
+  const expressionLabelList = FIXED_EXPRESSION_LABELS
+    .map((label, i) => `${i + 1}. ${label}`)
+    .join(', ');
+  return [
+    'You are re-deriving ONLY the visual-appearance descriptions for an existing tycoon-game asset pack, under a (possibly updated) art direction.',
+    'Return STRICT JSON only: no markdown, comments, commentary, or extra keys.',
+    '',
+    `Theme: ${plan.display_name}`,
+    `Creative direction (this governs every description below): ${plan.creative_direction}`,
+    `Environment: ${plan.environment}`,
+    '',
+    'Do NOT rename or reorder any item. For each list below, return exactly one description per name, in the SAME order.',
+    `Characters (${plan.characters.length}): ${plan.characters.join(', ')}`,
+    `Objects (${plan.objects.length}): ${plan.objects.join(', ')}`,
+    `Decor (${plan.decor.length}): ${plan.decor.join(', ')}`,
+    `Enemies (${plan.enemies.length}): ${plan.enemies.join(', ')}`,
+    `Expressions (fixed slots, in this exact order: ${expressionLabelList})`,
+    `Achievements (${plan.achievements.length}): ${plan.achievements.join(', ')}`,
+    '',
+    'Return exactly this JSON shape:',
+    '{',
+    `  "character_descriptions": [${plan.characters.length} concrete visual-appearance specs, one per character, same order],`,
+    `  "object_descriptions": [${plan.objects.length} concrete visual-appearance specs, one per object, same order],`,
+    '  "crate_description": "a concrete visual-appearance spec for the single build CRATE prop",',
+    '  "poof_description": "a concrete visual-appearance spec for the single build-completion POOF effect",',
+    '  "projectile_description": "a concrete visual-appearance spec for the single ranged-combat PROJECTILE effect",',
+    `  "decor_descriptions": [${plan.decor.length} concrete visual-appearance specs, one per decor item, same order],`,
+    `  "enemy_descriptions": [${plan.enemies.length} concrete visual-appearance specs, one per enemy, same order],`,
+    '  "expression_descriptions": [EXACTLY 8 concrete visual specs, one per fixed expression slot in the exact order listed above — a single bold symbolic icon per slot, never a face/character],',
+    `  "achievement_descriptions": [${plan.achievements.length} concrete visual-appearance specs, one per achievement badge, same order]`,
+    '}',
+    '',
+    'Every description is a concise (1-2 sentence) CONCRETE visual spec: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features. Every entry is REQUIRED — never leave a slot blank, and return exactly the required count for each array. Every description must be consistent with the creative direction above and coherent across the whole set (shared palette, materials, and art language).',
+  ].join('\n');
+}
+
+interface DescriptionsOnlyModelOutput {
+  character_descriptions?: unknown;
+  object_descriptions?: unknown;
+  crate_description?: string;
+  poof_description?: string;
+  projectile_description?: string;
+  decor_descriptions?: unknown;
+  enemy_descriptions?: unknown;
+  expression_descriptions?: unknown;
+  achievement_descriptions?: unknown;
+}
+
+/**
+ * Re-derive ONLY the `*_descriptions` fields of an existing plan from its
+ * CURRENT creative_direction, leaving every name array (characters, objects,
+ * decor, enemies, expressions, achievements) untouched. Returns just the
+ * updated description fields plus the direction they were generated under
+ * (`descriptions_direction`) — callers (themeService.regenerateThemeDescriptions)
+ * merge this onto the saved plan and snapshot the prior descriptions under
+ * `previous_descriptions` for one-level undo.
+ */
+export async function regenerateThemeDescriptionsFromPlan(
+  plan: ThemePlan,
+  options: ThemeImageGenerationOptions = {},
+): Promise<Pick<ThemePlan,
+  | 'character_descriptions' | 'object_descriptions' | 'crate_description' | 'poof_description'
+  | 'projectile_description' | 'decor_descriptions' | 'enemy_descriptions' | 'expression_descriptions'
+  | 'achievement_descriptions' | 'descriptions_direction'
+>> {
+  const { provider, apiKey } = resolvePlannerSettings(options);
+  if (!apiKey) {
+    const label = provider === 'openai' ? 'OpenAI' : 'Google Gemini';
+    throw new Error(`${label} API key is required. Add one in Themes > Theme Builder.`);
+  }
+
+  const descriptionsPrompt = buildThemeDescriptionsPrompt(plan);
+
+  const response = provider === 'openai'
+    ? await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4.1-mini',
+          messages: [{ role: 'user', content: descriptionsPrompt }],
+          response_format: { type: 'json_object' },
+        }),
+      })
+    : await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: descriptionsPrompt }] }],
+            generationConfig: { responseMimeType: 'application/json' },
+          }),
+        },
+      );
+
+  const rawBody = await response.text();
+  if (!response.ok) {
+    throw new Error(`${provider === 'openai' ? 'OpenAI' : 'Gemini'} API error ${response.status}: ${apiErrorDetail(rawBody)}`);
+  }
+
+  const modelText = extractModelText(rawBody, provider);
+  let model: DescriptionsOnlyModelOutput;
+  try {
+    model = JSON.parse(stripMarkdownFences(modelText)) as DescriptionsOnlyModelOutput;
+  } catch (err) {
+    throw new Error(
+      `Failed to parse ${provider === 'openai' ? 'OpenAI' : 'Gemini'} description regeneration as JSON: ${(err as Error).message}`,
+    );
+  }
+
+  return {
+    character_descriptions: requireDescriptionsArray('character_descriptions', model.character_descriptions, plan.characters.length),
+    object_descriptions: requireDescriptionsArray('object_descriptions', model.object_descriptions, plan.objects.length),
+    crate_description: typeof model.crate_description === 'string' ? model.crate_description : undefined,
+    poof_description: typeof model.poof_description === 'string' ? model.poof_description : undefined,
+    projectile_description: typeof model.projectile_description === 'string' ? model.projectile_description : undefined,
+    decor_descriptions: requireDescriptionsArray('decor_descriptions', model.decor_descriptions, plan.decor.length),
+    enemy_descriptions: requireDescriptionsArray('enemy_descriptions', model.enemy_descriptions, plan.enemies.length),
+    expression_descriptions: requireDescriptionsArray('expression_descriptions', model.expression_descriptions, plan.expressions.length),
+    achievement_descriptions: requireDescriptionsArray('achievement_descriptions', model.achievement_descriptions, plan.achievements.length),
+    descriptions_direction: plan.creative_direction,
+  };
+}
+
+/**
+ * Validate a single `*_descriptions` array from the description-regeneration
+ * model response against the corresponding name array's length on the plan
+ * being re-derived. Unlike expandThemePlan's initial full-plan generation
+ * (where name arrays don't exist yet and normalizeThemePlan pads/truncates
+ * freely), a regenerate call must produce descriptions that align 1:1 by
+ * INDEX with the plan's EXISTING, already-fixed name arrays — a count
+ * mismatch here would silently misalign description i with name j once
+ * written through by themeService.regenerateThemeDescriptions. So this
+ * throws rather than padding/truncating, leaving the saved plan untouched.
+ * `expectedCount === 0` (e.g. a plan with no decor) treats an absent/empty
+ * array as valid — undefined is returned so the field is omitted, matching
+ * normalizeThemePlan's existing "no description data" convention.
+ */
+function requireDescriptionsArray(kind: string, value: unknown, expectedCount: number): string[] | undefined {
+  if (expectedCount === 0 && (value === undefined || (Array.isArray(value) && value.length === 0))) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Description regeneration response for "${kind}" was not an array.`);
+  }
+  if (value.length !== expectedCount) {
+    throw new Error(
+      `Description regeneration response for "${kind}" returned ${value.length} entries, but the plan has ${expectedCount} — descriptions must align 1:1 with the plan's existing names.`,
+    );
+  }
+  if (!value.every((entry) => typeof entry === 'string' && entry.trim().length > 0)) {
+    throw new Error(`Description regeneration response for "${kind}" contains a blank or non-string entry.`);
+  }
+  return value as string[];
 }
 
 /**

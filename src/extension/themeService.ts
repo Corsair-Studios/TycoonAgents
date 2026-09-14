@@ -6,7 +6,7 @@ import type {
   ThemeManifest,
   ViewportConfig,
 } from '../shared/types';
-import { expandThemePlan } from './translator';
+import { expandThemePlan, regenerateThemeDescriptionsFromPlan } from './translator';
 import { buildDefaultBadges, upgradeThemeManifest } from './themeMigration';
 import { validateThemeIntegrity } from './themeHealth';
 import {
@@ -1718,6 +1718,85 @@ export async function updateThemeCreativeDirection(
   plan.creative_direction = trimmed;
   await creativeDirectionStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
   return { ok: true, creative_direction: trimmed };
+}
+
+/**
+ * Re-derive every `*_descriptions` field from the plan's CURRENT
+ * creative_direction (see themeDescriptionsStale in themePlan.ts), leaving
+ * every name array untouched. Snapshots the prior descriptions under
+ * plan.previous_descriptions (one-level undo) before overwriting, then
+ * records descriptions_direction so the plan is no longer stale. Unlike
+ * updateThemeCreativeDirection, this DOES resync saved review-item prompts —
+ * descriptions feed directly into already-generated boards' prompts, so a
+ * re-derive should refresh every board's prompt/rows immediately (mirrors
+ * updateThemeItemDescriptionsBatch's resync, but for ALL boards at once since
+ * every description slot changed).
+ */
+export async function regenerateThemeDescriptions(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  imageGenerationOptions: ThemeImageGenerationOptions,
+): Promise<{ plan: ThemePlan }> {
+  if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
+
+  const loadedTheme = await loadTheme(globalStorageUri, themeId);
+  if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be updated.');
+  const { manifest } = loadedTheme;
+
+  const store = resolveThemeFileStore(globalStorageUri);
+  const savedPlan = (await readJson<ThemePlan>(store, themePlanPath(themeId)))
+    ?? (await readJson<ThemePlan>(store, legacyPlanPath(themeId)));
+  if (!savedPlan) throw new Error('This theme has no saved plan — descriptions require plan.json.');
+  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+  if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
+
+  const previous_descriptions: NonNullable<ThemePlan['previous_descriptions']> = {
+    character_descriptions: plan.character_descriptions,
+    object_descriptions: plan.object_descriptions,
+    crate_description: plan.crate_description,
+    poof_description: plan.poof_description,
+    projectile_description: plan.projectile_description,
+    decor_descriptions: plan.decor_descriptions,
+    enemy_descriptions: plan.enemy_descriptions,
+    expression_descriptions: plan.expression_descriptions,
+    achievement_descriptions: plan.achievement_descriptions,
+  };
+
+  const fresh = await regenerateThemeDescriptionsFromPlan(plan, imageGenerationOptions);
+
+  plan.character_descriptions = fresh.character_descriptions;
+  plan.object_descriptions = fresh.object_descriptions;
+  plan.crate_description = fresh.crate_description;
+  plan.poof_description = fresh.poof_description;
+  plan.projectile_description = fresh.projectile_description;
+  plan.decor_descriptions = fresh.decor_descriptions;
+  plan.enemy_descriptions = fresh.enemy_descriptions;
+  plan.expression_descriptions = fresh.expression_descriptions;
+  plan.achievement_descriptions = fresh.achievement_descriptions;
+  plan.descriptions_direction = fresh.descriptions_direction;
+  plan.previous_descriptions = previous_descriptions;
+
+  await store.writeFile(themePlanPath(themeId), jsonBuffer(plan));
+
+  try {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (document) {
+      const expectedItems = createReviewItems(
+        plan,
+        manifest,
+        themePlanCreativeDirection(plan),
+        boardBackgroundModeForProvider(undefined),
+      );
+      const merged = mergeResumedReviewItems(expectedItems, document.items) as ThemeImageReviewItem[];
+      for (const item of merged) {
+        await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, item);
+      }
+    }
+  } catch (err) {
+    console.warn('TycoonAgents: unable to resync review-board prompts after description regeneration:', err);
+  }
+
+  return { plan };
 }
 
 /** Regenerate one character board, then fit its frames to production scale. */

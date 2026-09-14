@@ -689,6 +689,30 @@ export async function handleSetThemeCreativeDirection(store, broadcast, payload)
   }
 }
 
+/** Mirrors panel.ts's MSG.REGENERATE_THEME_DESCRIPTIONS branch: re-derive
+ * every *_descriptions field from the plan's current creative_direction, then
+ * refresh the review payload (now carrying the new descriptions and a
+ * cleared descriptionsStale flag) before the *_RESULT reply. */
+export async function handleRegenerateThemeDescriptions(store, broadcast, getThemeImageConfig, payload) {
+  const themeId = payload?.theme_id ?? '';
+  if (!isThemeId(themeId)) return;
+  try {
+    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider);
+    requireApiKey(imageOptions);
+    await genBridge.regenerateThemeDescriptions(store, themeId, imageOptions);
+    await handleGetThemeImageReview(store, broadcast, themeId);
+    broadcast('message', {
+      type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT,
+      payload: { ok: true, theme_id: themeId },
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT,
+      payload: { ok: false, theme_id: themeId, error: String(err?.message ?? err) },
+    });
+  }
+}
+
 /** Mirrors panel.ts's MSG.RENAME_THEME_CHARACTER branch, including the
  * gate/busy-state dance shared with handleRetryThemeImage. */
 export async function handleRenameThemeCharacter(store, broadcast, payload) {

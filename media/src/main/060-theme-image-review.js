@@ -2122,6 +2122,8 @@
       applyThemeItemDescriptionsResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_CREATIVE_DIRECTION_RESULT") {
       applyThemeCreativeDirectionResult(msg.payload || {});
+    } else if (msg && msg.type === "THEME_DESCRIPTIONS_REGENERATE_RESULT") {
+      applyThemeDescriptionsRegenerateResult(msg.payload || {});
     } else if (msg && msg.type === "BACKGROUND_REPLACE_RESULT") {
       const ok = msg.payload && msg.payload.ok;
       const cancelled = msg.payload && msg.payload.cancelled;

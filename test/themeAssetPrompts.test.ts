@@ -211,9 +211,10 @@ test('environment prompt bans floor clutter (empty-floor rule) and any silhouett
   assert.match(prompt, /COMPLETELY EMPTY walkable ground/i);
   assert.match(prompt, /REAR wall/);
 
-  // themeName + creativeDirection are still interpolated.
+  // themeName + creativeDirection are still interpolated, with the
+  // direction opening the prompt as a governing block rather than trailing.
   assert.match(prompt, /"Night Grid" theme\./);
-  assert.match(prompt, /Creative direction: neon cyberpunk$/);
+  assert.match(prompt, /^Art direction \(governs everything below\): neon cyberpunk/);
 });
 
 function staticObjectSpecs(count: number) {
@@ -533,7 +534,7 @@ test('background decor prompt describes seats, static decor, one animated row, a
   assert.match(prompt, /same projectile still anchored to that same cell center/i);
   assert.match(prompt, /width must be identical in every frame/i);
   assert.match(prompt, /footprint\/diameter stays constant across frames/i);
-  assert.match(prompt, /Creative direction: cozy tavern/i);
+  assert.match(prompt, /^Art direction \(governs everything below\): cozy tavern/i);
 });
 
 // --- 'transparent' background mode (OpenAI native alpha) ---------------------

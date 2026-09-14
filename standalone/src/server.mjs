@@ -84,6 +84,7 @@ import {
   handleSetThemeItemNames,
   handleSetThemeItemDescriptions,
   handleSetThemeCreativeDirection,
+  handleRegenerateThemeDescriptions,
   handleRenameThemeCharacter,
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
@@ -755,6 +756,11 @@ function handleBrowserMessage(msg) {
     case THEME_MSG_WIRE.SET_THEME_CREATIVE_DIRECTION:
       handleSetThemeCreativeDirection(themeStore, broadcast, payload).catch((err) => {
         console.error('[tycoonagents-standalone] SET_THEME_CREATIVE_DIRECTION failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.REGENERATE_THEME_DESCRIPTIONS:
+      handleRegenerateThemeDescriptions(themeStore, broadcast, themeImageConfigGetter, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] REGENERATE_THEME_DESCRIPTIONS failed:', err);
       });
       break;
     case THEME_MSG_WIRE.RENAME_THEME_CHARACTER:
