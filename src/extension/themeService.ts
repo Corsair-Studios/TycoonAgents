@@ -230,7 +230,8 @@ function nextThemeImageIdempotencyKey(themeId: string, itemId: string, attemptNu
 }
 
 /** Maps a review item to the Theme Service's boardType pricing key (docs/theme-service-api.md's `attemptCostByBoardType`). */
-function boardTypeForItem(item: { kind: ThemeImageKind; id: string }): string {
+/** Maps a review item to the Theme Service's boardType pricing key (docs/theme-service-api.md's `attemptCostByBoardType`) — exported (review fix) so getThemeImageReview's payload and its tests can compute/assert the same value the webview's cost line looks up. */
+export function boardTypeForItem(item: { kind: ThemeImageKind; id: string }): string {
   switch (item.kind) {
     case 'character_atlas': return 'roster_agent';
     case 'rival_atlas': return 'rival_group';
@@ -1170,8 +1171,14 @@ export async function getThemeImageReview(
     creditsSpent: items.reduce((sum, item) => sum + (item.attemptCost ?? 0), 0),
     entries: items.map((item) => {
       const imageUri = imagesByFilename.get(item.filename);
+      // Backfill boardType onto the live payload regardless of what the
+      // stored document carries (fresh, resumed, or a legacy document
+      // predating this field) — boardTypeForItem is the single source of
+      // truth, so the webview's cost line always resolves against the same
+      // key the Theme Service was actually billed under (review fix).
+      const itemWithBoardType: ThemeImageReviewItem = { ...item, boardType: boardTypeForItem(item) };
       return {
-        item,
+        item: itemWithBoardType,
         imageUri,
         generated: isThemeGenerationItemComplete(item, Boolean(imageUri), loadedTheme?.frames ?? {}),
       };

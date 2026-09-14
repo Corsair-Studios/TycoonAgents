@@ -126,6 +126,16 @@ export interface ThemeImageReviewItem {
   lastAttemptRefunded?: boolean;
   /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
   error_kind?: 'not_signed_in' | 'insufficient_credits' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited';
+  /**
+   * The Corsair Theme Service pricing key for this board (docs/theme-service-api.md's
+   * `attemptCostByBoardType` — e.g. "roster_agent", "objects_01") — see
+   * themeService.ts's boardTypeForItem, the single source of truth for this
+   * mapping. Optional on the STORED document (legacy/resumed items may
+   * predate this field); getThemeImageReview always backfills it onto the
+   * live payload so the webview's cost line (pricing.attemptCostByBoardType[...])
+   * can key off it instead of the unrelated review item.kind.
+   */
+  boardType?: string;
   updated_at: string;
 }
 

@@ -102,7 +102,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 const themeService = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 const {
   generateTheme, retryThemeImage, resliceThemeImageFromRaw, getThemeImageReview,
-  setThemeImageGenerator,
+  setThemeImageGenerator, boardTypeForItem,
 } = themeService;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
@@ -382,4 +382,40 @@ test('themeService.ts and panel.ts host wiring never reference a direct image-pr
     }
   }
   await assert.rejects(fsp.stat(path.join(process.cwd(), 'src', 'extension', 'imageClient.ts')), 'imageClient.ts must be deleted (p43-t1: direct-provider generation removed)');
+});
+
+test('every review payload item carries its Theme Service boardType, matching boardTypeForItem, for pricing lookups (review fix)', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'boardtype_payload_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { generator } = makeCountingGenerator();
+    setThemeImageGenerator(generator);
+    try {
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      assert.ok(review.entries.length > 0, 'fixture sanity: the theme must have review items');
+
+      const expectedBoardTypesByKind: Record<string, string> = {
+        character_atlas: 'roster_agent',
+        rival_atlas: 'rival_group',
+        environment: 'environment',
+        background_decor_atlas: 'objects_01',
+        expression_atlas: 'expressions',
+        achievement_atlas: 'achievements',
+        emote_atlas: 'expressions',
+      };
+
+      for (const { item } of review.entries) {
+        assert.equal(item.boardType, boardTypeForItem(item), `${item.id} (${item.kind}) payload boardType must equal boardTypeForItem(item)`);
+        if (item.kind === 'object_atlas') {
+          assert.equal(item.boardType, item.id === 'objects_02' ? 'objects_02' : 'objects_01');
+        } else if (item.kind in expectedBoardTypesByKind) {
+          assert.equal(item.boardType, expectedBoardTypesByKind[item.kind], `${item.kind} must map to its documented pricing key`);
+        }
+      }
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
 });
