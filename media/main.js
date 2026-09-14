@@ -2852,10 +2852,6 @@ if (typeof module !== "undefined" && module.exports) {
   const themeImageModelEl   = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-model"));
   const themeImageQualityRow = /** @type {HTMLElement} */ (document.getElementById("theme-image-quality-row"));
   const themeImageQualityEl = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-quality"));
-  const themeApiKeyInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-api-key-input"));
-  const themeApiKeyLabel    = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-label"));
-  const themeApiKeySave     = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-save"));
-  const themeApiKeyStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-status"));
   const themeImageReview    = /** @type {HTMLElement} */ (document.getElementById("theme-image-review"));
   const themeImageReviewTitle = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-title"));
   const themeImageReviewSummary = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-summary"));
@@ -2880,8 +2876,6 @@ if (typeof module !== "undefined" && module.exports) {
   let currentThemePlan = null;
   let themeGenerationRunning = false;
   let themeGenerationStopping = false;
-  let themeImageSettingsLoaded = false;
-  let themeProviderConfigured = { gemini: false, openai: false };
   /** @type {{gemini: Array<{id:string,label:string,note?:string}>, openai: Array<{id:string,label:string,note?:string}>}} */
   let themeImageModels = { gemini: [], openai: [] };
   /** @type {{gemini: string, openai: string}} Saved model id per provider ('' = Latest). */
@@ -3325,31 +3319,11 @@ if (typeof module !== "undefined" && module.exports) {
       if (root && typeof window.initThemeBuilder === "function") {
         window.initThemeBuilder(root);
       }
-      vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
     });
   }
 
   function selectedThemeImageProvider() {
     return themeImageProvider && themeImageProvider.value === "gemini" ? "gemini" : "openai";
-  }
-
-  function updateThemeApiKeyUi(message, isError) {
-    const provider = selectedThemeImageProvider();
-    const providerLabel = provider === "openai" ? "OpenAI" : "Google Gemini";
-    if (themeApiKeyLabel) themeApiKeyLabel.textContent = providerLabel + " API key";
-    if (themeApiKeyInput) {
-      themeApiKeyInput.placeholder = themeProviderConfigured[provider]
-        ? "Key stored - paste to replace"
-        : "Paste a key to save securely";
-    }
-    if (themeApiKeyStatus) {
-      themeApiKeyStatus.textContent = message || (themeProviderConfigured[provider]
-        ? providerLabel + " key is configured."
-        : providerLabel + " key is not configured.");
-      themeApiKeyStatus.style.color = isError
-        ? "var(--vscode-errorForeground)"
-        : "var(--vscode-descriptionForeground)";
-    }
   }
 
   /**
@@ -3396,7 +3370,6 @@ if (typeof module !== "undefined" && module.exports) {
 
   if (themeImageProvider) {
     themeImageProvider.addEventListener("change", () => {
-      updateThemeApiKeyUi("", false);
       populateModelSelect(selectedThemeImageProvider());
       populateQualitySelect(selectedThemeImageProvider());
       vscode.postMessage({
@@ -3436,38 +3409,12 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 
-  if (themeApiKeySave) {
-    themeApiKeySave.addEventListener("click", () => {
-      const provider = selectedThemeImageProvider();
-      const apiKey = themeApiKeyInput ? themeApiKeyInput.value.trim() : "";
-      if (!apiKey && !themeProviderConfigured[provider]) {
-        updateThemeApiKeyUi("Paste an API key before saving.", true);
-        return;
-      }
-      themeApiKeySave.setAttribute("disabled", "");
-      themeApiKeySave.textContent = "Saving...";
-      vscode.postMessage({
-        type: 'SAVE_THEME_IMAGE_SETTINGS',
-        payload: {
-          provider,
-          api_key: apiKey,
-          model: themeImageModelEl ? themeImageModelEl.value : "",
-          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
-        },
-      });
-    });
-  }
-
   if (themeGenerateBtn && themePromptInput) {
     themeGenerateBtn.addEventListener("click", () => {
       const prompt = themePromptInput.value.trim();
       if (!prompt) return;
       const imageProvider = selectedThemeImageProvider();
-      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-        updateThemeApiKeyUi("Add and save an API key before generating.", true);
-        return;
-      }
-      
+
       themeGenerateBtn.setAttribute("disabled", "");
       themeGenerateBtn.textContent = "Planning...";
       if (themeBuildStatus) {
@@ -3829,10 +3776,6 @@ if (typeof module !== "undefined" && module.exports) {
       }
       try {
         const imageProvider = selectedThemeImageProvider();
-        if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-          updateThemeApiKeyUi("Add and save an API key before generating.", true);
-          return;
-        }
         const plan = collectEditedThemePlan();
         currentThemePlan = plan;
         themeGenerationRunning = true;
@@ -3874,10 +3817,6 @@ if (typeof module !== "undefined" && module.exports) {
     themeReviewResumeGeneration.addEventListener("click", () => {
       if (!reviewThemeId || themeGenerationRunning) return;
       const imageProvider = selectedThemeImageProvider();
-      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-        updateThemeApiKeyUi("Add and save an API key before resuming.", true);
-        return;
-      }
       themeGenerationRunning = true;
       themeGenerationStopping = false;
       themeReviewResumeGeneration.hidden = true;
@@ -4036,7 +3975,6 @@ if (typeof module !== "undefined" && module.exports) {
       themeApproveAll.disabled = true;
       themeApproveAll.textContent = "Approve all";
     }
-    vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
     vscode.postMessage({ type: 'GET_THEME_IMAGE_REVIEW', payload: { theme_id: themeId } });
   }
 
@@ -11851,47 +11789,9 @@ if (typeof module !== "undefined" && module.exports) {
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
-      const payload = msg.payload || {};
-      if (payload.error) {
-        if (themeApiKeySave) {
-          themeApiKeySave.removeAttribute("disabled");
-          themeApiKeySave.textContent = "Save";
-        }
-        updateThemeApiKeyUi("Could not save the API key: " + payload.error, true);
-      } else {
-        themeImageSettingsLoaded = true;
-        themeProviderConfigured = {
-          gemini: Boolean(payload.providers?.gemini?.configured),
-          openai: Boolean(payload.providers?.openai?.configured),
-        };
-        if (payload.models && typeof payload.models === "object") {
-          themeImageModels = {
-            gemini: Array.isArray(payload.models.gemini) ? payload.models.gemini : [],
-            openai: Array.isArray(payload.models.openai) ? payload.models.openai : [],
-          };
-        }
-        if (payload.selectedModels && typeof payload.selectedModels === "object") {
-          themeImageSelectedModels = {
-            gemini: typeof payload.selectedModels.gemini === "string" ? payload.selectedModels.gemini : "",
-            openai: typeof payload.selectedModels.openai === "string" ? payload.selectedModels.openai : "",
-          };
-        }
-        if (Array.isArray(payload.qualityOptions)) {
-          themeImageQualityOptions = payload.qualityOptions;
-        }
-        themeImageSelectedQuality = typeof payload.selectedQuality === "string" ? payload.selectedQuality : "";
-        if (themeImageProvider && (payload.provider === "gemini" || payload.provider === "openai")) {
-          themeImageProvider.value = payload.provider;
-        }
-        populateModelSelect(selectedThemeImageProvider());
-        populateQualitySelect(selectedThemeImageProvider());
-        if (themeApiKeyInput) themeApiKeyInput.value = "";
-        if (themeApiKeySave) {
-          themeApiKeySave.removeAttribute("disabled");
-          themeApiKeySave.textContent = "Save";
-        }
-        updateThemeApiKeyUi(payload.saved ? "API key settings saved securely." : "", false);
-      }
+      // deprecated: p40 removed the API-key UI that consumed this message;
+      // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS
+      // are no longer posted from the webview, so this branch is unreached.
     } else if (msg && msg.type === "THEMES_LIST") {
       lastThemesList = msg.payload?.themes || msg.themes || [];
       renderThemesList(lastThemesList);

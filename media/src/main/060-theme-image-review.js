@@ -1229,47 +1229,9 @@
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
-      const payload = msg.payload || {};
-      if (payload.error) {
-        if (themeApiKeySave) {
-          themeApiKeySave.removeAttribute("disabled");
-          themeApiKeySave.textContent = "Save";
-        }
-        updateThemeApiKeyUi("Could not save the API key: " + payload.error, true);
-      } else {
-        themeImageSettingsLoaded = true;
-        themeProviderConfigured = {
-          gemini: Boolean(payload.providers?.gemini?.configured),
-          openai: Boolean(payload.providers?.openai?.configured),
-        };
-        if (payload.models && typeof payload.models === "object") {
-          themeImageModels = {
-            gemini: Array.isArray(payload.models.gemini) ? payload.models.gemini : [],
-            openai: Array.isArray(payload.models.openai) ? payload.models.openai : [],
-          };
-        }
-        if (payload.selectedModels && typeof payload.selectedModels === "object") {
-          themeImageSelectedModels = {
-            gemini: typeof payload.selectedModels.gemini === "string" ? payload.selectedModels.gemini : "",
-            openai: typeof payload.selectedModels.openai === "string" ? payload.selectedModels.openai : "",
-          };
-        }
-        if (Array.isArray(payload.qualityOptions)) {
-          themeImageQualityOptions = payload.qualityOptions;
-        }
-        themeImageSelectedQuality = typeof payload.selectedQuality === "string" ? payload.selectedQuality : "";
-        if (themeImageProvider && (payload.provider === "gemini" || payload.provider === "openai")) {
-          themeImageProvider.value = payload.provider;
-        }
-        populateModelSelect(selectedThemeImageProvider());
-        populateQualitySelect(selectedThemeImageProvider());
-        if (themeApiKeyInput) themeApiKeyInput.value = "";
-        if (themeApiKeySave) {
-          themeApiKeySave.removeAttribute("disabled");
-          themeApiKeySave.textContent = "Save";
-        }
-        updateThemeApiKeyUi(payload.saved ? "API key settings saved securely." : "", false);
-      }
+      // deprecated: p40 removed the API-key UI that consumed this message;
+      // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS
+      // are no longer posted from the webview, so this branch is unreached.
     } else if (msg && msg.type === "THEMES_LIST") {
       lastThemesList = msg.payload?.themes || msg.themes || [];
       renderThemesList(lastThemesList);

@@ -1447,6 +1447,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
           await this._handleInstallProjectPlanSkill();
         } else if (message.type === MSG.GET_THEME_IMAGE_SETTINGS) {
+          // deprecated: removed from UI in p40, host path retired in p43
           const providers = await getThemeImageConfigurationStatus(this._secrets);
           const imageConfig = vscode.workspace.getConfiguration("tycoonagents");
           void this._panel.webview.postMessage({
@@ -1464,6 +1465,7 @@ export class TycoonPanel {
             },
           });
         } else if (message.type === MSG.SAVE_THEME_IMAGE_SETTINGS) {
+          // deprecated: removed from UI in p40, host path retired in p43
           const payload = (message as any).payload as { provider?: string; api_key?: string; model?: string; quality?: string } | undefined;
           try {
             const provider = await saveThemeImageSettings(
@@ -9374,11 +9376,19 @@ export class TycoonPanel {
           <h2 style="margin: 0 0 16px;">Themes</h2>
           <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
           <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
-          <div class="theme-picker-actions">
-            <button id="theme-import-btn" class="skill-btn">Import .zip</button>
-            <button id="tab-theme-builder" class="skill-btn theme-builder-launch">Theme Builder</button>
+          <div class="theme-cta-block">
+            <div class="theme-cta-primary-row">
+              <div class="theme-cta-primary-row-top">
+                <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Theme Builder</button>
+                <span id="theme-builder-credits-chip" class="theme-credits-chip" hidden></span>
+              </div>
+              <p class="theme-cta-value">Generate a full sprite theme from a description.</p>
+            </div>
+            <div class="theme-cta-secondary-row">
+              <button id="theme-import-btn" class="skill-btn secondary-info">Import .zip</button>
+              <span class="theme-cta-secondary-note">free, works offline</span>
+            </div>
           </div>
-          <p class="theme-library-caption">Add a theme &mdash; build one with AI or import a shared .zip.</p>
         </section>
         <section id="theme-selected-section" class="theme-selected-section" hidden>
           <h3 id="theme-selected-heading" class="theme-selected-heading">Selected theme</h3>
@@ -9404,18 +9414,6 @@ export class TycoonPanel {
             <label for="theme-image-quality">Quality</label>
             <select id="theme-image-quality"></select>
           </div>
-          <div class="theme-image-settings-row theme-api-key-row">
-            <label for="theme-api-key-input" id="theme-api-key-label">Google Gemini API key</label>
-            <input
-              type="password"
-              id="theme-api-key-input"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Paste a key to save securely"
-            />
-            <button id="theme-api-key-save" class="skill-btn theme-api-key-save-btn">Save</button>
-          </div>
-          <div id="theme-api-key-status" class="theme-api-key-status" role="status"></div>
         </div>
         <p class="theme-generation-approval-warning" style="margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #d9a441; background: rgba(217, 164, 65, 0.12); border-radius: 4px; font-size: 12px; line-height: 1.4;">
           &#9888; AI image generation isn't perfect &mdash; expect to regenerate some images and do a little manual cleanup (use Retry, Upload, or edit the prompt).

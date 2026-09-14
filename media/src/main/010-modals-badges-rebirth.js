@@ -1047,10 +1047,6 @@
   const themeImageModelEl   = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-model"));
   const themeImageQualityRow = /** @type {HTMLElement} */ (document.getElementById("theme-image-quality-row"));
   const themeImageQualityEl = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-quality"));
-  const themeApiKeyInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-api-key-input"));
-  const themeApiKeyLabel    = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-label"));
-  const themeApiKeySave     = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-save"));
-  const themeApiKeyStatus   = /** @type {HTMLElement} */ (document.getElementById("theme-api-key-status"));
   const themeImageReview    = /** @type {HTMLElement} */ (document.getElementById("theme-image-review"));
   const themeImageReviewTitle = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-title"));
   const themeImageReviewSummary = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-summary"));
@@ -1075,8 +1071,6 @@
   let currentThemePlan = null;
   let themeGenerationRunning = false;
   let themeGenerationStopping = false;
-  let themeImageSettingsLoaded = false;
-  let themeProviderConfigured = { gemini: false, openai: false };
   /** @type {{gemini: Array<{id:string,label:string,note?:string}>, openai: Array<{id:string,label:string,note?:string}>}} */
   let themeImageModels = { gemini: [], openai: [] };
   /** @type {{gemini: string, openai: string}} Saved model id per provider ('' = Latest). */
@@ -1520,31 +1514,11 @@
       if (root && typeof window.initThemeBuilder === "function") {
         window.initThemeBuilder(root);
       }
-      vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
     });
   }
 
   function selectedThemeImageProvider() {
     return themeImageProvider && themeImageProvider.value === "gemini" ? "gemini" : "openai";
-  }
-
-  function updateThemeApiKeyUi(message, isError) {
-    const provider = selectedThemeImageProvider();
-    const providerLabel = provider === "openai" ? "OpenAI" : "Google Gemini";
-    if (themeApiKeyLabel) themeApiKeyLabel.textContent = providerLabel + " API key";
-    if (themeApiKeyInput) {
-      themeApiKeyInput.placeholder = themeProviderConfigured[provider]
-        ? "Key stored - paste to replace"
-        : "Paste a key to save securely";
-    }
-    if (themeApiKeyStatus) {
-      themeApiKeyStatus.textContent = message || (themeProviderConfigured[provider]
-        ? providerLabel + " key is configured."
-        : providerLabel + " key is not configured.");
-      themeApiKeyStatus.style.color = isError
-        ? "var(--vscode-errorForeground)"
-        : "var(--vscode-descriptionForeground)";
-    }
   }
 
   /**
@@ -1591,7 +1565,6 @@
 
   if (themeImageProvider) {
     themeImageProvider.addEventListener("change", () => {
-      updateThemeApiKeyUi("", false);
       populateModelSelect(selectedThemeImageProvider());
       populateQualitySelect(selectedThemeImageProvider());
       vscode.postMessage({
@@ -1631,38 +1604,12 @@
     });
   }
 
-  if (themeApiKeySave) {
-    themeApiKeySave.addEventListener("click", () => {
-      const provider = selectedThemeImageProvider();
-      const apiKey = themeApiKeyInput ? themeApiKeyInput.value.trim() : "";
-      if (!apiKey && !themeProviderConfigured[provider]) {
-        updateThemeApiKeyUi("Paste an API key before saving.", true);
-        return;
-      }
-      themeApiKeySave.setAttribute("disabled", "");
-      themeApiKeySave.textContent = "Saving...";
-      vscode.postMessage({
-        type: 'SAVE_THEME_IMAGE_SETTINGS',
-        payload: {
-          provider,
-          api_key: apiKey,
-          model: themeImageModelEl ? themeImageModelEl.value : "",
-          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
-        },
-      });
-    });
-  }
-
   if (themeGenerateBtn && themePromptInput) {
     themeGenerateBtn.addEventListener("click", () => {
       const prompt = themePromptInput.value.trim();
       if (!prompt) return;
       const imageProvider = selectedThemeImageProvider();
-      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-        updateThemeApiKeyUi("Add and save an API key before generating.", true);
-        return;
-      }
-      
+
       themeGenerateBtn.setAttribute("disabled", "");
       themeGenerateBtn.textContent = "Planning...";
       if (themeBuildStatus) {

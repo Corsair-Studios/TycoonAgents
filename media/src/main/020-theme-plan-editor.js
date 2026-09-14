@@ -160,10 +160,6 @@
       }
       try {
         const imageProvider = selectedThemeImageProvider();
-        if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-          updateThemeApiKeyUi("Add and save an API key before generating.", true);
-          return;
-        }
         const plan = collectEditedThemePlan();
         currentThemePlan = plan;
         themeGenerationRunning = true;
@@ -205,10 +201,6 @@
     themeReviewResumeGeneration.addEventListener("click", () => {
       if (!reviewThemeId || themeGenerationRunning) return;
       const imageProvider = selectedThemeImageProvider();
-      if (themeImageSettingsLoaded && !themeProviderConfigured[imageProvider]) {
-        updateThemeApiKeyUi("Add and save an API key before resuming.", true);
-        return;
-      }
       themeGenerationRunning = true;
       themeGenerationStopping = false;
       themeReviewResumeGeneration.hidden = true;
@@ -367,7 +359,6 @@
       themeApproveAll.disabled = true;
       themeApproveAll.textContent = "Approve all";
     }
-    vscode.postMessage({ type: 'GET_THEME_IMAGE_SETTINGS' });
     vscode.postMessage({ type: 'GET_THEME_IMAGE_REVIEW', payload: { theme_id: themeId } });
   }
 
