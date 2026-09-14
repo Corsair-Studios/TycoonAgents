@@ -111,10 +111,10 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       return { signedIn: false, pendingCheckout, error: toErrorPayload(res.error) };
     }
     const status: ThemeServiceStatus = res.value;
-    if (!lastCachedPricing) {
-      const pricingRes = await client.getPricing();
-      if (pricingRes.ok) lastCachedPricing = pricingRes.value;
-    }
+    // Refetch pricing on every status build (it can change server-side);
+    // the cached copy is kept only as a fallback when the refetch fails.
+    const pricingRes = await client.getPricing();
+    if (pricingRes.ok) lastCachedPricing = pricingRes.value;
     return {
       signedIn: status.signedIn,
       email: status.email,
@@ -235,6 +235,11 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     async handleBuyCredits(pack) {
+      // Refetch pricing immediately before checkout so the pack picker (and
+      // any price shown to the user) reflects current pricing at purchase
+      // time; keep the cached copy if this refetch fails.
+      const pricingRes = await client.getPricing();
+      if (pricingRes.ok) lastCachedPricing = pricingRes.value;
       const res = await client.createCheckoutSession(pack);
       if (!res.ok) {
         opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });

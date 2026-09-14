@@ -881,6 +881,10 @@ export class TycoonPanel {
    * code fallback in the webview covers that case).
    */
   public static handleUriCallback(uri: vscode.Uri): void {
+    // Trust boundary: VS Code dispatches vscode:// URIs to the extension whose
+    // publisher.name matches the URI's authority, so the OS/VS Code has
+    // already confirmed this callback is addressed to us — authority is not
+    // re-checked here.
     if (uri.path !== "/theme-service-auth") return;
     const code = new URLSearchParams(uri.query).get("code");
     if (!code) return;
