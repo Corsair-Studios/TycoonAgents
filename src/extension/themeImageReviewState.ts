@@ -125,7 +125,7 @@ export interface ThemeImageReviewItem {
   /** Whether that last attempt was auto-refunded (provider_failed). */
   lastAttemptRefunded?: boolean;
   /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
-  error_kind?: 'not_signed_in' | 'insufficient_credits' | 'unavailable' | 'unreachable' | 'provider_failed';
+  error_kind?: 'not_signed_in' | 'insufficient_credits' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited';
   updated_at: string;
 }
 

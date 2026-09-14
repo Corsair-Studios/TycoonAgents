@@ -257,6 +257,38 @@ test('resliceThemeImageFromRaw makes no Theme Service generator call', async () 
   });
 });
 
+test('an ok:true attempt with refunded:true is excluded from creditsSpent and recorded with attemptCost 0', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'refunded_ok_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const calls: FakeGenerateCall[] = [];
+    setThemeImageGenerator({
+      async generate(req: FakeGenerateCall) {
+        calls.push(req);
+        const image = await magentaAtlas();
+        const refunded = req.boardType === 'environment';
+        return { ok: true as const, value: { image, attemptCost: 1, credits: 99, refunded } };
+      },
+    });
+    try {
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      const environmentEntry = review.entries.find((entry) => entry.item.id === 'environment')!;
+      assert.equal(environmentEntry.item.lastAttemptRefunded, true);
+      assert.equal(environmentEntry.item.attemptCost, 0, 'a refunded successful attempt must record attemptCost 0');
+
+      const nonRefundedTotal = review.entries
+        .filter((entry) => entry.item.id !== 'environment')
+        .reduce((sum, entry) => sum + (entry.item.attemptCost ?? 0), 0);
+      assert.equal(review.creditsSpent, nonRefundedTotal, 'creditsSpent must exclude the refunded attempt entirely');
+      assert.ok(review.creditsSpent < calls.length, 'creditsSpent must be strictly less than the raw attempt count once one attempt is refunded');
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
 // Note: generateTheme runs every board through runNonFatalBoardStep
 // (themeService.ts), which swallows a non-cancellation board failure (logs
 // "<label> failed and was skipped" via onProgress and continues to the next
@@ -296,7 +328,9 @@ test('each Theme Service error kind surfaces as its own distinct error_kind, nev
     { kind: 'unavailable', expected: 'unavailable' },
     { kind: 'unreachable', expected: 'unreachable' },
     { kind: 'provider_failed', expected: 'provider_failed' },
-    { kind: 'rate_limited', expected: 'unavailable' }, // folded — see mapToReviewErrorKind
+    { kind: 'rate_limited', expected: 'rate_limited' }, // its own distinct review state — see mapToReviewErrorKind
+    { kind: 'server_error', expected: 'unavailable' }, // folded — no table entry of its own
+    { kind: 'invalid_response', expected: 'unavailable' }, // folded — no table entry of its own
   ];
 
   for (const { kind, expected } of kinds) {

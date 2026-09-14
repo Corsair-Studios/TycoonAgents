@@ -2932,7 +2932,7 @@ export async function retryThemeImage(
     status: 'pending',
     generation_error: undefined,
     error_kind: undefined,
-    attemptCost: attempt.attemptCost,
+    attemptCost: attempt.refunded ? 0 : attempt.attemptCost,
     lastAttemptRefunded: attempt.refunded,
     prompt,
     revision: item.revision + 1,
@@ -3078,13 +3078,13 @@ async function generateAndReviewThemeItem(
 }
 
 /**
- * The review item's error_kind field surfaces exactly the five distinct
- * kinds docs/theme-service-api.md's error table maps to a client UI state
+ * The review item's error_kind field surfaces the six distinct kinds
+ * docs/theme-service-api.md's error table maps to their own client UI state
  * (not_signed_in, insufficient_credits, unavailable, unreachable,
- * provider_failed) — see p43-t1. `rate_limited`/`server_error`/
- * `invalid_response` fold into `unavailable` (same "service unavailable,
- * try again" UI state as 503 per that table) rather than adding a sixth
- * value nothing downstream expects.
+ * provider_failed, rate_limited — "try again shortly", a different message
+ * than unavailable's "Theme Service unavailable") — see p43-t1/p43 review
+ * fix. Only `server_error`/`invalid_response` (no table entry of their own)
+ * fold into `unavailable`.
  */
 function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeImageReviewItem['error_kind']> {
   switch (kind) {
@@ -3093,6 +3093,7 @@ function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeIma
     case 'unavailable':
     case 'unreachable':
     case 'provider_failed':
+    case 'rate_limited':
       return kind;
     default:
       return 'unavailable';
@@ -4577,7 +4578,7 @@ async function markGenerated(
     ...item,
     status: 'pending',
     updated_at: new Date().toISOString(),
-    ...(attempt ? { attemptCost: attempt.attemptCost, lastAttemptRefunded: attempt.refunded, error_kind: undefined } : {}),
+    ...(attempt ? { attemptCost: attempt.refunded ? 0 : attempt.attemptCost, lastAttemptRefunded: attempt.refunded, error_kind: undefined } : {}),
   });
 }
 
