@@ -1535,6 +1535,336 @@
     });
   }
 
+  // ── Theme Service panel (p42-t2/p42-t4) ─────────────────────────────
+  // Renders #theme-service-panel-body against THEME_SERVICE_STATUS-shaped
+  // payloads (also carried by THEME_BUILDER_OPENED). Sign-in itself is a
+  // multi-step flow the host status shape doesn't model (host only knows
+  // signedIn/email/provider/credits/pricing/pendingCheckout/error) so the
+  // "waiting for Google" / "check your email" steps are tracked as local
+  // transient view state here and cleared once a real signedIn status
+  // arrives (see renderThemeServicePanel below).
+  const themeBuilderCreditsChip = /** @type {HTMLElement} */ (document.getElementById("theme-builder-credits-chip"));
+  const themeServicePanelBody   = /** @type {HTMLElement} */ (document.getElementById("theme-service-panel-body"));
+
+  let themeServiceStatus = null;
+  /** @type {"signin"|"google-wait"|"email-sent"} */
+  let themeServiceView = "signin";
+  let themeServicePendingEmail = "";
+
+  function postThemeService(type, payload) {
+    vscode.postMessage(Object.assign({ type: type }, payload || {}));
+  }
+
+  function updateThemeBuilderCreditsChip(status) {
+    if (!themeBuilderCreditsChip) return;
+    if (status && status.signedIn && typeof status.credits === "number") {
+      themeBuilderCreditsChip.textContent = status.credits + " credits";
+      themeBuilderCreditsChip.removeAttribute("hidden");
+    } else {
+      themeBuilderCreditsChip.textContent = "";
+      themeBuilderCreditsChip.setAttribute("hidden", "");
+    }
+  }
+
+  function tspClear(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  /**
+   * @param {string} tag
+   * @param {string} [cls]
+   * @param {string} [text]
+   */
+  function tspEl(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function tspButton(cls, text, onClick) {
+    const b = tspEl("button", "skill-btn" + (cls ? " " + cls : ""), text);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function tspNotice(kind, text) {
+    return tspEl("div", "tsp-notice tsp-notice-" + kind, text);
+  }
+
+  function tspLink(text, onClick) {
+    const a = tspEl("a", "muted tsp-link", text);
+    a.href = "#";
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      onClick();
+    });
+    return a;
+  }
+
+  function formatPackPrice(pack) {
+    const cents = typeof pack.priceCents === "number" ? pack.priceCents : 0;
+    const amount = (cents / 100).toFixed(2);
+    const currency = String(pack.currency || "usd").toUpperCase();
+    return currency === "USD" ? "$" + amount : amount + " " + currency;
+  }
+
+  function renderPackGrid(pricing, onBuy) {
+    const grid = tspEl("div", "tsp-pack-grid");
+    const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
+    for (const pack of packs) {
+      if (!pack) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tsp-pack";
+      btn.appendChild(tspEl("b", null, String(pack.credits)));
+      btn.appendChild(document.createTextNode(formatPackPrice(pack)));
+      btn.addEventListener("click", () => onBuy(pack));
+      grid.appendChild(btn);
+    }
+    return grid;
+  }
+
+  // C. Not signed in.
+  function renderThemeServiceSignedOut(container, status) {
+    container.appendChild(tspEl("h3", null, "Generate a theme"));
+    container.appendChild(tspEl("p", "muted tsp-lead", "Sign in to generate AI theme art with credits."));
+
+    if (status && status.error && status.error.message) {
+      container.appendChild(tspNotice("warn", status.error.message));
+    }
+
+    container.appendChild(tspButton("tsp-google-btn", "Continue with Google", () => {
+      themeServiceView = "google-wait";
+      postThemeService("THEME_SERVICE_GOOGLE_START", {});
+      renderThemeServicePanel(themeServiceStatus);
+    }));
+
+    const divider = tspEl("div", "tsp-divider");
+    divider.appendChild(tspEl("span", "muted", "or"));
+    container.appendChild(divider);
+
+    const field = tspEl("div", "field tsp-field");
+    const emailLabel = tspEl("label", null, "Email");
+    emailLabel.setAttribute("for", "theme-service-email-input");
+    const emailInput = document.createElement("input");
+    emailInput.type = "email";
+    emailInput.id = "theme-service-email-input";
+    emailInput.placeholder = "you@example.com";
+    emailInput.value = themeServicePendingEmail;
+    field.appendChild(emailLabel);
+    field.appendChild(emailInput);
+    container.appendChild(field);
+
+    container.appendChild(tspButton("primary", "Send sign-in link", () => {
+      const email = emailInput.value.trim();
+      if (!email) return;
+      themeServicePendingEmail = email;
+      themeServiceView = "email-sent";
+      postThemeService("THEME_SERVICE_REQUEST_MAGIC_LINK", { email: email });
+      renderThemeServicePanel(themeServiceStatus);
+    }));
+
+    container.appendChild(tspEl("small", "note", "Signing in opens your browser. Your Corsair account is created on first sign-in."));
+    container.appendChild(tspEl("small", "note", "Hand-made and imported themes never need an account."));
+  }
+
+  // C2. Waiting for browser sign-in (after GOOGLE_START).
+  function renderThemeServiceGoogleWait(container, status) {
+    container.appendChild(tspEl("h3", null, "Finish signing in with Google"));
+    container.appendChild(tspEl("p", "muted tsp-lead", "Finish signing in with Google in your browser. This panel updates when you're done."));
+
+    if (status && status.error && status.error.message) {
+      container.appendChild(tspNotice("error", status.error.message));
+    }
+
+    const waitRow = tspEl("div", "tsp-wait-row");
+    waitRow.appendChild(tspEl("span", "muted", "Waiting…"));
+    container.appendChild(waitRow);
+
+    const cancelP = tspEl("p", "tsp-cancel-row");
+    cancelP.appendChild(tspLink("Cancel", () => {
+      themeServiceView = "signin";
+      renderThemeServicePanel(themeServiceStatus);
+    }));
+    container.appendChild(cancelP);
+
+    const field = tspEl("div", "field tsp-field");
+    const codeLabel = tspEl("label", null, "Browser couldn't call back? Paste sign-in code");
+    codeLabel.setAttribute("for", "theme-service-google-code");
+    const codeInput = document.createElement("input");
+    codeInput.type = "text";
+    codeInput.id = "theme-service-google-code";
+    codeInput.placeholder = "Paste code from browser";
+    field.appendChild(codeLabel);
+    field.appendChild(codeInput);
+    container.appendChild(field);
+
+    container.appendChild(tspButton(null, "Submit code", () => {
+      const code = codeInput.value.trim();
+      if (!code) return;
+      postThemeService("THEME_SERVICE_GOOGLE_COMPLETE", { code: code });
+    }));
+  }
+
+  // D. Awaiting magic link (after REQUEST_MAGIC_LINK).
+  function renderThemeServiceEmailCode(container, status) {
+    container.appendChild(tspEl("h3", null, "Check your email"));
+    const email = themeServicePendingEmail || (status && status.email) || "";
+    container.appendChild(tspEl("p", "muted tsp-lead",
+      "We sent a sign-in link to " + email + ". You can also enter the 6-digit code from that email."));
+
+    if (status && status.error && status.error.message) {
+      container.appendChild(tspNotice("warn", status.error.message));
+    }
+
+    const boxes = tspEl("div", "tsp-code-boxes");
+    const inputs = [];
+    for (let i = 0; i < 6; i++) {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.maxLength = 1;
+      inp.inputMode = "numeric";
+      boxes.appendChild(inp);
+      inputs.push(inp);
+    }
+    inputs.forEach((inp, idx) => {
+      inp.addEventListener("input", () => {
+        if (inp.value && idx < inputs.length - 1) inputs[idx + 1].focus();
+      });
+    });
+    container.appendChild(boxes);
+
+    container.appendChild(tspButton(null, "Confirm code", () => {
+      const code = inputs.map((inp) => inp.value).join("").trim();
+      if (code.length !== 6) return;
+      postThemeService("THEME_SERVICE_VERIFY", { email: email, code: code });
+    }));
+
+    const resendP = tspEl("p", "tsp-resend-row");
+    resendP.appendChild(tspLink("Resend link", () => {
+      postThemeService("THEME_SERVICE_REQUEST_MAGIC_LINK", { email: email });
+    }));
+    container.appendChild(resendP);
+  }
+
+  // E / F. Signed in — ready, or insufficient credits.
+  function renderThemeServiceSignedIn(container, status) {
+    const pricing = status.pricing || {};
+    const typical = pricing.typicalTheme || {};
+    const insufficient = typeof status.credits === "number" && typeof typical.min === "number" && status.credits < typical.min;
+
+    const balanceRow = tspEl("div", "tsp-balance-row");
+    const idSpan = tspEl("span", "muted");
+    const providerLabel = status.provider === "google" ? "Google" : "Email";
+    idSpan.appendChild(document.createTextNode((status.email || "") + " · " + providerLabel + " · "));
+    idSpan.appendChild(tspLink("Sign out", () => {
+      postThemeService("THEME_SERVICE_SIGN_OUT", {});
+    }));
+    balanceRow.appendChild(idSpan);
+    balanceRow.appendChild(tspEl("span", "tsp-balance-num", (typeof status.credits === "number" ? status.credits : 0) + " credits"));
+    container.appendChild(balanceRow);
+
+    if (insufficient) {
+      container.appendChild(tspNotice("warn",
+        "Not enough credits for this theme (needs ~" + typical.min + "–" + typical.max + "). Buy more to continue."));
+    } else if (status.error && status.error.message) {
+      container.appendChild(tspNotice("warn", status.error.message));
+    }
+
+    if (typeof typical.min === "number" && typeof typical.max === "number") {
+      container.appendChild(tspEl("p", "tsp-guidance",
+        "A theme typically takes " + typical.min + "–" + typical.max + " credits. One attempt per board is the minimum; retries cost the same as the first attempt."));
+    }
+
+    container.appendChild(tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ }));
+    container.appendChild(renderPackGrid(pricing, (pack) => {
+      postThemeService("THEME_SERVICE_BUY_CREDITS", { pack: pack.id });
+    }));
+
+    container.appendChild(tspEl("p", "muted tsp-caveat",
+      "Results depend on your prompts. Every attempt that returns an image is billed, including retries. Re-slicing is free. Only attempts that fail outright are refunded."));
+
+    const tipsP = tspEl("p", "tsp-tips-row");
+    const tipsLink = tspEl("a", "muted tsp-link", "Prompt tips");
+    tipsLink.href = "README.md#prompt-tips";
+    tipsLink.target = "_blank";
+    tipsLink.rel = "noopener noreferrer";
+    tipsP.appendChild(tipsLink);
+    container.appendChild(tipsP);
+
+    if (insufficient) {
+      const disabledBtn = tspButton("tsp-block-btn", "Generate images (need more credits)", () => {});
+      disabledBtn.disabled = true;
+      container.appendChild(disabledBtn);
+    }
+  }
+
+  // H. Checkout pending (waiting for purchase to complete).
+  function renderThemeServicePendingCheckout(container) {
+    container.appendChild(tspEl("h3", null, "Buy credits"));
+    container.appendChild(tspEl("p", "muted tsp-lead", "Waiting for your purchase to complete…"));
+    const row = tspEl("div", "tsp-btn-row");
+    row.appendChild(tspButton("primary", "I completed payment, refresh balance", () => {
+      postThemeService("THEME_SERVICE_GET_STATUS", {});
+    }));
+    row.appendChild(tspButton(null, "Cancel", () => {
+      postThemeService("THEME_SERVICE_GET_STATUS", {});
+    }));
+    container.appendChild(row);
+  }
+
+  // G. Theme Service unreachable.
+  function renderThemeServiceUnreachable(container, status) {
+    container.appendChild(tspEl("h3", null, "Generate a theme"));
+    container.appendChild(tspNotice("error", (status.error && status.error.message) || "Theme Service unavailable — no credits were charged."));
+    container.appendChild(tspButton(null, "Retry", () => {
+      postThemeService("THEME_SERVICE_GET_STATUS", {});
+    }));
+    container.appendChild(tspEl("p", "muted tsp-note-bottom",
+      "Imports still work while the service is down — use Import .zip from the Themes page."));
+  }
+
+  /**
+   * Renders #theme-service-panel-body for the given THEME_SERVICE_STATUS-
+   * shaped payload (also the shape carried by THEME_BUILDER_OPENED), and
+   * keeps #theme-builder-credits-chip in sync. Precedence: pendingCheckout
+   * > unavailable/unreachable error > not-signed-in (incl. local transient
+   * google-wait/email-sent views) > signed-in (ready or insufficient
+   * credits). Called from 060-theme-image-review.js's message listener.
+   * @param {*} status
+   */
+  function renderThemeServicePanel(status) {
+    if (!themeServicePanelBody) return;
+    themeServiceStatus = status || themeServiceStatus;
+    updateThemeBuilderCreditsChip(themeServiceStatus);
+    tspClear(themeServicePanelBody);
+    const s = themeServiceStatus;
+    if (!s) return;
+
+    if (s.pendingCheckout) {
+      renderThemeServicePendingCheckout(themeServicePanelBody);
+      return;
+    }
+    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable")) {
+      renderThemeServiceUnreachable(themeServicePanelBody, s);
+      return;
+    }
+    if (!s.signedIn) {
+      if (themeServiceView === "google-wait") {
+        renderThemeServiceGoogleWait(themeServicePanelBody, s);
+      } else if (themeServiceView === "email-sent") {
+        renderThemeServiceEmailCode(themeServicePanelBody, s);
+      } else {
+        renderThemeServiceSignedOut(themeServicePanelBody, s);
+      }
+      return;
+    }
+    themeServiceView = "signin";
+    renderThemeServiceSignedIn(themeServicePanelBody, s);
+  }
+
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
       themePickerList.removeAttribute("hidden");

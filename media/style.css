@@ -1796,6 +1796,197 @@ body {
   justify-content: flex-end;
 }
 
+/* ── Theme Service panel (p42-t2/p42-t4) ──────────────────────────────── */
+/* Built entirely with textContent by renderThemeServicePanel() in
+   media/src/main/010-modals-badges-rebirth.js; reuses .skill-btn / .field /
+   .muted / .note token language already established elsewhere in this file. */
+#theme-service-panel-body h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.tsp-lead {
+  font-size: 11.5px;
+  margin: 0 0 12px;
+}
+
+.tsp-google-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.tsp-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.tsp-divider::before,
+.tsp-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.tsp-divider span {
+  font-size: 11px;
+}
+
+.tsp-field input,
+.tsp-code-boxes input,
+.tsp-balance-row + input {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.tsp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.tsp-field label {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.tsp-wait-row {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0;
+}
+
+.tsp-cancel-row,
+.tsp-resend-row,
+.tsp-tips-row {
+  margin: 8px 0 10px;
+}
+
+.tsp-link {
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.tsp-code-boxes {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.tsp-code-boxes input {
+  width: 34px;
+  text-align: center;
+  padding: 6px 0;
+}
+
+.tsp-balance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.tsp-balance-num {
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.tsp-guidance {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0 0 10px;
+}
+
+.tsp-pack-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.tsp-pack {
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 8px;
+  font-size: 11.5px;
+  text-align: center;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tsp-pack:hover {
+  border-color: var(--accent);
+}
+
+.tsp-pack b {
+  display: block;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.tsp-caveat {
+  font-size: 10.5px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.tsp-notice {
+  border-radius: 6px;
+  padding: 9px 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.tsp-notice-warn {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-left: 3px solid var(--accent);
+}
+
+.tsp-notice-error {
+  background: color-mix(in srgb, var(--status-error) 14%, transparent);
+  border-left: 3px solid var(--status-error);
+}
+
+.tsp-block-btn {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.tsp-btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tsp-note-bottom {
+  font-size: 11px;
+  margin-top: 10px;
+}
+
 /* ── Settings "subpage" modals (UEFN/Verse, Feedback) ─────────────────── */
 /* Shared classes (not per-id like #about-modal/#badge-modal above) since
    #uefn-modal and #feedback-modal are structurally identical: a scrollable
