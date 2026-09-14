@@ -193,6 +193,91 @@ test("refresh failure clears the token store and yields not_signed_in", async ()
   assert.equal(tokenStore.value, null);
 });
 
+test("concurrent 401s share one session refresh", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  const account = fake.helpers.createAccount("concurrent@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("concurrent@example.com");
+  await client.verifyMagicLink("concurrent@example.com", "123456");
+
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const client2 = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+
+  fake.helpers.expireAccessToken();
+
+  const [a, b, c] = await Promise.all([
+    client2.getStatus(),
+    client2.getStatus(),
+    client2.generateAttempt({ idempotencyKey: "concurrent-k1", boardType: "objects_01", prompt: "x", size: "1024x1024" }),
+  ]);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(c.ok, true);
+
+  const refreshCalls = calls.filter((call) => call.url.includes("/auth/v1/token") && call.url.includes("grant_type=refresh_token"));
+  assert.equal(refreshCalls.length, 1);
+
+  assert.ok(tokenStore.value);
+  const parsed = JSON.parse(tokenStore.value!) as { accessToken: string; refreshToken: string; expiresAt: number };
+  assert.equal(typeof parsed.accessToken, "string");
+  assert.equal(typeof parsed.refreshToken, "string");
+});
+
+test("concurrent 401s share one failed refresh: all callers get not_signed_in, store cleared once", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  await client.requestMagicLink("concurrentfail@example.com");
+  await client.verifyMagicLink("concurrentfail@example.com", "123456");
+
+  // Corrupt the stored refresh token so the shared refresh fails.
+  const parsed = JSON.parse(tokenStore.value!) as { accessToken: string; refreshToken: string; expiresAt: number };
+  parsed.refreshToken = "not-a-real-refresh-token";
+  await tokenStore.set(JSON.stringify(parsed));
+  fake.helpers.expireAccessToken();
+
+  let clearCalls = 0;
+  const countingStore: ThemeServiceTokenStore = {
+    get: () => tokenStore.get(),
+    set: (token: string) => tokenStore.set(token),
+    clear: async () => {
+      clearCalls += 1;
+      await tokenStore.clear();
+    },
+  };
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const client2 = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore: countingStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+
+  const [a, b, c] = await Promise.all([
+    client2.getStatus(),
+    client2.getStatus(),
+    client2.generateAttempt({ idempotencyKey: "concurrent-k2", boardType: "objects_01", prompt: "x", size: "1024x1024" }),
+  ]);
+  // getStatus reports "not signed in" as a successful, signed-out status
+  // rather than an error; generateAttempt (which requires auth) errors.
+  assert.equal(a.ok, true);
+  if (a.ok) assert.equal(a.value.signedIn, false);
+  assert.equal(b.ok, true);
+  if (b.ok) assert.equal(b.value.signedIn, false);
+  assert.equal(c.ok, false);
+  if (!c.ok) assert.equal(c.error.kind, "not_signed_in");
+
+  const refreshCalls = calls.filter((call) => call.url.includes("/auth/v1/token") && call.url.includes("grant_type=refresh_token"));
+  assert.equal(refreshCalls.length, 1);
+  assert.equal(clearCalls, 1);
+  assert.equal(tokenStore.value, null);
+});
+
 test("checkout -> completeCheckout raises credits", async () => {
   const { fake, client } = setupClient();
   await client.requestMagicLink("buyer@example.com");
