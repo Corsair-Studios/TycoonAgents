@@ -1520,7 +1520,7 @@
     const status = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
     const pricing = status && status.pricing;
     const byBoard = pricing && pricing.attemptCostByBoardType;
-    const knownCost = byBoard && typeof byBoard[item.kind] === "number" ? byBoard[item.kind] : undefined;
+    const knownCost = byBoard && typeof byBoard[item.boardType] === "number" ? byBoard[item.boardType] : undefined;
     const costText = typeof knownCost === "number" ? String(knownCost) : "1";
     if (typeof knownCost !== "number") line.title = "estimate";
     const spent = typeof payload.creditsSpent === "number" ? payload.creditsSpent : 0;

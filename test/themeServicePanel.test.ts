@@ -532,12 +532,48 @@ test('cost line shows per-attempt cost, running total and balance', async () => 
     theme_id: 't1',
     display_name: 'Forest',
     creditsSpent: 7,
-    items: [baseReviewItem({ attemptCost: 1 })],
+    items: [baseReviewItem({ attemptCost: 1, boardType: 'environment' })],
   }));
   const text = attemptCostLine(h);
   assert.match(text, /This attempt costs 1 credits/);
   assert.match(text, /Spent on this theme so far: 7 credits/);
   assert.match(text, /Balance 12 credits/);
+  h.win.close();
+});
+
+test('cost line resolves pricing by the item\'s service boardType, not its kind', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { objects_02: 2 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 7,
+    items: [baseReviewItem({ attemptCost: 2, boardType: 'objects_02' })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const line = card.querySelector('.theme-attempt-cost');
+  assert.match(line.textContent, /This attempt costs 2 credits/);
+  assert.ok(!line.hasAttribute('title'), 'a known boardType price must not be marked as an estimate');
+  h.win.close();
+});
+
+test('cost line falls back to the estimate when the item has no boardType', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { objects_02: 2 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 7,
+    items: [baseReviewItem({ attemptCost: 1 })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const line = card.querySelector('.theme-attempt-cost');
+  assert.match(line.textContent, /This attempt costs 1 credits/);
+  assert.equal(line.getAttribute('title'), 'estimate');
   h.win.close();
 });
 
