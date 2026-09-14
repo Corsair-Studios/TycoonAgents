@@ -177,7 +177,7 @@ async function withTempStore<T>(fn: (globalStorageUri: FakeUri) => Promise<T>): 
 }
 
 test('end-to-end: plan, generate, retry, re-slice, refund, and error paths against the fake Theme Service', async () => {
-  let nowMs = 1_700_000_000_000;
+  const nowMs = 1_700_000_000_000;
   const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
   const atlas = new Jimp(400, 200, 0xff00ffff);
   const pngDataUri = `data:image/png;base64,${(await atlas.getBufferAsync(Jimp.MIME_PNG)).toString('base64')}`;
