@@ -1730,7 +1730,7 @@ body {
 #theme-builder-shell-modal {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 110;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4619,6 +4619,15 @@ td.col-status {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.9;
+}
+
+/* p43 removed the provider/model/quality selects in favor of Corsair
+   credits; this replaces them (bug fix, 0.0.611). */
+.theme-image-settings-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .theme-image-settings-row {

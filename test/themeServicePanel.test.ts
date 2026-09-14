@@ -428,3 +428,63 @@ test('renderThemeServicePanel and its helpers never use innerHTML for status tex
   const section = src.slice(start, end);
   assert.ok(!/\.innerHTML\s*=/.test(section), 'Theme Service panel render helpers must not assign innerHTML (use textContent/DOM nodes)');
 });
+
+// ── Shell modal layering + always-visible click feedback (bug fix, 0.0.611) ──
+
+test('clicking #tab-theme-builder opens the shell modal immediately with a Connecting… body, before THEME_BUILDER_OPENED arrives', async () => {
+  const h = await bootThemePanelHarness();
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  // The harness stubs every getElementById id as a bare <div> (it doesn't
+  // replicate panel.ts/server.mjs's `hidden` attribute on the real modal
+  // markup), so start it hidden explicitly, matching production markup.
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.ok(!shell.hasAttribute('hidden'), 'shell modal must be visible immediately on click, before any host reply');
+  assert.match(h.panelText(), /Connecting/, 'panel body should show a Connecting… placeholder immediately on click');
+  assert.ok(h.posted.some((p) => p.type === 'OPEN_THEME_BUILDER'), 'click should still post OPEN_THEME_BUILDER');
+
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  assert.match(h.panelText(), /Generate a theme/, 'THEME_BUILDER_OPENED should replace the Connecting… placeholder with the real status');
+  h.win.close();
+});
+
+test('#theme-builder-shell-modal has a higher z-index than #themes-modal so it layers above it', () => {
+  const css = readFileSync(join(process.cwd(), 'media', 'style.css'), 'utf8');
+
+  function zIndexOf(selector: string): number {
+    const ruleStart = css.indexOf(selector + ' {');
+    assert.ok(ruleStart >= 0, `could not find CSS rule for ${selector}`);
+    const ruleEnd = css.indexOf('}', ruleStart);
+    const rule = css.slice(ruleStart, ruleEnd);
+    const m = /z-index:\s*(\d+)/.exec(rule);
+    assert.ok(m, `${selector} rule has no z-index declaration`);
+    return Number(m![1]);
+  }
+
+  const shellZ = zIndexOf('#theme-builder-shell-modal');
+  const themesZ = zIndexOf('#themes-modal');
+  assert.ok(shellZ > themesZ, `expected #theme-builder-shell-modal z-index (${shellZ}) to exceed #themes-modal z-index (${themesZ})`);
+});
+
+// ── Provider/model/quality selectors removed (bug fix, 0.0.611; p43 will remove image_provider entirely) ──
+
+test('the image provider/model/quality selects are gone from the webview bundle, replaced by a Corsair-credits note', () => {
+  const bundle = readFileSync(MAIN_JS_PATH, 'utf8');
+  assert.ok(!bundle.includes('theme-image-provider'), 'theme-image-provider select must be removed');
+  assert.ok(!bundle.includes('theme-image-model'), 'theme-image-model select must be removed');
+  assert.ok(!bundle.includes('theme-image-quality'), 'theme-image-quality select must be removed');
+  assert.ok(!bundle.includes('SET_THEME_IMAGE_PREFERENCE'), 'SET_THEME_IMAGE_PREFERENCE must no longer be posted');
+});
+
+test('PLAN_THEME still sends a default image_provider silently even with no provider UI', async () => {
+  const h = await bootThemePanelHarness();
+  const input = h.doc.getElementById('theme-prompt-input');
+  input.value = 'a cozy forest theme';
+  h.doc.getElementById('theme-generate-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  assert.ok(plan, 'expected a PLAN_THEME message');
+  assert.equal(plan.payload.image_provider, 'openai', 'image_provider should still default silently to "openai"');
+  h.win.close();
+});

@@ -3537,21 +3537,7 @@ function buildHostHtml() {
         <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
         <div id="theme-image-settings" class="theme-image-settings">
           <div class="theme-image-settings-heading">Image generation</div>
-          <div class="theme-image-settings-row">
-            <label for="theme-image-provider">Image provider</label>
-            <select id="theme-image-provider">
-              <option value="openai">OpenAI (GPT Image 2)</option>
-              <option value="gemini">Google Gemini</option>
-            </select>
-          </div>
-          <div class="theme-image-settings-row">
-            <label for="theme-image-model">Model</label>
-            <select id="theme-image-model"></select>
-          </div>
-          <div class="theme-image-settings-row" id="theme-image-quality-row">
-            <label for="theme-image-quality">Quality</label>
-            <select id="theme-image-quality"></select>
-          </div>
+          <p class="theme-image-settings-note muted">Image generation runs through your Corsair credits. Sign in from the Theme Builder to see your balance.</p>
         </div>
         <p class="theme-generation-approval-warning" style="margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #d9a441; background: rgba(217, 164, 65, 0.12); border-radius: 4px; font-size: 12px; line-height: 1.4;">
           &#9888; AI image generation isn't perfect &mdash; expect to regenerate some images and do a little manual cleanup (use Retry, Upload, or edit the prompt).

@@ -1043,10 +1043,6 @@
   const themeBuildStatus    = /** @type {HTMLElement} */ (document.getElementById("theme-build-status"));
   const themeBuildActions   = /** @type {HTMLElement} */ (document.getElementById("theme-build-actions"));
   const themeReviewImagesBtn = /** @type {HTMLElement} */ (document.getElementById("theme-review-images-btn"));
-  const themeImageProvider  = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-provider"));
-  const themeImageModelEl   = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-model"));
-  const themeImageQualityRow = /** @type {HTMLElement} */ (document.getElementById("theme-image-quality-row"));
-  const themeImageQualityEl = /** @type {HTMLSelectElement} */ (document.getElementById("theme-image-quality"));
   const themeImageReview    = /** @type {HTMLElement} */ (document.getElementById("theme-image-review"));
   const themeImageReviewTitle = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-title"));
   const themeImageReviewSummary = /** @type {HTMLElement} */ (document.getElementById("theme-image-review-summary"));
@@ -1071,14 +1067,6 @@
   let currentThemePlan = null;
   let themeGenerationRunning = false;
   let themeGenerationStopping = false;
-  /** @type {{gemini: Array<{id:string,label:string,note?:string}>, openai: Array<{id:string,label:string,note?:string}>}} */
-  let themeImageModels = { gemini: [], openai: [] };
-  /** @type {{gemini: string, openai: string}} Saved model id per provider ('' = Latest). */
-  let themeImageSelectedModels = { gemini: "", openai: "" };
-  /** @type {Array<{id:string,label:string,note?:string}>} OpenAI-only quality options ('low'|'medium'|'high'). */
-  let themeImageQualityOptions = [];
-  /** Saved OpenAI quality override ('' = medium/default). Gemini has no quality parameter. */
-  let themeImageSelectedQuality = "";
   let themeImageLightboxTrigger = null;
   const themeReviewBusyItems = new Map();
   /** True while a SET_THEME_CREATIVE_DIRECTION save is in flight. Whole-theme
@@ -1874,95 +1862,29 @@
     });
 
     tabThemeBuilder.addEventListener("click", () => {
+      // Open the shell immediately so the click always produces visible
+      // feedback, even if THEME_BUILDER_OPENED never arrives (host error).
+      // THEME_BUILDER_OPENED (060-theme-image-review.js) later replaces this
+      // with the real status via renderThemeServicePanel.
+      openThemeBuilderShellModal();
+      if (themeServicePanelBody) {
+        tspClear(themeServicePanelBody);
+        themeServicePanelBody.appendChild(tspEl("p", "muted", "Connecting…"));
+      }
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
   }
 
+  /**
+   * Image generation runs through Corsair credits (p43 reroutes the
+   * backend); there is no provider/model/quality choice in the UI anymore
+   * (bug fix, 0.0.611). This keeps sending the host's existing default
+   * provider silently on PLAN_THEME/GENERATE_THEME so generation keeps
+   * working until p43 retires the field.
+   * @returns {"openai"}
+   */
   function selectedThemeImageProvider() {
-    return themeImageProvider && themeImageProvider.value === "gemini" ? "gemini" : "openai";
-  }
-
-  /**
-   * Rebuild the #theme-image-model options for the given provider from the
-   * last-received IMAGE_MODELS list, then select the saved override (or
-   * "Latest" when unset). textContent-safe: uses the Option constructor, no
-   * innerHTML with server/config-derived data.
-   * @param {string} provider
-   */
-  function populateModelSelect(provider) {
-    if (!themeImageModelEl) return;
-    themeImageModelEl.textContent = "";
-    themeImageModelEl.appendChild(new Option("Latest (recommended)", ""));
-    const options = themeImageModels[provider] || [];
-    for (const model of options) {
-      if (!model || !model.id) continue;
-      const text = model.note ? model.label + " — " + model.note : model.label;
-      themeImageModelEl.appendChild(new Option(text, model.id));
-    }
-    themeImageModelEl.value = themeImageSelectedModels[provider] || "";
-  }
-
-  /**
-   * Rebuild the #theme-image-quality options from the last-received
-   * IMAGE_QUALITY_OPTIONS list and select the saved override (or "Default"
-   * when unset), same construction style as populateModelSelect. OpenAI
-   * only — Gemini has no `quality` parameter, so the whole row is hidden
-   * for that provider instead of being populated empty.
-   * @param {string} provider
-   */
-  function populateQualitySelect(provider) {
-    if (themeImageQualityRow) themeImageQualityRow.hidden = provider !== "openai";
-    if (!themeImageQualityEl) return;
-    if (provider !== "openai") return;
-    themeImageQualityEl.textContent = "";
-    themeImageQualityEl.appendChild(new Option("Default (medium)", ""));
-    for (const quality of themeImageQualityOptions) {
-      if (!quality || !quality.id) continue;
-      const text = quality.note ? quality.label + " — " + quality.note : quality.label;
-      themeImageQualityEl.appendChild(new Option(text, quality.id));
-    }
-    themeImageQualityEl.value = themeImageSelectedQuality || "";
-  }
-
-  if (themeImageProvider) {
-    themeImageProvider.addEventListener("change", () => {
-      populateModelSelect(selectedThemeImageProvider());
-      populateQualitySelect(selectedThemeImageProvider());
-      vscode.postMessage({
-        type: 'SET_THEME_IMAGE_PREFERENCE',
-        payload: {
-          provider: selectedThemeImageProvider(),
-          model: themeImageModelEl ? themeImageModelEl.value : "",
-          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
-        },
-      });
-    });
-  }
-
-  if (themeImageModelEl) {
-    themeImageModelEl.addEventListener("change", () => {
-      vscode.postMessage({
-        type: 'SET_THEME_IMAGE_PREFERENCE',
-        payload: {
-          provider: selectedThemeImageProvider(),
-          model: themeImageModelEl.value,
-          quality: themeImageQualityEl ? themeImageQualityEl.value : "",
-        },
-      });
-    });
-  }
-
-  if (themeImageQualityEl) {
-    themeImageQualityEl.addEventListener("change", () => {
-      vscode.postMessage({
-        type: 'SET_THEME_IMAGE_PREFERENCE',
-        payload: {
-          provider: selectedThemeImageProvider(),
-          model: themeImageModelEl ? themeImageModelEl.value : "",
-          quality: themeImageQualityEl.value,
-        },
-      });
-    });
+    return "openai";
   }
 
   if (themeGenerateBtn && themePromptInput) {
