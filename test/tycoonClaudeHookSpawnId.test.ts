@@ -119,3 +119,41 @@ test("two concurrent same-subagent_type spawns, neither with a bound instanceId:
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a worker's own Read PreToolUse carries no description key, and a Task spawn with no description omits the field instead of writing an empty string", () => {
+  const root = setupProject();
+  try {
+    runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Task",
+      tool_input: { subagent_type: "coding-specialist", prompt: "do the work" },
+      session_id: "s1",
+    });
+
+    // The worker's own tool call, attributed via resolveNonSpawnAgent. This
+    // must never carry a "description" key at all -- not "", not present.
+    runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_input: { file_path: "src/foo.ts" },
+      session_id: "s1",
+    });
+
+    const records = readActivity(root);
+    const spawnRecord = records.find((r) => r.event === "PreToolUse" && r.tool === "Task");
+    const readRecord = records.find((r) => r.event === "PreToolUse" && r.tool === "Read");
+
+    assert.ok(spawnRecord, "expected a Task spawn record");
+    assert.ok(readRecord, "expected a Read activity record");
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(spawnRecord, "description"),
+      "a spawn record with no description input must omit the field, not write an empty string",
+    );
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(readRecord, "description"),
+      "a worker's own tool-call record must never carry a description key",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

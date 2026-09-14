@@ -564,6 +564,21 @@ test("PreToolUse Task without spawnId/roleInferred/description emits WorkerSpawn
   }
 });
 
+test("PreToolUse Task with an empty-string description emits WorkerSpawned with no currentDescription (blank must not clear a prior one)", () => {
+  const record: HookRecord = {
+    event: "PreToolUse",
+    tool: "Task",
+    workerId: "coding-specialist",
+    description: "",
+    at: T,
+  };
+  const events = mapHookRecord(record);
+  assert.equal(events[0].type, "WorkerSpawned");
+  if (events[0].type === "WorkerSpawned") {
+    assert.equal(events[0].currentDescription, undefined);
+  }
+});
+
 test("PreToolUse Task with an explicit (non-inferred) spawn carries spawnId but no roleInferred", () => {
   const record: HookRecord = {
     event: "PreToolUse",

@@ -140,7 +140,9 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
             role: record.tool,
             ...(record.model !== undefined ? { model: record.model } : {}),
             ...(record.agentDescription !== undefined ? { description: record.agentDescription } : {}),
-            ...(record.description !== undefined ? { currentDescription: record.description } : {}),
+            ...(typeof record.description === "string" && record.description.trim() !== ""
+              ? { currentDescription: record.description }
+              : {}),
             ...(record.parentId !== undefined ? { parentId: record.parentId } : {}),
             ...(record.tier !== undefined ? { tier: record.tier } : {}),
             ...(record.delegationMode !== undefined ? { delegationMode: record.delegationMode } : {}),

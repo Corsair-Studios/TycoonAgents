@@ -639,7 +639,9 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
               }
             : {}),
           ...(event.roleInferred !== undefined ? { roleInferred: event.roleInferred } : {}),
-          ...(event.currentDescription !== undefined ? { currentDescription: event.currentDescription } : {}),
+          ...(event.currentDescription !== undefined && event.currentDescription.trim() !== ""
+            ? { currentDescription: event.currentDescription }
+            : {}),
         }),
         event.provider,
         event.sessionId,

@@ -416,6 +416,38 @@ test("applyEvent: SessionStop's orphan sweep clears liveSpawns (and currentDescr
   assert.equal(m?.status, "active");
 });
 
+test("applyEvent: a worker's own tool-call activity (empty currentDescription) does not blank an existing spawn description", () => {
+  let state = applyEvent(initialWorldState(), {
+    type: "WorkerSpawned",
+    at: T,
+    workerId: "coding-specialist",
+    spawnId: "spawn-1",
+    currentDescription: "implement the widget",
+  });
+  // A follow-on WorkerSpawned record for the same live spawn (e.g. the
+  // worker's own Read/Edit/Bash calls, which the hook attributes via
+  // resolveNonSpawnAgent) can carry an empty-string currentDescription.
+  // That must NOT clear the description the panel is showing.
+  state = applyEvent(state, {
+    type: "WorkerSpawned",
+    at: T + 1,
+    workerId: "coding-specialist",
+    currentDescription: "",
+  });
+  let m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.currentDescription, "implement the widget", "empty currentDescription must not overwrite the existing one");
+
+  state = applyEvent(state, {
+    type: "WorkerActivity",
+    at: T + 2,
+    workerId: "coding-specialist",
+    kind: "build",
+    detail: "Read",
+  });
+  m = metric(state.agentMetrics, "coding-specialist");
+  assert.equal(m?.currentDescription, "implement the widget", "WorkerActivity must not clear the spawn description either");
+});
+
 test("applyEvent: overlapping spawns of one agent are credited per-spawn, not double-counted off the shared workStartAt", () => {
   // A starts at T+0, B starts at T+10, A stops at T+30 (30ms), B stops at
   // T+40 (30ms) -- total should be exactly 60ms, not 70ms (which is what

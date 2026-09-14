@@ -1799,12 +1799,18 @@ function main(raw) {
         tool: toolName,
         workerId: agentId,
         model,
-        description,
         routingMethod,
         matchedKeyword,
         spawnId,
         at,
       };
+      // description: only emitted when non-empty. This is a spawn record
+      // (isSpawn true, we are inside that branch) so toolInput.description
+      // here is the Task/Agent call's own brief -- but a repeat spawn of
+      // the same worker can omit it, and mapHookRecord/state.ts would
+      // otherwise treat an empty string as "clear the description",
+      // blanking the panel's spawn-desc line at the worker's next spawn.
+      if (description) record.description = description;
       if (agentDescription) record.agentDescription = agentDescription;
       if (tier) record.tier = tier;
       if (parentId) record.parentId = parentId;
