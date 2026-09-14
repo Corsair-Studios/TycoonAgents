@@ -11,9 +11,8 @@
     "Sleep / low-energy zzz",
     "Dazed / hit"
   ];
-  var CHARACTER_WALK_FRAME_CAP = 2;
   var ATLAS_CLIPS = {
-    walk: { frames: [0, 1, 2, 3, 4].slice(0, CHARACTER_WALK_FRAME_CAP), fps: 10, loop: true, flippable: true },
+    walk: { frames: [0, 1, 2, 3], fps: 10, loop: true, flippable: true },
     idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
     sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
     melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },
@@ -29,12 +28,9 @@
     // clip), played as a one-shot emote override — see media/main.js
     // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
     block: { frames: [14], fps: 6, loop: false, flippable: true },
-    // Freed row-1 frames (formerly walk cells 3-5, now unused by the 2-frame
-    // walk cap above). Only played when the active theme's manifest carries
-    // freed_frames: 'v2' (see themeHasFreedFrames) — themes generated before
-    // this change still have old walk poses baked into slots 2-4 and must
-    // never play them as idle_rare/stand_back.
-    idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+    // Cell 5 (back view). Only played when the active theme's manifest
+    // carries freed_frames: 'v2' (see themeHasFreedFrames) — themes generated
+    // before this change never play it.
     stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true }
   };
   var RIVAL_CLIPS = {

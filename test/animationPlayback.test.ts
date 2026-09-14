@@ -49,15 +49,6 @@ test('one-shot clips settle on their final frame', () => {
   assert.equal(currentCharacterSlot(state), 11);
 });
 
-test('idle_rare loops between the two freed row-1 frames', () => {
-  const state = createCharacterAnimation('idle_rare');
-  assert.equal(currentCharacterSlot(state), 2);
-  advanceCharacterAnimation(state, 0.5);
-  assert.equal(currentCharacterSlot(state), 3);
-  advanceCharacterAnimation(state, 0.5);
-  assert.equal(currentCharacterSlot(state), 2);
-});
-
 test('stand_back is a held single frame', () => {
   const state = createCharacterAnimation('stand_back');
   advanceCharacterAnimation(state, 10);

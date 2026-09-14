@@ -32,7 +32,7 @@ export const FIXED_EXPRESSION_LABELS = [
 export const THEME_ACHIEVEMENT_COUNT = 25;
 export const THEME_DECOR_COUNT = 9;
 
-export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'block'|'idle_rare'|'stand_back';
+export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'block'|'stand_back';
 
 export interface AtlasClip {
   frames: number[];    // 1+ slot indices into the 20-cell character atlas
@@ -63,19 +63,16 @@ export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
   // clip), played as a one-shot emote override — see media/main.js
   // playEmote(entry, "block", ...). Purely cosmetic, no gameplay effect.
   block: { frames: [14], fps: 6, loop: false, flippable: true },
-  // Freed row-1 frames (formerly walk cells 3-5, now unused by the 2-frame
-  // walk cap above). Only played when the active theme's manifest carries
-  // freed_frames: 'v2' (see themeHasFreedFrames) — themes generated before
-  // this change still have old walk poses baked into slots 2-4 and must
-  // never play them as idle_rare/stand_back.
-  idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+  // Cell 5 (back view). Only played when the active theme's manifest
+  // carries freed_frames: 'v2' (see themeHasFreedFrames) — themes generated
+  // before this change never play it.
   stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
 };
 
-// Manifest opt-in for themes whose row-1 slots 2-4 hold the new idle_rare /
-// stand_back poses instead of legacy walk frames 3-5. Absent or any other
-// value means "old walk art in those slots" — never play idle_rare/stand_back
-// for that theme.
+// Manifest opt-in gating the "stand_back" pose (row-1 cell 5, back view).
+// Absent or any other value means "never play stand_back" for that theme.
+// The row-1 idle_rare clip (formerly gated on this same flag) was removed;
+// this function still parses the field harmlessly for old manifests.
 export function themeHasFreedFrames(manifest: Pick<ThemeManifest, 'freed_frames'> | { freed_frames?: string } | null | undefined): boolean {
   return !!manifest && manifest.freed_frames === 'v2';
 }

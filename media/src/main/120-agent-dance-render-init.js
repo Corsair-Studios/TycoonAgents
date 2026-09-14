@@ -1478,9 +1478,6 @@
           // Ambient idle poses (freed-frames, plan p10-t4): mirrors
           // AmbientPoseState in src/webview/animationPlayback.ts.
           standingBack: false,
-          idleRareActive: false,
-          idleRareElapsed: 0,
-          idleMinuteTimer: 0,
           prevIsMoving: false,
         };
       }
@@ -2471,34 +2468,6 @@
       }
       if (charEntry.standingBack && !isActive && desiredClip === "idle") {
         desiredClip = "stand_back";
-      }
-      // Per-idle-minute rare pose: only accrues/rolls while truly idle
-      // (idleAndStill) and the theme flag is on; plays exactly one full
-      // 2-frame/fps-2 pass (IDLE_RARE_DURATION_SECONDS) then falls back to
-      // idle on its own — no external stop needed even though the clip
-      // itself loops.
-      if (!themeFreedFramesEnabled || isActive || !idleAndStill) {
-        charEntry.idleRareActive = false;
-        charEntry.idleRareElapsed = 0;
-        charEntry.idleMinuteTimer = 0;
-      } else if (charEntry.idleRareActive) {
-        charEntry.idleRareElapsed += delta;
-        if (charEntry.idleRareElapsed >= IDLE_RARE_DURATION_SECONDS) {
-          charEntry.idleRareActive = false;
-          charEntry.idleRareElapsed = 0;
-        }
-      } else {
-        charEntry.idleMinuteTimer += delta;
-        if (charEntry.idleMinuteTimer >= IDLE_RARE_MINUTE_SECONDS) {
-          charEntry.idleMinuteTimer -= IDLE_RARE_MINUTE_SECONDS;
-          if (Math.random() < IDLE_RARE_CHANCE) {
-            charEntry.idleRareActive = true;
-            charEntry.idleRareElapsed = 0;
-          }
-        }
-      }
-      if (charEntry.idleRareActive && desiredClip === "idle") {
-        desiredClip = "idle_rare";
       }
       charEntry.prevIsMoving = isMoving;
       // BUILD override: once arrived at the standoff spot for an active

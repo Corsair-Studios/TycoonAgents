@@ -292,16 +292,11 @@
   })();
 
   // ── Theme character rendering ────────────────────────────────────────────
-  // ATLAS_CLIPS mirrors src/extension/themePlan.ts exactly — keep in sync.
-  // EXPERIMENT (reversible): walk capped to the first CHARACTER_WALK_FRAME_CAP
-  // (2) frames — most theme walk_1..walk_5 frames render near-identically, so
-  // the full 5-frame cycle showed a visible duplicate-looking frame each
-  // loop. fps is unchanged so per-frame duration stays the same, the 2-frame
-  // loop just repeats. Revert by restoring frames to [0, 1, 2, 3, 4] here and
-  // in src/extension/themePlan.ts's ATLAS_CLIPS (a parity test enforces the
-  // two stay identical).
+  // ATLAS_CLIPS mirrors src/extension/themePlan.ts exactly — keep in sync
+  // (a parity test enforces the two stay identical). Row-1 cells 1-4 are a
+  // four-frame walk cycle; cell 5 stays the back view.
   const ATLAS_CLIPS = {
-    walk:      { frames: [0, 1],  fps: 10, loop: true,  flippable: true },
+    walk:      { frames: [0, 1, 2, 3],  fps: 10, loop: true,  flippable: true },
     idle:      { frames: [16],              fps: 0,  loop: true,  flippable: false, hold: true },
     sit:       { frames: [15],              fps: 0,  loop: true,  flippable: true,  hold: true },
     melee:     { frames: [10, 11],         fps: 12, loop: false, flippable: true },
@@ -312,10 +307,9 @@
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
-    // Freed row-1 frames (formerly walk cells 3-5). Only played when the
-    // active theme's manifest carries freed_frames: 'v2' — see
-    // themeHasFreedFrames in src/extension/themePlan.ts (parity-tested).
-    idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+    // Cell 5 (back view). Only played when the active theme's manifest
+    // carries freed_frames: 'v2' — see themeHasFreedFrames in
+    // src/extension/themePlan.ts (parity-tested).
     stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
     // Idle ambient combat (cosmetic hit-reaction): a brief block/flinch pose.
     // Frame 14 is this block clip's OWN dedicated dodge/flinch frame (no longer
@@ -1163,17 +1157,11 @@
   const EMOTE_COOLDOWN_SEC = 20;
 
   // ── Ambient idle poses (freed-frames scene behaviour, plan p10-t4) ─────
-  // Mirrors src/webview/animationPlayback.ts's onWalkEnded/updateIdleRare
-  // exactly (parity is hand-maintained, same as ATLAS_CLIPS above) — that
-  // file is the testable copy since main.js is a plain IIFE with no exports.
+  // Mirrors src/webview/animationPlayback.ts's onWalkEnded exactly (parity
+  // is hand-maintained, same as ATLAS_CLIPS above) — that file is the
+  // testable copy since main.js is a plain IIFE with no exports.
   /** Chance a walk-end picks the held "stand_back" pose instead of idle. */
   const STAND_BACK_CHANCE = 0.25;
-  /** Per-idle-minute chance of playing the "idle_rare" one-shot. */
-  const IDLE_RARE_CHANCE = 0.05;
-  /** Idle_rare is rolled at most once per this many seconds of continuous idle. */
-  const IDLE_RARE_MINUTE_SECONDS = 60;
-  /** Duration of one full idle_rare pass: ATLAS_CLIPS.idle_rare has 2 frames at fps 2. */
-  const IDLE_RARE_DURATION_SECONDS = 1.0;
 
   // ── Expression bubbles (rare, meaningful — see showExpression) ─────────
   /** Minimum seconds between one agent's expression bubbles (shared rate limit). */

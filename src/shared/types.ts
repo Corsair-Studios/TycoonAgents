@@ -157,10 +157,9 @@ export interface ThemeManifest {
   buildable_objects: BuildableObject[];
   decor_objects: DecorObject[];
   badges: ThemeBadge[];
-  // Opt-in: 'v2' means row-1 character-atlas slots 2-4 hold the new
-  // idle_rare/stand_back poses instead of legacy walk frames 3-5. Absent on
-  // themes generated before this field existed. See themeHasFreedFrames in
-  // src/extension/themePlan.ts.
+  // Opt-in: 'v2' gates the "stand_back" pose (row-1 cell 5, back view).
+  // Absent on themes generated before this field existed. See
+  // themeHasFreedFrames in src/extension/themePlan.ts.
   freed_frames?: string;
 }
 

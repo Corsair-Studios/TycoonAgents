@@ -21,7 +21,6 @@ const REQUIRED_CLIP_NAMES = [
   'point',
   'signal',
   'block',
-  'idle_rare',
   'stand_back',
 ];
 

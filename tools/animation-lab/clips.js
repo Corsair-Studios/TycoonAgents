@@ -8,8 +8,7 @@
 // between the two and will fail on drift.
 
 const ATLAS_CLIPS = {
-  // EXPERIMENT (reversible): capped to CHARACTER_WALK_FRAME_CAP=2 frames —
-  // mirrors src/extension/themePlan.ts's ATLAS_CLIPS.walk (parity-tested).
+  // Row-1 cells 1-4: four-frame walk cycle. Mirrors themePlan.ts (parity-tested).
   walk: { frames: [0, 1, 2, 3], fps: 10, loop: true, flippable: true },
   idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
   sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
@@ -22,8 +21,7 @@ const ATLAS_CLIPS = {
   point: { frames: [9], fps: 0, loop: true, flippable: true, hold: true },
   signal: { frames: [19], fps: 0, loop: true, flippable: false, hold: true },
   block: { frames: [14], fps: 6, loop: false, flippable: true },
-  // Freed row-1 frames (formerly walk cells 3-5), mirrors themePlan.ts.
-  idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+  // Cell 5 (back view), mirrors themePlan.ts.
   stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
 };
 

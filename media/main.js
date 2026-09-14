@@ -5900,10 +5900,9 @@ if (typeof module !== "undefined" && module.exports) {
     cheer:     { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
     point:     { frames: [9],              fps: 0,  loop: true,  flippable: true,  hold: true },
     signal:    { frames: [19],             fps: 0,  loop: true,  flippable: false, hold: true },
-    // Freed row-1 frames (formerly walk cells 3-5). Only played when the
-    // active theme's manifest carries freed_frames: 'v2' — see
-    // themeHasFreedFrames in src/extension/themePlan.ts (parity-tested).
-    idle_rare: { frames: [2, 3], fps: 2, loop: true, flippable: true },
+    // Cell 5 (back view). Only played when the active theme's manifest
+    // carries freed_frames: 'v2' — see themeHasFreedFrames in
+    // src/extension/themePlan.ts (parity-tested).
     stand_back: { frames: [4], fps: 0, loop: true, flippable: false, hold: true },
     // Idle ambient combat (cosmetic hit-reaction): a brief block/flinch pose.
     // Frame 14 is this block clip's OWN dedicated dodge/flinch frame (no longer
@@ -6751,17 +6750,11 @@ if (typeof module !== "undefined" && module.exports) {
   const EMOTE_COOLDOWN_SEC = 20;
 
   // ── Ambient idle poses (freed-frames scene behaviour, plan p10-t4) ─────
-  // Mirrors src/webview/animationPlayback.ts's onWalkEnded/updateIdleRare
-  // exactly (parity is hand-maintained, same as ATLAS_CLIPS above) — that
-  // file is the testable copy since main.js is a plain IIFE with no exports.
+  // Mirrors src/webview/animationPlayback.ts's onWalkEnded exactly (parity
+  // is hand-maintained, same as ATLAS_CLIPS above) — that file is the
+  // testable copy since main.js is a plain IIFE with no exports.
   /** Chance a walk-end picks the held "stand_back" pose instead of idle. */
   const STAND_BACK_CHANCE = 0.25;
-  /** Per-idle-minute chance of playing the "idle_rare" one-shot. */
-  const IDLE_RARE_CHANCE = 0.05;
-  /** Idle_rare is rolled at most once per this many seconds of continuous idle. */
-  const IDLE_RARE_MINUTE_SECONDS = 60;
-  /** Duration of one full idle_rare pass: ATLAS_CLIPS.idle_rare has 2 frames at fps 2. */
-  const IDLE_RARE_DURATION_SECONDS = 1.0;
 
   // ── Expression bubbles (rare, meaningful — see showExpression) ─────────
   /** Minimum seconds between one agent's expression bubbles (shared rate limit). */
@@ -23974,9 +23967,6 @@ if (typeof module !== "undefined" && module.exports) {
           // Ambient idle poses (freed-frames, plan p10-t4): mirrors
           // AmbientPoseState in src/webview/animationPlayback.ts.
           standingBack: false,
-          idleRareActive: false,
-          idleRareElapsed: 0,
-          idleMinuteTimer: 0,
           prevIsMoving: false,
         };
       }
@@ -24967,34 +24957,6 @@ if (typeof module !== "undefined" && module.exports) {
       }
       if (charEntry.standingBack && !isActive && desiredClip === "idle") {
         desiredClip = "stand_back";
-      }
-      // Per-idle-minute rare pose: only accrues/rolls while truly idle
-      // (idleAndStill) and the theme flag is on; plays exactly one full
-      // 2-frame/fps-2 pass (IDLE_RARE_DURATION_SECONDS) then falls back to
-      // idle on its own — no external stop needed even though the clip
-      // itself loops.
-      if (!themeFreedFramesEnabled || isActive || !idleAndStill) {
-        charEntry.idleRareActive = false;
-        charEntry.idleRareElapsed = 0;
-        charEntry.idleMinuteTimer = 0;
-      } else if (charEntry.idleRareActive) {
-        charEntry.idleRareElapsed += delta;
-        if (charEntry.idleRareElapsed >= IDLE_RARE_DURATION_SECONDS) {
-          charEntry.idleRareActive = false;
-          charEntry.idleRareElapsed = 0;
-        }
-      } else {
-        charEntry.idleMinuteTimer += delta;
-        if (charEntry.idleMinuteTimer >= IDLE_RARE_MINUTE_SECONDS) {
-          charEntry.idleMinuteTimer -= IDLE_RARE_MINUTE_SECONDS;
-          if (Math.random() < IDLE_RARE_CHANCE) {
-            charEntry.idleRareActive = true;
-            charEntry.idleRareElapsed = 0;
-          }
-        }
-      }
-      if (charEntry.idleRareActive && desiredClip === "idle") {
-        desiredClip = "idle_rare";
       }
       charEntry.prevIsMoving = isMoving;
       // BUILD override: once arrived at the standoff spot for an active
