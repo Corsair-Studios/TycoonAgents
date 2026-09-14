@@ -1,12 +1,17 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { createThemeServiceClient, ThemeServiceTokenStore } from '../src/core/themeServiceClient';
-import { createFakeThemeService } from './helpers/fakeThemeService';
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createThemeServiceClient, ThemeServiceTokenStore } from "../src/core/themeServiceClient";
+import { createFakeThemeService } from "./helpers/fakeThemeService";
 
-function createMemoryTokenStore(initial: string | null = null): ThemeServiceTokenStore & { value: string | null } {
+const ENDPOINT = "https://theme-service.example";
+const SUPABASE_URL = "https://fake-project.supabase.co";
+
+function createMemoryTokenStore(initial: string | null = null): ThemeServiceTokenStore & { value: string | null; getCalls: number } {
   return {
     value: initial,
+    getCalls: 0,
     async get() {
+      this.getCalls += 1;
       return this.value;
     },
     async set(token: string) {
@@ -18,288 +23,370 @@ function createMemoryTokenStore(initial: string | null = null): ThemeServiceToke
   };
 }
 
-// The fake defaults its endpoint to https://theme-service.example, but the
-// client defaults to THEME_SERVICE_ENDPOINT — they must be pointed at the
-// same value explicitly.
-function setupClient() {
-  const endpoint = 'https://theme-service.example';
-  const fake = createFakeThemeService({ endpoint });
+function countingFetch(fetchFn: typeof fetch): { fetch: typeof fetch; calls: Array<{ url: string; body: unknown }> } {
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const wrapped: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    calls.push({ url, body: init?.body });
+    return fetchFn(input, init);
+  }) as typeof fetch;
+  return { fetch: wrapped, calls };
+}
+
+function setupClient(nowFn?: () => number) {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: nowFn });
   const tokenStore = createMemoryTokenStore();
-  const client = createThemeServiceClient({ fetch: fake.fetch, tokenStore, endpoint });
+  const client = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+    now: nowFn,
+  });
   return { fake, tokenStore, client };
 }
 
-test('magic-link sign-in round trip stores a token and getStatus reports signedIn', async () => {
+test("magic-link sign-in round trip stores the JSON session and getStatus shows email/credits", async () => {
   const { fake, tokenStore, client } = setupClient();
-  fake.helpers.createAccount('a@example.com');
-  fake.helpers.setMagicLinkCode('a@example.com', '111111');
+  const account = fake.helpers.createAccount("a@example.com");
+  fake.helpers.grant(account.id, 7);
 
-  const req = await client.requestMagicLink('a@example.com');
+  const req = await client.requestMagicLink("a@example.com");
   assert.equal(req.ok, true);
 
-  const verify = await client.verifyMagicLink('a@example.com', '111111');
+  const verify = await client.verifyMagicLink("a@example.com", "123456");
   assert.equal(verify.ok, true);
-  if (!verify.ok) return;
-  assert.equal(verify.value.account.email, 'a@example.com');
-  assert.equal(tokenStore.value, verify.value.deviceToken);
+
+  assert.ok(tokenStore.value);
+  const parsed = JSON.parse(tokenStore.value!) as { accessToken: string; refreshToken: string; expiresAt: number };
+  assert.equal(typeof parsed.accessToken, "string");
+  assert.equal(typeof parsed.refreshToken, "string");
+  assert.equal(typeof parsed.expiresAt, "number");
 
   const status = await client.getStatus();
   assert.equal(status.ok, true);
   if (!status.ok) return;
   assert.equal(status.value.signedIn, true);
-  assert.equal(status.value.account?.email, 'a@example.com');
-  assert.equal(status.value.balance?.credits, 0);
+  assert.equal(status.value.email, "a@example.com");
+  assert.equal(status.value.credits, 7);
 });
 
-test('Google sign-in: browser completion then completeGoogleSignIn by sessionId', async () => {
+test("Google sign-in: startGoogleSignIn -> completeGoogleInBrowser -> completeGoogleSignIn", async () => {
   const { fake, tokenStore, client } = setupClient();
-  const start = await client.startGoogleSignIn();
+  const start = await client.startGoogleSignIn({ redirectTo: "http://127.0.0.1:9999/callback" });
   assert.equal(start.ok, true);
   if (!start.ok) return;
-  assert.equal(typeof start.value.browserUrl, 'string');
-  assert.equal(typeof start.value.sessionId, 'string');
+  assert.equal(typeof start.value.browserUrl, "string");
+  assert.equal(typeof start.value.codeVerifier, "string");
 
-  fake.helpers.completeGoogleInBrowser(start.value.sessionId);
-  const complete = await client.completeGoogleSignIn({ sessionId: start.value.sessionId });
+  await fake.fetch(start.value.browserUrl); // simulate the system browser visiting the authorize URL
+  const authCode = await fake.helpers.completeGoogleInBrowser();
+  const complete = await client.completeGoogleSignIn({ authCode, codeVerifier: start.value.codeVerifier });
   assert.equal(complete.ok, true);
-  if (!complete.ok) return;
-  assert.equal(complete.value.account.provider, 'google');
-  assert.equal(tokenStore.value, complete.value.deviceToken);
+  assert.ok(tokenStore.value);
 });
 
-test('Google sign-in: pasted-code completion path', async () => {
+test("Google sign-in with the wrong code verifier fails", async () => {
   const { fake, client } = setupClient();
-  const start = await client.startGoogleSignIn();
+  const start = await client.startGoogleSignIn({ redirectTo: "http://127.0.0.1:9999/callback" });
   assert.equal(start.ok, true);
   if (!start.ok) return;
-  fake.helpers.completeGoogleInBrowser(start.value.sessionId);
-  const session = fake.state.pendingGoogleSessions.get(start.value.sessionId);
-  assert.ok(session);
-  const complete = await client.completeGoogleSignIn({ code: session!.code });
-  assert.equal(complete.ok, true);
-  if (!complete.ok) return;
-  assert.equal(complete.value.account.provider, 'google');
+  await fake.fetch(start.value.browserUrl);
+  const authCode = await fake.helpers.completeGoogleInBrowser();
+  const complete = await client.completeGoogleSignIn({ authCode, codeVerifier: "totally-wrong-verifier" });
+  assert.equal(complete.ok, false);
 });
 
-// KNOWN CLIENT/FAKE MISMATCH (reported, not fixed here per the brief):
-// docs/theme-service-api.md places `GET /pricing` under its own "Pricing"
-// section (not "Account"), and src/core/themeServiceClient.ts:355 calls
-// `request("/pricing", { method: "GET" })` with no `auth: true` — so the
-// client never sends an Authorization header for it, signed in or not.
-// But fakeThemeService.ts routes `/pricing` below its "everything below
-// requires auth" gate (line ~330), so it 401s every client.getPricing()
-// call regardless of sign-in state. This test documents the fake's actual
-// (auth-required) behavior rather than asserting the docs' intended
-// (public) contract, since neither src nor the helper may be edited here.
-test('getPricing: fake requires auth, so an unauthenticated client call gets not_signed_in', async () => {
+test("getPricing works signed out with no Authorization header sent", async () => {
   const { fake, client } = setupClient();
-  await signIn(client, fake, 'pricing@example.com', '777777');
-  const pricing = await client.getPricing();
-  assert.equal(pricing.ok, false);
-  if (pricing.ok) return;
-  assert.equal(pricing.error.kind, 'not_signed_in');
-});
-
-test('getPricing: fake pricing data itself has five packs and a typicalTheme range', async () => {
-  const { fake } = setupClient();
-  assert.equal(fake.state.pricing.packs.length, 5);
-  assert.equal(typeof fake.state.pricing.typicalTheme.min, 'number');
-  assert.equal(typeof fake.state.pricing.typicalTheme.max, 'number');
-});
-
-test('checkout: createCheckoutSession returns a url, completeCheckout raises balance', async () => {
-  const { fake, tokenStore, client } = setupClient();
-  const account = fake.helpers.createAccount('buyer@example.com');
-  // sign in via magic link to get a real token
-  fake.helpers.setMagicLinkCode('buyer@example.com', '222222');
-  await client.requestMagicLink('buyer@example.com');
-  const verify = await client.verifyMagicLink('buyer@example.com', '222222');
-  assert.equal(verify.ok, true);
-
-  const checkout = await client.createCheckoutSession('pack_s');
-  assert.equal(checkout.ok, true);
-  if (!checkout.ok) return;
-  assert.equal(typeof checkout.value.url, 'string');
-
-  const before = await client.getStatus();
-  assert.equal(before.ok, true);
-  if (!before.ok) return;
-  const beforeBalance = before.value.balance?.credits ?? 0;
-
-  fake.helpers.completeCheckout(checkout.value.sessionId);
-
-  const after = await client.getStatus();
-  assert.equal(after.ok, true);
-  if (!after.ok) return;
-  assert.ok((after.value.balance?.credits ?? 0) > beforeBalance);
-  assert.equal(account.id, fake.state.accountsByEmail.get('buyer@example.com'));
-});
-
-async function signIn(client: ReturnType<typeof setupClient>['client'], fake: ReturnType<typeof createFakeThemeService>, email: string, code: string) {
-  fake.helpers.createAccount(email);
-  fake.helpers.setMagicLinkCode(email, code);
-  await client.requestMagicLink(email);
-  const verify = await client.verifyMagicLink(email, code);
-  assert.equal(verify.ok, true);
-  return verify;
-}
-
-test('generateAttempt debits credits, retries, refund on provider failure, and idempotent replay', async () => {
-  const { fake, client } = setupClient();
-  await signIn(client, fake, 'gen@example.com', '333333');
-  const accountId = fake.state.accountsByEmail.get('gen@example.com')!;
-  fake.helpers.grant(accountId, 10);
-
-  const req1 = {
-    idempotencyKey: 'key-1',
-    boardType: 'character',
-    prompt: 'a hero',
-    size: '512x512',
-  };
-  const first = await client.generateAttempt(req1);
-  assert.equal(first.ok, true);
-  if (!first.ok) return;
-  const spendRowsAfterFirst = fake.state.ledger.filter((r) => r.kind === 'spend' && r.accountId === accountId);
-  assert.equal(spendRowsAfterFirst.length, 1);
-
-  const req2 = { ...req1, idempotencyKey: 'key-2' };
-  const second = await client.generateAttempt(req2);
-  assert.equal(second.ok, true);
-  const spendRowsAfterSecond = fake.state.ledger.filter((r) => r.kind === 'spend' && r.accountId === accountId);
-  assert.equal(spendRowsAfterSecond.length, 2);
-
-  const balanceBeforeFail = second.ok ? second.value.balance : 0;
-  fake.helpers.failNextGenerate();
-  const req3 = { ...req1, idempotencyKey: 'key-3' };
-  const failed = await client.generateAttempt(req3);
-  assert.equal(failed.ok, false);
-  if (failed.ok) return;
-  assert.equal(failed.error.kind, 'provider_failed');
-  assert.equal(failed.error.refunded, true);
-  assert.equal(failed.error.balance, balanceBeforeFail);
-
-  const spendRowsAfterFail = fake.state.ledger.filter((r) => r.kind === 'spend' && r.accountId === accountId);
-  const refundRows = fake.state.ledger.filter((r) => r.kind === 'refund' && r.accountId === accountId);
-  assert.equal(spendRowsAfterFail.length, 3);
-  assert.equal(refundRows.length, 1);
-
-  // replay with same idempotencyKey returns ok with no new spend row
-  const replay = await client.generateAttempt(req3);
-  assert.equal(replay.ok, false);
-  const spendRowsAfterReplay = fake.state.ledger.filter((r) => r.kind === 'spend' && r.accountId === accountId);
-  assert.equal(spendRowsAfterReplay.length, 3);
-});
-
-test('generateAttempt: insufficient balance returns insufficient_credits with balance', async () => {
-  const { fake, client } = setupClient();
-  await signIn(client, fake, 'poor@example.com', '444444');
-  const result = await client.generateAttempt({
-    idempotencyKey: 'poor-1',
-    boardType: 'character',
-    prompt: 'a hero',
-    size: '512x512',
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const client2 = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
   });
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.error.kind, 'insufficient_credits');
-  assert.equal(result.error.balance, 0);
+  const pricing = await client2.getPricing();
+  assert.equal(pricing.ok, true);
+  assert.equal(calls.length, 1);
+  const initArg = undefined; // headers aren't captured by countingFetch; verify via a raw fetch spy instead below.
+  void initArg;
 });
 
-test('setUnavailable makes every call fail with kind unavailable', async () => {
+test("getPricing signed out sends no Authorization header (direct header check)", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  let sawAuthHeader = false;
+  const spyFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers ?? {});
+    if (headers.has("Authorization")) sawAuthHeader = true;
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const client = createThemeServiceClient({
+    fetch: spyFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const res = await client.getPricing();
+  assert.equal(res.ok, true);
+  assert.equal(sawAuthHeader, false);
+});
+
+test("expired session triggers a proactive refresh before /api/account", async () => {
+  let currentTime = 1_000_000;
+  const nowFn = () => currentTime;
+  const { fake, client } = setupClient(nowFn);
+  const account = fake.helpers.createAccount("expire@example.com");
+  fake.helpers.grant(account.id, 3);
+  await client.requestMagicLink("expire@example.com");
+  const verify = await client.verifyMagicLink("expire@example.com", "123456");
+  assert.equal(verify.ok, true);
+
+  // Advance time past the 1-hour expiry the fake issues.
+  currentTime += 3600 * 1000 + 1000;
+
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (!status.ok) return;
+  assert.equal(status.value.signedIn, true);
+  assert.equal(status.value.credits, 3);
+});
+
+test("a service 401 triggers one refresh and retry", async () => {
   const { fake, client } = setupClient();
-  fake.helpers.setUnavailable(true);
-  const result = await client.getPricing();
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.error.kind, 'unavailable');
+  const account = fake.helpers.createAccount("retry@example.com");
+  fake.helpers.grant(account.id, 2);
+  await client.requestMagicLink("retry@example.com");
+  await client.verifyMagicLink("retry@example.com", "123456");
+
+  // Force the current access token to be rejected without expiring it
+  // client-side, so getStatus hits the service, gets 401, refreshes, retries.
+  fake.helpers.expireAccessToken();
+
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (!status.ok) return;
+  assert.equal(status.value.signedIn, true);
+  assert.equal(status.value.credits, 2);
 });
 
-test('a fetch that throws yields kind unreachable', async () => {
-  const tokenStore = createMemoryTokenStore();
-  const throwingFetch = (async () => {
-    throw new Error('network down');
-  }) as unknown as typeof fetch;
-  const client = createThemeServiceClient({ fetch: throwingFetch, tokenStore, endpoint: 'https://theme-service.example' });
-  const result = await client.getPricing();
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.error.kind, 'unreachable');
-});
-
-test('a bogus token causes 401 -> not_signed_in and clears the token store', async () => {
-  const endpoint = 'https://theme-service.example';
-  const fake = createFakeThemeService({ endpoint });
-  const tokenStore = createMemoryTokenStore('bogus-token');
-  const client = createThemeServiceClient({ fetch: fake.fetch, tokenStore, endpoint });
-
-  const result = await client.createCheckoutSession('pack_s');
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.error.kind, 'not_signed_in');
-  assert.equal(tokenStore.value, null);
-});
-
-test('signOut clears the token store', async () => {
+test("refresh failure clears the token store and yields not_signed_in", async () => {
   const { fake, tokenStore, client } = setupClient();
-  await signIn(client, fake, 'out@example.com', '555555');
-  assert.notEqual(tokenStore.value, null);
-  const result = await client.signOut();
-  assert.equal(result.ok, true);
-  assert.equal(tokenStore.value, null);
-});
+  await client.requestMagicLink("badrefresh@example.com");
+  await client.verifyMagicLink("badrefresh@example.com", "123456");
+  assert.ok(tokenStore.value);
 
-test('a fetch returning malformed JSON yields invalid_response', async () => {
-  const tokenStore = createMemoryTokenStore();
-  const malformedFetch = (async () =>
-    new Response('not json{{{', { status: 200, headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch;
-  const client = createThemeServiceClient({ fetch: malformedFetch, tokenStore, endpoint: 'https://theme-service.example' });
-  const result = await client.getPricing();
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.error.kind, 'invalid_response');
-});
-
-test('Authorization header carries the token and the token never appears in the request body', async () => {
-  const endpoint = 'https://theme-service.example';
-  const fake = createFakeThemeService({ endpoint });
-  const tokenStore = createMemoryTokenStore();
-  const requests: { headers: Headers; body: string }[] = [];
-  const wrappedFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const req = input instanceof Request ? input : new Request(input as string, init);
-    const bodyText = init?.body ? String(init.body) : '';
-    requests.push({ headers: req.headers, body: bodyText });
-    return fake.fetch(input, init);
-  }) as unknown as typeof fetch;
-  const client = createThemeServiceClient({ fetch: wrappedFetch, tokenStore, endpoint });
-
-  await signIn(client, fake, 'hdr@example.com', '666666');
-  const token = tokenStore.value!;
-  assert.ok(token);
-
-  requests.length = 0;
-  await client.getStatus();
-  const statusReq = requests.find((r) => true);
-  assert.ok(statusReq);
-  assert.equal(statusReq!.headers.get('Authorization'), `Bearer ${token}`);
-  for (const r of requests) {
-    assert.doesNotMatch(r.body, new RegExp(token));
-  }
-});
-
-test('getStatus with no token returns signedIn false without calling the network', async () => {
-  const endpoint = 'https://theme-service.example';
-  const fake = createFakeThemeService({ endpoint });
-  let calls = 0;
-  const countingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls += 1;
-    return fake.fetch(input, init);
-  }) as unknown as typeof fetch;
-  const tokenStore = createMemoryTokenStore();
-  const client = createThemeServiceClient({ fetch: countingFetch, tokenStore, endpoint });
+  // Corrupt the stored refresh token so the fake rejects the refresh call,
+  // then force a 401 from the service to trigger refresh-and-retry.
+  const parsed = JSON.parse(tokenStore.value!) as { accessToken: string; refreshToken: string; expiresAt: number };
+  parsed.refreshToken = "not-a-real-refresh-token";
+  await tokenStore.set(JSON.stringify(parsed));
+  fake.helpers.expireAccessToken();
 
   const status = await client.getStatus();
   assert.equal(status.ok, true);
   if (!status.ok) return;
   assert.equal(status.value.signedIn, false);
-  assert.equal(calls, 0);
+  assert.equal(tokenStore.value, null);
+});
+
+test("checkout -> completeCheckout raises credits", async () => {
+  const { fake, client } = setupClient();
+  await client.requestMagicLink("buyer@example.com");
+  await client.verifyMagicLink("buyer@example.com", "123456");
+
+  const checkout = await client.createCheckoutSession("mini30");
+  assert.equal(checkout.ok, true);
+  if (!checkout.ok) return;
+  const sessionId = checkout.value.url.split("/").pop()!;
+  const row = fake.helpers.completeCheckout(sessionId);
+  assert.ok(row);
+
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (!status.ok) return;
+  assert.equal(status.value.credits, 30);
+});
+
+test("generate debits, retry debits again, failNextGenerate refunds with zero net", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("gen@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("gen@example.com");
+  await client.verifyMagicLink("gen@example.com", "123456");
+
+  const first = await client.generateAttempt({
+    idempotencyKey: "k1",
+    boardType: "objects_01",
+    prompt: "a chair",
+    size: "1024x1024",
+  });
+  assert.equal(first.ok, true);
+  if (first.ok) assert.equal(first.value.credits, 4);
+
+  const second = await client.generateAttempt({
+    idempotencyKey: "k2",
+    boardType: "objects_01",
+    prompt: "another chair",
+    size: "1024x1024",
+  });
+  assert.equal(second.ok, true);
+  if (second.ok) assert.equal(second.value.credits, 3);
+
+  fake.helpers.failNextGenerate();
+  const third = await client.generateAttempt({
+    idempotencyKey: "k3",
+    boardType: "objects_01",
+    prompt: "fails",
+    size: "1024x1024",
+  });
+  assert.equal(third.ok, false);
+  if (!third.ok) {
+    assert.equal(third.error.kind, "provider_failed");
+    assert.equal(third.error.refunded, true);
+    assert.equal(third.error.credits, 3); // net zero vs pre-attempt balance
+  }
+});
+
+test("idempotent replay of generateAttempt adds no new ledger row", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("replay@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("replay@example.com");
+  await client.verifyMagicLink("replay@example.com", "123456");
+
+  const req = {
+    idempotencyKey: "replay-key",
+    boardType: "objects_01",
+    prompt: "x",
+    size: "1024x1024",
+  };
+  const first = await client.generateAttempt(req);
+  const second = await client.generateAttempt(req);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (first.ok && second.ok) {
+    assert.deepEqual(first.value, second.value);
+  }
+  const rows = fake.state.ledger.filter((r) => r.ref === "attempt:replay-key");
+  assert.equal(rows.length, 1);
+});
+
+test("insufficient credits (402) is surfaced with the current balance", async () => {
+  const { client } = setupClient();
+  await client.requestMagicLink("poor@example.com");
+  await client.verifyMagicLink("poor@example.com", "123456");
+  const res = await client.generateAttempt({
+    idempotencyKey: "poor-key",
+    boardType: "objects_01",
+    prompt: "x",
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "insufficient_credits");
+    assert.equal(res.error.credits, 0);
+  }
+});
+
+test("service unavailable (503)", async () => {
+  const { fake, client } = setupClient();
+  fake.helpers.setUnavailable(true);
+  const res = await client.getPricing();
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "unavailable");
+});
+
+test("unreachable network failure (fetch throws)", async () => {
+  const throwingFetch: typeof fetch = (async () => {
+    throw new Error("network down");
+  }) as typeof fetch;
+  const client = createThemeServiceClient({
+    fetch: throwingFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const res = await client.getPricing();
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "unreachable");
+});
+
+test("invalid JSON response is invalid_response", async () => {
+  const badFetch: typeof fetch = (async () => new Response("not json", { status: 200 })) as typeof fetch;
+  const client = createThemeServiceClient({
+    fetch: badFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const res = await client.getPricing();
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "invalid_response");
+});
+
+test("access token never appears in a request body", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("secret@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("secret@example.com");
+  await client.verifyMagicLink("secret@example.com", "123456");
+
+  const bodies: string[] = [];
+  const spyFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof init?.body === "string") bodies.push(init.body);
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  const spiedClient = createThemeServiceClient({
+    fetch: spyFetch,
+    tokenStore: createMemoryTokenStore(
+      JSON.stringify({ accessToken: "leak-check-access", refreshToken: "leak-check-refresh", expiresAt: Date.now() + 3600_000 })
+    ),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  void client;
+
+  // This access token is not a real one issued by the fake, so the service
+  // 401s and the client attempts a refresh — the refresh token legitimately
+  // appears in that request body by design. Only the access token must
+  // never appear in any request body.
+  await spiedClient.generateAttempt({ idempotencyKey: "tok-check", boardType: "objects_01", prompt: "x", size: "1024x1024" });
+  for (const body of bodies) {
+    assert.doesNotMatch(body, /leak-check-access/);
+  }
+});
+
+test("getStatus with no session makes zero fetch calls", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const client = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (status.ok) assert.equal(status.value.signedIn, false);
+  assert.equal(calls.length, 0);
+});
+
+test("signOut clears the token store", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  await client.requestMagicLink("out@example.com");
+  await client.verifyMagicLink("out@example.com", "123456");
+  assert.ok(tokenStore.value);
+  const signOut = await client.signOut();
+  assert.equal(signOut.ok, true);
+  assert.equal(tokenStore.value, null);
+  void fake;
 });

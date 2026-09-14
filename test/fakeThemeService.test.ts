@@ -9,210 +9,259 @@ import assert from "node:assert/strict";
 import { createFakeThemeService } from "./helpers/fakeThemeService";
 
 const ENDPOINT = "https://theme-service.example";
+const SUPABASE_URL = "https://fake-project.supabase.co";
 
 function authHeaders(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
-async function signIn(fetchFn: typeof fetch, email: string) {
-  await fetchFn(`${ENDPOINT}/auth/magic-link`, {
+async function signInByEmail(fetchFn: typeof fetch, email: string, code = "123456") {
+  await fetchFn(`${SUPABASE_URL}/auth/v1/otp`, {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, create_user: true }),
   });
-  const res = await fetchFn(`${ENDPOINT}/auth/verify`, {
+  const res = await fetchFn(`${SUPABASE_URL}/auth/v1/verify`, {
     method: "POST",
-    body: JSON.stringify({ email, code: "123456" }),
+    body: JSON.stringify({ type: "email", email, token: code }),
   });
   const body = (await res.json()) as {
-    deviceToken: string;
-    account: { id: string; email: string; provider: string };
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+    user: { id: string; email: string };
   };
-  return body;
+  return { res, body };
 }
 
-test("sign-in round trip issues a device token and account", async () => {
-  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "a@example.com");
-  assert.ok(deviceToken);
-  assert.equal(account.email, "a@example.com");
-  assert.equal(account.provider, "email");
-
-  const meRes = await fakeFetch(`${ENDPOINT}/me`, { headers: authHeaders(deviceToken) });
-  assert.equal(meRes.status, 200);
-  const me = (await meRes.json()) as { account: { id: string }; balance: { credits: number } };
-  assert.equal(me.account.id, account.id);
-  assert.equal(me.balance.credits, 0);
+test("/api/pricing is public — no auth required", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const res = await fakeFetch(`${ENDPOINT}/api/pricing`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { packs: Array<{ id: string }> };
+  assert.ok(body.packs.length > 0);
 });
 
-test("admin grant increases balance", async () => {
-  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "b@example.com");
-  helpers.grant(account.id, 10);
+test("email OTP sign-in round trip issues a Supabase-shaped session", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { res, body } = await signInByEmail(fakeFetch, "a@example.com");
+  assert.equal(res.status, 200);
+  assert.ok(body.access_token);
+  assert.ok(body.refresh_token);
+  assert.equal(body.user.email, "a@example.com");
 
-  const balRes = await fakeFetch(`${ENDPOINT}/me/balance`, { headers: authHeaders(deviceToken) });
-  const bal = (await balRes.json()) as { credits: number };
-  assert.equal(bal.credits, 10);
-  assert.equal(state.ledger.filter((r) => r.kind === "grant").length, 1);
+  const meRes = await fakeFetch(`${ENDPOINT}/api/account`, { headers: authHeaders(body.access_token) });
+  assert.equal(meRes.status, 200);
+  const me = (await meRes.json()) as { email: string; credits: number };
+  assert.equal(me.email, "a@example.com");
+  assert.equal(me.credits, 0);
+});
+
+test("wrong OTP code is rejected", async () => {
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  helpers.setOtpCode("bad@example.com", "111111");
+  const res = await fakeFetch(`${SUPABASE_URL}/auth/v1/verify`, {
+    method: "POST",
+    body: JSON.stringify({ type: "email", email: "bad@example.com", token: "000000" }),
+  });
+  assert.equal(res.status, 401);
+});
+
+test("Google PKCE flow: authorize -> completeGoogleInBrowser -> pkce token exchange", async () => {
+  const { fetch: fakeFetch, state } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const verifier = "test-verifier-1234567890";
+  // Compute the challenge the same way the client does (sha256 base64url).
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  let binary = "";
+  new Uint8Array(digest).forEach((b) => (binary += String.fromCharCode(b)));
+  const challenge = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+  const authorizeUrl = new URL(`${SUPABASE_URL}/auth/v1/authorize`);
+  authorizeUrl.searchParams.set("provider", "google");
+  authorizeUrl.searchParams.set("redirect_to", "http://127.0.0.1:9999/callback");
+  authorizeUrl.searchParams.set("code_challenge", challenge);
+  const authorizeRes = await fakeFetch(authorizeUrl.toString());
+  assert.equal(authorizeRes.status, 302);
+  const location = authorizeRes.headers.get("Location");
+  assert.ok(location?.includes("code="));
+
+  const authCode = new URL(location!).searchParams.get("code")!;
+  const tokenRes = await fakeFetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
+    method: "POST",
+    body: JSON.stringify({ auth_code: authCode, code_verifier: verifier }),
+  });
+  assert.equal(tokenRes.status, 200);
+  const session = (await tokenRes.json()) as { access_token: string };
+  assert.ok(session.access_token);
+  assert.equal(state.pendingGoogleChallenges.size, 0);
+});
+
+test("pkce exchange with wrong verifier fails", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const authorizeUrl = new URL(`${SUPABASE_URL}/auth/v1/authorize`);
+  authorizeUrl.searchParams.set("provider", "google");
+  authorizeUrl.searchParams.set("redirect_to", "http://127.0.0.1:9999/callback");
+  authorizeUrl.searchParams.set("code_challenge", "some-challenge");
+  const authorizeRes = await fakeFetch(authorizeUrl.toString());
+  const location = authorizeRes.headers.get("Location")!;
+  const authCode = new URL(location).searchParams.get("code")!;
+
+  const tokenRes = await fakeFetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
+    method: "POST",
+    body: JSON.stringify({ auth_code: authCode, code_verifier: "wrong-verifier" }),
+  });
+  assert.equal(tokenRes.status, 401);
+});
+
+test("refresh_token grant rotates tokens", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "refresh@example.com");
+  const refreshRes = await fakeFetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    body: JSON.stringify({ refresh_token: body.refresh_token }),
+  });
+  assert.equal(refreshRes.status, 200);
+  const refreshed = (await refreshRes.json()) as { access_token: string; refresh_token: string };
+  assert.notEqual(refreshed.access_token, body.access_token);
+
+  // Old refresh token is now invalid.
+  const replay = await fakeFetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    body: JSON.stringify({ refresh_token: body.refresh_token }),
+  });
+  assert.equal(replay.status, 401);
+});
+
+test("expireAccessToken makes the access token 401 from service routes", async () => {
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "expire@example.com");
+  helpers.expireAccessToken();
+  const res = await fakeFetch(`${ENDPOINT}/api/account`, { headers: authHeaders(body.access_token) });
+  assert.equal(res.status, 401);
+});
+
+test("logout revokes the access token", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "logout@example.com");
+  const logoutRes = await fakeFetch(`${SUPABASE_URL}/auth/v1/logout`, {
+    method: "POST",
+    headers: authHeaders(body.access_token),
+  });
+  assert.equal(logoutRes.status, 204);
+  const res = await fakeFetch(`${ENDPOINT}/api/account`, { headers: authHeaders(body.access_token) });
+  assert.equal(res.status, 401);
+});
+
+test("checkout -> completeCheckout grants pack credits", async () => {
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "buyer@example.com");
+  const res = await fakeFetch(`${ENDPOINT}/api/store/checkout`, {
+    method: "POST",
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ pack: "mini30" }),
+  });
+  assert.equal(res.status, 200);
+  const { url } = (await res.json()) as { url: string };
+  const sessionId = url.split("/").pop()!;
+  const row = helpers.completeCheckout(sessionId);
+  assert.ok(row);
+  assert.equal(row?.delta, 30);
+  assert.match(row!.ref!, /^stripe:.*:mini30$/);
+
+  const meRes = await fakeFetch(`${ENDPOINT}/api/account`, { headers: authHeaders(body.access_token) });
+  const me = (await meRes.json()) as { credits: number };
+  assert.equal(me.credits, 30);
+
+  // Replay-safe: completing again is a no-op.
+  const replay = helpers.completeCheckout(sessionId);
+  assert.equal(replay, undefined);
 });
 
 test("generate debits the ledger and returns an image", async () => {
-  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "c@example.com");
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("gen@example.com");
+  const { body } = await signInByEmail(fakeFetch, "gen@example.com");
   helpers.grant(account.id, 5);
 
-  const res = await fakeFetch(`${ENDPOINT}/generate`, {
+  const res = await fakeFetch(`${ENDPOINT}/api/generate`, {
     method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify({
-      idempotencyKey: "key-1",
-      boardType: "objects_01",
-      prompt: "a chair",
-    }),
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "key-1", boardType: "objects_01", prompt: "a chair" }),
   });
   assert.equal(res.status, 200);
-  const body = (await res.json()) as { image: string; attemptCost: number; balance: number; refunded: boolean };
-  assert.ok(body.image.startsWith("data:image/png"));
-  assert.equal(body.attemptCost, 1);
-  assert.equal(body.balance, 4);
-  assert.equal(body.refunded, false);
+  const gen = (await res.json()) as { image: string; attemptCost: number; credits: number; refunded: boolean };
+  assert.ok(gen.image.startsWith("data:image/png"));
+  assert.equal(gen.attemptCost, 1);
+  assert.equal(gen.credits, 4);
+  assert.equal(gen.refunded, false);
 });
 
 test("failed generate refunds with zero net ledger effect", async () => {
-  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "d@example.com");
+  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("fail@example.com");
+  const { body } = await signInByEmail(fakeFetch, "fail@example.com");
   helpers.grant(account.id, 5);
   helpers.failNextGenerate();
 
-  const res = await fakeFetch(`${ENDPOINT}/generate`, {
+  const res = await fakeFetch(`${ENDPOINT}/api/generate`, {
     method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify({ idempotencyKey: "key-fail", boardType: "character", prompt: "x" }),
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "key-fail", boardType: "roster_agent", prompt: "x" }),
   });
   assert.equal(res.status, 502);
-  const body = (await res.json()) as { error: string; refunded: boolean; balance: number };
-  assert.equal(body.error, "provider_failed");
-  assert.equal(body.refunded, true);
-  assert.equal(body.balance, 5); // net zero — balance restored
+  const respBody = (await res.json()) as { error: string; refunded: boolean; credits: number };
+  assert.equal(respBody.error, "provider_failed");
+  assert.equal(respBody.refunded, true);
+  assert.equal(respBody.credits, 5); // net zero — balance restored
 
-  const rows = state.ledger.filter((r) => r.attemptId);
+  const rows = state.ledger.filter((r) => r.ref?.includes("key-fail"));
   assert.equal(rows.length, 2);
-  assert.equal(rows[0].kind, "spend");
-  assert.equal(rows[1].kind, "refund");
-  assert.equal(rows[0].credits, rows[1].credits);
+  assert.equal(rows[0].reason, "spend-theme-attempt");
+  assert.equal(rows[1].reason, "refund-theme-attempt");
 });
 
-test("repeated idempotencyKey replays the original response without a new debit", async () => {
-  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "e@example.com");
+test("idempotent generate replay returns the original response with no new ledger row", async () => {
+  const { fetch: fakeFetch, state, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = helpers.createAccount("replay@example.com");
+  const { body } = await signInByEmail(fakeFetch, "replay@example.com");
   helpers.grant(account.id, 5);
 
-  const body1 = { idempotencyKey: "same-key", boardType: "environment", prompt: "x" };
-  const res1 = await fakeFetch(`${ENDPOINT}/generate`, {
-    method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify(body1),
-  });
-  const parsed1 = (await res1.json()) as { balance: number };
+  const req = () =>
+    fakeFetch(`${ENDPOINT}/api/generate`, {
+      method: "POST",
+      headers: authHeaders(body.access_token),
+      body: JSON.stringify({ idempotencyKey: "replay-key", boardType: "objects_01", prompt: "x" }),
+    });
 
-  const res2 = await fakeFetch(`${ENDPOINT}/generate`, {
-    method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify(body1),
-  });
-  const parsed2 = (await res2.json()) as { balance: number };
+  const first = await req();
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  const second = await req();
+  assert.equal(second.status, 200);
+  const secondBody = await second.json();
+  assert.deepEqual(firstBody, secondBody);
 
-  assert.equal(parsed1.balance, parsed2.balance);
-  assert.equal(state.ledger.filter((r) => r.kind === "spend").length, 1);
+  const rows = state.ledger.filter((r) => r.ref === "attempt:replay-key");
+  assert.equal(rows.length, 1);
 });
 
-test("checkout completion grants the pack's credits", async () => {
-  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken, account } = await signIn(fakeFetch, "f@example.com");
-
-  const res = await fakeFetch(`${ENDPOINT}/checkout/session`, {
+test("insufficient credits returns 402", async () => {
+  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { body } = await signInByEmail(fakeFetch, "poor@example.com");
+  const res = await fakeFetch(`${ENDPOINT}/api/generate`, {
     method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify({ sku: "pack_m" }),
-  });
-  const { sessionId } = (await res.json()) as { sessionId: string; url: string };
-
-  const grantRow = helpers.completeCheckout(sessionId);
-  assert.ok(grantRow);
-  assert.equal(grantRow?.credits, 50);
-
-  const balRes = await fakeFetch(`${ENDPOINT}/me/balance`, { headers: authHeaders(deviceToken) });
-  const bal = (await balRes.json()) as { credits: number };
-  assert.equal(bal.credits, 50);
-
-  // completing twice does nothing further
-  const second = helpers.completeCheckout(sessionId);
-  assert.equal(second, undefined);
-});
-
-test("missing or invalid token returns 401", async () => {
-  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT });
-  const res = await fakeFetch(`${ENDPOINT}/me`, { headers: authHeaders("bogus-token") });
-  assert.equal(res.status, 401);
-  const body = (await res.json()) as { error: string };
-  assert.equal(body.error, "not_signed_in");
-});
-
-test("insufficient balance returns 402 with balance", async () => {
-  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken } = await signIn(fakeFetch, "g@example.com");
-
-  const res = await fakeFetch(`${ENDPOINT}/generate`, {
-    method: "POST",
-    headers: authHeaders(deviceToken),
-    body: JSON.stringify({ idempotencyKey: "k", boardType: "character", prompt: "x" }),
+    headers: authHeaders(body.access_token),
+    body: JSON.stringify({ idempotencyKey: "poor-key", boardType: "objects_01", prompt: "x" }),
   });
   assert.equal(res.status, 402);
-  const body = (await res.json()) as { error: string; balance: number };
-  assert.equal(body.error, "insufficient_credits");
-  assert.equal(body.balance, 0);
+  const respBody = (await res.json()) as { error: string; credits: number };
+  assert.equal(respBody.error, "insufficient_credits");
+  assert.equal(respBody.credits, 0);
 });
 
-test("setUnavailable(true) returns 503 for any request", async () => {
-  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
+test("setUnavailable makes service routes return 503", async () => {
+  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
   helpers.setUnavailable(true);
-  const res = await fakeFetch(`${ENDPOINT}/me/balance`, { headers: authHeaders("whatever") });
+  const res = await fakeFetch(`${ENDPOINT}/api/pricing`);
   assert.equal(res.status, 503);
-  const body = (await res.json()) as { error: string };
-  assert.equal(body.error, "unavailable");
 });
 
-test("google sign-in requires browser completion before /auth/google/complete succeeds", async () => {
-  const { fetch: fakeFetch, helpers } = createFakeThemeService({ endpoint: ENDPOINT });
-  const startRes = await fakeFetch(`${ENDPOINT}/auth/google/start`, { method: "POST", body: "{}" });
-  const { sessionId } = (await startRes.json()) as { sessionId: string; browserUrl: string };
-
-  const tooEarly = await fakeFetch(`${ENDPOINT}/auth/google/complete`, {
-    method: "POST",
-    body: JSON.stringify({ sessionId }),
-  });
-  assert.equal(tooEarly.status, 401);
-
-  helpers.completeGoogleInBrowser(sessionId);
-  const completeRes = await fakeFetch(`${ENDPOINT}/auth/google/complete`, {
-    method: "POST",
-    body: JSON.stringify({ sessionId }),
-  });
-  assert.equal(completeRes.status, 200);
-  const body = (await completeRes.json()) as { account: { provider: string } };
-  assert.equal(body.account.provider, "google");
-});
-
-test("pricing exposes deterministic defaults", async () => {
-  const { fetch: fakeFetch } = createFakeThemeService({ endpoint: ENDPOINT });
-  const { deviceToken } = await signIn(fakeFetch, "h@example.com");
-  const res = await fakeFetch(`${ENDPOINT}/pricing`, { headers: authHeaders(deviceToken) });
-  const body = (await res.json()) as {
-    attemptCostByBoardType: Record<string, number>;
-    typicalTheme: { min: number; max: number };
-    packs: Array<{ sku: string; credits: number }>;
-  };
-  assert.equal(body.attemptCostByBoardType.objects_01, 1);
-  assert.equal(body.typicalTheme.min, 14);
-  assert.equal(body.typicalTheme.max, 40);
-  assert.equal(body.packs.length, 5);
-});
