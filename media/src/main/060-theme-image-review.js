@@ -1228,7 +1228,12 @@
 
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
-    if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
+    if (msg && msg.type === "THEME_BUILDER_OPENED") {
+      // p40-t3: host reply to OPEN_THEME_BUILDER — only now does the shell
+      // modal open. payload.signedIn is hardcoded false host-side until p42.
+      const shellModal = document.getElementById("theme-builder-shell-modal");
+      if (shellModal) shellModal.removeAttribute("hidden");
+    } else if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
       // deprecated: p40 removed the API-key UI that consumed this message;
       // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS
       // are no longer posted from the webview, so this branch is unreached.

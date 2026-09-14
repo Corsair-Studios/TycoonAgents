@@ -1862,6 +1862,11 @@ export class TycoonPanel {
               );
             }
           }
+        } else if (message.type === MSG.OPEN_THEME_BUILDER) {
+          // p40-t3: webview -> host, no payload. The webview opens the Theme
+          // Builder panel shell only after this reply; signedIn is hardcoded
+          // false until p42 wires real Theme Service auth.
+          void this._panel.webview.postMessage({ type: MSG.THEME_BUILDER_OPENED, payload: { signedIn: false } });
         } else if (message.type === MSG.REVEAL_THEME_IMAGE) {
           // Right-click "Open file location" on a review board — reveal its
           // saved image file in the OS explorer. Fully guarded: a missing
@@ -9521,6 +9526,22 @@ export class TycoonPanel {
       </div>
       <div id="themes-footer">
         <button id="themes-footer-close" class="skill-btn theme-footer-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Builder panel shell (p40-t3): opened by OPEN_THEME_BUILDER / THEME_BUILDER_OPENED.
+       theme-service-panel-body is an empty placeholder p42 fills in; "Continue to builder"
+       reaches the existing plan-editor tab (theme-builder-panel inside themes-modal) so
+       current users lose no functionality. -->
+  <div id="theme-builder-shell-modal" role="dialog" aria-modal="true" aria-labelledby="theme-builder-shell-title" hidden>
+    <div id="theme-builder-shell-backdrop"></div>
+    <div id="theme-builder-shell-dialog">
+      <button id="theme-builder-shell-close" aria-label="Close dialog">&times;</button>
+      <h2 id="theme-builder-shell-title">Theme Builder</h2>
+      <div id="theme-service-panel-body"></div>
+      <div class="theme-builder-shell-footer">
+        <button id="theme-builder-shell-continue" class="skill-btn primary">Continue to builder</button>
       </div>
     </div>
   </div>

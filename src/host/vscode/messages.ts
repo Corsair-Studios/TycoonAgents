@@ -258,6 +258,16 @@ export const MSG = {
   // main.js isLeaderEntry, which derives leader-ness purely from index 0).
   SAVE_ROSTER_ORDER: "saveRosterOrder",
 
+  // ---- theme builder panel shell (p40-t3) --------------------------------
+  // Webview -> host, no payload. Sent when the Theme Builder primary button
+  // (tab-theme-builder in the themes modal) is clicked, before the webview
+  // opens the theme-builder-shell-modal panel.
+  OPEN_THEME_BUILDER: "OPEN_THEME_BUILDER",
+  // Host -> webview reply to OPEN_THEME_BUILDER. Payload: { signedIn: boolean }
+  // — hardcoded false until p42 wires real Theme Service auth. The webview
+  // only opens the shell modal once this arrives.
+  THEME_BUILDER_OPENED: "THEME_BUILDER_OPENED",
+
   // ---- theme image review / retry / reslice / normalize / rename ---------
   OPEN_THEME_IMAGES: "OPEN_THEME_IMAGES",
   REVEAL_THEME_IMAGE: "REVEAL_THEME_IMAGE",
@@ -384,6 +394,9 @@ export type MsgType = (typeof MSG)[keyof typeof MSG];
  * validation failure must never throw across the dispatcher.
  */
 export const MSG_SCHEMAS = {
+  // p40-t3: no payload beyond type.
+  OPEN_THEME_BUILDER: z.object({}).passthrough(),
+
   // ---- install / remove: skill, agent, pack -------------------------------
   // (dispatcher reads `message.id` directly, not a nested `.payload`)
   ID_ONLY: z.object({ id: z.string().min(1) }).passthrough(),

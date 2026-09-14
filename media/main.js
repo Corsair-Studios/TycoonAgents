@@ -3296,6 +3296,46 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 
+  // Theme Builder panel shell (p40-t3) elements. tab-theme-builder's own
+  // click now only requests the shell (OPEN_THEME_BUILDER); this function is
+  // the pre-existing plan-editor-tab behaviour, kept reachable from inside
+  // the shell via "Continue to builder" so nothing regresses for current
+  // users.
+  const themeBuilderShellModal    = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-modal"));
+  const themeBuilderShellBackdrop = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-backdrop"));
+  const themeBuilderShellClose    = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-close"));
+  const themeBuilderShellContinue = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-continue"));
+
+  function openThemeBuilderPlanEditorTab() {
+    themeBuilderPanel.removeAttribute("hidden");
+    themePickerList.setAttribute("hidden", "");
+    tabThemePicker.focus();
+    if (themeImageReview) themeImageReview.setAttribute("hidden", "");
+    if (themeBuilderRoot) {
+      if (themePlanEditor && !themePlanEditor.hasAttribute("hidden")) themeBuilderRoot.setAttribute("hidden", "");
+      else themeBuilderRoot.removeAttribute("hidden");
+    }
+
+    // Boot up the theme builder canvas when the tab is first visited
+    const root = document.getElementById("theme-builder-root");
+    if (root && typeof window.initThemeBuilder === "function") {
+      window.initThemeBuilder(root);
+    }
+  }
+
+  function closeThemeBuilderShellModal() {
+    if (themeBuilderShellModal) themeBuilderShellModal.setAttribute("hidden", "");
+  }
+
+  if (themeBuilderShellClose) themeBuilderShellClose.addEventListener("click", closeThemeBuilderShellModal);
+  if (themeBuilderShellBackdrop) themeBuilderShellBackdrop.addEventListener("click", closeThemeBuilderShellModal);
+  if (themeBuilderShellContinue) {
+    themeBuilderShellContinue.addEventListener("click", () => {
+      closeThemeBuilderShellModal();
+      openThemeBuilderPlanEditorTab();
+    });
+  }
+
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
       themePickerList.removeAttribute("hidden");
@@ -3305,20 +3345,7 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     tabThemeBuilder.addEventListener("click", () => {
-      themeBuilderPanel.removeAttribute("hidden");
-      themePickerList.setAttribute("hidden", "");
-      tabThemePicker.focus();
-      if (themeImageReview) themeImageReview.setAttribute("hidden", "");
-      if (themeBuilderRoot) {
-        if (themePlanEditor && !themePlanEditor.hasAttribute("hidden")) themeBuilderRoot.setAttribute("hidden", "");
-        else themeBuilderRoot.removeAttribute("hidden");
-      }
-
-      // Boot up the theme builder canvas when the tab is first visited
-      const root = document.getElementById("theme-builder-root");
-      if (root && typeof window.initThemeBuilder === "function") {
-        window.initThemeBuilder(root);
-      }
+      vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
   }
 
@@ -11788,7 +11815,12 @@ if (typeof module !== "undefined" && module.exports) {
 
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
-    if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
+    if (msg && msg.type === "THEME_BUILDER_OPENED") {
+      // p40-t3: host reply to OPEN_THEME_BUILDER — only now does the shell
+      // modal open. payload.signedIn is hardcoded false host-side until p42.
+      const shellModal = document.getElementById("theme-builder-shell-modal");
+      if (shellModal) shellModal.removeAttribute("hidden");
+    } else if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
       // deprecated: p40 removed the API-key UI that consumed this message;
       // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS
       // are no longer posted from the webview, so this branch is unreached.

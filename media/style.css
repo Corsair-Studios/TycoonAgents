@@ -1719,6 +1719,83 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Theme Builder panel shell (p40-t3) ───────────────────────────────── */
+/* Mirrors #badge-modal structure/classes exactly. theme-service-panel-body
+   is an empty placeholder p42 fills; theme-builder-shell-footer holds the
+   "Continue to builder" button that reaches the existing plan-editor tab. */
+#theme-builder-shell-modal[hidden] {
+  display: none;
+}
+
+#theme-builder-shell-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#theme-builder-shell-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+#theme-builder-shell-dialog {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 32px 24px;
+  min-width: 0;
+  max-width: 480px;
+  width: 90%;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#theme-builder-shell-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+#theme-builder-shell-close {
+  position: sticky;
+  top: 0;
+  align-self: flex-end;
+  z-index: 6;
+  background: var(--surface);
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+#theme-builder-shell-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+#theme-service-panel-body {
+  min-height: 80px;
+}
+
+.theme-builder-shell-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ── Settings "subpage" modals (UEFN/Verse, Feedback) ─────────────────── */
 /* Shared classes (not per-id like #about-modal/#badge-modal above) since
    #uefn-modal and #feedback-modal are structurally identical: a scrollable

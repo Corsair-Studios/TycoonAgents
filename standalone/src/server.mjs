@@ -91,6 +91,12 @@ import {
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 
+// p40-t3: OPEN_THEME_BUILDER (webview->host, no payload) / THEME_BUILDER_OPENED
+// (host->webview, { signedIn }) wire strings — must stay byte-identical to
+// src/host/vscode/messages.ts's MSG.OPEN_THEME_BUILDER / MSG.THEME_BUILDER_OPENED.
+const OPEN_THEME_BUILDER_WIRE = 'OPEN_THEME_BUILDER';
+const THEME_BUILDER_OPENED_WIRE = 'THEME_BUILDER_OPENED';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -1237,6 +1243,12 @@ function handleBrowserMessage(msg) {
     case 'getEngineStatus':
       // main.js's "engineStatus" handler: renderEngineChips(Array.isArray(msg.chips) ? msg.chips : []).
       broadcast('message', { type: 'engineStatus', chips: [] });
+      break;
+    case OPEN_THEME_BUILDER_WIRE:
+      // Standalone analog of panel.ts's MSG.OPEN_THEME_BUILDER branch
+      // (p40-t3). No payload in; signedIn hardcoded false until p42 wires
+      // real Theme Service auth.
+      broadcast('message', { type: THEME_BUILDER_OPENED_WIRE, payload: { signedIn: false } });
       break;
     case 'getSkills':
       // Standalone analog of panel.ts's _handleGetSkills (~line 3184-3211).
@@ -3647,6 +3659,20 @@ function buildHostHtml() {
       </div>
       <div id="themes-footer">
         <button id="themes-footer-close" class="skill-btn theme-footer-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme Builder panel shell (p40-t3): opened by OPEN_THEME_BUILDER / THEME_BUILDER_OPENED.
+       Mirrors src/host/vscode/panel.ts's #theme-builder-shell-modal exactly (same ids/classes). -->
+  <div id="theme-builder-shell-modal" role="dialog" aria-modal="true" aria-labelledby="theme-builder-shell-title" hidden>
+    <div id="theme-builder-shell-backdrop"></div>
+    <div id="theme-builder-shell-dialog">
+      <button id="theme-builder-shell-close" aria-label="Close dialog">&times;</button>
+      <h2 id="theme-builder-shell-title">Theme Builder</h2>
+      <div id="theme-service-panel-body"></div>
+      <div class="theme-builder-shell-footer">
+        <button id="theme-builder-shell-continue" class="skill-btn primary">Continue to builder</button>
       </div>
     </div>
   </div>
