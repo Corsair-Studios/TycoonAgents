@@ -69,8 +69,9 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 
 ## What's shipped
 
-- **Bundled theme.** "Survivors vs Zombies" ships inside the VSIX and seeds automatically on first run, so a fresh install has a playable stage without any API keys.
-- **More themes to download.** Additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
+- **Bundled theme.** "Survivors vs Zombies" ships inside the VSIX and seeds automatically on first run, so a fresh install has a playable stage out of the box.
+- **Theme Builder.** The primary path on the Themes page — generate a custom theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts through the Corsair Theme Service. Sign-in and credits are coming in a future release; Theme Builder generation isn't available yet.
+- **Import .zip.** The free, offline path, and always available: additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
 - **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
 - **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
@@ -91,8 +92,8 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 
 The scene is **user-authored data** — you can generate your own theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts.
 
-1. **Open the Theme Builder** from the Themes panel.
-2. **Choose an image provider, key, and model.** Pick `openai` (GPT Image) or `gemini` (Nano Banana), paste your API key, and pick a model — it defaults to **Latest (recommended)** and offers older/cheaper tiers (e.g. *GPT Image 1 Mini*, *Gemini Flash-Lite*) if you'd rather save cost.
+1. **Open the Theme Builder** from the Themes panel — it's the primary path for creating a theme.
+2. **Choose a model.** Pick a generation model — it defaults to **Latest (recommended)** and offers older/cheaper tiers if you'd rather save cost. Generation runs through the Corsair Theme Service using credits; sign-in and credits are coming in a future release, so Theme Builder generation isn't available yet.
 3. **Fill the generate form** — theme name, creative direction, and an environment description, plus per-slot editors for the characters (16), objects (21), enemies (4), expressions (8), badges (25), and decor (9).
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
@@ -101,7 +102,7 @@ If you change the creative direction after descriptions already exist, those cha
 
 Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or `node src/cli.mjs watch <project-path>`.
 
-> Image generation happens **only at authoring time** and uses your own API key. The shipped plugin still makes zero runtime AI calls — themes are just data.
+> Image generation happens **only at authoring time**, through the Corsair Theme Service. The shipped plugin still makes zero runtime AI calls — themes are just data.
 
 ## Multi-LLM
 
