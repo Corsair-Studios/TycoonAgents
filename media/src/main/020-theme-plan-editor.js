@@ -1743,8 +1743,7 @@
       acceptBtn.className = "skill-btn theme-review-accept";
       acceptBtn.textContent = "Keep";
       acceptBtn.disabled = !item.image_src
-        || themeReviewBusyItems.has(item.id)
-        || (payload.generation_active && !isCurrentReviewGate);
+        || themeReviewBusyItems.has(item.id);
       acceptBtn.addEventListener("click", () => {
         acceptBtn.disabled = true;
         if (isCurrentReviewGate) disableThemeRetryButtons();

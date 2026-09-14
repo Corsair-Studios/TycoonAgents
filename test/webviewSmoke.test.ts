@@ -3391,7 +3391,15 @@ test('THEME_IMAGE_REVIEW: an accepted item on a non-current gate stays editable 
         image_src: 'data:image/png;base64,AAA', updated_at: '',
       },
       {
+        // Un-kept mid-run by a Retry: has an image again but back to pending,
+        // and is off-gate (the gate is 'objects_02' below) — Keep must be
+        // re-clickable without waiting for generation to finish.
         id: 'objects_01', filename: 'objects_01.png', label: 'Objects 1', kind: 'object_atlas',
+        status: 'pending', prompt: 'A base objects prompt.', revision: 1, frame_keys: [],
+        image_src: 'data:image/png;base64,BBB', updated_at: '',
+      },
+      {
+        id: 'objects_02', filename: 'objects_02.png', label: 'Objects 2', kind: 'object_atlas',
         status: 'pending', prompt: 'A base objects prompt.', revision: 0, frame_keys: [], updated_at: '',
       },
     ];
@@ -3403,7 +3411,7 @@ test('THEME_IMAGE_REVIEW: an accepted item on a non-current gate stays editable 
         items,
         creative_direction: 'a moody neon skyline',
         generation_active: true,
-        waiting_for_review_item_id: 'objects_01',
+        waiting_for_review_item_id: 'objects_02',
       },
     });
     h.tick(2);
@@ -3423,6 +3431,15 @@ test('THEME_IMAGE_REVIEW: an accepted item on a non-current gate stays editable 
     const uploadBtn = acceptedCard.querySelector('.theme-review-upload');
     assert.ok(uploadBtn, 'Upload button should render on the accepted card');
     assert.equal(uploadBtn.disabled, false, 'Upload on an accepted, off-gate item must stay enabled while generation is active');
+
+    // A mid-run Retry un-keeps an off-gate item (status back to pending), and
+    // the user must be able to re-keep it without waiting for generation to
+    // finish — Keep is disabled only by missing image_src or its own busy state.
+    const pendingCard = list.querySelector('[data-item-id="objects_01"]');
+    assert.ok(pendingCard, 'the un-kept, off-gate pending card should render');
+    const keepBtn = pendingCard.querySelector('.theme-review-accept');
+    assert.ok(keepBtn, 'Keep button should render on the pending card');
+    assert.equal(keepBtn.disabled, false, 'Keep on an off-gate item with an image must stay enabled while generation is active');
   } finally {
     h.win.close();
   }
