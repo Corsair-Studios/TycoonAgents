@@ -159,21 +159,23 @@ function base64UrlEncode(bytes: Uint8Array): string {
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function randomBytes(length: number): Uint8Array {
-  const bytes = new Uint8Array(length);
+function secureRandomBytes(length: number): Uint8Array | null {
   const g: { getRandomValues?: (a: Uint8Array) => Uint8Array } | undefined = (globalThis as unknown as {
     crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array };
   }).crypto;
-  if (g?.getRandomValues) {
-    g.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
+  if (!g?.getRandomValues) return null;
+  const bytes = new Uint8Array(length);
+  g.getRandomValues(bytes);
   return bytes;
 }
 
-function defaultCreateCodeVerifier(): string {
-  return base64UrlEncode(randomBytes(32));
+// No Math.random fallback here on purpose: a PKCE verifier needs
+// cryptographically secure randomness. When neither `crypto.getRandomValues`
+// nor an injected `createCodeVerifier` is available, startGoogleSignIn
+// returns an error instead of silently generating a guessable verifier.
+function defaultCreateCodeVerifier(): string | null {
+  const bytes = secureRandomBytes(32);
+  return bytes ? base64UrlEncode(bytes) : null;
 }
 
 // Pure-TS SHA-256 (FIPS 180-4), used only when `crypto.subtle` is
@@ -285,7 +287,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   const supabaseAnonKey = opts.supabaseAnonKey ?? SUPABASE_ANON_KEY;
   const tokenStore = opts.tokenStore;
   const now = opts.now ?? (() => Date.now());
-  const createCodeVerifier = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
+  const createCodeVerifier: () => string | null = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
 
   async function loadSession(): Promise<StoredSession | null> {
     let raw: string | null;
@@ -385,12 +387,11 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     };
   }
 
-  async function doRefreshSession(): Promise<ThemeServiceResult<void>> {
+  async function doRefreshSessionUncoordinated(): Promise<ThemeServiceResult<void>> {
     const session = await loadSession();
     if (!session) return { ok: false, error: { kind: "not_signed_in", message: "no session to refresh" } };
     const res = await authRequest(`/auth/v1/token?grant_type=refresh_token`, { refresh_token: session.refreshToken });
     if (!res.ok) {
-      await clearSession();
       return res as ThemeServiceResult<void>;
     }
     const parsed = parseGoTrueSession(res.value, now());
@@ -401,19 +402,51 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     return { ok: true, value: undefined };
   }
 
+  // Single-flight guard: concurrent 401s (or a proactive check racing a
+  // retry) must not each POST the same stale refresh_token — Supabase
+  // rotates it, so the second call would invalidate the first's freshly
+  // saved session. All concurrent callers await the one in-flight refresh;
+  // the session is cleared only when that single shared refresh fails.
+  let refreshInFlight: Promise<ThemeServiceResult<void>> | null = null;
+
+  async function doRefreshSession(): Promise<ThemeServiceResult<void>> {
+    if (refreshInFlight) return refreshInFlight;
+    const attempt = doRefreshSessionUncoordinated().then(async (res) => {
+      if (!res.ok) await clearSession();
+      return res;
+    });
+    refreshInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (refreshInFlight === attempt) refreshInFlight = null;
+    }
+  }
+
   /** GET/POST against the Theme Service itself, with bearer auth + one 401 refresh-and-retry. */
   async function serviceRequest(
     path: string,
     init: { method: "GET" | "POST"; body?: unknown; auth: boolean }
   ): Promise<ThemeServiceResult<unknown>> {
+    // Clock-skew margin: refresh a little before actual expiry so a token
+    // that is about to lapse mid-flight doesn't round-trip as a 401.
+    const EXPIRY_SKEW_MS = 30_000;
+    // Set when the proactive refresh below is attempted and fails, so the
+    // 401 handler further down knows not to retry a refresh that already
+    // failed for this same session.
+    let proactiveRefreshFailed = false;
+
     async function once(): Promise<{ status: "ok"; value: unknown } | { status: "unauthorized" } | { status: "error"; error: ThemeServiceError }> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (init.auth) {
         let session = await loadSession();
         if (!session) return { status: "unauthorized" };
-        if (session.expiresAt <= now()) {
+        if (session.expiresAt - EXPIRY_SKEW_MS <= now()) {
           const refreshed = await doRefreshSession();
-          if (!refreshed.ok) return { status: "unauthorized" };
+          if (!refreshed.ok) {
+            proactiveRefreshFailed = true;
+            return { status: "unauthorized" };
+          }
           session = await loadSession();
           if (!session) return { status: "unauthorized" };
         }
@@ -480,10 +513,9 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     }
 
     let r = await once();
-    if (r.status === "unauthorized") {
+    if (r.status === "unauthorized" && !proactiveRefreshFailed) {
       const refreshed = await doRefreshSession();
       if (!refreshed.ok) {
-        await clearSession();
         return { ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } };
       }
       r = await once();
@@ -514,11 +546,16 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
 
     async startGoogleSignIn({ redirectTo }) {
       const codeVerifier = createCodeVerifier();
+      if (codeVerifier === null) {
+        return { ok: false, error: { kind: "server_error", message: "secure random unavailable" } };
+      }
       const codeChallenge = await codeChallengeFor(codeVerifier);
       const url = new URL(`${supabaseUrl}/auth/v1/authorize`);
       url.searchParams.set("provider", "google");
       url.searchParams.set("redirect_to", redirectTo);
       url.searchParams.set("code_challenge", codeChallenge);
+      // Lowercase "s256" per Supabase's GoTrue docs (not the RFC 7636
+      // uppercase "S256" some OAuth providers expect).
       url.searchParams.set("code_challenge_method", "s256");
       return { ok: true, value: { browserUrl: url.toString(), codeVerifier } };
     },
