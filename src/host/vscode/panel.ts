@@ -79,6 +79,7 @@ import {
   approveAllThemeImages,
   boardBackgroundModeForProvider,
   buildReplacementPrompt,
+  createServiceImageGenerator,
   deleteTheme,
   ensureThemeReviewImages,
   exportThemeArchive,
@@ -102,6 +103,7 @@ import {
   retryThemeImage,
   resumeThemeGeneration,
   saveThemeTuning,
+  setThemeImageGenerator,
   updateThemeCreativeDirection,
   regenerateThemeDescriptions,
   updateThemeImageReviewStatus,
@@ -125,14 +127,15 @@ import { themeImagesDirectoryUri, themeRawImagesDirectoryUri } from "../../exten
 import { configureThemeFileStore } from "../../extension/themeFileStore";
 import { createVscodeThemeFileStore } from "../../extension/themeFileStoreVscode";
 import { validateThemeIntegrity } from "../../extension/themeHealth";
-import {
-  getConfiguredThemeImageProvider,
-  getThemeImageConfigurationStatus,
-  resolveThemeImageSettings,
-  saveThemeImageSettings,
-  saveThemeImagePreference,
-} from "../../extension/themeImageSettings";
-import { IMAGE_MODELS, IMAGE_QUALITY_OPTIONS } from "../../extension/imageModels";
+// getConfiguredThemeImageProvider / getThemeImageConfigurationStatus /
+// saveThemeImageSettings / saveThemeImagePreference / IMAGE_MODELS /
+// IMAGE_QUALITY_OPTIONS removed (p43-t1, direct-provider image settings UI
+// retired). resolveThemeImageSettings stays: PLAN_THEME and
+// REGENERATE_THEME_DESCRIPTIONS still resolve a provider/apiKey for their
+// TEXT (chat-completions) calls via translator.ts, unaffected by the
+// image-generation migration — see docs/theme-service-api.md's Generation
+// section, which only covers image attempts.
+import { resolveThemeImageSettings } from "../../extension/themeImageSettings";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
   readPlanSafe,
@@ -955,6 +958,12 @@ export class TycoonPanel {
       },
     });
     this._themeServiceHost.start();
+    // Route every board-image generation attempt through this panel's
+    // ThemeServiceHost client (p43-t1) — the same authenticated instance
+    // status/checkout already use, so a generation call reuses the current
+    // session and refresh-in-flight coordination rather than building a
+    // second client.
+    setThemeImageGenerator(createServiceImageGenerator(this._themeServiceHost.getClient()));
     // Refresh status whenever the panel becomes visible again (tab
     // switch/restore) — cheap (one getStatus call) and keeps a stale
     // signed-out/balance view from lingering after e.g. completing sign-in
@@ -1493,96 +1502,6 @@ export class TycoonPanel {
           await this._handleDesignDocAction((message as any).mode);
         } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
           await this._handleInstallProjectPlanSkill();
-        } else if (message.type === MSG.GET_THEME_IMAGE_SETTINGS) {
-          // deprecated: removed from UI in p40, host path retired in p43
-          const providers = await getThemeImageConfigurationStatus(this._secrets);
-          const imageConfig = vscode.workspace.getConfiguration("tycoonagents");
-          void this._panel.webview.postMessage({
-            type: MSG.THEME_IMAGE_SETTINGS,
-            payload: {
-              provider: await getConfiguredThemeImageProvider(this._secrets),
-              providers,
-              models: IMAGE_MODELS,
-              selectedModels: {
-                gemini: imageConfig.get<string>("geminiModel") ?? "",
-                openai: imageConfig.get<string>("openaiModel") ?? "",
-              },
-              qualityOptions: IMAGE_QUALITY_OPTIONS,
-              selectedQuality: imageConfig.get<string>("openaiImageQuality") ?? "",
-            },
-          });
-        } else if (message.type === MSG.SAVE_THEME_IMAGE_SETTINGS) {
-          // deprecated: removed from UI in p40, host path retired in p43
-          const payload = (message as any).payload as { provider?: string; api_key?: string; model?: string; quality?: string } | undefined;
-          try {
-            const provider = await saveThemeImageSettings(
-              this._secrets,
-              payload?.provider,
-              payload?.api_key,
-            );
-            const modelConfigKey = provider === "gemini" ? "geminiModel" : "openaiModel";
-            const modelValue = typeof payload?.model === "string" ? payload.model.trim() : "";
-            const modelConfig = vscode.workspace.getConfiguration("tycoonagents");
-            if (modelConfig.inspect<string>(modelConfigKey)) {
-              try {
-                await modelConfig.update(modelConfigKey, modelValue, vscode.ConfigurationTarget.Global);
-              } catch (err) {
-                console.warn(`TycoonAgents: Could not save ${modelConfigKey} to User Settings:`, err);
-              }
-            }
-            // Quality is OpenAI-only (Gemini has no `quality` parameter — see
-            // imageModels.ts's IMAGE_QUALITY_OPTIONS doc comment), so it's
-            // only persisted when the provider being saved is 'openai'; a
-            // quality value submitted for 'gemini' (the UI hides the control
-            // in that case, but be defensive) is ignored rather than stored.
-            if (provider === "openai") {
-              const qualityValue = typeof payload?.quality === "string" ? payload.quality.trim() : "";
-              if (modelConfig.inspect<string>("openaiImageQuality")) {
-                try {
-                  await modelConfig.update("openaiImageQuality", qualityValue, vscode.ConfigurationTarget.Global);
-                } catch (err) {
-                  console.warn("TycoonAgents: Could not save openaiImageQuality to User Settings:", err);
-                }
-              }
-            }
-            const providers = await getThemeImageConfigurationStatus(this._secrets);
-            const refreshedConfig = vscode.workspace.getConfiguration("tycoonagents");
-            void this._panel.webview.postMessage({
-              type: MSG.THEME_IMAGE_SETTINGS,
-              payload: {
-                provider,
-                providers,
-                saved: true,
-                models: IMAGE_MODELS,
-                selectedModels: {
-                  gemini: refreshedConfig.get<string>("geminiModel") ?? "",
-                  openai: refreshedConfig.get<string>("openaiModel") ?? "",
-                },
-                qualityOptions: IMAGE_QUALITY_OPTIONS,
-                selectedQuality: refreshedConfig.get<string>("openaiImageQuality") ?? "",
-              },
-            });
-          } catch (err) {
-            void this._panel.webview.postMessage({
-              type: MSG.THEME_IMAGE_SETTINGS,
-              payload: { error: String(err) },
-            });
-          }
-        } else if (message.type === MSG.SET_THEME_IMAGE_PREFERENCE) {
-          // Lightweight sibling of SAVE_THEME_IMAGE_SETTINGS fired on
-          // dropdown change: persists provider + model only, never the
-          // api_key, and swallows errors non-throwing (no reply needed —
-          // the webview already reflects the change locally).
-          const payload = (message as any).payload as { provider?: string; model?: string; quality?: string } | undefined;
-          try {
-            await saveThemeImagePreference(this._secrets, {
-              provider: payload?.provider,
-              model: payload?.model,
-              quality: payload?.quality,
-            });
-          } catch (err) {
-            console.warn("TycoonAgents: Could not persist theme image preference:", err);
-          }
         } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
@@ -2306,8 +2225,6 @@ export class TycoonPanel {
           if (normalizingDuringActiveGeneration && this._themeGenerationGateRetryActive) return;
           if (normalizingDuringActiveGeneration) this._themeGenerationGateRetryActive = true;
           try {
-            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
-            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
             void this._panel.webview.postMessage({
               type: MSG.THEME_CHARACTER_NORMALIZE_STATE,
               payload: { item_id: itemId, busy: true, message: "Regenerating at the standard character scale..." },
@@ -2317,10 +2234,6 @@ export class TycoonPanel {
               themeId,
               itemId,
               {
-                provider: imageSettings.provider,
-                apiKey: imageSettings.apiKey,
-                model: imageSettings.model,
-                quality: imageSettings.quality,
                 signal: normalizingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -2378,8 +2291,6 @@ export class TycoonPanel {
           if (retryingDuringActiveGeneration && this._themeGenerationGateRetryActive) return;
           if (retryingDuringActiveGeneration) this._themeGenerationGateRetryActive = true;
           try {
-            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
-            if (!imageSettings.apiKey) throw new Error("The selected image provider has no saved API key.");
             const retryMode: ThemeImageRetryMode = payload?.mode === "replace"
               ? "replace"
               : payload?.mode === "retry"
@@ -2435,10 +2346,6 @@ export class TycoonPanel {
               retryFeedback,
               retryMode,
               {
-                provider: imageSettings.provider,
-                apiKey: imageSettings.apiKey,
-                model: imageSettings.model,
-                quality: imageSettings.quality,
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
               },
               (message) => void this._panel.webview.postMessage({
@@ -2597,14 +2504,6 @@ export class TycoonPanel {
             }
             if (resumeThemeId) generatedThemeId = resumeThemeId;
             this._themePauseForReview = payload?.pause_for_review !== false;
-            const imageSettings = await resolveThemeImageSettings(
-              this._secrets,
-              payload?.image_provider,
-            );
-            if (!imageSettings.apiKey) {
-              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
-              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
-            }
             const onProgress = (msg: string) => void this._panel.webview.postMessage({
               type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: msg },
@@ -2614,10 +2513,6 @@ export class TycoonPanel {
               void this._panel.webview.postMessage({ type: MSG.THEME_REVIEW_READY, payload: { theme_id: themeId } });
             };
             const imageOptions = {
-              provider: imageSettings.provider,
-              apiKey: imageSettings.apiKey,
-              model: imageSettings.model,
-              quality: imageSettings.quality,
               signal: abortController.signal,
             };
             const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
@@ -2689,21 +2584,11 @@ export class TycoonPanel {
             }
             if (!themeId) throw new Error("No theme was specified for board regeneration.");
             if (!board) throw new Error("No board was specified for regeneration.");
-            const imageSettings = await resolveThemeImageSettings(this._secrets, payload?.image_provider);
-            if (!imageSettings.apiKey) {
-              const label = imageSettings.provider === "openai" ? "OpenAI" : "Google Gemini";
-              throw new Error(`No ${label} API key found. Add and save one above the theme prompt.`);
-            }
             const onProgress = (msg: string) => void this._panel.webview.postMessage({
               type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: msg },
             });
-            const imageOptions = {
-              provider: imageSettings.provider,
-              apiKey: imageSettings.apiKey,
-              model: imageSettings.model,
-              quality: imageSettings.quality,
-            };
+            const imageOptions = {};
             await regenerateThemeBoard(
               this._globalStorageUri,
               themeImagesDirectoryUri(this._globalStorageUri, themeId),
@@ -3363,7 +3248,7 @@ export class TycoonPanel {
       const currentPlan = loadedTheme
         ? await loadCurrentThemePlan(this._globalStorageUri, themeId, loadedTheme.manifest.display_name)
         : undefined;
-      const backgroundMode = boardBackgroundModeForProvider(await getConfiguredThemeImageProvider(this._secrets));
+      const backgroundMode = boardBackgroundModeForProvider();
       const creativeDirection = currentPlan ? themePlanCreativeDirection(currentPlan) : undefined;
       const items = await Promise.all(review.entries.map(async ({ item, imageUri, generated }) => {
         let currentPrompt: string | undefined;

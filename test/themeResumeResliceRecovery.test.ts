@@ -119,7 +119,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { resumeThemeGeneration, createReviewItems } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { resumeThemeGeneration, createReviewItems, setThemeImageGenerator } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -248,12 +248,13 @@ async function setupFixtureTheme(themeId: string, withRawImage: boolean): Promis
 test('resume recovers an accepted-but-incomplete expression board by re-slicing its saved raw image, never calling the AI generator, and status stays accepted', async () => {
   const themeId = 'reslice_recovery_theme';
   const fixture = await setupFixtureTheme(themeId, true);
-  const originalFetch = globalThis.fetch;
-  let fetchCallCount = 0;
-  globalThis.fetch = (async () => {
-    fetchCallCount++;
-    throw new Error('generateThemeImage must not be called: a raw atlas is available for reslice recovery');
-  }) as typeof fetch;
+  let generatorCallCount = 0;
+  setThemeImageGenerator({
+    async generate() {
+      generatorCallCount++;
+      throw new Error('the Theme Service generator must not be called: a raw atlas is available for reslice recovery');
+    },
+  });
 
   try {
     const progressMessages: string[] = [];
@@ -263,7 +264,7 @@ test('resume recovers an accepted-but-incomplete expression board by re-slicing 
       (message) => progressMessages.push(message),
     );
 
-    assert.equal(fetchCallCount, 0, 'the AI image generator must not be invoked when a raw atlas can be re-sliced');
+    assert.equal(generatorCallCount, 0, 'the AI image generator must not be invoked when a raw atlas can be re-sliced');
     assert.ok(
       progressMessages.some((message) => message.includes('frames recovered from the saved original')),
       `expected a frame-recovery progress message, got: ${JSON.stringify(progressMessages)}`,
@@ -278,7 +279,7 @@ test('resume recovers an accepted-but-incomplete expression board by re-slicing 
     assert.ok(expressionsItem, 'expressions review item must still be present after resume');
     assert.equal(expressionsItem?.status, 'accepted', 'an accepted board must stay accepted after frame recovery, never bounce to pending');
   } finally {
-    globalThis.fetch = originalFetch;
+    setThemeImageGenerator(undefined);
     await fixture.cleanup();
   }
 });
@@ -286,13 +287,14 @@ test('resume recovers an accepted-but-incomplete expression board by re-slicing 
 test('resume falls through to real AI generation for an incomplete item with no saved raw image', async () => {
   const themeId = 'reslice_no_raw_theme';
   const fixture = await setupFixtureTheme(themeId, false);
-  const originalFetch = globalThis.fetch;
-  let fetchCallCount = 0;
+  let generatorCallCount = 0;
   const atlasBuffer = await buildMagentaAtlasBuffer();
-  globalThis.fetch = (async () => {
-    fetchCallCount++;
-    return new Response(JSON.stringify({ data: [{ b64_json: atlasBuffer.toString('base64') }] }), { status: 200 });
-  }) as typeof fetch;
+  setThemeImageGenerator({
+    async generate() {
+      generatorCallCount++;
+      return { ok: true, value: { image: atlasBuffer, attemptCost: 1, credits: 41, refunded: false } };
+    },
+  });
 
   try {
     const progressMessages: string[] = [];
@@ -300,18 +302,15 @@ test('resume falls through to real AI generation for an incomplete item with no 
       fixture.globalStorageUri as unknown as import('vscode').Uri,
       themeId,
       (message) => progressMessages.push(message),
-      undefined,
-      undefined,
-      { provider: 'openai', apiKey: 'test-key' },
     );
 
-    assert.ok(fetchCallCount >= 1, 'the AI image generator must be invoked when no raw atlas is available to re-slice from');
+    assert.ok(generatorCallCount >= 1, 'the AI image generator must be invoked when no raw atlas is available to re-slice from');
     assert.ok(
       progressMessages.some((message) => message.includes('8-expression sprite sheet')),
       `expected the AI-generation progress message, got: ${JSON.stringify(progressMessages)}`,
     );
   } finally {
-    globalThis.fetch = originalFetch;
+    setThemeImageGenerator(undefined);
     await fixture.cleanup();
   }
 });

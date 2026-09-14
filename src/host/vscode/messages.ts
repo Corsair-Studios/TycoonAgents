@@ -206,15 +206,12 @@ export const MSG = {
   ENGINE_STATUS: "engineStatus",
 
   // ---- theme image provider settings -------------------------------------
-  GET_THEME_IMAGE_SETTINGS: "GET_THEME_IMAGE_SETTINGS",
-  SAVE_THEME_IMAGE_SETTINGS: "SAVE_THEME_IMAGE_SETTINGS",
+  // GET_THEME_IMAGE_SETTINGS / SAVE_THEME_IMAGE_SETTINGS /
+  // SET_THEME_IMAGE_PREFERENCE removed (p43-t1) — direct-provider image
+  // generation is gone; THEME_IMAGE_SETTINGS stays only as the (now
+  // unused-by-host) reply-type string in case any legacy webview build still
+  // references it.
   THEME_IMAGE_SETTINGS: "THEME_IMAGE_SETTINGS",
-  // Preference-only persistence (provider + model, no api_key) fired on
-  // dropdown `change` so a selection survives panel close/reopen without
-  // requiring a Save click. See saveThemeImagePreference in
-  // extension/themeImageSettings.ts. No reply message — the webview already
-  // reflects the change locally.
-  SET_THEME_IMAGE_PREFERENCE: "SET_THEME_IMAGE_PREFERENCE",
 
   // ---- theme library: list / export / upgrade / import / delete / select ---
   LIST_THEMES: "LIST_THEMES",

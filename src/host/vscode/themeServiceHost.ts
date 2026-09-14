@@ -74,6 +74,13 @@ export interface ThemeServiceHost {
   handleBuyCredits(pack: string): Promise<void>;
   /** Called by the registered vscode.window.registerUriHandler on a deep-link callback. */
   handleUriCallback(code: string): Promise<void>;
+  /**
+   * The shared {@link ThemeServiceClient} this host was built on (p43-t1) —
+   * lets panel.ts wire `themeService.setThemeImageGenerator` to the same
+   * authenticated client instance used for status/checkout, instead of
+   * constructing a second one.
+   */
+  getClient(): ThemeServiceClient;
   start(): void;
   dispose(): void;
 }
@@ -225,6 +232,10 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     async handleUriCallback(code) {
       await completeGoogle(code);
+    },
+
+    getClient() {
+      return client;
     },
 
     async handleSignOut() {

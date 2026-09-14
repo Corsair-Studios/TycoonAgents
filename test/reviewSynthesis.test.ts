@@ -617,10 +617,8 @@ test('removeStaleBoardFrameKeys: no-op when there are no previous frame keys (fi
 // transparent-mode prompt builders below remain exercised directly since the
 // plumbing is kept dormant, not removed. ---
 
-test('boardBackgroundModeForProvider maps every provider (including openai) to magenta', () => {
-  assert.equal(boardBackgroundModeForProvider('openai'), 'magenta');
-  assert.equal(boardBackgroundModeForProvider('gemini'), 'magenta');
-  assert.equal(boardBackgroundModeForProvider(undefined), 'magenta');
+test('boardBackgroundModeForProvider always returns magenta (p43-t1: no provider input anymore)', () => {
+  assert.equal(boardBackgroundModeForProvider(), 'magenta');
 });
 
 test('createReviewItems threads a transparent backgroundMode into every sprite-board prompt it builds', () => {

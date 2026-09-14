@@ -120,6 +120,12 @@ export interface ThemeImageReviewItem {
    * editor. Absent when the theme has no badge descriptions yet. */
   achievement_descriptions?: string[];
   generation_error?: ThemeImageGenerationError;
+  /** Corsair Theme Service credit cost of the attempt that produced (or last failed to replace) this item's current image. Undefined until the item's first successful attempt via the Theme Service. */
+  attemptCost?: number;
+  /** Whether that last attempt was auto-refunded (provider_failed). */
+  lastAttemptRefunded?: boolean;
+  /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
+  error_kind?: 'not_signed_in' | 'insufficient_credits' | 'unavailable' | 'unreachable' | 'provider_failed';
   updated_at: string;
 }
 
@@ -223,6 +229,26 @@ export async function setThemeImageGenerationError(
   if (!item) return undefined;
   item.status = 'pending';
   item.generation_error = generationError;
+  item.updated_at = new Date().toISOString();
+  await writeReviewDocument(globalStorageUri, document);
+  return document;
+}
+
+/** Records a Corsair Theme Service attempt failure's distinct error kind (p43-t1) — sibling of setThemeImageGenerationError, for THEME_SERVICE-originated failures rather than OpenAI moderation blocks. */
+export async function setThemeImageReviewErrorKind(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  itemId: string,
+  errorKind: NonNullable<ThemeImageReviewItem['error_kind']>,
+  refunded?: boolean,
+): Promise<ThemeImageReviewDocument | undefined> {
+  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+  if (!document) return undefined;
+  const item = document.items.find((candidate) => candidate.id === itemId);
+  if (!item) return undefined;
+  item.status = 'pending';
+  item.error_kind = errorKind;
+  if (refunded !== undefined) item.lastAttemptRefunded = refunded;
   item.updated_at = new Date().toISOString();
   await writeReviewDocument(globalStorageUri, document);
   return document;

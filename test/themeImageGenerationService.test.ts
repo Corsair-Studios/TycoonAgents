@@ -1,0 +1,351 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import Jimp from 'jimp';
+import type { ThemeManifest } from '../src/shared/types';
+import type { ThemePlan } from '../src/extension/themePlan';
+
+// Coverage for p43-t1: generation attempts route through the Corsair Theme
+// Service (src/core/themeServiceClient.ts's generateAttempt) via the
+// ThemeImageGenerator seam in src/extension/themeService.ts, instead of the
+// removed direct-provider imageClient.ts. Same vscode-module-stub trick as
+// test/themeResumeResliceRecovery.test.ts (themeService.ts imports 'vscode'
+// at module scope; the ThemeFileStore adapter genuinely reads/writes a real
+// temp directory through the stub's workspace.fs).
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const NodeModule = require('module');
+const originalLoad = NodeModule._load;
+
+class FakeUri {
+  readonly fsPath: string;
+  readonly path: string;
+  constructor(fsPath: string) {
+    this.fsPath = fsPath;
+    this.path = fsPath.split(path.sep).join('/');
+  }
+  static file(fsPath: string): FakeUri {
+    return new FakeUri(fsPath);
+  }
+  static joinPath(base: FakeUri, ...segments: string[]): FakeUri {
+    return new FakeUri(path.join(base.fsPath, ...segments.map((segment) => segment.split('/').join(path.sep))));
+  }
+}
+
+const FileType = { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 };
+
+function makeVscodeStub(): unknown {
+  const target: Record<string, unknown> = {
+    Uri: FakeUri,
+    FileType,
+    workspace: {
+      fs: {
+        async readFile(uri: FakeUri): Promise<Uint8Array> {
+          return fsp.readFile(uri.fsPath);
+        },
+        async writeFile(uri: FakeUri, data: Uint8Array): Promise<void> {
+          await fsp.mkdir(path.dirname(uri.fsPath), { recursive: true });
+          await fsp.writeFile(uri.fsPath, Buffer.from(data));
+        },
+        async readDirectory(uri: FakeUri): Promise<[string, number][]> {
+          const entries = await fsp.readdir(uri.fsPath, { withFileTypes: true });
+          return entries.map((entry) => [entry.name, entry.isDirectory() ? FileType.Directory : FileType.File]);
+        },
+        async createDirectory(uri: FakeUri): Promise<void> {
+          await fsp.mkdir(uri.fsPath, { recursive: true });
+        },
+        async stat(uri: FakeUri): Promise<{ type: number; size: number; mtime: number; ctime: number }> {
+          const info = await fsp.stat(uri.fsPath);
+          return {
+            type: info.isDirectory() ? FileType.Directory : FileType.File,
+            size: info.size,
+            mtime: info.mtimeMs,
+            ctime: info.mtimeMs,
+          };
+        },
+        async delete(uri: FakeUri, options?: { recursive?: boolean }): Promise<void> {
+          await fsp.rm(uri.fsPath, { recursive: options?.recursive ?? false, force: false });
+        },
+        async rename(from: FakeUri, to: FakeUri, options?: { overwrite?: boolean }): Promise<void> {
+          await fsp.mkdir(path.dirname(to.fsPath), { recursive: true });
+          await fsp.rename(from.fsPath, to.fsPath);
+        },
+      },
+    },
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler: ProxyHandler<any> = {
+    get(t, prop) {
+      if (prop === '__esModule') return true;
+      if (!(prop in t)) {
+        t[prop] = new Proxy(function stub() {}, handler);
+      }
+      return t[prop];
+    },
+    apply() {
+      return new Proxy({}, handler);
+    },
+    construct() {
+      return new Proxy({}, handler);
+    },
+  };
+  return new Proxy(target, handler);
+}
+const vscodeStub = makeVscodeStub();
+NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain: boolean) {
+  if (request === 'vscode') return vscodeStub;
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const themeService = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const {
+  generateTheme, retryThemeImage, resliceThemeImageFromRaw, getThemeImageReview,
+  setThemeImageGenerator,
+} = themeService;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
+
+function buildPlan(themeId: string): ThemePlan {
+  return normalizeThemePlan({
+    version: 1,
+    theme_id: themeId,
+    display_name: 'Attempt Accounting Theme',
+    creative_direction: 'test direction',
+    characters: [],
+    environment: 'test env',
+    objects: [],
+    decor: [],
+    enemies: [],
+    expressions: [],
+    achievements: [],
+  }, 'Attempt Accounting Theme');
+}
+
+async function magentaAtlas(): Promise<Buffer> {
+  const atlas = new Jimp(400, 200, 0xff00ffff);
+  return atlas.getBufferAsync(Jimp.MIME_PNG);
+}
+
+interface FakeGenerateCall {
+  idempotencyKey: string;
+  boardType: string;
+  prompt: string;
+  referenceImages?: string[];
+  size: string;
+}
+
+/** Counting fake generator (p43-t1): every call succeeds and costs 1 credit unless `fail` says otherwise. */
+type FakeErrorKind = 'not_signed_in' | 'insufficient_credits' | 'rate_limited' | 'provider_failed' | 'unavailable' | 'unreachable' | 'server_error' | 'invalid_response';
+
+function makeCountingGenerator(opts: { fail?: (call: FakeGenerateCall, callIndex: number) => { kind: FakeErrorKind; message: string; refunded?: boolean; credits?: number } | undefined } = {}) {
+  const calls: FakeGenerateCall[] = [];
+  let credits = 100;
+  return {
+    calls,
+    generator: {
+      async generate(req: FakeGenerateCall) {
+        calls.push(req);
+        const failure = opts.fail?.(req, calls.length - 1);
+        if (failure) {
+          if (failure.refunded === false) credits -= 1;
+          return { ok: false as const, error: { kind: failure.kind, message: failure.message, refunded: failure.refunded, credits: failure.credits ?? credits } };
+        }
+        credits -= 1;
+        const image = await magentaAtlas();
+        return { ok: true as const, value: { image, attemptCost: 1, credits, refunded: false } };
+      },
+    },
+  };
+}
+
+async function withTempStore<T>(fn: (globalStorageUri: FakeUri) => Promise<T>): Promise<T> {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'tycoon-theme-svc-'));
+  try {
+    return await fn(FakeUri.file(root));
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+}
+
+test('a full plan run debits the Theme Service exactly once per board, each with a distinct idempotency key', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'attempt_accounting_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { calls, generator } = makeCountingGenerator();
+    setThemeImageGenerator(generator);
+    try {
+      const progress: string[] = [];
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, (m) => progress.push(m));
+
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      // One attempt per generated board item (an empty roster still pads to
+      // the fixed 21-object/16-character contract — see themePlan.ts — so
+      // the exact count is read from the review rather than hardcoded).
+      assert.equal(calls.length, review.entries.length, `expected one attempt per board, got calls: ${JSON.stringify(calls.map((c) => c.boardType))}`);
+      const keys = new Set(calls.map((c) => c.idempotencyKey));
+      assert.equal(keys.size, calls.length, 'every attempt must carry a distinct idempotency key');
+      for (const key of keys) assert.match(key, /^attempt_accounting_theme:[^:]+:\d+:.+$/);
+
+      assert.equal(review.creditsSpent, calls.length, 'creditsSpent must sum every successful attemptCost');
+      for (const entry of review.entries) {
+        assert.equal(entry.item.attemptCost, 1, `${entry.item.id} must record its attemptCost`);
+        assert.equal(entry.item.lastAttemptRefunded, false);
+      }
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
+test('retrying a board debits the Theme Service again with a new idempotency key and bumped revision', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'retry_accounting_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { calls, generator } = makeCountingGenerator();
+    setThemeImageGenerator(generator);
+    try {
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      const callsAfterGeneration = calls.length;
+      assert.equal(callsAfterGeneration, review.entries.length);
+
+      const environmentEntry = review.entries.find((entry) => entry.item.id === 'environment')!;
+      assert.ok(environmentEntry, 'environment board must exist');
+      const revisionBefore = environmentEntry.item.revision;
+      const originalEnvironmentKey = calls.find((c) => c.boardType === 'environment')!.idempotencyKey;
+
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {});
+      assert.equal(calls.length, callsAfterGeneration + 1, 'retry must place exactly one more attempt');
+      assert.notEqual(calls[calls.length - 1].idempotencyKey, originalEnvironmentKey, 'a new user-initiated retry must use a fresh idempotency key');
+
+      const reviewAfter = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      const environmentAfter = reviewAfter.entries.find((entry) => entry.item.id === 'environment')!;
+      assert.equal(environmentAfter.item.revision, revisionBefore + 1);
+      assert.equal(environmentAfter.item.attemptCost, 1);
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
+test('resliceThemeImageFromRaw makes no Theme Service generator call', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'reslice_zero_calls_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { calls, generator } = makeCountingGenerator();
+    setThemeImageGenerator(generator);
+    try {
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      const callsAfterGeneration = calls.length;
+      assert.ok(callsAfterGeneration > 0);
+
+      const result = await resliceThemeImageFromRaw(globalStorageUri as unknown as import('vscode').Uri, themeId, 'expressions');
+      assert.equal(calls.length, callsAfterGeneration, 'resliceThemeImageFromRaw must never call the generator');
+      // 'expressions' has no raw atlas persisted by this fixture path unless
+      // generation itself saved one — either a successful re-slice or an
+      // explicit "no saved original" failure is acceptable; a generator call
+      // is not.
+      void result;
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
+// Note: generateTheme runs every board through runNonFatalBoardStep
+// (themeService.ts), which swallows a non-cancellation board failure (logs
+// "<label> failed and was skipped" via onProgress and continues to the next
+// board) rather than rejecting the whole run — so these failure-path tests
+// assert on the review item's persisted error_kind/lastAttemptRefunded, not
+// on generateTheme throwing.
+test('a provider_failed attempt surfaces error_kind:"provider_failed" and the refunded flag on the review item', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'provider_failed_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { generator } = makeCountingGenerator({
+      fail: (call) => (call.boardType === 'environment'
+        ? { kind: 'provider_failed', message: 'upstream image model failed', refunded: true, credits: 99 }
+        : undefined),
+    });
+    setThemeImageGenerator(generator);
+    const progress: string[] = [];
+    try {
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, (m) => progress.push(m));
+      assert.ok(progress.some((m) => m.includes('failed and was skipped')), 'a non-cancellation board failure must be logged and skipped, not crash the run');
+
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      const environmentEntry = review.entries.find((entry) => entry.item.id === 'environment')!;
+      assert.equal(environmentEntry.item.error_kind, 'provider_failed');
+      assert.equal(environmentEntry.item.lastAttemptRefunded, true);
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
+test('each Theme Service error kind surfaces as its own distinct error_kind, never a generic message', async () => {
+  const kinds: Array<{ kind: FakeErrorKind; expected: string }> = [
+    { kind: 'not_signed_in', expected: 'not_signed_in' },
+    { kind: 'insufficient_credits', expected: 'insufficient_credits' },
+    { kind: 'unavailable', expected: 'unavailable' },
+    { kind: 'unreachable', expected: 'unreachable' },
+    { kind: 'provider_failed', expected: 'provider_failed' },
+    { kind: 'rate_limited', expected: 'unavailable' }, // folded — see mapToReviewErrorKind
+  ];
+
+  for (const { kind, expected } of kinds) {
+    await withTempStore(async (globalStorageUri) => {
+      const themeId = 'error_kind_theme';
+      const plan = buildPlan(themeId);
+      plan.theme_id = themeId;
+      const { generator } = makeCountingGenerator({
+        fail: (call) => (call.boardType === 'environment' ? { kind, message: `${kind} failure` } : undefined),
+      });
+      setThemeImageGenerator(generator);
+      try {
+        await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+        const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+        const environmentEntry = review.entries.find((entry) => entry.item.id === 'environment')!;
+        assert.equal(environmentEntry.item.error_kind, expected, `kind ${kind} must map to error_kind ${expected}`);
+      } finally {
+        setThemeImageGenerator(undefined);
+      }
+    });
+  }
+});
+
+test('generation fails explicitly when no generator has been configured, never silently', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const themeId = 'unconfigured_generator_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    setThemeImageGenerator(undefined);
+    const progress: string[] = [];
+    await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, (m) => progress.push(m));
+    const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+    const environmentEntry = review.entries.find((entry) => entry.item.id === 'environment')!;
+    assert.equal(environmentEntry.item.error_kind, 'unavailable', 'an unconfigured generator must surface an explicit "unavailable" error_kind, never fail silently or produce a placeholder image');
+  });
+});
+
+test('themeService.ts and panel.ts host wiring never reference a direct image-provider endpoint or SDK (p43-t1)', async () => {
+  const forbidden = [/api\.openai\.com/i, /generativelanguage\.googleapis\.com/i, /from ['"]openai['"]/, /@google\/generative-ai/i];
+  const files = [
+    path.join(process.cwd(), 'src', 'extension', 'themeService.ts'),
+    path.join(process.cwd(), 'src', 'host', 'vscode', 'panel.ts'),
+    path.join(process.cwd(), 'src', 'host', 'vscode', 'themeServiceHost.ts'),
+  ];
+  for (const file of files) {
+    const contents = await fsp.readFile(file, 'utf8');
+    for (const pattern of forbidden) {
+      assert.equal(pattern.test(contents), false, `${path.basename(file)} must not reference ${pattern} — image generation routes through the Theme Service only`);
+    }
+  }
+  await assert.rejects(fsp.stat(path.join(process.cwd(), 'src', 'extension', 'imageClient.ts')), 'imageClient.ts must be deleted (p43-t1: direct-provider generation removed)');
+});

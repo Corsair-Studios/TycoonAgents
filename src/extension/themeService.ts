@@ -7,6 +7,7 @@ import type {
   ViewportConfig,
 } from '../shared/types';
 import { expandThemePlan, regenerateThemeDescriptionsFromPlan } from './translator';
+import type { ThemeImageGenerationOptions as ThemeTextGenerationOptions } from './translator';
 import { buildDefaultBadges, upgradeThemeManifest } from './themeMigration';
 import { validateThemeIntegrity } from './themeHealth';
 import {
@@ -34,12 +35,15 @@ import {
   rivalBoardFrameKeys,
 } from './themeAssetPrompts';
 import type { BoardBackgroundMode, ThemeObjectPromptSpec, ThemeRivalPromptSpec } from './themeAssetPrompts';
-import { generateThemeImage } from './imageClient';
-import type { ThemeImageGenerationOptions } from './imageClient';
 import {
   isUserCorrectableImageGenerationError,
   type ImageGenerationApiError,
 } from './imageGenerationError';
+import type {
+  ThemeServiceClient,
+  ThemeServiceError,
+  ThemeServiceErrorKind,
+} from '../core/themeServiceClient';
 import { compositeBoardFromFrameKeys, sliceAndNormalizeAtlas } from './slicer';
 import {
   optimizeSpriteBoard,
@@ -55,6 +59,7 @@ import {
   initializeThemeImageReviewDocument,
   loadThemeImageReviewDocument,
   setThemeImageGenerationError,
+  setThemeImageReviewErrorKind,
   setThemeImageReviewStatus,
   upsertThemeImageReviewItem,
 } from './themeImageReviewState';
@@ -107,6 +112,168 @@ import {
 } from './themeFileStore';
 
 /**
+ * Generation options threaded through every board-image call (p43-t1). No
+ * `provider`/`apiKey`/`model`/`quality` fields anymore — the Corsair Theme
+ * Service (see docs/theme-service-api.md v2) owns provider/model selection
+ * entirely; the client only ever supplies the prompt, reference images, and
+ * requested size/aspect ratio. Reference images are converted to
+ * `data:` URIs at the call boundary (see referenceImagesToDataUris below).
+ */
+export interface ThemeImageGenerationOptions {
+  aspectRatio?: '1:1' | '3:4';
+  /** Cancels the in-flight Theme Service request when a theme generation is stopped. */
+  signal?: AbortSignal;
+  referenceImages?: Array<{
+    data: Buffer;
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+    filename: string;
+  }>;
+  /**
+   * Dormant — see boardBackgroundModeForProvider's doc comment. Kept only so
+   * spriteBoardOptions/normalizeThemeCharacterAtlas's shape stays stable;
+   * the Theme Service request never reads it.
+   */
+  transparentBackground?: boolean;
+}
+
+/**
+ * One generation attempt against the Corsair Theme Service. Mirrors
+ * ThemeServiceClient['generateAttempt'] exactly (docs/theme-service-api.md
+ * "Generation") so {@link createServiceImageGenerator} is a thin adapter, not
+ * a translation layer — see p43-t1.
+ */
+export interface ThemeImageGenerateRequest {
+  idempotencyKey: string;
+  boardType: string;
+  prompt: string;
+  referenceImages?: string[];
+  size: string;
+}
+
+export interface ThemeImageGenerateValue {
+  image: Buffer;
+  attemptCost: number;
+  credits: number;
+  refunded: boolean;
+}
+
+export type ThemeImageGenerateResult =
+  | { ok: true; value: ThemeImageGenerateValue }
+  | { ok: false; error: ThemeServiceError };
+
+/** Injectable seam (p43-t1) so themeService.ts never imports a provider SDK or `vscode` directly. */
+export interface ThemeImageGenerator {
+  generate(req: ThemeImageGenerateRequest): Promise<ThemeImageGenerateResult>;
+}
+
+/** Build a {@link ThemeImageGenerator} backed by a real ThemeServiceClient's generateAttempt. */
+export function createServiceImageGenerator(client: ThemeServiceClient): ThemeImageGenerator {
+  return {
+    async generate(req) {
+      const res = await client.generateAttempt(req);
+      if (!res.ok) return res;
+      const base64 = res.value.image.includes(',') ? res.value.image.slice(res.value.image.indexOf(',') + 1) : res.value.image;
+      return {
+        ok: true,
+        value: {
+          image: Buffer.from(base64, 'base64'),
+          attemptCost: res.value.attemptCost,
+          credits: res.value.credits,
+          refunded: res.value.refunded,
+        },
+      };
+    },
+  };
+}
+
+let currentThemeImageGenerator: ThemeImageGenerator | undefined;
+
+/** Host wiring point (panel.ts, standalone) — call once at startup with `createServiceImageGenerator(themeServiceHost.getClient())`; tests inject a fake directly. */
+export function setThemeImageGenerator(generator: ThemeImageGenerator | undefined): void {
+  currentThemeImageGenerator = generator;
+}
+
+/** Thrown by generateBoardImage on any non-ok ThemeServiceClient result, or when no generator has been configured. `kind` mirrors ThemeServiceErrorKind exactly so callers can surface a distinct, non-generic message per docs/theme-service-api.md's error table. */
+export class ThemeGenerationServiceError extends Error {
+  readonly kind: ThemeServiceErrorKind;
+  readonly refunded?: boolean;
+  readonly credits?: number;
+  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number }) {
+    super(error.message);
+    this.name = 'ThemeGenerationServiceError';
+    this.kind = error.kind;
+    this.refunded = error.refunded;
+    this.credits = error.credits;
+  }
+}
+
+export function isThemeGenerationServiceError(error: unknown): error is ThemeGenerationServiceError {
+  return error instanceof ThemeGenerationServiceError;
+}
+
+function referenceImagesToDataUris(options: ThemeImageGenerationOptions | undefined): string[] | undefined {
+  const images = options?.referenceImages;
+  if (!images?.length) return undefined;
+  return images.map((image) => `data:${image.mimeType};base64,${image.data.toString('base64')}`);
+}
+
+function sizeForOptions(options: ThemeImageGenerationOptions | undefined): string {
+  return options?.aspectRatio === '3:4' ? '1024x1440' : '1024x1024';
+}
+
+let themeImageAttemptCounter = 0;
+/** `${themeId}:${itemId}:${attemptNumber}:${randomSuffix}` (p43-t1) — generated once per attempt; a caller that retries the same HTTP request (not a new user-initiated retry) must reuse the same key, which is why this is computed once per generateBoardImage call and threaded through, never regenerated mid-request. */
+function nextThemeImageIdempotencyKey(themeId: string, itemId: string, attemptNumber: number): string {
+  themeImageAttemptCounter += 1;
+  const suffix = `${Date.now().toString(36)}${themeImageAttemptCounter.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return `${themeId}:${itemId}:${attemptNumber}:${suffix}`;
+}
+
+/** Maps a review item to the Theme Service's boardType pricing key (docs/theme-service-api.md's `attemptCostByBoardType`). */
+function boardTypeForItem(item: { kind: ThemeImageKind; id: string }): string {
+  switch (item.kind) {
+    case 'character_atlas': return 'roster_agent';
+    case 'rival_atlas': return 'rival_group';
+    case 'environment': return 'environment';
+    case 'object_atlas': return item.id === 'objects_02' ? 'objects_02' : 'objects_01';
+    case 'background_decor_atlas': return 'objects_01';
+    case 'expression_atlas': return 'expressions';
+    case 'achievement_atlas': return 'achievements';
+    case 'emote_atlas': return 'expressions';
+    default: return item.kind;
+  }
+}
+
+/**
+ * Single choke point for every board-image call (p43-t1) — replaces the
+ * removed direct-provider `generateThemeImage` (imageClient.ts, deleted).
+ * Routes through the injected {@link ThemeImageGenerator} (real: Corsair
+ * Theme Service via createServiceImageGenerator; tests: a fake counting
+ * generator). Throws {@link ThemeGenerationServiceError} on any failure so
+ * callers keep their existing try/catch shape.
+ */
+async function generateBoardImage(
+  themeId: string,
+  item: { id: string; kind: ThemeImageKind; revision: number },
+  prompt: string,
+  options: ThemeImageGenerationOptions | undefined,
+): Promise<ThemeImageGenerateValue> {
+  if (!currentThemeImageGenerator) {
+    throw new ThemeGenerationServiceError({ kind: 'unavailable', message: 'Theme Service is not configured.' });
+  }
+  const idempotencyKey = nextThemeImageIdempotencyKey(themeId, item.id, item.revision);
+  const result = await currentThemeImageGenerator.generate({
+    idempotencyKey,
+    boardType: boardTypeForItem(item),
+    prompt,
+    referenceImages: referenceImagesToDataUris(options),
+    size: sizeForOptions(options),
+  });
+  if (!result.ok) throw new ThemeGenerationServiceError(result.error);
+  return result.value;
+}
+
+/**
  * Best-effort persist of the RAW pre-slice atlas buffer alongside its normalized
  * review image. Enables a future re-slice-without-regenerate path; a failure here
  * must NEVER break generation, so we only log a `[raw-atlas]` warning.
@@ -146,6 +313,8 @@ export interface ThemeImageReviewEntry {
 export interface ThemeImageReview {
   theme_id: string;
   display_name: string;
+  /** Sum of every entry's item.attemptCost (successful Theme Service attempts only; undefined attemptCost counts as 0) — p43-t1. Webview surfacing is p43-t2. */
+  creditsSpent: number;
   entries: ThemeImageReviewEntry[];
 }
 
@@ -182,7 +351,7 @@ export type BoardKind =
  * transparentBackground request option) is kept dormant rather than removed —
  * re-enable it here for a specific provider if a future model supports alpha.
  */
-export function boardBackgroundModeForProvider(_provider: ThemeImageGenerationOptions['provider']): BoardBackgroundMode {
+export function boardBackgroundModeForProvider(): BoardBackgroundMode {
   return 'magenta';
 }
 
@@ -199,15 +368,15 @@ function spriteBoardOptions(
   if (!options) return options;
   return {
     ...options,
-    transparentBackground: boardBackgroundModeForProvider(options.provider) === 'transparent',
+    transparentBackground: boardBackgroundModeForProvider() === 'transparent',
   };
 }
 
 export async function planTheme(
   prompt: string,
-  imageGenerationOptions?: ThemeImageGenerationOptions,
+  textGenerationOptions?: ThemeTextGenerationOptions,
 ): Promise<ThemePlan> {
-  return expandThemePlan(prompt, imageGenerationOptions);
+  return expandThemePlan(prompt, textGenerationOptions);
 }
 
 export async function listThemes(
@@ -998,6 +1167,7 @@ export async function getThemeImageReview(
   return {
     theme_id: themeId,
     display_name: document?.display_name ?? displayName,
+    creditsSpent: items.reduce((sum, item) => sum + (item.attemptCost ?? 0), 0),
     entries: items.map((item) => {
       const imageUri = imagesByFilename.get(item.filename);
       return {
@@ -1629,7 +1799,7 @@ export function resyncDescriptionReviewItems(
     plan,
     manifest,
     themePlanCreativeDirection(plan),
-    boardBackgroundModeForProvider(undefined),
+    boardBackgroundModeForProvider(),
   ).filter((item) => affectedBoardIds.has(item.id));
   const savedItems = document.items.filter((item) => affectedBoardIds.has(item.id));
 
@@ -1735,7 +1905,7 @@ export async function updateThemeCreativeDirection(
 export async function regenerateThemeDescriptions(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
-  imageGenerationOptions: ThemeImageGenerationOptions,
+  textGenerationOptions: ThemeTextGenerationOptions,
 ): Promise<{ plan: ThemePlan }> {
   if (!isThemeId(themeId)) throw new Error('Invalid theme ID.');
 
@@ -1762,7 +1932,7 @@ export async function regenerateThemeDescriptions(
     achievement_descriptions: plan.achievement_descriptions,
   };
 
-  const fresh = await regenerateThemeDescriptionsFromPlan(plan, imageGenerationOptions);
+  const fresh = await regenerateThemeDescriptionsFromPlan(plan, textGenerationOptions);
 
   plan.character_descriptions = fresh.character_descriptions;
   plan.object_descriptions = fresh.object_descriptions;
@@ -1785,7 +1955,7 @@ export async function regenerateThemeDescriptions(
         plan,
         manifest,
         themePlanCreativeDirection(plan),
-        boardBackgroundModeForProvider(undefined),
+        boardBackgroundModeForProvider(),
       );
       const merged = mergeResumedReviewItems(expectedItems, document.items) as ThemeImageReviewItem[];
       for (const item of merged) {
@@ -1822,7 +1992,7 @@ export async function normalizeThemeCharacterAtlas(
   // padding on a board originally baked transparent for OpenAI — would confuse
   // the model).
   const paddingAdjective = boardBackgroundPaddingAdjective(
-    boardBackgroundModeForProvider(imageGenerationOptions.provider),
+    boardBackgroundModeForProvider(),
   );
   const notes = [
     'Regenerate this character sprite board at the universal production character scale.',
@@ -1872,7 +2042,7 @@ export async function generateTheme(
   onProgress(typeof requestedPlan === 'string' ? 'Planning theme...' : 'Preparing theme...');
   const plan = normalizeThemePlan(
     typeof requestedPlan === 'string'
-      ? await expandThemePlan(requestedPlan, imageGenerationOptions)
+      ? await expandThemePlan(requestedPlan, imageGenerationOptions as ThemeTextGenerationOptions | undefined)
       : requestedPlan,
     typeof requestedPlan === 'string' ? requestedPlan : requestedPlan.display_name,
   );
@@ -1915,7 +2085,7 @@ export async function generateTheme(
     plan,
     manifest,
     creativeDirection,
-    boardBackgroundModeForProvider(imageGenerationOptions?.provider),
+    boardBackgroundModeForProvider(),
   );
   await initializeThemeImageReviewDocument(globalStorageUri, themeId, plan.display_name, reviewItems);
   onReviewReady?.(themeId);
@@ -1962,7 +2132,7 @@ export async function resumeThemeGeneration(
     plan,
     loadedTheme.manifest,
     themePlanCreativeDirection(plan),
-    boardBackgroundModeForProvider(imageGenerationOptions?.provider),
+    boardBackgroundModeForProvider(),
   );
   const reviewItems = mergeResumedReviewItems(expectedItems, document.items);
 
@@ -2168,7 +2338,7 @@ export async function regenerateThemeBoard(
   const { manifest, frames } = loadedTheme;
   const plan = normalizeThemePlan(savedPlan, manifest.display_name);
 
-  let items = buildBoardItems(plan, manifest, board, boardBackgroundModeForProvider(options?.provider));
+  let items = buildBoardItems(plan, manifest, board, boardBackgroundModeForProvider());
   if (itemId) {
     items = items.filter((candidate) => candidate.id === itemId);
     if (!items.length) throw new Error(`No regenerable image with id "${itemId}" was found on board "${board}".`);
@@ -2579,7 +2749,7 @@ export async function retryThemeImage(
   // non-fatal: buildReplacementPrompt falls back to the item's saved names, then
   // generic defaults.
   const currentPlan = await loadCurrentThemePlan(globalStorageUri, themeId, loadedTheme.manifest.display_name);
-  const backgroundMode = boardBackgroundModeForProvider(imageGenerationOptions.provider);
+  const backgroundMode = boardBackgroundModeForProvider();
 
   // 'replace' explicitly swaps the theme's creative direction for the user's
   // typed notes — that is what "replace" means.
@@ -2609,10 +2779,12 @@ export async function retryThemeImage(
   );
 
   let generated: Buffer;
+  let attempt: ThemeImageGenerateValue;
   try {
-    generated = item.kind === 'environment'
-      ? await generateEnvironmentImage(prompt, imageGenerationOptions)
-      : await generateThemeImage(prompt, spriteBoardOptions(imageGenerationOptions));
+    attempt = item.kind === 'environment'
+      ? await generateEnvironmentImage(themeId, item, prompt, imageGenerationOptions)
+      : await generateBoardImage(themeId, item, prompt, spriteBoardOptions(imageGenerationOptions));
+    generated = attempt.image;
   } catch (error) {
     await recordUserCorrectableGenerationError(globalStorageUri, themeId, item.id, error);
     throw error;
@@ -2759,6 +2931,9 @@ export async function retryThemeImage(
     ...item,
     status: 'pending',
     generation_error: undefined,
+    error_kind: undefined,
+    attemptCost: attempt.attemptCost,
+    lastAttemptRefunded: attempt.refunded,
     prompt,
     revision: item.revision + 1,
     frame_keys: frameKeys,
@@ -2879,7 +3054,11 @@ async function generateAndReviewThemeItem(
 
     const review = waitForReview?.(themeId, item.id, { requiresReplacement: true });
     onReviewReady?.(themeId);
-    onProgress(`${item.label} was blocked by the image safety check. Revise its instructions and retry to continue.`);
+    onProgress(
+      isThemeGenerationServiceError(error)
+        ? `${item.label} could not be generated (${error.kind.replace(/_/g, ' ')}). Resolve it, then retry.`
+        : `${item.label} was blocked by the image safety check. Revise its instructions and retry to continue.`,
+    );
     if (!review) throw error;
     const replacement = await review;
     if (!replacement) throw error;
@@ -2898,12 +3077,45 @@ async function generateAndReviewThemeItem(
   );
 }
 
+/**
+ * The review item's error_kind field surfaces exactly the five distinct
+ * kinds docs/theme-service-api.md's error table maps to a client UI state
+ * (not_signed_in, insufficient_credits, unavailable, unreachable,
+ * provider_failed) — see p43-t1. `rate_limited`/`server_error`/
+ * `invalid_response` fold into `unavailable` (same "service unavailable,
+ * try again" UI state as 503 per that table) rather than adding a sixth
+ * value nothing downstream expects.
+ */
+function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeImageReviewItem['error_kind']> {
+  switch (kind) {
+    case 'not_signed_in':
+    case 'insufficient_credits':
+    case 'unavailable':
+    case 'unreachable':
+    case 'provider_failed':
+      return kind;
+    default:
+      return 'unavailable';
+  }
+}
+
 async function recordUserCorrectableGenerationError(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   error: unknown,
 ): Promise<boolean> {
+  if (isThemeGenerationServiceError(error)) {
+    await setThemeImageReviewErrorKind(globalStorageUri, themeId, itemId, mapToReviewErrorKind(error.kind), error.refunded);
+    console.error('TycoonAgents: Theme Service generation attempt failed.', {
+      themeId,
+      itemId,
+      kind: error.kind,
+      refunded: error.refunded,
+      credits: error.credits,
+    });
+    return true;
+  }
   if (!isUserCorrectableImageGenerationError(error)) return false;
   const details = error as ImageGenerationApiError;
   await setThemeImageGenerationError(globalStorageUri, themeId, itemId, {
@@ -3445,7 +3657,8 @@ async function generateAgentAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
   throwIfCancelled(undefined, options?.signal);
@@ -3455,7 +3668,7 @@ async function generateAgentAsset(
   throwIfCancelled(undefined, options?.signal);
   const frameKey = item.frame_keys[0] ?? item.id;
   frames[frameKey] = spritePackage.slots.map((slot) => slot.data);
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3470,7 +3683,8 @@ async function generateEnvironmentAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('Environment (20/25)');
-  const generated = await generateEnvironmentImage(item.prompt, options);
+  const attempt = await generateEnvironmentImage(plan.theme_id, item, item.prompt, options);
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const output = await normalizeEnvironmentImage(generated);
   throwIfCancelled(undefined, options?.signal);
@@ -3479,7 +3693,7 @@ async function generateEnvironmentAsset(
   await persistRawAtlas(globalStorageUri, plan.theme_id, item.filename, generated);
   frames.environment_background = [dataUri(output)];
   manifest.viewport.background_asset = 'frames.json#environment_background';
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3494,7 +3708,8 @@ async function generateDecorAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('Background decor');
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const rows = decorRowsForItem(item, manifest);
   const decorAtlas = await processDecorAtlas(generated, manifest);
@@ -3505,7 +3720,7 @@ async function generateDecorAsset(
   throwIfCancelled(undefined, options?.signal);
   applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
   manifest.viewport.projectile_asset = 'frames.json#projectile';
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3521,7 +3736,8 @@ async function generateRivalAsset(
 ): Promise<void> {
   onProgress(item.label);
   const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const rows = rivalRowsForItem(item, manifest);
   const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
@@ -3532,7 +3748,7 @@ async function generateRivalAsset(
   throwIfCancelled(undefined, options?.signal);
   const newFrameKeys = applyRivalBoardFrames(frames, rivalAtlas.spritePackage.slots, rows);
   removeStaleBoardFrameKeys(frames, previousFrameKeys, newFrameKeys);
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3765,7 +3981,7 @@ export function resyncRenamedReviewItems(
     plan,
     manifest,
     themePlanCreativeDirection(plan),
-    boardBackgroundModeForProvider(undefined),
+    boardBackgroundModeForProvider(),
   ).filter((item) => affectedBoardIds.has(item.id));
   const savedItems = document.items.filter((item) => affectedBoardIds.has(item.id));
 
@@ -3861,7 +4077,8 @@ async function generateObjectAsset(
 ): Promise<void> {
   onProgress(`${item.label} (${progressIndex}/25)`);
   const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   if (!item.object_rows?.length) throw new Error(`${item.label} is missing object-board row metadata.`);
   const objectAtlas = await processObjectAtlas(generated, manifest, item.object_rows);
@@ -3876,7 +4093,7 @@ async function generateObjectAsset(
   // pushed them onto a later board), drop the stale keys it used to own so they
   // can't keep clobbering the board that owns them now.
   removeStaleBoardFrameKeys(frames, previousFrameKeys, newFrameKeys);
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3891,7 +4108,8 @@ async function generateExpressionAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('8-expression sprite sheet (24/25)');
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 4, 2);
   throwIfCancelled(undefined, options?.signal);
@@ -3901,7 +4119,7 @@ async function generateExpressionAsset(
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 4, rows: 2 });
   throwIfCancelled(undefined, options?.signal);
   applyExpressionFrames(frames, spritePackage.slots);
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
@@ -3916,7 +4134,8 @@ async function generateAchievementAsset(
   onProgress: (message: string) => void,
 ): Promise<void> {
   onProgress('25 achievement badges (25/25)');
-  const generated = await generateThemeImage(item.prompt, spriteBoardOptions(options));
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const output = await optimizeSpriteBoardCanvas(generated, 5, 5);
   throwIfCancelled(undefined, options?.signal);
@@ -3926,16 +4145,18 @@ async function generateAchievementAsset(
   const spritePackage = await sliceAndNormalizeAtlas(output, manifest, { columns: 5, rows: 5 });
   throwIfCancelled(undefined, options?.signal);
   applyAchievementFrames(frames, spritePackage.slots);
-  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item);
+  await markGenerated(globalStorageUri, plan.theme_id, plan.display_name, item, attempt);
   await writeThemeFiles(globalStorageUri, manifest, frames);
 }
 
 async function generateEnvironmentImage(
+  themeId: string,
+  item: { id: string; kind: ThemeImageKind; revision: number },
   prompt: string,
   options?: ThemeImageGenerationOptions,
-): Promise<Buffer> {
+): Promise<ThemeImageGenerateValue> {
   const shapeGuide = await createEnvironmentShapeGuide();
-  return generateThemeImage(prompt, {
+  return generateBoardImage(themeId, item, prompt, {
     ...options,
     aspectRatio: '3:4',
     referenceImages: [{
@@ -4350,11 +4571,13 @@ async function markGenerated(
   themeId: string,
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'>,
+  attempt?: { attemptCost: number; refunded: boolean },
 ): Promise<void> {
   await upsertThemeImageReviewItem(globalStorageUri, themeId, displayName, {
     ...item,
     status: 'pending',
     updated_at: new Date().toISOString(),
+    ...(attempt ? { attemptCost: attempt.attemptCost, lastAttemptRefunded: attempt.refunded, error_kind: undefined } : {}),
   });
 }
 

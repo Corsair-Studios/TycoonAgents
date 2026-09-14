@@ -2,7 +2,22 @@
 // provider-neutral and does not add another runtime SDK dependency.
 
 import type { ThemeManifest } from '../shared/types';
-import type { ThemeImageGenerationOptions } from './imageClient';
+/**
+ * Local, text-LLM-only settings type (p43-t1). Previously imported from
+ * imageClient.ts, which was deleted when direct-provider IMAGE generation
+ * moved to the Corsair Theme Service — theme planning/description generation
+ * here still calls the OpenAI/Gemini chat-completions endpoints directly
+ * (unaffected by that migration; see docs/theme-service-api.md's Generation
+ * section, which only covers image attempts), so this keeps its own
+ * provider/apiKey/model shape rather than sharing themeService.ts's
+ * (image-only) ThemeImageGenerationOptions.
+ */
+export interface ThemeImageGenerationOptions {
+  provider?: 'gemini' | 'openai';
+  apiKey?: string;
+  model?: string;
+  quality?: string;
+}
 import {
   FIXED_EXPRESSION_LABELS,
   normalizeThemePlan,
