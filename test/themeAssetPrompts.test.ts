@@ -88,7 +88,9 @@ test('rival prompt is a 5x4 compact board with 2-frame walk + 3-frame attack per
   const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
   assert.match(prompt, /one perfect SQUARE \(1:1 aspect ratio\)/i);
   assert.match(prompt, /5-column by 4-row grid of 20 equal cells/i);
-  assert.match(prompt, /2-frame side-view WALK cycle/i);
+  assert.match(prompt, /one complete, seamless two-frame locomotion cycle/i);
+  assert.match(prompt, /Cell 2 — Opposite contact/i);
+  assert.match(prompt, /Do not duplicate cell 1 as cell 2/i);
   assert.match(prompt, /3-frame ATTACK/i);
   assert.match(prompt, /Row 1 \(Cells 1-5\): the enemy \*\*"Rival 1"\*\*/i);
   assert.match(prompt, /Row 4 \(Cells 16-20\): the enemy \*\*"Rival 4"\*\*/i);
