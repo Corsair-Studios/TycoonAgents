@@ -3376,6 +3376,58 @@ test('THEME_IMAGE_REVIEW: renders the Creative Direction editor prefilled from t
   }
 });
 
+// Regression: an accepted (kept) item on a board other than the current
+// review gate must stay fully editable while generation is running on
+// another board — see themeService.ts's runExclusivePerTheme, which
+// serializes theme writes per theme_id, so a retry/edit for an off-gate item
+// is safe to send mid-run. Only that item's own busy state may disable it.
+test('THEME_IMAGE_REVIEW: an accepted item on a non-current gate stays editable while generation_active', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const items = [
+      {
+        id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+        status: 'accepted', prompt: 'A base environment prompt.', revision: 1, frame_keys: [],
+        image_src: 'data:image/png;base64,AAA', updated_at: '',
+      },
+      {
+        id: 'objects_01', filename: 'objects_01.png', label: 'Objects 1', kind: 'object_atlas',
+        status: 'pending', prompt: 'A base objects prompt.', revision: 0, frame_keys: [], updated_at: '',
+      },
+    ];
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: {
+        theme_id: 'smoke_theme',
+        display_name: 'Smoke Theme',
+        items,
+        creative_direction: 'a moody neon skyline',
+        generation_active: true,
+        waiting_for_review_item_id: 'objects_01',
+      },
+    });
+    h.tick(2);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `THEME_IMAGE_REVIEW threw: ${h.errors.map(String).join('; ')}`);
+
+    const list = h.doc.getElementById('theme-image-review-list');
+    assert.ok(list, 'theme-image-review-list should exist');
+    const acceptedCard = list.querySelector('.theme-review-card--accepted');
+    assert.ok(acceptedCard, 'the accepted (kept) card should render');
+    assert.ok(!acceptedCard.classList.contains('theme-review-card--current'), 'the accepted card must not be the current review gate in this scenario');
+
+    const retryBtn = acceptedCard.querySelector('.theme-review-retry');
+    assert.ok(retryBtn, 'Retry button should render on the accepted card');
+    assert.equal(retryBtn.disabled, false, 'Retry on an accepted, off-gate item must stay enabled while generation is active');
+
+    const uploadBtn = acceptedCard.querySelector('.theme-review-upload');
+    assert.ok(uploadBtn, 'Upload button should render on the accepted card');
+    assert.equal(uploadBtn.disabled, false, 'Upload on an accepted, off-gate item must stay enabled while generation is active');
+  } finally {
+    h.win.close();
+  }
+});
+
 // Regression: a THEME_IMAGE_REVIEW push arriving while the user is mid-edit
 // in the Creative Direction textarea used to rebuild the panel straight from
 // payload.creative_direction, silently discarding the unsaved typed text

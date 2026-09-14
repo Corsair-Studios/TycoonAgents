@@ -433,6 +433,12 @@ test('resyncDescriptionReviewItems rebuilds only the object board carrying the c
 
   // Review progress survives the resync untouched.
   assert.equal(refreshed[0].status, savedBoard.status);
+  // Explicit regression check: a description edit on an ACCEPTED (kept) board
+  // must never bounce it back to pending — unlike Retry/Re-slice/Upload,
+  // which do reset status (a replaced image needs re-approval). Text edits
+  // are not image replacements, so the kept status is preserved.
+  assert.equal(savedBoard.status, 'accepted');
+  assert.equal(refreshed[0].status, 'accepted');
   assert.equal(refreshed[0].revision, savedBoard.revision);
   assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
 });

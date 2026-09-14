@@ -5362,7 +5362,7 @@ if (typeof module !== "undefined" && module.exports) {
         characterNameInput.maxLength = 80;
         const savedDraft = reviewUiState.drafts.get(item.id);
         characterNameInput.value = savedDraft?.characterName || item.subject || item.label || "";
-        characterNameInput.disabled = Boolean(payload.generation_active && !isCurrentReviewGate);
+        characterNameInput.disabled = false;
         renameBtn = document.createElement("button");
         renameBtn.className = "skill-btn theme-review-rename";
         renameBtn.type = "button";
@@ -5430,7 +5430,7 @@ if (typeof module !== "undefined" && module.exports) {
         normalizeBtn.type = "button";
         normalizeBtn.dataset.idleText = "Normalize size";
         normalizeBtn.textContent = "Normalize size";
-        normalizeBtn.disabled = !item.image_src || Boolean(payload.generation_active && !isCurrentReviewGate);
+        normalizeBtn.disabled = !item.image_src;
         normalizeBtn.title = "Regenerate this character, then fit every frame to the shared production scale. Saves your creative-direction edit first.";
         if (themeReviewBusyItems.get(item.id) === "normalize") {
           normalizeBtn.disabled = true;
@@ -5464,7 +5464,7 @@ if (typeof module !== "undefined" && module.exports) {
       uploadBtn.title = item.kind === "character_atlas"
         ? "Replace this character with a 512×512 atlas image from your computer (it will be re-sliced)."
         : "Replace this image with one from your computer.";
-      uploadBtn.disabled = Boolean(payload.generation_active && !isCurrentReviewGate);
+      uploadBtn.disabled = false;
       uploadBtn.addEventListener("click", () => {
         uploadBtn.disabled = true;
         uploadBtn.textContent = "Uploading…";
@@ -5502,12 +5502,12 @@ if (typeof module !== "undefined" && module.exports) {
         item,
         savedDraft,
         themeReviewBusyItems.get(item.id) === "names_descriptions",
-        Boolean(payload.generation_active && !isCurrentReviewGate),
+        false,
         Boolean(payload.descriptionsStale),
       );
       const frameGridSection = buildThemeReviewFrameGrid(
         item,
-        Boolean(payload.generation_active && !isCurrentReviewGate),
+        false,
       );
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
@@ -5527,19 +5527,17 @@ if (typeof module !== "undefined" && module.exports) {
       const retryBusy = themeReviewBusyItems.get(item.id) === "retry";
       retryBtn.textContent = retryBusy || item.id === activeGenerationItemId
         ? "Generating..."
-        : payload.generation_active && !item.image_src && !isCurrentReviewGate
-          ? "Queued"
-          : retryIdleText;
-      // An inactive run may leave a valid review item without an image. Let the
-      // user recover that checkpoint directly; during an active run, only the
-      // exact item paused at the review gate may issue a replacement request.
-      const retryBtnBaseDisabled = retryBusy || Boolean(payload.generation_active && !isCurrentReviewGate);
+        : retryIdleText;
+      // The host serializes theme writes per theme_id (runExclusivePerTheme in
+      // themeService.ts), so issuing a retry for an item that is not the
+      // current review gate while generation is active is safe — it queues
+      // behind the in-flight write rather than racing it. Only this item's
+      // own busy state disables the button now.
+      const retryBtnBaseDisabled = retryBusy;
       retryBtn.disabled = retryBtnBaseDisabled;
       retryBtn.title = (!item.image_src && !payload.generation_active
         ? "Generate this unfinished image using the current visual description."
-        : payload.generation_active && !isCurrentReviewGate
-          ? "This image is generating or queued in the active run."
-          : "Generate a replacement using the current visual description.")
+        : "Generate a replacement using the current visual description.")
         + " Saves your creative-direction edit first.";
       retryBtn.addEventListener("click", () => {
         retryBtn.disabled = true;
@@ -5583,8 +5581,7 @@ if (typeof module !== "undefined" && module.exports) {
         resliceBtn.dataset.idleText = "Re-slice";
         const resliceBusy = themeReviewBusyItems.get(item.id) === "reslice";
         resliceBtn.textContent = resliceBusy ? "Re-slicing…" : "Re-slice";
-        resliceBtn.disabled = themeReviewBusyItems.has(item.id)
-          || Boolean(payload.generation_active && !isCurrentReviewGate);
+        resliceBtn.disabled = themeReviewBusyItems.has(item.id);
         resliceBtn.title = "Re-slice this board from its saved original image — applies the latest slicing fixes without regenerating (no image-generation cost).";
         resliceBtn.addEventListener("click", () => {
           resliceBtn.disabled = true;
