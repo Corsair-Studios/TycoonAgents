@@ -240,40 +240,22 @@ export async function handleGenerateTheme(store, broadcast, getThemeImageConfig,
     });
     requireApiKey(imageOptions);
 
-    const onProgress = (msg) =>
-      broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: msg } });
-    const onReviewReady = (themeId) => {
-      generatedThemeId = themeId;
-      broadcast('message', { type: MSG_WIRE.THEME_REVIEW_READY, payload: { theme_id: themeId } });
-    };
-    const waitForReview = async (themeId, itemId, reviewOptions) =>
-      themePauseForReview || reviewOptions?.requiresReplacement
-        ? waitForThemeImageAcceptance(themeId, itemId, abortController.signal, reviewOptions)
-        : undefined;
-
-    const r = resumeThemeId
-      ? await genBridge.resumeThemeGeneration(
-          store,
-          resumeThemeId,
-          onProgress,
-          () => abortController.signal.aborted,
-          onReviewReady,
-          imageOptions,
-          waitForReview,
-        )
-      : await genBridge.generateTheme(
-          store,
-          plan,
-          onProgress,
-          () => abortController.signal.aborted,
-          onReviewReady,
-          imageOptions,
-          waitForReview,
-        );
-    broadcast('message', {
-      type: MSG_WIRE.THEME_INITIALIZED,
-      payload: buildThemeInitPayload(r.manifest, r.frames, true),
-    });
+    // p43-t1 rerouted the real pipeline's image generation through an
+    // injected ThemeImageGenerator seam (src/extension/themeService.js's
+    // setThemeImageGenerator/currentThemeImageGenerator) that only the
+    // extension host wires up (Corsair Theme Service client). The
+    // standalone never calls setThemeImageGenerator, so every board would
+    // throw a `ThemeGenerationServiceError({kind:'unavailable'})` on its
+    // FIRST image and then hang forever: generateAndReviewThemeItem's catch
+    // records the error and awaits waitForReview(..., {requiresReplacement:
+    // true}) for a replacement image nothing in standalone can ever supply.
+    // Fail fast here instead, before entering that pipeline at all.
+    // Standalone theme-image-generation parity is tracked as plan p44 — this
+    // is the deliberate interim behavior, not a bug to silently swallow.
+    throw new Error(
+      'Theme Service generation not wired in standalone yet (see plan p44 for parity work). ' +
+        'Use the VS Code extension host to generate theme images for now.',
+    );
   } catch (err) {
     if (abortController.signal.aborted) {
       broadcast('message', {
