@@ -4967,6 +4967,49 @@ td.col-status {
   display: none;
 }
 
+/* Per-attempt cost line + refund/error notices above the Generate/Retry
+   controls (p43-t2/p43-t3). */
+.theme-attempt-cost {
+  color: var(--vscode-descriptionForeground, var(--muted));
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.theme-attempt-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
+.theme-attempt-refunded {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 70%, transparent);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 10%, transparent);
+}
+
+.theme-attempt-signin,
+.theme-attempt-credits {
+  color: var(--vscode-editorInfo-foreground, #3794ff);
+  border: 1px solid color-mix(in srgb, var(--vscode-editorInfo-foreground, #3794ff) 70%, transparent);
+  background: color-mix(in srgb, var(--vscode-editorInfo-foreground, #3794ff) 10%, transparent);
+}
+
+.theme-attempt-unavailable,
+.theme-attempt-ratelimited {
+  color: var(--vscode-editorError-foreground, #f14c4c);
+  border: 1px solid color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 70%, transparent);
+  background: color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 10%, transparent);
+}
+
+.theme-attempt-action {
+  flex: 0 0 auto;
+}
+
 .theme-image-review-list {
   display: flex;
   flex-direction: column;

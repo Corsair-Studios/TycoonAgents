@@ -488,3 +488,170 @@ test('PLAN_THEME still sends a default image_provider silently even with no prov
   assert.equal(plan.payload.image_provider, 'openai', 'image_provider should still default silently to "openai"');
   h.win.close();
 });
+
+// ── Per-attempt cost line + refund/error states in the image review (p43-t2/p43-t3) ──
+
+function baseReviewItem(overrides: any = {}) {
+  return {
+    id: 'env1',
+    kind: 'environment',
+    label: 'Environment',
+    status: 'pending',
+    revision: 1,
+    generated: true,
+    image_src: 'data:image/png;base64,AA==',
+    ...overrides,
+  };
+}
+
+function themeImageReview(payload: any) {
+  return { type: 'THEME_IMAGE_REVIEW', payload };
+}
+
+function attemptCostLine(h: any, itemId = 'env1'): string {
+  const card = h.doc.querySelector(`[data-item-id="${itemId}"]`);
+  assert.ok(card, `expected a review card for item ${itemId}`);
+  const line = card.querySelector('.theme-attempt-cost');
+  assert.ok(line, 'expected a .theme-attempt-cost line');
+  return line.textContent;
+}
+
+function attemptNotice(h: any, itemId = 'env1'): any {
+  const card = h.doc.querySelector(`[data-item-id="${itemId}"]`);
+  assert.ok(card, `expected a review card for item ${itemId}`);
+  return card.querySelector('.theme-attempt-notice');
+}
+
+test('cost line shows per-attempt cost, running total and balance', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { environment: 1 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    display_name: 'Forest',
+    creditsSpent: 7,
+    items: [baseReviewItem({ attemptCost: 1 })],
+  }));
+  const text = attemptCostLine(h);
+  assert.match(text, /This attempt costs 1 credits/);
+  assert.match(text, /Spent on this theme so far: 7 credits/);
+  assert.match(text, /Balance 12 credits/);
+  h.win.close();
+});
+
+test('cost line omits balance when not signed in and falls back to an estimated cost', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem()],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const line = card.querySelector('.theme-attempt-cost');
+  assert.match(line.textContent, /This attempt costs 1 credits/);
+  assert.ok(!/Balance/.test(line.textContent), 'balance segment should be omitted when not signed in');
+  assert.equal(line.getAttribute('title'), 'estimate');
+  h.win.close();
+});
+
+test('cost line updates without reload when a fresh THEME_SERVICE_STATUS arrives', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { environment: 1 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 7,
+    items: [baseReviewItem({ attemptCost: 1 })],
+  }));
+  assert.match(attemptCostLine(h), /Spent on this theme so far: 7 credits/);
+
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 8,
+    items: [baseReviewItem({ attemptCost: 1 })],
+  }));
+  assert.match(attemptCostLine(h), /Spent on this theme so far: 8 credits/);
+
+  h.dispatch(themeServiceStatus(signedInStatus({
+    credits: 20,
+    pricing: { ...PRICING, attemptCostByBoardType: { environment: 1 } },
+  })));
+  assert.match(attemptCostLine(h), /Balance 20 credits/, 'THEME_SERVICE_STATUS alone should re-render the review cards');
+  h.win.close();
+});
+
+test('lastAttemptRefunded shows the refunded notice and keeps Retry available', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 3,
+    items: [baseReviewItem({ lastAttemptRefunded: true, attemptCost: 2, image_src: undefined, generated: false })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-refunded'));
+  assert.equal(notice.textContent, 'Attempt failed, 2 credit(s) refunded');
+  const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
+  assert.ok(retryBtn && !retryBtn.disabled, 'Retry must remain available after a refund');
+  h.win.close();
+});
+
+test('provider_failed without a refund flag still renders the refunded notice', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 3,
+    items: [baseReviewItem({ error_kind: 'provider_failed', attemptCost: 1 })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-refunded'));
+  assert.equal(notice.textContent, 'Attempt failed, 1 credit(s) refunded');
+  h.win.close();
+});
+
+const ERROR_KIND_CASES: Array<[string, string, string]> = [
+  ['not_signed_in', 'theme-attempt-signin', 'Sign in from the Theme Builder to generate'],
+  ['insufficient_credits', 'theme-attempt-credits', 'Not enough credits'],
+  ['unavailable', 'theme-attempt-unavailable', 'Theme Service unavailable — no credits were charged'],
+  ['unreachable', 'theme-attempt-unavailable', 'Theme Service unavailable — no credits were charged'],
+  ['rate_limited', 'theme-attempt-ratelimited', 'Too many requests, try again shortly'],
+];
+
+for (const [errorKind, cls, expectedText] of ERROR_KIND_CASES) {
+  test(`error_kind ${errorKind} renders its distinct notice`, async () => {
+    const h = await bootThemePanelHarness();
+    h.dispatch(themeImageReview({
+      theme_id: 't1',
+      creditsSpent: 0,
+      items: [baseReviewItem({ error_kind: errorKind })],
+    }));
+    const notice = attemptNotice(h);
+    assert.ok(notice.classList.contains(cls), `expected class ${cls}, got ${notice.className}`);
+    assert.ok(
+      notice.textContent.startsWith(expectedText),
+      `expected notice text to start with "${expectedText}", got "${notice.textContent}"`,
+    );
+    h.win.close();
+  });
+}
+
+test('not_signed_in notice button opens the Theme Builder shell and posts OPEN_THEME_BUILDER', async () => {
+  const h = await bootThemePanelHarness();
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'not_signed_in' })],
+  }));
+  const notice = attemptNotice(h);
+  const btn = notice.querySelector('button');
+  assert.ok(btn, 'expected an action button on the not_signed_in notice');
+  btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(!shell.hasAttribute('hidden'), 'clicking the notice button should open the Theme Builder shell');
+  assert.ok(h.posted.some((p: any) => p.type === 'OPEN_THEME_BUILDER'), 'clicking should post OPEN_THEME_BUILDER');
+  h.win.close();
+});

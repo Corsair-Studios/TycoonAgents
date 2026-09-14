@@ -1240,6 +1240,10 @@
       vscode.postMessage({ type: "THEME_SERVICE_GET_STATUS" });
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
+      // p43-t2: refresh the image-review cards' attempt-cost line against
+      // the freshly-arrived credits/pricing, without waiting for the host
+      // to re-send THEME_IMAGE_REVIEW.
+      if (lastThemeImageReviewPayload) renderThemeImageReview(lastThemeImageReviewPayload);
     } else if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
       // deprecated: p40 removed the API-key UI that consumed this message;
       // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS

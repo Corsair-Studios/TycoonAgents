@@ -5384,8 +5384,105 @@ if (typeof module !== "undefined" && module.exports) {
     };
   }
 
+  // p43-t2/p43-t3: last THEME_IMAGE_REVIEW payload, kept so a later
+  // THEME_SERVICE_STATUS push (fresh credits/pricing, no new review data)
+  // can re-render the same cards with an updated cost line without waiting
+  // on the host to re-send THEME_IMAGE_REVIEW. Read by 060's message
+  // listener. `themeServiceStatus` itself is 010-modals-badges-rebirth.js's
+  // module state (shared IIFE scope, built before this file).
+  let lastThemeImageReviewPayload = null;
+
+  const THEME_ATTEMPT_ERROR_TEXT = {
+    not_signed_in: "Sign in from the Theme Builder to generate",
+    insufficient_credits: "Not enough credits",
+    unavailable: "Theme Service unavailable — no credits were charged",
+    unreachable: "Theme Service unavailable — no credits were charged",
+    rate_limited: "Too many requests, try again shortly",
+  };
+
+  function openThemeBuilderFromReview() {
+    openThemeBuilderShellModal();
+    vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
+  }
+
+  /**
+   * Above-the-controls "this attempt costs N credits" line (p43-t2). N comes
+   * from the last known THEME_SERVICE_STATUS pricing.attemptCostByBoardType
+   * for this item's board kind, falling back to "1" (marked as an estimate
+   * via the title attribute) when pricing hasn't arrived yet. M is the
+   * theme-level payload.creditsSpent; B is the last known signed-in balance,
+   * omitted entirely when not signed in.
+   * @param {any} item
+   * @param {any} payload
+   */
+  function buildThemeAttemptCostLine(item, payload) {
+    const line = document.createElement("div");
+    line.className = "theme-attempt-cost";
+    const status = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
+    const pricing = status && status.pricing;
+    const byBoard = pricing && pricing.attemptCostByBoardType;
+    const knownCost = byBoard && typeof byBoard[item.kind] === "number" ? byBoard[item.kind] : undefined;
+    const costText = typeof knownCost === "number" ? String(knownCost) : "1";
+    if (typeof knownCost !== "number") line.title = "estimate";
+    const spent = typeof payload.creditsSpent === "number" ? payload.creditsSpent : 0;
+    let text = `This attempt costs ${costText} credits · Spent on this theme so far: ${spent} credits`;
+    if (status && status.signedIn && typeof status.credits === "number") {
+      text += ` · Balance ${status.credits} credits`;
+    }
+    line.textContent = text;
+    return line;
+  }
+
+  /**
+   * Per-item refund/error notice shown above Generate/Retry (p43-t3). Each
+   * state gets its own class and plain-text message; the not_signed_in and
+   * insufficient_credits states also get a button that opens the Theme
+   * Builder shell (openThemeBuilderFromReview). Returns null when the item
+   * has nothing to report.
+   * @param {any} item
+   */
+  function buildThemeAttemptStatusNotice(item) {
+    // provider_failed without an explicit refund flag is still treated as a
+    // refund — the backend always refunds a provider failure, it just may
+    // not have set lastAttemptRefunded on this payload.
+    if (item.lastAttemptRefunded || item.error_kind === "provider_failed") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-refunded";
+      const n = typeof item.attemptCost === "number" ? item.attemptCost : 1;
+      notice.textContent = `Attempt failed, ${n} credit(s) refunded`;
+      return notice;
+    }
+    if (item.error_kind === "not_signed_in" || item.error_kind === "insufficient_credits") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-"
+        + (item.error_kind === "not_signed_in" ? "signin" : "credits");
+      notice.textContent = THEME_ATTEMPT_ERROR_TEXT[item.error_kind];
+      const btn = document.createElement("button");
+      btn.className = "skill-btn theme-attempt-action";
+      btn.type = "button";
+      btn.textContent = item.error_kind === "not_signed_in" ? "Sign in" : "Buy credits";
+      btn.addEventListener("click", () => openThemeBuilderFromReview());
+      notice.appendChild(btn);
+      return notice;
+    }
+    if (item.error_kind === "unavailable" || item.error_kind === "unreachable") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-unavailable";
+      notice.textContent = THEME_ATTEMPT_ERROR_TEXT[item.error_kind];
+      return notice;
+    }
+    if (item.error_kind === "rate_limited") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-ratelimited";
+      notice.textContent = THEME_ATTEMPT_ERROR_TEXT.rate_limited;
+      return notice;
+    }
+    return null;
+  }
+
   function renderThemeImageReview(payload) {
     if (!themeImageReview || !themeImageReviewList) return;
+    lastThemeImageReviewPayload = payload;
     // Clear/hide any stale health-check results from a previous manual click
     // so they don't linger over a new generation/review render — the health
     // panel is re-populated only by an explicit RUN_THEME_HEALTH_CHECK.
@@ -5710,6 +5807,9 @@ if (typeof module !== "undefined" && module.exports) {
       // consumes whatever visual description is currently saved. This applies
       // uniformly, including for blocked items: to recover from a block, edit
       // the description above (e.g. to neutral, non-graphic wording) then Retry.
+      const attemptCostLine = buildThemeAttemptCostLine(item, payload);
+      const attemptStatusNotice = buildThemeAttemptStatusNotice(item);
+
       const retryGuidanceHint = document.createElement("div");
       retryGuidanceHint.className = "theme-review-names-descriptions-hint";
       retryGuidanceHint.textContent = "To steer the retry, edit the visual description above, then Retry. Blank retry = fresh reroll.";
@@ -5832,6 +5932,8 @@ if (typeof module !== "undefined" && module.exports) {
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
       if (frameGridSection) body.appendChild(frameGridSection);
       body.appendChild(decisionRow);
+      body.appendChild(attemptCostLine);
+      if (attemptStatusNotice) body.appendChild(attemptStatusNotice);
       body.appendChild(retryGuidanceHint);
       body.appendChild(retryRow);
       body.appendChild(retryStatus);
@@ -12073,6 +12175,10 @@ if (typeof module !== "undefined" && module.exports) {
       vscode.postMessage({ type: "THEME_SERVICE_GET_STATUS" });
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
+      // p43-t2: refresh the image-review cards' attempt-cost line against
+      // the freshly-arrived credits/pricing, without waiting for the host
+      // to re-send THEME_IMAGE_REVIEW.
+      if (lastThemeImageReviewPayload) renderThemeImageReview(lastThemeImageReviewPayload);
     } else if (msg && msg.type === "THEME_IMAGE_SETTINGS") {
       // deprecated: p40 removed the API-key UI that consumed this message;
       // model/quality selects still exist, but GET/SAVE_THEME_IMAGE_SETTINGS
