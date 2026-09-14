@@ -384,3 +384,40 @@ test('REGENERATE_THEME_DESCRIPTIONS schema: extra fields are tolerated (passthro
     assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
   }
 });
+
+// ── OPEN_THEME_BUILDER / THEME_BUILDER_OPENED (p40-t4) ──────────────────────
+// Webview -> host OPEN_THEME_BUILDER (no payload) and the host -> webview
+// THEME_BUILDER_OPENED reply ({ signedIn: boolean }); see
+// src/host/vscode/messages.ts:262-269, panel.ts:1865-1869,
+// standalone/src/server.mjs OPEN_THEME_BUILDER_WIRE.
+
+test('MSG.OPEN_THEME_BUILDER and MSG.THEME_BUILDER_OPENED are stable, unique wire strings', () => {
+  assert.equal(MSG.OPEN_THEME_BUILDER, 'OPEN_THEME_BUILDER');
+  assert.equal(MSG.THEME_BUILDER_OPENED, 'THEME_BUILDER_OPENED');
+  assert.notEqual(MSG.OPEN_THEME_BUILDER, MSG.THEME_BUILDER_OPENED);
+});
+
+test('media/main.js still posts OPEN_THEME_BUILDER and handles THEME_BUILDER_OPENED', () => {
+  const src = readMainJs();
+  assert.ok(
+    src.includes(`"${MSG.OPEN_THEME_BUILDER}"`) || src.includes(`'${MSG.OPEN_THEME_BUILDER}'`),
+    'media/main.js has drifted — expected literal "OPEN_THEME_BUILDER" not found',
+  );
+  assert.ok(
+    src.includes(`"${MSG.THEME_BUILDER_OPENED}"`) || src.includes(`'${MSG.THEME_BUILDER_OPENED}'`),
+    'media/main.js has drifted — expected literal "THEME_BUILDER_OPENED" not found',
+  );
+});
+
+test('OPEN_THEME_BUILDER schema: no-payload message passes', () => {
+  const result = MSG_SCHEMAS.OPEN_THEME_BUILDER.safeParse({});
+  assert.equal(result.success, true);
+});
+
+test('OPEN_THEME_BUILDER schema: extra fields are tolerated (passthrough)', () => {
+  const result = MSG_SCHEMAS.OPEN_THEME_BUILDER.safeParse({ futureField: 'ignored-by-older-hosts' });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
+  }
+});

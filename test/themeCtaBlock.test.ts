@@ -266,3 +266,80 @@ test('showing THEME_IMAGE_REVIEW posts neither GET_THEME_IMAGE_SETTINGS nor SAVE
     h.win.close();
   }
 });
+
+// ── OPEN_THEME_BUILDER / THEME_BUILDER_OPENED round trip (p40-t4) ──────────
+// tab-theme-builder posts OPEN_THEME_BUILDER; THEME_BUILDER_OPENED unhides
+// #theme-builder-shell-modal; the shell's close button re-hides it; the
+// shell's continue button opens the plan-editor tab (media/src/main/
+// 010-modals-badges-rebirth.js openThemeBuilderPlanEditorTab, ~1504-1518).
+
+test('clicking #tab-theme-builder posts OPEN_THEME_BUILDER', async () => {
+  const h = await bootMinimalHarness();
+  try {
+    const tabBtn = h.doc.getElementById('tab-theme-builder');
+    assert.ok(tabBtn, '#tab-theme-builder should exist');
+    tabBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    const opened = h.posted.filter((m: any) => m && m.type === 'OPEN_THEME_BUILDER');
+    assert.equal(opened.length, 1, `expected exactly one OPEN_THEME_BUILDER post; got: ${JSON.stringify(h.posted)}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('dispatching THEME_BUILDER_OPENED unhides the shell modal, close re-hides it', async () => {
+  const h = await bootMinimalHarness();
+  try {
+    const shellModal = h.doc.getElementById('theme-builder-shell-modal');
+    assert.ok(shellModal, '#theme-builder-shell-modal should exist');
+    shellModal.setAttribute('hidden', '');
+
+    h.dispatch({ type: 'THEME_BUILDER_OPENED', payload: { signedIn: false } });
+    await h.flush();
+    assert.ok(
+      !shellModal.hasAttribute('hidden'),
+      '#theme-builder-shell-modal should be visible after THEME_BUILDER_OPENED',
+    );
+
+    const closeBtn = h.doc.getElementById('theme-builder-shell-close');
+    assert.ok(closeBtn, '#theme-builder-shell-close should exist');
+    closeBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    assert.ok(
+      shellModal.hasAttribute('hidden'),
+      '#theme-builder-shell-modal should be hidden again after clicking close',
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
+test('clicking the shell continue button opens the plan-editor tab', async () => {
+  const h = await bootMinimalHarness();
+  try {
+    const shellModal = h.doc.getElementById('theme-builder-shell-modal');
+    const themeBuilderPanel = h.doc.getElementById('theme-builder-panel');
+    assert.ok(shellModal, '#theme-builder-shell-modal should exist');
+    assert.ok(themeBuilderPanel, '#theme-builder-panel should exist');
+
+    h.dispatch({ type: 'THEME_BUILDER_OPENED', payload: { signedIn: false } });
+    await h.flush();
+    assert.ok(!shellModal.hasAttribute('hidden'), 'shell modal should be open before continue is clicked');
+
+    themeBuilderPanel.setAttribute('hidden', '');
+
+    const continueBtn = h.doc.getElementById('theme-builder-shell-continue');
+    assert.ok(continueBtn, '#theme-builder-shell-continue should exist');
+    continueBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+
+    assert.ok(shellModal.hasAttribute('hidden'), 'shell modal should close when continue is clicked');
+    assert.ok(
+      !themeBuilderPanel.hasAttribute('hidden'),
+      '#theme-builder-panel (plan editor tab) should be visible after clicking continue',
+    );
+  } finally {
+    h.win.close();
+  }
+});
