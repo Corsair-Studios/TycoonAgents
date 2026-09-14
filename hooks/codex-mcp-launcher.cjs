@@ -105,9 +105,9 @@ function looksLikeCommandNotFound(stdout, stderr) {
  * rest. Returns { ok: true } on content-verified success, or
  * { ok: false, ranButWrongContent: boolean } on failure.
  */
-function probeCandidate(command) {
+function probeCandidate(command, spawnSyncFn) {
   try {
-    const result = spawnSync(command, ["--version"], {
+    const result = spawnSyncFn(command, ["--version"], {
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
@@ -395,6 +395,17 @@ function discoverCodexBinary(requestedArgs, opts) {
   const tried = [];
   const wantsMcpServer = Array.isArray(requestedArgs) && requestedArgs.includes("mcp-server");
   const allowIncapableFallback = Boolean(opts && opts.allowIncapableFallback) && wantsMcpServer;
+  // Injectable spawnSync-shaped seam (Plan p34-t3): defaults to the real
+  // child_process.spawnSync, so CLI entry behaviour (`main()` with no
+  // override) is byte-for-byte identical to before this seam existed.
+  // Tests inject a fake that returns canned --help/--version text and
+  // records how it was called, without ever spawning a real process — this
+  // is what lets the two win32-skipped cases below run everywhere.
+  const spawnSyncFn = (opts && opts.spawnSync) || spawnSync;
+  // Per-call cache (defaults to the shared module-level cache used by
+  // getHelpText/translateMcpServerSubcommand at real runtime) so injected
+  // test spawns never collide with each other or with a prior real call.
+  const helpCache = (opts && opts.helpTextCache) || helpTextCache;
   let firstIncapable = null;
 
   function hasCapability(command) {
@@ -405,7 +416,7 @@ function discoverCodexBinary(requestedArgs, opts) {
     // binary used in tests, whose --help output is not shaped like real
     // clap output. Literal token "mcp-server" anywhere in --help is
     // sufficient signal here.
-    const help = getHelpText(command, []);
+    const help = getHelpText(command, [], spawnSyncFn, helpCache);
     if (help && help.includes("mcp-server")) return true;
     if (allowIncapableFallback && !firstIncapable) firstIncapable = command;
     process.stderr.write(
@@ -418,7 +429,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   const override = process.env["CODEX_CLI_PATH"];
   if (override) {
     tried.push(`CODEX_CLI_PATH=${override}`);
-    const probed = probeCandidate(override);
+    const probed = probeCandidate(override, spawnSyncFn);
     if (probed.ok && hasCapability(override)) {
       return override;
     }
@@ -443,7 +454,7 @@ function discoverCodexBinary(requestedArgs, opts) {
 
   for (const candidate of candidates) {
     tried.push(`${candidate.origin}: ${candidate.command}`);
-    const probed = probeCandidate(candidate.command);
+    const probed = probeCandidate(candidate.command, spawnSyncFn);
     if (probed.ok && hasCapability(candidate.command)) {
       return candidate.command;
     }
@@ -493,12 +504,14 @@ function discoverCodexBinary(requestedArgs, opts) {
 const KNOWN_MCP_SERVER_SPELLINGS = ["mcp-server", "mcp serve", "serve"];
 
 const helpTextCache = new Map();
-function getHelpText(command, subArgs) {
+function getHelpText(command, subArgs, spawnSyncFn, cache) {
+  const spawn = spawnSyncFn || spawnSync;
+  const helpCache = cache || helpTextCache;
   const key = command + "\0" + subArgs.join(" ");
-  if (helpTextCache.has(key)) return helpTextCache.get(key);
+  if (helpCache.has(key)) return helpCache.get(key);
   let text = "";
   try {
-    const result = spawnSync(command, [...subArgs, "--help"], {
+    const result = spawn(command, [...subArgs, "--help"], {
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
@@ -508,7 +521,7 @@ function getHelpText(command, subArgs) {
   } catch {
     text = "";
   }
-  helpTextCache.set(key, text);
+  helpCache.set(key, text);
   return text;
 }
 
@@ -522,19 +535,19 @@ function helpListsCommand(helpText, name) {
 }
 
 /** True only if `spelling` (one or two words) is a genuine subcommand path in this build: each word is independently confirmed present in its own --help's Commands list (never a raw substring match against unrelated help text). */
-function spellingIsValid(command, parts) {
-  const topHelp = getHelpText(command, []);
+function spellingIsValid(command, parts, spawnSyncFn, helpCache) {
+  const topHelp = getHelpText(command, [], spawnSyncFn, helpCache);
   if (!helpListsCommand(topHelp, parts[0])) return false;
   if (parts.length === 1) return true;
-  const subHelp = getHelpText(command, [parts[0]]);
+  const subHelp = getHelpText(command, [parts[0]], spawnSyncFn, helpCache);
   return helpListsCommand(subHelp, parts[1]);
 }
 
-function translateMcpServerSubcommand(command, args) {
+function translateMcpServerSubcommand(command, args, spawnSyncFn, helpCache) {
   const idx = args.lastIndexOf("mcp-server");
   if (idx === -1) return args;
 
-  const topHelp = getHelpText(command, []);
+  const topHelp = getHelpText(command, [], spawnSyncFn, helpCache);
   if (!topHelp) return args; // couldn't probe help — pass through unchanged, best-effort
 
   if (helpListsCommand(topHelp, "mcp-server")) {
@@ -544,7 +557,7 @@ function translateMcpServerSubcommand(command, args) {
   for (const spelling of KNOWN_MCP_SERVER_SPELLINGS) {
     if (spelling === "mcp-server") continue;
     const parts = spelling.split(" ");
-    if (spellingIsValid(command, parts)) {
+    if (spellingIsValid(command, parts, spawnSyncFn, helpCache)) {
       process.stderr.write(
         `codex-mcp-launcher: this Codex CLI build's --help does not list "mcp-server"; substituting "${spelling}" (confirmed present in --help). ` +
           `If this is wrong, set CODEX_CLI_PATH to a build that still supports the expected subcommand.\n`,
@@ -572,10 +585,17 @@ function translateMcpServerSubcommand(command, args) {
  * signal. Uses shell:false for the resolved absolute path so quoted -c
  * values are not mangled (see needsShell doc comment above).
  */
-function main() {
+function main(opts) {
+  const spawnSyncFn = (opts && opts.spawnSync) || spawnSync;
+  const spawnFn = (opts && opts.spawn) || spawn;
+  const helpCache = (opts && opts.helpTextCache) || helpTextCache;
   const requestedArgs = process.argv.slice(2);
   const wantsMcpServer = requestedArgs.includes("mcp-server");
-  const discovered = discoverCodexBinary(requestedArgs, { allowIncapableFallback: wantsMcpServer });
+  const discovered = discoverCodexBinary(requestedArgs, {
+    allowIncapableFallback: wantsMcpServer,
+    spawnSync: spawnSyncFn,
+    helpTextCache: helpCache,
+  });
 
   if (discovered && typeof discovered === "object" && discovered.fallbackTo) {
     // Plan p30-t1: every candidate that content-verified as Codex lacks the
@@ -589,7 +609,7 @@ function main() {
         `MCP shim (${shimPath}) against "${discovered.fallbackTo}".\n`,
     );
     const shimArgs = requestedArgs.filter((a) => a !== "mcp-server");
-    const child = spawn(process.execPath, [shimPath, ...shimArgs], {
+    const child = spawnFn(process.execPath, [shimPath, ...shimArgs], {
       stdio: "inherit",
       windowsHide: true,
       env: { ...process.env, CODEX_CLI_PATH: discovered.fallbackTo },
@@ -609,9 +629,9 @@ function main() {
   }
 
   const command = discovered;
-  const args = translateMcpServerSubcommand(command, requestedArgs);
+  const args = translateMcpServerSubcommand(command, requestedArgs, spawnSyncFn, helpCache);
 
-  const child = spawn(command, args, {
+  const child = spawnFn(command, args, {
     shell: needsShell(command),
     stdio: "inherit",
     windowsHide: true,

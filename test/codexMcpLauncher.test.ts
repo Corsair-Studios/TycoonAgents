@@ -45,15 +45,59 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-const { needsShell } = require("../../hooks/codex-mcp-launcher.cjs");
+const { needsShell, discoverCodexBinary } = require("../../hooks/codex-mcp-launcher.cjs");
 
 const IS_WIN = process.platform === "win32";
 const LAUNCHER_PATH = join(__dirname, "..", "..", "hooks", "codex-mcp-launcher.cjs");
 /** node's own bin dir — only enough PATH for fixture scripts to resolve `node` itself; not the real dev PATH. */
 const NODE_BIN_DIR = dirname(process.execPath);
 
-const PE_SKIP_REASON =
-  "requires a genuine win32 PE codex.exe spawned with shell:false (bundle/node_modules signals are hardcoded to a .exe path there); cannot fabricate one without compiling or renaming to .exe (forbidden by test-execution policy)";
+/**
+ * Fake spawnSync (Plan p34-t3): matches the same argv shape needsShell()
+ * drives real spawnSync calls with, but never spawns a real process — this
+ * is the seam that lets the two previously-win32-skipped cases below (the
+ * node_modules/VS Code bundle candidates the real ladder hardcodes to a
+ * .exe on win32, which this project's test-execution policy forbids
+ * fabricating) run on every platform. `matches` maps an exact command
+ * string to `{ version, help }` canned output; any other command is
+ * reported as "not recognized" (the same shape a real missing binary
+ * produces), matching looksLikeCommandNotFound()'s check. Every call is
+ * recorded on the returned function's `.calls` for assertions on argv/shell.
+ */
+function makeFakeSpawnSync(matches: Record<string, { version?: string; help?: string }>) {
+  const calls: { command: string; args: string[]; shell: boolean }[] = [];
+  const fn = (command: string, args: string[], options: { shell?: boolean }) => {
+    calls.push({ command, args: args.slice(), shell: Boolean(options && options.shell) });
+    const cfg = matches[command];
+    if (!cfg) {
+      return { stdout: "", stderr: `'${command}' is not recognized as an internal or external command`, status: 1, error: undefined };
+    }
+    if (args[0] === "--version") {
+      return { stdout: cfg.version || "", stderr: "", status: 0, error: undefined };
+    }
+    // Any other invocation in this file's tests is a --help probe
+    // (args is [...subArgs, "--help"]).
+    return { stdout: cfg.help || "", stderr: "", status: 0, error: undefined };
+  };
+  (fn as any).calls = calls;
+  return fn as unknown as typeof import("node:child_process").spawnSync & { calls: typeof calls };
+}
+
+/** Captures everything written to process.stderr for the duration of `fn()` (discoverCodexBinary writes its skip/failure diagnostics there directly), restoring the real stream afterward. */
+function captureStderr(fn: () => unknown): { result: unknown; stderr: string } {
+  let stderr = "";
+  const orig = process.stderr.write.bind(process.stderr);
+  (process.stderr as any).write = (chunk: any) => {
+    stderr += chunk.toString();
+    return true;
+  };
+  try {
+    const result = fn();
+    return { result, stderr };
+  } finally {
+    process.stderr.write = orig;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Shared fixture: one Node script, reused by every shim below. It is
@@ -187,39 +231,63 @@ function runLauncher(args: string[], env: NodeJS.ProcessEnv) {
 }
 
 // ---------------------------------------------------------------------------
-// (extension-signal) posix only: win32's bundle candidate is hardcoded to
-// bin/<platform>/codex.exe — a real PE, which is skipped per PE_SKIP_REASON.
+// (extension-signal) Plan p34-t3: exercises discoverCodexBinary() directly
+// (in-process, no launcher subprocess) with an injected fake spawnSync, so
+// the win32 bundle candidate (hardcoded to bin/<platform>/codex.exe, a real
+// PE the test-execution policy forbids fabricating) never needs to actually
+// be spawned — the fake matches on the exact candidate path string.
 // ---------------------------------------------------------------------------
 
-test(
-  "(extension-signal) the numerically-newest VS Code extension candidate is the one actually launched",
-  { skip: IS_WIN && PE_SKIP_REASON },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));
-    const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
-    try {
-      const platformFolder = platformFolderForThisProcess();
-      const versions = ["26.903.71938", "26.908.31748", "26.1000.1"];
-      const selfPaths: Record<string, string> = {};
-      for (const v of versions) {
-        const dir = join(home, ".vscode", "extensions", `openai.chatgpt-${v}-${process.platform}-x64`, "bin", platformFolder);
-        mkdirSync(dir, { recursive: true });
-        selfPaths[v] = writeFixtureStub(dir, "codex");
-      }
-      const env = scrubbedEnv({ ...homeOverride(home) }, emptyProjectRoot);
-      const result = runLauncher(["marker-arg"], env);
+test("(extension-signal) the numerically-newest VS Code extension candidate is the one actually launched", () => {
+  const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));
+  const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
+  const savedEnv = {
+    USERPROFILE: process.env["USERPROFILE"],
+    HOME: process.env["HOME"],
+    CODEX_CLI_PATH: process.env["CODEX_CLI_PATH"],
+    CODEX_LAUNCHER_PROJECT_ROOT: process.env["CODEX_LAUNCHER_PROJECT_ROOT"],
+    PATH: process.env["PATH"],
+    Path: process.env["Path"],
+  };
+  try {
+    process.env[HOME_ENV_KEY] = home;
+    delete process.env["CODEX_CLI_PATH"];
+    process.env["CODEX_LAUNCHER_PROJECT_ROOT"] = emptyProjectRoot;
+    // No candidate here is spawned via a real shell PATH lookup (spawnSync
+    // is fully faked), so an empty PATH only needs to keep
+    // collectNpmGlobalSignal's real `npm prefix -g` call from finding a
+    // real npm on this machine.
+    process.env["PATH"] = "";
+    process.env["Path"] = "";
 
-      assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
-      assert.ok(
-        result.stdout.includes(`SELF:${selfPaths["26.1000.1"]}`),
-        `expected the numerically-highest (26.1000.1) copy to be the one launched — lexical order would rank it below the others, got stdout: ${result.stdout}`,
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(emptyProjectRoot, { recursive: true, force: true });
+    const platformFolder = platformFolderForThisProcess();
+    const binName = IS_WIN ? "codex.exe" : "codex";
+    const versions = ["26.903.71938", "26.908.31748", "26.1000.1"];
+    const candidatePaths: Record<string, string> = {};
+    for (const v of versions) {
+      const dir = join(home, ".vscode", "extensions", `openai.chatgpt-${v}-${process.platform}-x64`, "bin", platformFolder);
+      mkdirSync(dir, { recursive: true });
+      candidatePaths[v] = join(dir, binName);
     }
-  },
-);
+    const matches: Record<string, { version: string }> = {};
+    for (const v of versions) matches[candidatePaths[v]] = { version: "codex-cli 0.0.0-test" };
+    const spawnSyncFn = makeFakeSpawnSync(matches);
+
+    const { result } = captureStderr(() => discoverCodexBinary(["marker-arg"], { spawnSync: spawnSyncFn }));
+
+    assert.equal(result, candidatePaths["26.1000.1"], "expected the numerically-highest (26.1000.1) copy to be the one resolved — lexical order would rank it below the others");
+    const versionCall = spawnSyncFn.calls.find((c) => c.command === candidatePaths["26.1000.1"] && c.args[0] === "--version");
+    assert.ok(versionCall, "expected the winning candidate to have been probed with --version");
+    assert.equal(versionCall!.shell, false, "a resolved absolute .exe/binary path must be spawned with shell:false");
+  } finally {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(home, { recursive: true, force: true });
+    rmSync(emptyProjectRoot, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // (override) both platforms: CODEX_CLI_PATH resolves through a .cmd shim on
@@ -278,60 +346,72 @@ test("(passthrough) launcher args reach the resolved binary as distinct, unmangl
 });
 
 // ---------------------------------------------------------------------------
-// (capability) posix only: the incapable candidate lives at the
-// node_modules signal's hardcoded vendor path, which is codex.exe on win32
-// (a real PE, shell:false) — skipped there per PE_SKIP_REASON.
+// (capability) Plan p34-t3: exercises discoverCodexBinary() directly with an
+// injected fake spawnSync — the incapable candidate lives at the
+// node_modules signal's hardcoded vendor path (codex.exe on win32, a real
+// PE the test-execution policy forbids fabricating), so faking the
+// --version/--help probes lets this run on every platform without ever
+// spawning that path.
 // ---------------------------------------------------------------------------
 
-test(
-  "(capability) a --help-incapable candidate is skipped, and the next candidate wins",
-  { skip: IS_WIN && PE_SKIP_REASON },
-  () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-proj-"));
-    const pathDir = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-pathbin-"));
-    const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
-    try {
-      // Rung 2 (node_modules): a content-verified but MCP-server-incapable
-      // candidate — package.json present (so the signal trusts this tree),
-      // vendor binary present, NO_MCP_SERVER marker dropped next to it so
-      // this fixture's --help omits "mcp-server".
-      const triple = process.platform === "darwin" ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin") : "x86_64-unknown-linux-musl";
-      const pkg = process.platform === "darwin" ? (process.arch === "arm64" ? "codex-darwin-arm64" : "codex-darwin-x64") : "codex-linux-x64";
-      const nmDir = join(projectRoot, "node_modules");
-      mkdirSync(join(nmDir, "@openai", "codex"), { recursive: true });
-      writeFileSync(join(nmDir, "@openai", "codex", "package.json"), "{}", "utf8");
-      const vendorDir = join(nmDir, "@openai", pkg, "vendor", triple, "bin");
-      mkdirSync(vendorDir, { recursive: true });
-      const incapableSelf = writeFixtureStub(vendorDir, "codex");
-      writeFileSync(join(vendorDir, "NO_MCP_SERVER"), "", "utf8");
+test("(capability) a --help-incapable candidate is skipped, and the next candidate wins", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-proj-"));
+  const emptyHome = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-home-"));
+  const savedEnv: NodeJS.ProcessEnv = {
+    CODEX_LAUNCHER_PROJECT_ROOT: process.env["CODEX_LAUNCHER_PROJECT_ROOT"],
+    CODEX_CLI_PATH: process.env["CODEX_CLI_PATH"],
+    PATH: process.env["PATH"],
+    Path: process.env["Path"],
+    [HOME_ENV_KEY]: process.env[HOME_ENV_KEY],
+  };
+  try {
+    delete process.env["CODEX_CLI_PATH"];
+    process.env[HOME_ENV_KEY] = emptyHome;
+    // Nothing here is actually spawned via a shell PATH lookup (spawnSync
+    // is fully faked below), so an empty PATH is sufficient — it only
+    // needs to keep collectNpmGlobalSignal's real `npm prefix -g` call
+    // from finding a real npm on this machine.
+    process.env["PATH"] = "";
+    process.env["Path"] = "";
+    // Rung 2 (node_modules): a content-verified but MCP-server-incapable
+    // candidate — package.json present (so the signal trusts this tree)
+    // and the vendor path built from the real target-triple map; the
+    // binary itself is never written to disk since the fake spawnSync
+    // matches on the path string, not real file content.
+    const triple = process.platform === "darwin" ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin") : process.platform === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-musl";
+    const pkg = process.platform === "darwin" ? (process.arch === "arm64" ? "codex-darwin-arm64" : "codex-darwin-x64") : process.platform === "win32" ? "codex-win32-x64" : "codex-linux-x64";
+    const nmDir = join(projectRoot, "node_modules");
+    mkdirSync(join(nmDir, "@openai", "codex"), { recursive: true });
+    writeFileSync(join(nmDir, "@openai", "codex", "package.json"), "{}", "utf8");
+    const vendorDir = join(nmDir, "@openai", pkg, "vendor", triple, "bin");
+    const incapablePath = join(vendorDir, IS_WIN ? "codex.exe" : "codex");
 
-      // Rung 3 (PATH): a capable candidate — same fixture, no marker.
-      const capableSelf = writeFixtureStub(pathDir, "codex");
+    // Rung 3 (PATH): a capable candidate — the bare "codex" PATH lookup.
+    const capableCommand = "codex";
 
-      const env = scrubbedEnv(
-        {
-          ...homeOverride(projectRoot),
-          CODEX_LAUNCHER_PROJECT_ROOT: projectRoot,
-          PATH: `${pathDir}${IS_WIN ? ";" : ":"}${NODE_BIN_DIR}`,
-        },
-        emptyProjectRoot,
-      );
-      const result = runLauncher(["mcp-server"], env);
+    process.env["CODEX_LAUNCHER_PROJECT_ROOT"] = projectRoot;
 
-      const stderr = result.stderr || "";
-      assert.ok(
-        stderr.includes(`skipping "${incapableSelf}"`) && stderr.includes('does not mention "mcp-server"'),
-        `expected the incapable node_modules candidate to be named and skipped, got stderr:\n${stderr}`,
-      );
-      assert.equal(result.status, 0, `expected the PATH candidate to win after the skip, stderr: ${stderr}`);
-      assert.ok(result.stdout.includes(`SELF:${capableSelf}`), `expected the capable PATH candidate to be the one launched, got stdout: ${result.stdout}`);
-    } finally {
-      rmSync(projectRoot, { recursive: true, force: true });
-      rmSync(pathDir, { recursive: true, force: true });
-      rmSync(emptyProjectRoot, { recursive: true, force: true });
+    const spawnSyncFn = makeFakeSpawnSync({
+      [incapablePath]: { version: "codex-cli 0.0.0-test", help: "Commands:\n  version   Show version\n  help      Show this help\n" },
+      [capableCommand]: { version: "codex-cli 0.0.0-test", help: "Commands:\n  mcp-server   Run the MCP stdio server\n  version      Show version\n" },
+    });
+
+    const { result, stderr } = captureStderr(() => discoverCodexBinary(["mcp-server"], { spawnSync: spawnSyncFn }));
+
+    assert.ok(
+      stderr.includes(`skipping "${incapablePath}"`) && stderr.includes('does not mention "mcp-server"'),
+      `expected the incapable node_modules candidate to be named and skipped, got stderr:\n${stderr}`,
+    );
+    assert.equal(result, capableCommand, `expected the capable PATH candidate to win after the skip, stderr:\n${stderr}`);
+  } finally {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
     }
-  },
-);
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(emptyHome, { recursive: true, force: true });
+  }
+});
 
 test("(override) a nonexistent CODEX_CLI_PATH is reported to stderr and discovery falls through", () => {
   const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));

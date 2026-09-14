@@ -148,60 +148,65 @@ function platformFolderForThisProcess(): string {
   return "linux-x86_64";
 }
 
-// On win32 the VS Code extension rung specifically probes `codex.exe` — a
-// real PE image is required (CreateProcess rejects a text file merely named
-// .exe), and this project's test-execution policy forbids compiling or
-// renaming any file to .exe. These two cases are therefore only exercised
-// on posix, where the candidate is a plain `codex` script; on win32 they are
-// skipped rather than faked.
-test(
-  "VS Code extension rung: finds the bundled codex binary under ~/.vscode/extensions/openai.chatgpt-*/bin/<platform>/codex",
-  { skip: IS_WIN && "requires a genuine win32 PE codex.exe; cannot fabricate one without compiling/renaming to .exe (forbidden by test-execution policy)" },
-  () => {
-    const snap = snapshotEnv();
-    const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-"));
-    try {
-      sandboxEnv(dir);
-      const platformFolder = platformFolderForThisProcess();
-      const extDir = join(dir, ".vscode", "extensions", "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
-      mkdirSync(extDir, { recursive: true });
-      const stub = writeStub(extDir, "codex", "codex-cli 26.901.22334");
+// The VS Code extension rung hardcodes `codex.exe` as the candidate name on
+// win32, and this project's test-execution policy forbids compiling or
+// renaming any file to .exe. Plan p34-t3: discoverCodexBinary() now accepts
+// an injectable `exec` (execFileSync-shaped) via its options argument, so
+// these two cases fake the `--version` probe entirely — the candidate path
+// only has to exist on disk for fs.readdirSync() to see it (this signal's
+// directory walk is untouched, real fs), never to actually be executed —
+// and run identically on every platform instead of being skipped on win32.
+function makeExec(matches: Record<string, string>): (command: string) => string {
+  return (command: string) => {
+    if (Object.prototype.hasOwnProperty.call(matches, command)) return matches[command];
+    throw new Error(`ENOENT: no fake output configured for "${command}"`);
+  };
+}
 
-      const resolved = discoverCodexBinary();
-      assert.equal(resolved, stub, "must resolve the bundled extension binary when no other signal matches");
-    } finally {
-      restoreEnv(snap);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-);
+test("VS Code extension rung: finds the bundled codex binary under ~/.vscode/extensions/openai.chatgpt-*/bin/<platform>/codex", () => {
+  const snap = snapshotEnv();
+  const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-"));
+  try {
+    sandboxEnv(dir);
+    const platformFolder = platformFolderForThisProcess();
+    const extDir = join(dir, ".vscode", "extensions", "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
+    mkdirSync(extDir, { recursive: true });
+    const binName = IS_WIN ? "codex.exe" : "codex";
+    const candidatePath = join(extDir, binName);
 
-test(
-  "VS Code extension rung: prefers the highest version when multiple extension folders are installed",
-  { skip: IS_WIN && "requires a genuine win32 PE codex.exe; cannot fabricate one without compiling/renaming to .exe (forbidden by test-execution policy)" },
-  () => {
-    const snap = snapshotEnv();
-    const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-multi-"));
-    try {
-      sandboxEnv(dir);
-      const platformFolder = platformFolderForThisProcess();
-      const extensionsRoot = join(dir, ".vscode", "extensions");
+    const resolved = discoverCodexBinary({ exec: makeExec({ [candidatePath]: "codex-cli 26.901.22334" }) });
+    assert.equal(resolved, candidatePath, "must resolve the bundled extension binary when no other signal matches");
+  } finally {
+    restoreEnv(snap);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-      const oldDir = join(extensionsRoot, "openai.chatgpt-1.0.0-win32-x64", "bin", platformFolder);
-      const newDir = join(extensionsRoot, "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
-      mkdirSync(oldDir, { recursive: true });
-      mkdirSync(newDir, { recursive: true });
-      writeStub(oldDir, "codex", "codex-cli 1.0.0");
-      const newStub = writeStub(newDir, "codex", "codex-cli 26.901.22334");
+test("VS Code extension rung: prefers the highest version when multiple extension folders are installed", () => {
+  const snap = snapshotEnv();
+  const dir = mkdtempSync(join(tmpdir(), "codex-disc-vscodeext-multi-"));
+  try {
+    sandboxEnv(dir);
+    const platformFolder = platformFolderForThisProcess();
+    const extensionsRoot = join(dir, ".vscode", "extensions");
 
-      const resolved = discoverCodexBinary();
-      assert.equal(resolved, newStub, "must prefer the higher-version extension folder");
-    } finally {
-      restoreEnv(snap);
-      rmSync(dir, { recursive: true, force: true });
-    }
-  },
-);
+    const oldDir = join(extensionsRoot, "openai.chatgpt-1.0.0-win32-x64", "bin", platformFolder);
+    const newDir = join(extensionsRoot, "openai.chatgpt-26.901.22334-win32-x64", "bin", platformFolder);
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(newDir, { recursive: true });
+    const binName = IS_WIN ? "codex.exe" : "codex";
+    const oldPath = join(oldDir, binName);
+    const newPath = join(newDir, binName);
+
+    const resolved = discoverCodexBinary({
+      exec: makeExec({ [oldPath]: "codex-cli 1.0.0", [newPath]: "codex-cli 26.901.22334" }),
+    });
+    assert.equal(resolved, newPath, "must prefer the higher-version extension folder");
+  } finally {
+    restoreEnv(snap);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("found-but-not-codex: a binary that runs but whose output lacks the codex-cli signature is rejected", () => {
   const snap = snapshotEnv();

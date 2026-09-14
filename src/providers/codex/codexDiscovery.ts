@@ -56,6 +56,34 @@ interface CodexCandidate {
 /** Content signal Phase 1 observed: `codex --version` prints "codex-cli " followed by a semver, e.g. "codex-cli 0.124.0". Matching on this (not merely exit code 0) is the content-based verification criterion 3 in docs/PATH-DISCOVERY.md requires. */
 const CODEX_VERSION_PREFIX = "codex-cli ";
 
+/**
+ * Injectable execFileSync-shaped seam (Plan p34-t3): every probe in this
+ * module runs `<command> --version` through this function instead of
+ * calling child_process.execFileSync directly. Defaults to the real
+ * execFileSync so production/CLI behaviour is byte-for-byte unchanged when
+ * no override is supplied. Tests inject a fake that returns canned output
+ * for a given command WITHOUT spawning any real process — this is what
+ * lets the two VS Code-extension-rung cases (previously skipped on win32
+ * because that rung hardcodes a `codex.exe` candidate name, and this
+ * project's test-execution policy forbids compiling or renaming a file to
+ * .exe) run on every platform: the candidate path only needs to exist for
+ * fs.readdirSync() to see it, never to actually be executed.
+ */
+export type CodexExecFn = (command: string) => string;
+
+const defaultExec: CodexExecFn = (command) =>
+  execFileSync(command, ["--version"], {
+    shell: true,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+
+export interface CodexDiscoveryOptions {
+  /** Override for the `<command> --version` probe. Defaults to a real execFileSync call. */
+  exec?: CodexExecFn;
+}
+
 /** Shell "command not found" shapes observed/expected across platforms (Windows cmd.exe confirmed in Phase 1; POSIX "command not found" carried forward by analogy per docs/provider-contract.md's binary-absent entry). */
 const NOT_RECOGNIZED_PATTERNS = [
   /is not recognized as an internal or external command/i,
@@ -76,14 +104,9 @@ function looksLikeCommandNotFound(stdout: string, stderr: string): boolean {
  * never abort discovery of the rest. Returns the resolved command string on
  * success (content-verified as genuine Codex CLI output), or null.
  */
-function probeCandidate(command: string): string | null {
+function probeCandidate(command: string, exec: CodexExecFn): string | null {
   try {
-    const stdout = execFileSync(command, ["--version"], {
-      shell: true,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10_000,
-    });
+    const stdout = exec(command);
     if (stdout.trim().startsWith(CODEX_VERSION_PREFIX)) {
       return command;
     }
@@ -101,14 +124,9 @@ function probeCandidate(command: string): string | null {
 }
 
 /** True if this specific candidate ran and produced output, but the content didn't match Codex's signature — used to prefer reporting "found-but-not-codex" over the generic "binary-absent" when we can tell the difference. */
-function probeRanButWrongContent(command: string): boolean {
+function probeRanButWrongContent(command: string, exec: CodexExecFn): boolean {
   try {
-    const stdout = execFileSync(command, ["--version"], {
-      shell: true,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10_000,
-    });
+    const stdout = exec(command);
     return stdout.trim().length > 0 && !stdout.trim().startsWith(CODEX_VERSION_PREFIX);
   } catch {
     return false;
@@ -312,17 +330,18 @@ function compareExtensionFolderVersions(a: string, b: string): number {
  * tried and naming CODEX_BINARY_PATH as the override to set. Never returns
  * an empty string, null, or other success-shaped placeholder.
  */
-export function discoverCodexBinary(): string {
+export function discoverCodexBinary(opts?: CodexDiscoveryOptions): string {
+  const exec = (opts && opts.exec) || defaultExec;
   const tried: string[] = [];
 
   const override = process.env["CODEX_BINARY_PATH"];
   if (override) {
     tried.push(`CODEX_BINARY_PATH=${override}`);
-    const resolved = probeCandidate(override);
+    const resolved = probeCandidate(override, exec);
     if (resolved) {
       return resolved;
     }
-    if (probeRanButWrongContent(override)) {
+    if (probeRanButWrongContent(override, exec)) {
       throw new CodexDiscoveryError(
         "found-but-not-codex",
         `CODEX_BINARY_PATH is set to "${override}", but running it with --version did not produce Codex CLI's ` +
@@ -350,11 +369,11 @@ export function discoverCodexBinary(): string {
   let sawWrongContent = false;
   for (const candidate of candidates) {
     tried.push(`${candidate.origin}: ${candidate.command}`);
-    const resolved = probeCandidate(candidate.command);
+    const resolved = probeCandidate(candidate.command, exec);
     if (resolved) {
       return resolved;
     }
-    if (!sawWrongContent && probeRanButWrongContent(candidate.command)) {
+    if (!sawWrongContent && probeRanButWrongContent(candidate.command, exec)) {
       sawWrongContent = true;
     }
   }
