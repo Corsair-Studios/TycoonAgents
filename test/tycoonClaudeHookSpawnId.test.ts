@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -115,6 +115,25 @@ test("two concurrent same-subagent_type spawns, neither with a bound instanceId:
       spawnIdB,
       `second SubagentStop should carry spawn B's spawnId (${spawnIdB}), got ${stopRecords[1].spawnId}`,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a subagent's own SessionStart/SessionStop (agent_id present) appends nothing; an orchestrator SessionStart/SessionStop (no agent_id) appends the record as before", () => {
+  const root = setupProject();
+  try {
+    runHook(root, { hook_event_name: "SessionStart", agent_id: "sub-1", session_id: "s1" });
+    runHook(root, { hook_event_name: "SessionStop", agent_id: "sub-1", session_id: "s1" });
+    const activityPath = join(root, ".claude", "tycoon", "activity.jsonl");
+    assert.ok(!existsSync(activityPath), "subagent SessionStart/SessionStop must append nothing (no activity file created)");
+
+    runHook(root, { hook_event_name: "SessionStart", session_id: "s1" });
+    runHook(root, { hook_event_name: "SessionStop", session_id: "s1" });
+    const records = readActivity(root);
+    assert.equal(records.length, 2, "orchestrator SessionStart/SessionStop must still append");
+    assert.equal(records[0].event, "SessionStart");
+    assert.equal(records[1].event, "SessionStop");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

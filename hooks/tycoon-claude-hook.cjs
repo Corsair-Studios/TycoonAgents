@@ -2188,6 +2188,22 @@ function main(raw) {
     }
   }
 
+  // SessionStart/SessionStop fired from INSIDE a spawned subagent's own
+  // Claude Code session (payload.agent_id present) must never fall through
+  // to the generic record builder below: mapHookRecord.ts maps this event
+  // to {type:"SessionStart"}/{type:"SessionStop"}, which state.ts's
+  // orphan-sweep reducers (~458/536) clear EVERY active worker's
+  // currentDescription/liveSpawns on — a subagent merely starting/ending
+  // its own turn would wipe every OTHER worker's live spawn bookkeeping.
+  // Orchestrator SessionStart/SessionStop (no agent_id) is unaffected.
+  if (
+    (hookEvent === "SessionStart" || hookEvent === "SessionStop") &&
+    typeof payload.agent_id === "string" &&
+    payload.agent_id !== ""
+  ) {
+    process.exit(0);
+  }
+
   /** @type {Record<string, unknown>} */
   const record = {
     event: hookEvent,
