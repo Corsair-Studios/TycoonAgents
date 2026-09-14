@@ -107,6 +107,17 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   void bundledThemesReady;
 
+  // p42-t1: Google sign-in deep link (vscode://<publisher>.<name>/theme-service-auth?code=...).
+  // No manifest contribution is needed for registerUriHandler — it's a
+  // runtime API, not a `contributes` entry — this call alone is sufficient.
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri(uri) {
+        TycoonPanel.handleUriCallback(uri);
+      },
+    }),
+  );
+
   // Command: open (or reveal) the TycoonAgents panel
   const openCmd = vscode.commands.registerCommand("tycoonagents.open", () => {
     const panel = TycoonPanel.createOrShow(context.extensionUri, runtime, context.globalStorageUri, context.secrets, bundledThemesReady);

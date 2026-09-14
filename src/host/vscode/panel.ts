@@ -64,6 +64,7 @@ import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
 import { describeFsError } from "./fsErrors";
+import { createThemeServiceHost, type ThemeServiceHost, type ThemeServiceHostStatus } from "./themeServiceHost";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -697,6 +698,9 @@ export class TycoonPanel {
   private _getRunningProviderId: (() => ProviderId | undefined) | undefined;
   private _disposables: vscode.Disposable[] = [];
   private _runtimeDisposable: { dispose(): void } | undefined;
+  /** p42-t1: Theme Service auth/balance/checkout host, owns its own polling
+   * and the in-memory Google PKCE code verifier. Disposed in dispose(). */
+  private readonly _themeServiceHost: ThemeServiceHost;
   private _enginePollInterval: NodeJS.Timeout | undefined;
   /**
    * Incremental read state for the session-scoped delegationHealth rebuild
@@ -868,6 +872,21 @@ export class TycoonPanel {
     this._getRunningProviderId = getRunning;
   }
 
+  /**
+   * p42-t1: registered once by extension.ts's activate() via
+   * `vscode.window.registerUriHandler`, for the `vscode://<publisher>.<name>/
+   * theme-service-auth?code=...` Google sign-in deep link. Forwards to
+   * whichever panel is currently open — there is at most one
+   * (TycoonPanel.currentPanel) — and is a no-op if none is open (the pasted-
+   * code fallback in the webview covers that case).
+   */
+  public static handleUriCallback(uri: vscode.Uri): void {
+    if (uri.path !== "/theme-service-auth") return;
+    const code = new URLSearchParams(uri.query).get("code");
+    if (!code) return;
+    void TycoonPanel.currentPanel?._themeServiceHost.handleUriCallback(code);
+  }
+
   public static createOrShow(
     extensionUri: vscode.Uri,
     runtime: Runtime,
@@ -921,6 +940,30 @@ export class TycoonPanel {
     this._runtime = runtime;
     this._globalStorageUri = globalStorageUri;
     this._secrets = secrets;
+
+    this._themeServiceHost = createThemeServiceHost({
+      secrets,
+      openExternal: (url) => {
+        void vscode.env.openExternal(vscode.Uri.parse(url));
+      },
+      postStatus: (status: ThemeServiceHostStatus) => {
+        void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
+      },
+    });
+    this._themeServiceHost.start();
+    // Refresh status whenever the panel becomes visible again (tab
+    // switch/restore) — cheap (one getStatus call) and keeps a stale
+    // signed-out/balance view from lingering after e.g. completing sign-in
+    // in the browser and switching back.
+    this._panel.onDidChangeViewState(
+      (e) => {
+        if (e.webviewPanel.visible) {
+          void this._themeServiceHost.handleGetStatus();
+        }
+      },
+      null,
+      this._disposables,
+    );
 
     // Inject the vscode-backed ThemeFileStore (project-plan task pA-t1) once,
     // so themeStorage.ts/themeService.ts do all theme file I/O through it
@@ -1864,9 +1907,41 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.OPEN_THEME_BUILDER) {
           // p40-t3: webview -> host, no payload. The webview opens the Theme
-          // Builder panel shell only after this reply; signedIn is hardcoded
-          // false until p42 wires real Theme Service auth.
-          void this._panel.webview.postMessage({ type: MSG.THEME_BUILDER_OPENED, payload: { signedIn: false } });
+          // Builder panel shell only after this reply. p42-t1: signedIn/
+          // email/credits/pricing now come from a real Theme Service status
+          // check instead of the old hardcoded { signedIn: false }.
+          const parsedOpen = MSG_SCHEMAS.OPEN_THEME_BUILDER.safeParse((message as any).payload);
+          if (!parsedOpen.success) return;
+          const openStatus = await this._themeServiceHost.getStatusSnapshot();
+          void this._panel.webview.postMessage({ type: MSG.THEME_BUILDER_OPENED, payload: openStatus });
+        } else if (message.type === MSG.THEME_SERVICE_GET_STATUS) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GET_STATUS.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleGetStatus();
+        } else if (message.type === MSG.THEME_SERVICE_REQUEST_MAGIC_LINK) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleRequestMagicLink(parsed.data.email);
+        } else if (message.type === MSG.THEME_SERVICE_VERIFY) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleVerify(parsed.data.email, parsed.data.code);
+        } else if (message.type === MSG.THEME_SERVICE_GOOGLE_START) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_START.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleGoogleStart();
+        } else if (message.type === MSG.THEME_SERVICE_GOOGLE_COMPLETE) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleGoogleComplete(parsed.data.code);
+        } else if (message.type === MSG.THEME_SERVICE_SIGN_OUT) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleSignOut();
+        } else if (message.type === MSG.THEME_SERVICE_BUY_CREDITS) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          await this._themeServiceHost.handleBuyCredits(parsed.data.pack);
         } else if (message.type === MSG.REVEAL_THEME_IMAGE) {
           // Right-click "Open file location" on a review board — reveal its
           // saved image file in the OS explorer. Fully guarded: a missing
@@ -9053,6 +9128,7 @@ export class TycoonPanel {
       clearTimeout(this._mcpWatcherDebounce);
       this._mcpWatcherDebounce = undefined;
     }
+    this._themeServiceHost.dispose();
     this._runtimeDisposable?.dispose();
     this._panel.dispose();
     for (const d of this._disposables) {

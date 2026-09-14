@@ -263,9 +263,12 @@ export const MSG = {
   // (tab-theme-builder in the themes modal) is clicked, before the webview
   // opens the theme-builder-shell-modal panel.
   OPEN_THEME_BUILDER: "OPEN_THEME_BUILDER",
-  // Host -> webview reply to OPEN_THEME_BUILDER. Payload: { signedIn: boolean }
-  // — hardcoded false until p42 wires real Theme Service auth. The webview
-  // only opens the shell modal once this arrives.
+  // Host -> webview reply to OPEN_THEME_BUILDER. Payload: same shape as
+  // THEME_SERVICE_STATUS (signedIn, email?, provider?, credits?, pricing?,
+  // pendingCheckout?, error?) — p42-t1 wires this to a real
+  // themeServiceHost.getStatus() call instead of the old hardcoded
+  // { signedIn: false }. The webview only opens the shell modal once this
+  // arrives.
   THEME_BUILDER_OPENED: "THEME_BUILDER_OPENED",
 
   // ---- theme image review / retry / reslice / normalize / rename ---------
@@ -373,6 +376,32 @@ export const MSG = {
   // fresh ENV_PROBE reply for the affected name.
   SET_LOCAL_ENV_VALUE: "setLocalEnvValue",
   CLEAR_LOCAL_ENV_VALUE: "clearLocalEnvValue",
+
+  // ---- Theme Service auth / balance / checkout (p42-t1) ------------------
+  // Webview -> host, no payload. Host replies with THEME_SERVICE_STATUS.
+  THEME_SERVICE_GET_STATUS: "THEME_SERVICE_GET_STATUS",
+  // Webview -> host: { email }. Requests a magic-link/OTP email.
+  THEME_SERVICE_REQUEST_MAGIC_LINK: "THEME_SERVICE_REQUEST_MAGIC_LINK",
+  // Webview -> host: { email, code }. Verifies the OTP code from that email.
+  THEME_SERVICE_VERIFY: "THEME_SERVICE_VERIFY",
+  // Webview -> host, no payload. Starts Google OAuth (PKCE); host opens the
+  // browser URL via vscode.env.openExternal and keeps the code verifier in
+  // memory. Completion arrives either via the registered URI handler
+  // (vscode://<publisher>.<name>/theme-service-auth?code=...) or the pasted-
+  // code fallback (THEME_SERVICE_GOOGLE_COMPLETE).
+  THEME_SERVICE_GOOGLE_START: "THEME_SERVICE_GOOGLE_START",
+  // Webview -> host: { code? } — pasted-code fallback for Google sign-in
+  // when the deep link doesn't reach VS Code. Same completion path as the
+  // URI handler.
+  THEME_SERVICE_GOOGLE_COMPLETE: "THEME_SERVICE_GOOGLE_COMPLETE",
+  // Webview -> host, no payload.
+  THEME_SERVICE_SIGN_OUT: "THEME_SERVICE_SIGN_OUT",
+  // Webview -> host: { pack }. Opens a Stripe checkout URL and begins
+  // polling getStatus while pendingCheckout is true.
+  THEME_SERVICE_BUY_CREDITS: "THEME_SERVICE_BUY_CREDITS",
+  // Host -> webview: current auth/balance/pricing snapshot. Never carries
+  // any token — see themeServiceHost.ts.
+  THEME_SERVICE_STATUS: "THEME_SERVICE_STATUS",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -778,5 +807,30 @@ export const MSG_SCHEMAS = {
   // preserves.
   SET_OFFLOAD_OFFER_DISMISSED: z
     .object({ dismissed: z.boolean(), accepted: z.boolean().optional() })
+    .passthrough(),
+
+  // ---- Theme Service auth / balance / checkout (p42-t1) -------------------
+  THEME_SERVICE_GET_STATUS: z.object({}).passthrough(),
+  THEME_SERVICE_REQUEST_MAGIC_LINK: z.object({ email: z.string().min(1) }).passthrough(),
+  THEME_SERVICE_VERIFY: z.object({ email: z.string().min(1), code: z.string().min(1) }).passthrough(),
+  THEME_SERVICE_GOOGLE_START: z.object({}).passthrough(),
+  // `code` is optional so the same schema covers the pasted-code fallback's
+  // empty-submit guard client-side; the host treats an empty/missing code as
+  // a no-op rather than a completion attempt.
+  THEME_SERVICE_GOOGLE_COMPLETE: z.object({ code: z.string().optional() }).passthrough(),
+  THEME_SERVICE_SIGN_OUT: z.object({}).passthrough(),
+  THEME_SERVICE_BUY_CREDITS: z.object({ pack: z.string().min(1) }).passthrough(),
+  // Outbound host -> webview. `error` is present only when the most recent
+  // action failed; never includes token material.
+  THEME_SERVICE_STATUS: z
+    .object({
+      signedIn: z.boolean(),
+      email: z.string().optional(),
+      provider: z.string().optional(),
+      credits: z.number().optional(),
+      pricing: z.record(z.unknown()).optional(),
+      pendingCheckout: z.boolean().optional(),
+      error: z.object({ kind: z.string(), message: z.string() }).optional(),
+    })
     .passthrough(),
 } as const;
