@@ -1518,8 +1518,12 @@
     }
   }
 
+  function openThemeBuilderShellModal() {
+    if (themeBuilderShellModal && themeBuilderShellClose) openModal(themeBuilderShellModal, themeBuilderShellClose);
+  }
+
   function closeThemeBuilderShellModal() {
-    if (themeBuilderShellModal) themeBuilderShellModal.setAttribute("hidden", "");
+    if (themeBuilderShellModal) closeModal(themeBuilderShellModal);
   }
 
   if (themeBuilderShellClose) themeBuilderShellClose.addEventListener("click", closeThemeBuilderShellModal);

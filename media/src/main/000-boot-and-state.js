@@ -1013,7 +1013,9 @@
   // it was opened more recently, then about modal, then menu.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (themeSwitchConfirmModalEl && !themeSwitchConfirmModalEl.hasAttribute("hidden")) {
+      if (themeBuilderShellModal && !themeBuilderShellModal.hasAttribute("hidden")) {
+        closeModal(themeBuilderShellModal);
+      } else if (themeSwitchConfirmModalEl && !themeSwitchConfirmModalEl.hasAttribute("hidden")) {
         closeThemeSwitchConfirmModal();
         selectedThemeId = themeSwitchConfirmPreviousId;
         renderThemesList(lastThemesList);

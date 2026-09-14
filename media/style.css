@@ -4253,13 +4253,6 @@ td.col-status {
   text-align: left;
 }
 
-.theme-picker-actions {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  margin-top: 8px;
-}
-
 /* ── Themes page CTA block (p40): Theme Builder promoted to its own line as
    the primary action, Import .zip demoted to a secondary line below. ───── */
 .theme-cta-block {
@@ -5746,13 +5739,6 @@ button.theme-review-preview:focus-visible::after {
   padding: 1px 5px;
   margin: 0 4px;
   vertical-align: middle;
-}
-
-/* ── Theme library group (Change: reorganized Themes modal IA) ──────────── */
-.theme-library-caption {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 11px;
 }
 
 /* ── Selected-theme group: scoped to the current selection, separated from
