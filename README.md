@@ -104,6 +104,23 @@ Prefer to author outside VS Code? There's a **standalone theme host** in [`stand
 
 > Image generation happens **only at authoring time**, through the Corsair Theme Service. The shipped plugin still makes zero runtime AI calls — themes are just data.
 
+### Prompt tips
+
+- State the **subject** plainly first (what the character/object/enemy is), then style — the model reads left to right.
+- Pin down an **art style** (e.g. "flat vector," "painterly pixel art," "clean cel-shaded") and repeat it across boards so the whole theme reads as one set.
+- Name an explicit **palette** (2-4 colors) rather than leaving color to chance — it's the fastest way to keep sprites from clashing.
+- Favor a strong, readable **silhouette** — sprites render small on the stage, so shape and contrast matter more than fine detail.
+- Lock a consistent **camera/side view** (e.g. "3/4 side view, facing right") across every character and enemy board so the set feels like one game.
+- Say what to **avoid**: no embedded text, no logos or watermarks, no background scenery, and no more than one character per cell.
+- Keep descriptions **short and concrete** — a cluttered prompt usually produces a cluttered sprite.
+- Every generation attempt is billed, including retries, so refine the creative direction and description before regenerating rather than retrying repeatedly on the same prompt.
+
+### Sign-in and credits
+
+*(rolling out: sign-in and purchases require the Corsair Theme Service, which is not yet live)*
+
+Sign in with Google or an emailed one-time code. Your credit balance shows in the Theme Builder panel and as a chip on the Themes page. Credits are bought in packs through Stripe Checkout, opened in your browser. Each generation attempt costs credits per board — retries cost the same as the original attempt — while re-slicing an existing image is free, and a failed generation is refunded automatically. Imported `.zip` themes and hand-made themes never require an account.
+
 ## Multi-LLM
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
