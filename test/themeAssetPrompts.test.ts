@@ -120,16 +120,19 @@ test('character prompt enforces the production sprite-board mime contracts', () 
   assert.equal(CHARACTER_TARGET_CONTENT_HEIGHT, 118);
 });
 
-test('character prompt row 1 cells 3-5 describe impatient idle and back view, not walking', () => {
+test('character prompt row 1 cells 1-4 describe a four-frame walk cycle, cell 5 stays the back view', () => {
   const prompt = buildCharacterAtlasPrompt('neon cyberpunk', 'Nova', 'Night Grid');
   assert.match(
     prompt,
-    /two frames of an impatient idle — the character waiting restlessly \(for example tapping a foot or checking a watch\), same stance and framing in both frames so they loop as one gesture/i,
+    /one complete, seamless locomotion cycle, arranged in playback order/i,
   );
+  assert.match(prompt, /Frame 3 — Opposite contact/i);
+  assert.match(prompt, /Do not duplicate the first frame as the fourth frame/i);
   assert.match(
     prompt,
     /the same character standing still, seen from directly behind, back to the viewer/i,
   );
+  assert.doesNotMatch(prompt, /impatient idle/i);
   assert.doesNotMatch(prompt, /Cell 3 — CONTACT, foot B forward/i);
   assert.doesNotMatch(prompt, /Cell 4 — PASSING/i);
   assert.doesNotMatch(prompt, /Cell 5 — RECOVERY/i);

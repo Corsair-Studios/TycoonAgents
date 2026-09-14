@@ -25,7 +25,7 @@ export interface AtlasClip {
 
 | Clip | Frames | FPS | Loop | Flippable | Pingpong | Hold | Represents |
 |---|---|---|---|---|---|---|---|
-| walk | [0,1,2,3,4] | 10 | true | true | - | - | walk cycle |
+| walk | [0,1,2,3] | 10 | true | true | - | - | four-frame walk cycle (row-1 cell 5 is the back view, not part of the walk clip) |
 | idle | [16] | 0 | true | false | - | true | idle pose |
 | sit | [15] | 0 | true | false | - | true | sit pose |
 | melee | [5,6,7,8] | 12 | false | true | - | - | melee swing |

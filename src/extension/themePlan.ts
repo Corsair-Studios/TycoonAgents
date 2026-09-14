@@ -43,15 +43,11 @@ export interface AtlasClip {
   hold?: boolean;       // optional: single static frame (frames.length===1)
 }
 
-// EXPERIMENT (reversible): character walk cycles are capped to the first
-// CHARACTER_WALK_FRAME_CAP frames because most theme walk_1..walk_5 frames
-// render near-identically, producing a visible duplicate-looking frame each
-// loop. fps is left unchanged so the loop just repeats faster in wall time
-// per distinct pose, not per-frame speed. Revert by restoring frames back to
-// [0, 1, 2, 3, 4] (and mirror the change in media/main.js's ATLAS_CLIPS).
-const CHARACTER_WALK_FRAME_CAP = 2;
+// Row-1 cells 1-4 of the character atlas are a four-frame walk cycle
+// (see buildCharacterAtlasPrompt in themeAssetPrompts.ts); cell 5 stays the
+// back view. Mirror any change here in media/main.js's ATLAS_CLIPS.
 export const ATLAS_CLIPS: Record<ClipName, AtlasClip> = {
-  walk: { frames: [0, 1, 2, 3, 4].slice(0, CHARACTER_WALK_FRAME_CAP), fps: 10, loop: true, flippable: true },
+  walk: { frames: [0, 1, 2, 3], fps: 10, loop: true, flippable: true },
   idle: { frames: [16], fps: 0, loop: true, flippable: false, hold: true },
   sit: { frames: [15], fps: 0, loop: true, flippable: true, hold: true },
   melee: { frames: [10, 11], fps: 12, loop: false, flippable: true },
