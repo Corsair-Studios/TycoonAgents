@@ -5045,6 +5045,15 @@ td.col-status {
   margin: 8px 0 4px;
 }
 
+.team-readiness-harness {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+
 .team-readiness-list {
   list-style: none;
   margin: 0;

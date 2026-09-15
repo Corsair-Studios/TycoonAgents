@@ -1344,6 +1344,7 @@ function handleBrowserMessage(msg) {
         repoRoot: REPO_ROOT,
         projectRoot: primaryProjectRoot,
         version: readRepoVersion(),
+        harness: resolveEffectiveHarness(primaryProjectRoot || process.cwd()),
       });
       broadcast('message', { type: 'TEAM_SETUP_EXPORTED', payload: result });
       break;

@@ -23,6 +23,15 @@ import type { CostModelClass } from "./agentBackend";
 
 export const TEAM_MANIFEST_SCHEMA_VERSION = 1 as const;
 
+/** Harness the orchestrator was exported to run on (p51-t0). Mirrors
+ *  ProviderId (src/core/providerSelection.ts) / HarnessId
+ *  (src/core/fallbackTargets.ts) but kept as its own narrow union here so a
+ *  malformed/future value fails manifest validation instead of silently
+ *  widening to `string`. */
+export type TeamHarnessId = "claude-code" | "codex" | "opencode";
+
+const TEAM_HARNESS_IDS: readonly TeamHarnessId[] = ["claude-code", "codex", "opencode"];
+
 export interface TeamManifestRosterEntry {
   id: string;
   displayName: string;
@@ -72,6 +81,10 @@ export interface TeamManifest {
   mcp: string[];
   delegation: TeamManifestDelegation;
   planPointer?: string;
+  /** Which harness head the exporter ran the orchestrator on at export
+   *  time (p51-t0). Optional so manifests written before this field
+   *  existed still parse. */
+  harness?: TeamHarnessId;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +100,7 @@ export interface TeamManifestInput {
   mcp: string[];
   delegation: TeamManifestDelegation;
   planPointer?: string;
+  harness?: TeamHarnessId;
 }
 
 export interface BuildTeamManifestOptions {
@@ -163,6 +177,7 @@ export function buildTeamManifest(input: TeamManifestInput, opts: BuildTeamManif
       parallelLimit: input.delegation.parallelLimit,
     },
     ...(input.planPointer !== undefined ? { planPointer: input.planPointer } : {}),
+    ...(input.harness !== undefined ? { harness: input.harness } : {}),
   };
   return manifest;
 }
@@ -246,6 +261,10 @@ const ENV_VAR_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 export function validateTeamManifest(manifest: TeamManifest): TeamManifestValidationResult {
   if (manifest.schemaVersion !== TEAM_MANIFEST_SCHEMA_VERSION) {
     return { ok: false, field: "schemaVersion", reason: "unsupported schema version" };
+  }
+
+  if (manifest.harness !== undefined && !TEAM_HARNESS_IDS.includes(manifest.harness)) {
+    return { ok: false, field: "harness", reason: "unknown harness id" };
   }
 
   for (const entry of manifest.requiredEnv ?? []) {
@@ -384,6 +403,9 @@ export function parseTeamManifest(text: string): ParseTeamManifestResult {
   }
   if (obj.planPointer !== undefined && typeof obj.planPointer !== "string") {
     return { ok: false, field: "planPointer", reason: "not a string" };
+  }
+  if (obj.harness !== undefined && (typeof obj.harness !== "string" || !TEAM_HARNESS_IDS.includes(obj.harness as TeamHarnessId))) {
+    return { ok: false, field: "harness", reason: "unknown harness id" };
   }
 
   return { ok: true, manifest: obj as unknown as TeamManifest };

@@ -30,6 +30,7 @@
 import type { Backend } from "./agentBackend";
 import type { EnvProbeEntry } from "./routingHostOps";
 import type {
+  TeamHarnessId,
   TeamManifestDelegation,
   TeamManifestInput,
   TeamManifestRequiredEnv,
@@ -86,6 +87,9 @@ export interface TeamSetupAssembleInput {
   delegation: TeamManifestDelegation;
   /** Present only when .claude/tycoon/plan.json exists on disk. */
   planPointer?: string;
+  /** Harness the exporter ran the orchestrator on (p51-t0) — the caller's
+   *  already-resolved effective harness (describeProviderSelection().effective). */
+  harness?: TeamHarnessId;
 }
 
 function backendToRouting(
@@ -143,5 +147,6 @@ export function assembleTeamSetupInput(input: TeamSetupAssembleInput): TeamManif
     mcp: [...input.mcp],
     delegation: { mode: input.delegation.mode, parallelLimit: input.delegation.parallelLimit },
     ...(input.planPointer !== undefined ? { planPointer: input.planPointer } : {}),
+    ...(input.harness !== undefined ? { harness: input.harness } : {}),
   };
 }

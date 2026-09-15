@@ -22,16 +22,19 @@ import { execFileSync } from 'child_process';
  * @param {string} opts.repoRoot
  * @param {string|null} opts.projectRoot
  * @param {string} opts.version
+ * @param {string} [opts.harness] Caller's already-resolved effective harness
+ *   (e.g. resolveEffectiveHarness(projectRoot) in server.mjs) — recorded on
+ *   the manifest when it is a recognized harness id.
  * @returns {{ ok: boolean, path?: string, error?: string }}
  */
-export function handleExportTeamSetupStandalone({ requireCompiledOrThrow, repoRoot, projectRoot, version }) {
+export function handleExportTeamSetupStandalone({ requireCompiledOrThrow, repoRoot, projectRoot, version, harness }) {
   if (!projectRoot) {
     return { ok: false, error: 'No project root resolved' };
   }
   try {
     const teamSetupHostPath = path.join(repoRoot, 'out', 'src', 'host', 'vscode', 'teamSetupHost.js');
     const { exportTeamSetup } = requireCompiledOrThrow(teamSetupHostPath, 'teamSetupHost');
-    return exportTeamSetup({ root: projectRoot, env: process.env, version });
+    return exportTeamSetup({ root: projectRoot, env: process.env, version, harness });
   } catch (err) {
     return { ok: false, error: err && err.message ? err.message : String(err) };
   }

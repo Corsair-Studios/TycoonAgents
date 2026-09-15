@@ -35,7 +35,18 @@ import {
 } from "../../core/routingProfile";
 import { readExecutionConfig } from "./delegationDoctrine";
 import { assembleTeamSetupInput } from "../../core/teamSetupAssemble";
-import { buildTeamManifest, validateTeamManifest, serializeTeamManifest } from "../../core/teamSetup";
+import { buildTeamManifest, validateTeamManifest, serializeTeamManifest, type TeamHarnessId } from "../../core/teamSetup";
+
+const TEAM_HARNESS_IDS: readonly TeamHarnessId[] = ["claude-code", "codex", "opencode"];
+
+/** Narrows an arbitrary already-resolved effective-harness string (e.g.
+ *  describeProviderSelection().effective, which is a bare ProviderId string)
+ *  to a TeamHarnessId, or undefined when it isn't one of the three known
+ *  ids — never throws, so an export is never blocked by an unrecognized
+ *  harness value. */
+function asTeamHarnessId(harness: string | undefined): TeamHarnessId | undefined {
+  return harness !== undefined && (TEAM_HARNESS_IDS as readonly string[]).includes(harness) ? (harness as TeamHarnessId) : undefined;
+}
 import {
   applyTeamSetup as applyTeamSetupCore,
   type ApplyTeamSetupReport,
@@ -62,6 +73,12 @@ export interface ExportTeamSetupOptions {
   root: string;
   env: NodeJS.ProcessEnv;
   version: string;
+  /** Effective harness the caller already resolved (e.g. via
+   *  describeProviderSelection({cwd:root}).effective) — recorded on the
+   *  manifest as-is when it is a recognized TeamHarnessId. Omitted when the
+   *  caller doesn't have one, in which case the manifest carries no
+   *  `harness` field. */
+  harness?: string;
 }
 
 export interface ExportTeamSetupResult {
@@ -234,6 +251,7 @@ export function exportTeamSetup(opts: ExportTeamSetupOptions): ExportTeamSetupRe
         parallelLimit: parallelLimit.value,
       },
       planPointer: planPointerIfExists(root),
+      harness: asTeamHarnessId(opts.harness),
     });
 
     const manifest = buildTeamManifest(input, { now: new Date().toISOString(), version: opts.version });
@@ -432,6 +450,12 @@ function sanitizeReadinessReport(report: TeamReadinessReport): TeamReadinessRepo
       detail: sanitizeDetailPaths(a.detail),
       ...(a.reachability ? { reachability: { ...a.reachability, detail: sanitizeDetailPaths(a.reachability.detail) } } : {}),
     })),
+    harness: {
+      ...report.harness,
+      installed: Object.fromEntries(
+        Object.entries(report.harness.installed).map(([id, status]) => [id, { ...status, detail: sanitizeDetailPaths(status.detail) }]),
+      ) as TeamReadinessReport["harness"]["installed"],
+    },
   };
 }
 

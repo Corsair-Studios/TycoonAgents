@@ -10,10 +10,19 @@ import {
   buildTeamReadiness,
   createDefaultProbes,
   formatReadinessReport,
+  type HarnessInstalledMap,
   type TeamReadinessProbes,
   type VendorAvailability,
 } from "../src/core/teamReadiness";
 import type { TeamManifest } from "../src/core/teamSetup";
+
+function defaultHarnessesInstalled(): HarnessInstalledMap {
+  return {
+    "claude-code": { installed: true, detail: "claude CLI found" },
+    codex: { installed: false, detail: "codex CLI not found" },
+    opencode: { installed: false, detail: "OpenCode install not found" },
+  };
+}
 
 function sampleManifest(): TeamManifest {
   return {
@@ -64,6 +73,7 @@ function makeProbes(overrides: Partial<TeamReadinessProbes> = {}): TeamReadiness
     vendorAvailable: async (vendor: string) =>
       vendorAvailability[vendor] ?? { available: false, detail: "unknown vendor" },
     envSet: (name: string) => envValues[name] ?? false,
+    harnessesInstalled: async () => defaultHarnessesInstalled(),
     now: () => 1000,
     ...overrides,
   };
@@ -73,7 +83,7 @@ test("all agents ready when vendors available and env set", async () => {
   const report = await buildTeamReadiness(sampleManifest(), makeProbes());
   assert.equal(report.summary.ready, 3);
   assert.equal(report.summary.total, 3);
-  assert.equal(report.summary.text, "3 of 3 agents ready");
+  assert.equal(report.summary.text, "3 of 3 agents ready · harness ok");
   assert.ok(report.agents.every((a) => a.status === "ready"));
 });
 
@@ -113,7 +123,7 @@ test("unavailable vendor whose fallback also fails marks agent not_ready and cou
   assert.equal(byId["search-retrieval"].status, "ready");
   assert.equal(report.summary.ready, 2);
   assert.equal(report.summary.total, 3);
-  assert.equal(report.summary.text, "2 of 3 agents ready");
+  assert.equal(report.summary.text, "2 of 3 agents ready · harness ok");
 });
 
 test("missing required env marks agent not_ready and names the var", async () => {
@@ -204,7 +214,7 @@ test("an agent's own missing env does not affect an unrelated agent needing no e
   };
   const probes = makeProbes({ envSet: () => false });
   const report = await buildTeamReadiness(manifest, probes);
-  assert.equal(report.summary.text, "1 of 2 agents ready");
+  assert.equal(report.summary.text, "1 of 2 agents ready · harness ok");
   const byId = Object.fromEntries(report.agents.map((a) => [a.id, a]));
   assert.equal(byId["needs-var-a"].status, "not_ready");
   assert.deepEqual(byId["needs-var-a"].missingEnv, ["VAR_A"]);
@@ -259,6 +269,51 @@ test("createDefaultProbes standalone hostKind marks anthropic available when cla
 test("formatReadinessReport produces stable plain-text lines", async () => {
   const report = await buildTeamReadiness(sampleManifest(), makeProbes());
   const text = formatReadinessReport(report);
-  assert.ok(text.startsWith("3 of 3 agents ready"));
+  assert.ok(text.includes("3 of 3 agents ready · harness ok"));
   assert.ok(text.includes("coding-specialist [ready]"));
+});
+
+// ---------------------------------------------------------------------------
+// Harness readiness (p51-t0): manifest.harness vs. probes.harnessesInstalled.
+// ---------------------------------------------------------------------------
+
+test("manifest with harness codex on a machine where only claude-code is installed marks harness.ok false and names claude-code as installed", async () => {
+  const manifest = { ...sampleManifest(), harness: "codex" as const };
+  const report = await buildTeamReadiness(manifest, makeProbes());
+  assert.equal(report.harness.team, "codex");
+  assert.equal(report.harness.ok, false);
+  assert.equal(report.harness.installed["claude-code"].installed, true);
+  assert.equal(report.harness.installed.codex.installed, false);
+  const text = formatReadinessReport(report);
+  assert.ok(text.startsWith("Harness: codex NOT installed here (installed: claude-code)"));
+  assert.ok(text.includes("harness missing"));
+});
+
+test("manifest without a harness field reports harness.ok true and no team", async () => {
+  const report = await buildTeamReadiness(sampleManifest(), makeProbes());
+  assert.equal(report.harness.team, undefined);
+  assert.equal(report.harness.ok, true);
+  const text = formatReadinessReport(report);
+  assert.ok(!text.startsWith("Harness:"));
+  assert.ok(text.includes("harness ok"));
+});
+
+test("manifest with a harness that IS installed reports harness.ok true and the installed line", async () => {
+  const manifest = { ...sampleManifest(), harness: "claude-code" as const };
+  const report = await buildTeamReadiness(manifest, makeProbes());
+  assert.equal(report.harness.ok, true);
+  const text = formatReadinessReport(report);
+  assert.ok(text.startsWith("Harness: claude-code installed"));
+});
+
+test("a throwing harnessesInstalled probe is treated as not installed, never propagated", async () => {
+  const manifest = { ...sampleManifest(), harness: "opencode" as const };
+  const probes = makeProbes({
+    harnessesInstalled: async () => {
+      throw new Error("probe exploded");
+    },
+  });
+  const report = await buildTeamReadiness(manifest, probes);
+  assert.equal(report.harness.ok, false);
+  assert.equal(report.harness.installed.opencode.installed, false);
 });

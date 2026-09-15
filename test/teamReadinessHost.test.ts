@@ -28,7 +28,7 @@ function tmpRoot(): string {
 
 /** Writes a minimal valid .claude/tycoon-team.json with two roster entries:
  *  a codex-routed agent and an anthropic-routed agent requiring FAKE_VAR. */
-function seedManifest(root: string, exportedAt?: string): void {
+function seedManifest(root: string, exportedAt?: string, harness?: "claude-code" | "codex" | "opencode"): void {
   const input: TeamManifestInput = {
     roster: [
       { id: "coding-specialist", displayName: "Coding Specialist" },
@@ -42,6 +42,7 @@ function seedManifest(root: string, exportedAt?: string): void {
     skills: [],
     mcp: [],
     delegation: { mode: "flat", parallelLimit: 2 },
+    ...(harness ? { harness } : {}),
   };
   const manifest = buildTeamManifest(input, {
     now: exportedAt ?? new Date().toISOString(),
@@ -85,7 +86,7 @@ test("readiness: codex fails, anthropic missing env -> 0 of 2; setting FAKE_VAR 
     });
     assert.equal(r1.ok, true, r1.error);
     assert.ok(r1.report);
-    assert.equal(r1.report!.summary.text, "0 of 2 agents ready");
+    assert.equal(r1.report!.summary.text, "0 of 2 agents ready · harness ok");
     const byId1 = new Map(r1.report!.agents.map((a) => [a.id, a]));
     assert.equal(byId1.get("coding-specialist")!.status, "not_ready");
     assert.equal(byId1.get("search-retrieval")!.status, "not_ready");
@@ -99,10 +100,56 @@ test("readiness: codex fails, anthropic missing env -> 0 of 2; setting FAKE_VAR 
       execSeam: failingExecSeam,
     });
     assert.equal(r2.ok, true, r2.error);
-    assert.equal(r2.report!.summary.text, "1 of 2 agents ready");
+    assert.equal(r2.report!.summary.text, "1 of 2 agents ready · harness ok");
 
     const payloadText = JSON.stringify(r2.report);
     assert.ok(!payloadText.includes(FAKE_VALUE), "env var value must never appear in the readiness payload");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readiness: manifest.harness codex on a machine with only claude-code installed reports harness.ok false and names claude-code installed", async () => {
+  const root = tmpRoot();
+  try {
+    seedManifest(root, undefined, "codex");
+    const execSeam = (command: string): string => {
+      if (command.includes("codex")) throw new Error("codex not found");
+      return "1.0.0"; // claude --version succeeds
+    };
+    const result = await buildTeamReadinessHost({
+      root,
+      env: { ...process.env, FAKE_VAR: "x" },
+      hostKind: "standalone",
+      execSeam,
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.report!.harness.team, "codex");
+    assert.equal(result.report!.harness.ok, false);
+    assert.equal(result.report!.harness.installed["claude-code"].installed, true);
+    assert.equal(result.report!.harness.installed.codex.installed, false);
+    assert.ok(result.text!.startsWith("Harness: codex NOT installed here (installed: "));
+    assert.ok(result.text!.split("\n")[0].includes("claude-code"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readiness: manifest with no harness field reports harness.ok true and no Harness line", async () => {
+  const root = tmpRoot();
+  try {
+    seedManifest(root);
+    const execSeam = (): string => "1.0.0";
+    const result = await buildTeamReadinessHost({
+      root,
+      env: { ...process.env, FAKE_VAR: "x" },
+      hostKind: "standalone",
+      execSeam,
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.report!.harness.team, undefined);
+    assert.equal(result.report!.harness.ok, true);
+    assert.ok(!result.text!.startsWith("Harness:"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

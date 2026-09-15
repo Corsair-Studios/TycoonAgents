@@ -145,6 +145,35 @@ test("export from a fixture project: manifest written, parses, roster/fallback/e
   }
 });
 
+test("export populates harness from the caller's already-resolved value, and omits it when not passed", () => {
+  const root = tmpRoot();
+  try {
+    seedFixtureProject(root);
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.FIXTURE_ENDPOINT_URL;
+
+    const withHarness = exportTeamSetup({ root, env, version: "0.0.1", harness: "codex" });
+    assert.equal(withHarness.ok, true);
+    let manifest = parseTeamManifest(fs.readFileSync(path.join(root, ".claude", "tycoon-team.json"), "utf8"));
+    assert.equal(manifest.ok, true);
+    if (manifest.ok) assert.equal(manifest.manifest.harness, "codex");
+
+    const withoutHarness = exportTeamSetup({ root, env, version: "0.0.1" });
+    assert.equal(withoutHarness.ok, true);
+    manifest = parseTeamManifest(fs.readFileSync(path.join(root, ".claude", "tycoon-team.json"), "utf8"));
+    assert.equal(manifest.ok, true);
+    if (manifest.ok) assert.equal(manifest.manifest.harness, undefined);
+
+    const unrecognized = exportTeamSetup({ root, env, version: "0.0.1", harness: "some-other-vendor" });
+    assert.equal(unrecognized.ok, true);
+    manifest = parseTeamManifest(fs.readFileSync(path.join(root, ".claude", "tycoon-team.json"), "utf8"));
+    assert.equal(manifest.ok, true);
+    if (manifest.ok) assert.equal(manifest.manifest.harness, undefined, "an unrecognized harness string must be dropped, never written raw");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("validator refusal: a secret-shaped model id is rejected and never echoed", () => {
   const root = tmpRoot();
   try {

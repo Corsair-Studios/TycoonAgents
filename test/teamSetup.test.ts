@@ -186,6 +186,47 @@ test("validateTeamManifest rejects unknown schemaVersion", () => {
   if (!result.ok) assert.equal(result.field, "schemaVersion");
 });
 
+test("buildTeamManifest populates harness from input when provided", () => {
+  const m = buildTeamManifest({ ...sampleInput(), harness: "codex" }, { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+  assert.equal(m.harness, "codex");
+});
+
+test("buildTeamManifest omits harness when input doesn't provide it", () => {
+  const m = buildTeamManifest(sampleInput(), { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+  assert.equal(m.harness, undefined);
+});
+
+test("validateTeamManifest rejects an unknown harness value", () => {
+  const m = buildTeamManifest(sampleInput(), { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+  const tampered = { ...m, harness: "not-a-real-harness" } as unknown as TeamManifest;
+  const result = validateTeamManifest(tampered);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.field, "harness");
+});
+
+test("validateTeamManifest accepts each known harness id", () => {
+  for (const harness of ["claude-code", "codex", "opencode"] as const) {
+    const m = buildTeamManifest({ ...sampleInput(), harness }, { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+    const result = validateTeamManifest(m);
+    assert.equal(result.ok, true, `harness ${harness} should validate`);
+  }
+});
+
+test("parseTeamManifest rejects an unknown harness value", () => {
+  const m = buildTeamManifest({ ...sampleInput(), harness: "claude-code" }, { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+  const tampered = { ...m, harness: "bogus" };
+  const result = parseTeamManifest(JSON.stringify(tampered));
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.field, "harness");
+});
+
+test("parseTeamManifest round-trips a manifest with no harness field", () => {
+  const m = buildTeamManifest(sampleInput(), { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
+  const result = parseTeamManifest(serializeTeamManifest(m));
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.manifest.harness, undefined);
+});
+
 test("serializeTeamManifest produces stable 2-space JSON with trailing newline", () => {
   const m = buildTeamManifest(sampleInput(), { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
   const s = serializeTeamManifest(m);

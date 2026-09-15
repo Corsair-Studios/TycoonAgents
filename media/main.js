@@ -12413,6 +12413,28 @@ if (typeof module !== "undefined" && module.exports) {
           errEl.textContent = "Could not check readiness: " + (payload.error || "unknown error");
           reportEl.appendChild(errEl);
         } else {
+          const harness = payload.report.harness;
+          if (harness && harness.team) {
+            const harnessEl = document.createElement("p");
+            harnessEl.className = "team-readiness-harness";
+            const harnessChip = document.createElement("span");
+            harnessChip.className = "team-readiness-chip team-readiness-chip--" + (harness.ok ? "ready" : "fallback");
+            harnessChip.textContent = harness.ok ? "installed" : "not installed";
+            harnessEl.appendChild(document.createTextNode("Harness: " + harness.team + " "));
+            harnessEl.appendChild(harnessChip);
+            if (!harness.ok && harness.installed) {
+              const installedNames = Object.keys(harness.installed).filter(function (id) {
+                return harness.installed[id] && harness.installed[id].installed;
+              });
+              if (installedNames.length > 0) {
+                const detailEl = document.createElement("span");
+                detailEl.className = "team-readiness-detail";
+                detailEl.textContent = " installed here: " + installedNames.join(", ");
+                harnessEl.appendChild(detailEl);
+              }
+            }
+            reportEl.appendChild(harnessEl);
+          }
           const summaryEl = document.createElement("p");
           summaryEl.className = "team-readiness-summary";
           summaryEl.textContent = payload.report.summary && payload.report.summary.text ? payload.report.summary.text : "";

@@ -4622,6 +4622,7 @@ export class TycoonPanel {
       root,
       env: process.env,
       version: this._currentExtensionVersion() ?? "0.0.0",
+      harness: this._resolveEffectiveHarness(root),
     });
     void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_EXPORTED, payload: result });
   }

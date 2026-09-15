@@ -29,7 +29,17 @@
 // passes vendor/model identifiers (never secret values) into probes.
 // ---------------------------------------------------------------------------
 
-import type { TeamManifest, TeamManifestRouting } from "./teamSetup";
+import type { TeamHarnessId, TeamManifest, TeamManifestRouting } from "./teamSetup";
+
+const TEAM_HARNESS_IDS: readonly TeamHarnessId[] = ["claude-code", "codex", "opencode"];
+
+export interface HarnessInstallStatus {
+  installed: boolean;
+  /** Sanitized human-readable detail (no absolute paths, no secret values). */
+  detail: string;
+}
+
+export type HarnessInstalledMap = Record<TeamHarnessId, HarnessInstallStatus>;
 
 export type ReadinessStatus = "ready" | "fallback" | "not_ready";
 
@@ -55,6 +65,10 @@ export interface TeamReadinessProbes {
   envSet: (name: string) => boolean;
   /** Optional, opt-in. Only called when opts.probeReachability is true. */
   reachability?: (vendor: string, model: string | undefined) => Promise<ReachabilityResult>;
+  /** Which of the three harness heads are installed on this machine
+   *  (p51-t0). Fail-open: a throwing/rejecting call is treated by
+   *  buildTeamReadiness as "none installed", never propagated. */
+  harnessesInstalled: () => Promise<HarnessInstalledMap>;
   now: () => number;
 }
 
@@ -83,10 +97,24 @@ export interface TeamReadinessSummary {
   text: string;
 }
 
+/** Whether the harness the manifest recorded the orchestrator as exported
+ *  on (manifest.harness) is installed on THIS machine (p51-t0). `team` is
+ *  undefined when the manifest carries no `harness` field, in which case
+ *  `ok` is unconditionally true (nothing to be missing). `installed`
+ *  always reports all three harness heads regardless of which one (if any)
+ *  the team uses, so the UI can name what IS available when the team
+ *  harness is missing. */
+export interface TeamHarnessReadiness {
+  team?: TeamHarnessId;
+  installed: HarnessInstalledMap;
+  ok: boolean;
+}
+
 export interface TeamReadinessReport {
   generatedAt: number;
   agents: AgentReadiness[];
   summary: TeamReadinessSummary;
+  harness: TeamHarnessReadiness;
 }
 
 function missingEnvNames(requiredEnvNames: string[], envSet: (name: string) => boolean): string[] {
@@ -208,14 +236,29 @@ export async function buildTeamReadiness(
   const ready = agents.filter((a) => a.status === "ready" || a.status === "fallback").length;
   const total = agents.length;
 
+  let installed: HarnessInstalledMap;
+  try {
+    installed = await probes.harnessesInstalled();
+  } catch {
+    installed = {
+      "claude-code": { installed: false, detail: "harness probe failed" },
+      codex: { installed: false, detail: "harness probe failed" },
+      opencode: { installed: false, detail: "harness probe failed" },
+    };
+  }
+  const team = manifest.harness;
+  const harnessOk = team === undefined ? true : installed[team]?.installed === true;
+  const harness: TeamHarnessReadiness = { ...(team !== undefined ? { team } : {}), installed, ok: harnessOk };
+
   return {
     generatedAt: probes.now(),
     agents,
     summary: {
       ready,
       total,
-      text: `${ready} of ${total} agents ready`,
+      text: `${ready} of ${total} agents ready · harness ${harnessOk ? "ok" : "missing"}`,
     },
+    harness,
   };
 }
 
@@ -324,6 +367,64 @@ export function createDefaultProbes(opts: CreateDefaultProbesOptions): TeamReadi
     }
   };
 
+  /** Real exec seam for the claude-code harness check: uses the caller's
+   *  injected execSeam (tests, and the standalone host) when provided,
+   *  otherwise falls back to a real execFileSync — vscode's host never
+   *  injects an execSeam (see buildTeamReadinessHost's caller in panel.ts),
+   *  but "is the claude CLI actually installed" is a real fs/PATH question
+   *  distinct from vendorAvailable's "native host vendor" shortcut above,
+   *  so it needs a real probe here regardless of host. */
+  const runHarnessExec = (command: string): string => {
+    if (execSeam) return execSeam(command);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { execFileSync } = require("child_process") as typeof import("child_process");
+    const [bin, ...args] = command.split(" ");
+    return execFileSync(bin, args, { encoding: "utf8", timeout: 5000 });
+  };
+
+  const probeHarnessClaudeCode = async (): Promise<HarnessInstallStatus> => {
+    const candidates = process.platform === "win32" ? ["claude", "claude.cmd"] : ["claude"];
+    for (const bin of candidates) {
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => runHarnessExec(`${bin} --version`)),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+        ]);
+        return { installed: true, detail: "claude CLI found" };
+      } catch {
+        // try next candidate
+      }
+    }
+    return { installed: false, detail: "claude CLI not found on PATH" };
+  };
+
+  const probeHarnessCodex = async (): Promise<HarnessInstallStatus> => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { discoverCodexBinary } = require("../providers/codex/codexDiscovery") as typeof import("../providers/codex/codexDiscovery");
+      discoverCodexBinary(execSeam ? { exec: execSeam } : undefined);
+      return { installed: true, detail: "codex CLI discovered" };
+    } catch {
+      return { installed: false, detail: "codex CLI not found" };
+    }
+  };
+
+  const probeHarnessOpencode = async (): Promise<HarnessInstallStatus> => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { resolveOpenCode } = require("../providers/opencode/discovery") as typeof import("../providers/opencode/discovery");
+      resolveOpenCode({ env, projectDir: root });
+      return { installed: true, detail: "OpenCode install discovered" };
+    } catch {
+      return { installed: false, detail: "OpenCode install not found" };
+    }
+  };
+
+  const harnessesInstalled = async (): Promise<HarnessInstalledMap> => {
+    const [claudeCode, codex, opencode] = await Promise.all([probeHarnessClaudeCode(), probeHarnessCodex(), probeHarnessOpencode()]);
+    return { "claude-code": claudeCode, codex, opencode };
+  };
+
   const reachability = async (vendor: string, model: string | undefined): Promise<ReachabilityResult> => {
     const key = `${vendor}::${model ?? ""}`;
     const cached = reachabilityCache.get(key);
@@ -344,6 +445,7 @@ export function createDefaultProbes(opts: CreateDefaultProbesOptions): TeamReadi
     vendorAvailable,
     envSet,
     reachability,
+    harnessesInstalled,
     now: () => Date.now(),
   };
 }
@@ -354,6 +456,14 @@ export function createDefaultProbes(opts: CreateDefaultProbesOptions): TeamReadi
 
 export function formatReadinessReport(report: TeamReadinessReport): string {
   const lines: string[] = [];
+  if (report.harness?.team) {
+    if (report.harness.ok) {
+      lines.push(`Harness: ${report.harness.team} installed`);
+    } else {
+      const installedNames = TEAM_HARNESS_IDS.filter((id) => report.harness.installed[id]?.installed);
+      lines.push(`Harness: ${report.harness.team} NOT installed here (installed: ${installedNames.join(", ") || "none"})`);
+    }
+  }
   lines.push(report.summary.text);
   for (const agent of report.agents) {
     const parts: string[] = [agent.id, `[${agent.status}]`];
