@@ -50,7 +50,7 @@ Figures are **dimensionless ratios** from measured tokens × approximate per-mod
 
 Turn a design doc into an **approvable plan** and let the fleet execute it. The Project Plan feature decomposes a spec into an ordered set of **phases**, each holding **tasks** with concrete acceptance criteria, then works through them one task at a time — delegating each to the right specialist, verifying the result against its own criteria, and **stopping at every phase gate for your approval** before moving on.
 
-It's **zero-runtime-AI**: all the reasoning happens in Claude Code; the extension only reads and displays `.claude/tycoon/plan.json` and lets you approve, retry, or skip tasks from the panel. It's **on by default** for new installs and toggleable in Settings.
+All the reasoning happens in Claude Code; the extension only reads and displays `.claude/tycoon/plan.json` and lets you approve, retry, or skip tasks from the panel (see "Self-contained & hook-driven" below for the zero-runtime-AI claim this rests on). It's **on by default** for new installs and toggleable in Settings.
 
 ## Self-contained & hook-driven
 
@@ -75,7 +75,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 - **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
 - **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
-- **UEFN pack.** Skills that understand Verse syntax and write Verse code, project/LSP checks, and the `uefn-auditor`/`verse-expert` agents. Pair it with Trashbyrd's UEFN Power Tools MCP for live access to an open UEFN level.
+- **UEFN pack.** See "UEFN pack" below.
 - **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
 - **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
 - **Ready test & diagnose, by default.** The `tycoon-ready-test` skill (spawns every configured agent in parallel and verifies they light up in the visualization) and `tycoon-diagnose` skill (AI-reasoned audit of this project's own delegation/routing config) both ship in the VSIX and land in `.claude/skills/` on every Install/Repair — no separate opt-in.
@@ -98,11 +98,11 @@ The scene is **user-authored data** — you can generate your own theme (charact
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
 
-If you change the creative direction after descriptions already exist, those character and object descriptions are marked stale — under the field and beside each description — since they were generated under the previous direction and images follow the descriptions more than the direction line. Use **Re-derive descriptions** to regenerate the text from the new direction before generating or retrying images; the previous descriptions are kept on the plan for one level of undo. Generate and Retry now save an unsaved creative-direction edit first, and image prompts open with the art direction rather than ending with it.
+Changing the creative direction after descriptions already exist marks them stale; use **Re-derive descriptions** to regenerate the text before generating or retrying images. See the [GitHub releases page](https://github.com/Corsair-Studios/TycoonAgents/releases) for what changed in recent versions.
 
 Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or `node src/cli.mjs watch <project-path>`.
 
-> Image generation happens **only at authoring time**, through the Corsair Theme Service. The shipped plugin still makes zero runtime AI calls — themes are just data.
+> Image generation happens **only at authoring time**, through the Corsair Theme Service (see "Self-contained & hook-driven" above) — themes are just data.
 
 ### Prompt tips
 
@@ -150,40 +150,13 @@ A provider abstraction so agent activity can come from Claude Code, other agent 
 
 TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction. This depends on the `.claude/agents/*.md` agent roster existing first — it is not committed (`.claude/` is gitignored); seed it via the VS Code panel's Install/Repair hooks, or `node standalone/src/cli.mjs install-hook <dir>` / `seed-agents <dir>` on OpenCode-only setups — see "Prerequisite: the agent roster" in [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
 
-1. **Build** — from the repo root:
-
-  ```sh
-  npm install && npm run build
-  ```
-
-  This compiles the TypeScript sources and copies the hook runtime files the OpenCode plugin needs.
-
-2. **Select the provider** — VS Code setting `tycoonagents.provider: "opencode"`, or the `TYCOON_PROVIDER=opencode` environment variable (which always overrides the setting), or `--provider opencode` in the standalone host.
-3. **Generate the roster** — `npm run opencode:config` writes an OpenCode-flavored agent config from the same specialist roster the VS Code extension seeds.
-4. **Register the plugin** — copy `hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`, `hooks/delegationEnforcement.js`, and `hooks/fallbackChain.js` into your project's `.opencode/plugin/` directory (OpenCode loads `.ts` plugins from there); the standalone host can do this for you — see [`standalone/README.md`](standalone/README.md#opencode-plugin-registration).
-5. **Run a session** in OpenCode as usual — the plugin appends hook records to the same activity log the Claude Code hook writes to. On a headless or remote machine, set `TYCOON_STANDALONE_NO_OPEN=1` so the standalone does not try to launch a browser.
-6. **What the panel shows** — the same live agent visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
+Building from source and registering the OpenCode plugin are covered in [`docs/BUILDING.md`](docs/BUILDING.md). Select the provider via the VS Code setting `tycoonagents.provider: "opencode"`, the `TYCOON_PROVIDER=opencode` environment variable, or `--provider opencode` in the standalone host; the panel then shows the same live visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
 
 ### Codex host (Experimental)
 
-TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/codex) via the same provider abstraction, alongside Claude Code and OpenCode. Codex support is Experimental.
+TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/codex) via the same provider abstraction, alongside Claude Code and OpenCode. Codex support is Experimental — select it via `TYCOON_PROVIDER=codex`, the VS Code setting `tycoonagents.provider: "codex"`, or `--provider codex` in the standalone host. See [`docs/codex-host.md`](docs/codex-host.md) for provider-selection precedence, per-agent attribution reconstruction, the known "stopped/reopened" display tradeoff, and binary-discovery paths.
 
-- **Selection** — precedence highest to lowest: `TYCOON_PROVIDER=codex` environment variable, then the VS Code setting `tycoonagents.provider: "codex"`, then the `provider` key in `<projectDir>/.claude/tycoon/execution.json`, then the `claude-code` default (see `src/core/providerSelection.ts:13-18`). `--provider codex` in the standalone host maps to the same setting-level slot.
-- **Per-agent attribution** — Codex has no per-agent hook payload the way Claude Code's hooks or OpenCode's plugin events do. Attribution is reconstructed from two sources instead: the `notify` command TycoonAgents registers in `CODEX_HOME/config.toml` (see `src/providers/codex/installCodexHooks.ts`), and Codex's own rollout/session metadata, which are cross-referenced to map a spawn back to the agent that made it.
-- **Known tradeoff** — because attribution is reconstructed rather than pushed live per turn, a sub-agent mid a multi-turn exchange shows as *stopped* and then *reopened* between turns in the panel, instead of staying continuously "running" the way a Claude Code or OpenCode sub-agent does. This is a limitation of what Codex currently exposes, not a bug in the mapping.
-- **Platforms** — the Codex binary is discovered on Windows, macOS, and Linux via PATH, the npm global install location, `~/.codex/bin`, Homebrew (`/opt/homebrew/bin` or `/usr/local/bin`, macOS only), and the bundled binary inside the OpenAI ChatGPT VS Code extension; set `CODEX_BINARY_PATH` to override discovery outright. `CODEX_HOME` (default `~/.codex`, using `USERPROFILE` on Windows) overrides where rollout/session files and `config.toml` are read from.
-
-### Codex CLI 0.154 and later (Experimental)
-
-codex-cli 0.154 removed the `mcp-server` stdio command that TycoonAgents' Codex MCP entry
-previously launched directly. The Codex MCP entry now runs `node hooks/codex-mcp-launcher.cjs`,
-which discovers the Codex binary at runtime — checking, in order, the `CODEX_CLI_PATH` override,
-the project's `node_modules`, `PATH`, the npm global install location, Homebrew, `~/.codex/bin`,
-`~/.local/bin`, and finally the newest OpenAI VS Code extension bundle. It prefers a discovered
-binary that still exposes `mcp-server`, and otherwise falls back to
-`hooks/codex-app-server-mcp.cjs`, a shim over Codex's `app-server` protocol that exposes the same
-`codex` and `codex-reply` tools. The project pins `@openai/codex` `0.153.0` as a devDependency for
-this reason. The fallback shim is Experimental.
+Codex CLI 0.154 removed the `mcp-server` command TycoonAgents previously launched directly; a runtime shim now discovers the Codex binary and falls back to an `app-server`-based adapter when needed. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
 ### Routing walkthrough
 
@@ -236,7 +209,7 @@ TycoonAgents ships a UEFN pack: skills that understand Verse syntax and write Ve
 
 ## Attribution
 Authored by **TycoonAgents** — https://x.com/thetrashbyrd
-The main repository and the themes repository are both currently private, and there's no public releases page or Marketplace listing yet; get the VSIX and any additional theme archives directly from the maintainer.
+The main repository and the themes repository are both currently private, and there's no Marketplace listing yet. Install from the VSIX attached to each [GitHub release](https://github.com/Corsair-Studios/TycoonAgents/releases); get any additional theme archives directly from the maintainer.
 
 Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md)): a short, removable header on *significant* files only, a one-line footprint in the managed block of `CLAUDE.md` / agent files, and a clickable credit in the panel UI — TycoonAgents never stamps the user's own generated code.
 

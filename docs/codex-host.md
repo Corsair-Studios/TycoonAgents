@@ -1,0 +1,20 @@
+# Codex host (Experimental) — implementation notes
+
+TycoonAgents can read activity from [Codex CLI](https://github.com/openai/codex) via the same provider abstraction, alongside Claude Code and OpenCode. Codex support is Experimental.
+
+- **Selection** — precedence highest to lowest: `TYCOON_PROVIDER=codex` environment variable, then the VS Code setting `tycoonagents.provider: "codex"`, then the `provider` key in `<projectDir>/.claude/tycoon/execution.json`, then the `claude-code` default (see `src/core/providerSelection.ts:13-18`). `--provider codex` in the standalone host maps to the same setting-level slot.
+- **Per-agent attribution** — Codex has no per-agent hook payload the way Claude Code's hooks or OpenCode's plugin events do. Attribution is reconstructed from two sources instead: the `notify` command TycoonAgents registers in `CODEX_HOME/config.toml` (see `src/providers/codex/installCodexHooks.ts`), and Codex's own rollout/session metadata, which are cross-referenced to map a spawn back to the agent that made it.
+- **Known tradeoff** — because attribution is reconstructed rather than pushed live per turn, a sub-agent mid a multi-turn exchange shows as *stopped* and then *reopened* between turns in the panel, instead of staying continuously "running" the way a Claude Code or OpenCode sub-agent does. This is a limitation of what Codex currently exposes, not a bug in the mapping.
+- **Platforms** — the Codex binary is discovered on Windows, macOS, and Linux via PATH, the npm global install location, `~/.codex/bin`, Homebrew (`/opt/homebrew/bin` or `/usr/local/bin`, macOS only), and the bundled binary inside the OpenAI ChatGPT VS Code extension; set `CODEX_BINARY_PATH` to override discovery outright. `CODEX_HOME` (default `~/.codex`, using `USERPROFILE` on Windows) overrides where rollout/session files and `config.toml` are read from.
+
+## Codex CLI 0.154 and later (Experimental)
+
+codex-cli 0.154 removed the `mcp-server` stdio command that TycoonAgents' Codex MCP entry
+previously launched directly. The Codex MCP entry now runs `node hooks/codex-mcp-launcher.cjs`,
+which discovers the Codex binary at runtime — checking, in order, the `CODEX_CLI_PATH` override,
+the project's `node_modules`, `PATH`, the npm global install location, Homebrew, `~/.codex/bin`,
+`~/.local/bin`, and finally the newest OpenAI VS Code extension bundle. It prefers a discovered
+binary that still exposes `mcp-server`, and otherwise falls back to
+`hooks/codex-app-server-mcp.cjs`, a shim over Codex's `app-server` protocol that exposes the same
+`codex` and `codex-reply` tools. The project pins `@openai/codex` `0.153.0` as a devDependency for
+this reason. The fallback shim is Experimental.
