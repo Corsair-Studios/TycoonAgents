@@ -117,6 +117,10 @@ Reuse these; do not invent a competing name for the same concept.
 | `UEFN_INSTALL_DIR` | The `UnrealEditorFortnite` editor-install folder itself (skips `LOCALAPPDATA`/`AppData\Local` derivation in `uefnDetect.ts`). |
 | `FORTNITE_INSTALL_DIR` | The Fortnite game install root (parent of `FortniteGame\Content\...`), used by `panel.ts`'s Python-bridge staging discovery. |
 
+## Related docs
+
+Team setup readiness (harness/vendor CLI/env-var discovery per teammate machine) consumes this same discovery discipline — see the README's "Team setup (share your configuration with teammates)" section.
+
 ## On mechanical enforcement
 
 The repo already gates packaging with

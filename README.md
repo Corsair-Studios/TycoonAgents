@@ -132,6 +132,16 @@ None of this touches the free path: uploading or hand-making a theme (**Import .
 - Three strikes within 24 hours lock the account, disabling both generation and purchases.
 - Locked accounts can request an unlock through **Submit Feedback**; the full wording lives in [`docs/theme-credits-terms-draft.md`](docs/theme-credits-terms-draft.md).
 
+## Team setup (share your configuration with teammates)
+
+Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex, OpenCode) are discovered per machine — none of that travels. Instead, the Settings panel's **Team setup** section exports the *shape* of your setup, not the machine it runs on.
+
+**Export team setup** writes `.claude/tycoon-team.json` at the project's `.claude` folder — the roster, per-agent routing (vendor/model plus fallback chains), the *names* of the env vars each slot needs (never values), which skills and MCP servers are enabled, the delegation mode and parallel limit, an optional plan pointer, and which harness (Claude Code, Codex, or OpenCode) the orchestrator was recorded running on. It's path-free and secret-free by construction — validation rejects anything that looks like an absolute path or a secret — so it's safe to commit. Your API keys, CLI sessions, themes, and the rest of the local `tycoon` runtime folder never leave the machine.
+
+A teammate who clones the project and opens TycoonAgents sees a **"Team setup changed. Apply?"** drift notice the next time Settings opens. **Apply** re-seeds any missing agent files, merges the team-managed routing fields into their local `routing.json`, and reinstalls hooks with project-relative commands (never absolute paths) so they work regardless of where the project lives on disk. MCP installation is skipped during Apply — it always needs your own confirmation — and any roster id Apply doesn't recognize is reported rather than guessed at.
+
+**Check readiness** then tells the teammate what's actually usable on their machine: per agent, whether it resolves ready (its primary vendor/model works), on a fallback, or not ready, plus which env vars by name are still unset; a summary line ("N of M agents ready"); and a harness line confirming whether the recorded harness is installed here, or which ones are. Checking **"Probe reachability (may use vendor quota)"** adds a live reachability check for the resolved agents — off by default since it can spend vendor quota. From there it's mechanical: set the env vars readiness names, install whichever harness it flags missing, and re-check.
+
 ## Multi-LLM
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
