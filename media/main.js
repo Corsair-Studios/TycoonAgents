@@ -3405,7 +3405,7 @@ if (typeof module !== "undefined" && module.exports) {
     return currency === "USD" ? "$" + amount : amount + " " + currency;
   }
 
-  function renderPackGrid(pricing, onBuy) {
+  function renderPackGrid(pricing, onBuy, disabled) {
     const grid = tspEl("div", "tsp-pack-grid");
     const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
     for (const pack of packs) {
@@ -3415,6 +3415,10 @@ if (typeof module !== "undefined" && module.exports) {
       btn.className = "tsp-pack";
       btn.appendChild(tspEl("b", null, String(pack.credits)));
       btn.appendChild(document.createTextNode(formatPackPrice(pack)));
+      if (disabled) {
+        btn.disabled = true;
+        btn.title = "Account locked";
+      }
       btn.addEventListener("click", () => onBuy(pack));
       grid.appendChild(btn);
     }
@@ -3562,6 +3566,14 @@ if (typeof module !== "undefined" && module.exports) {
     balanceRow.appendChild(tspEl("span", "tsp-balance-num", (typeof status.credits === "number" ? status.credits : 0) + " credits"));
     container.appendChild(balanceRow);
 
+    if (status.locked) {
+      container.appendChild(tspNotice("warn",
+        "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock."));
+    } else if (typeof status.strikes === "number" && status.strikes > 0) {
+      container.appendChild(tspEl("p", "muted tsp-strikes-notice",
+        status.strikes + " recent content-policy strike" + (status.strikes === 1 ? "" : "s") + ". 3 locks the account."));
+    }
+
     if (insufficient) {
       container.appendChild(tspNotice("warn",
         "Not enough credits for this theme (needs ~" + typical.min + "–" + typical.max + "). Buy more to continue."));
@@ -3574,10 +3586,16 @@ if (typeof module !== "undefined" && module.exports) {
         "A theme typically takes " + typical.min + "–" + typical.max + " credits. One attempt per board is the minimum; retries cost the same as the first attempt."));
     }
 
-    container.appendChild(tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ }));
+    const buyCreditsBtn = tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ });
+    if (status.locked) {
+      buyCreditsBtn.disabled = true;
+      buyCreditsBtn.title = "Account locked";
+    }
+    container.appendChild(buyCreditsBtn);
     container.appendChild(renderPackGrid(pricing, (pack) => {
+      if (status.locked) return;
       postThemeService("THEME_SERVICE_BUY_CREDITS", { pack: pack.id });
-    }));
+    }, Boolean(status.locked)));
 
     container.appendChild(tspEl("p", "muted tsp-caveat",
       "Results depend on your prompts. Every attempt that returns an image is billed, including retries. Re-slicing is free. Only attempts that fail outright are refunded."));
@@ -3638,6 +3656,19 @@ if (typeof module !== "undefined" && module.exports) {
     tspClear(themeServicePanelBody);
     const s = themeServiceStatus;
     if (!s) return;
+
+    // p46-t3: last known lock state gates the Themes-modal Generate entry
+    // point too — the review card's own per-item locked handling
+    // (020-theme-plan-editor.js) covers Retry/Re-derive once a review is open.
+    if (themeStartGenerationBtn) {
+      if (s.locked) {
+        themeStartGenerationBtn.disabled = true;
+        themeStartGenerationBtn.title = "Account locked";
+      } else if (themeStartGenerationBtn.title === "Account locked") {
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.title = "Saves your creative-direction edit first";
+      }
+    }
 
     if (s.pendingCheckout) {
       renderThemeServicePendingCheckout(themeServicePanelBody);
@@ -5013,7 +5044,7 @@ if (typeof module !== "undefined" && module.exports) {
    *   from the textarea before this render's rebuild — restored here instead of the payload value so a
    *   THEME_IMAGE_REVIEW push arriving mid-edit never discards what the user typed
    */
-  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy, descriptionsStale, descriptionsDirection, draft) {
+  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy, descriptionsStale, descriptionsDirection, draft, locked) {
     const section = document.createElement("div");
     section.className = "theme-review-names-descriptions theme-review-creative-direction-panel";
 
@@ -5061,7 +5092,8 @@ if (typeof module !== "undefined" && module.exports) {
       rederiveBtn.type = "button";
       rederiveBtn.className = "skill-btn theme-review-rederive-descriptions";
       rederiveBtn.textContent = "Re-derive descriptions";
-      rederiveBtn.title = "Saves your creative-direction edit first";
+      rederiveBtn.title = locked ? "Account locked" : "Saves your creative-direction edit first";
+      rederiveBtn.disabled = Boolean(locked);
       rederiveBtn.addEventListener("click", () => {
         rederiveBtn.disabled = true;
         rederiveBtn.textContent = "Re-deriving…";
@@ -5399,6 +5431,8 @@ if (typeof module !== "undefined" && module.exports) {
     unavailable: "Theme Service unavailable — no credits were charged",
     unreachable: "Theme Service unavailable — no credits were charged",
     rate_limited: "Too many requests, try again shortly",
+    content_blocked: "This prompt was blocked by content screening. No credit was spent.",
+    account_locked: "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock.",
   };
 
   function openThemeBuilderFromReview() {
@@ -5478,6 +5512,25 @@ if (typeof module !== "undefined" && module.exports) {
       notice.textContent = THEME_ATTEMPT_ERROR_TEXT.rate_limited;
       return notice;
     }
+    if (item.error_kind === "content_blocked") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-contentblocked";
+      notice.appendChild(document.createTextNode(THEME_ATTEMPT_ERROR_TEXT.content_blocked + " "));
+      const link = document.createElement("a");
+      link.className = "muted tsp-link";
+      link.href = "README.md#acceptable-use";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Acceptable use";
+      notice.appendChild(link);
+      return notice;
+    }
+    if (item.error_kind === "account_locked") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-accountlocked";
+      notice.textContent = THEME_ATTEMPT_ERROR_TEXT.account_locked;
+      return notice;
+    }
     return null;
   }
 
@@ -5513,6 +5566,8 @@ if (typeof module !== "undefined" && module.exports) {
     // render pass regardless of item count/kind (even with zero items or no
     // environment board) since the list is fully rebuilt from scratch above —
     // prepending it fresh here can never duplicate it.
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const reviewAccountLocked = items.some((item) => item.error_kind === "account_locked");
     themeImageReviewList.appendChild(
       buildThemeReviewCreativeDirectionSection(
         reviewThemeId,
@@ -5521,10 +5576,10 @@ if (typeof module !== "undefined" && module.exports) {
         Boolean(payload.descriptionsStale),
         payload.descriptionsDirection,
         reviewUiState.creativeDirectionDraft,
+        reviewAccountLocked,
       ),
     );
 
-    const items = Array.isArray(payload.items) ? payload.items : [];
     const waitingForReviewItemId = payload.waiting_for_review_item_id || "";
     const accepted = items.filter((item) => item.status === "accepted").length;
     const rejected = items.filter((item) => item.status === "rejected").length;
@@ -5856,12 +5911,15 @@ if (typeof module !== "undefined" && module.exports) {
       // current review gate while generation is active is safe — it queues
       // behind the in-flight write rather than racing it. Only this item's
       // own busy state disables the button now.
-      const retryBtnBaseDisabled = retryBusy;
+      const itemLocked = item.error_kind === "account_locked";
+      const retryBtnBaseDisabled = retryBusy || itemLocked;
       retryBtn.disabled = retryBtnBaseDisabled;
-      retryBtn.title = (!item.image_src && !payload.generation_active
-        ? "Generate this unfinished image using the current visual description."
-        : "Generate a replacement using the current visual description.")
-        + " Saves your creative-direction edit first.";
+      retryBtn.title = itemLocked
+        ? "Account locked"
+        : (!item.image_src && !payload.generation_active
+          ? "Generate this unfinished image using the current visual description."
+          : "Generate a replacement using the current visual description.")
+          + " Saves your creative-direction edit first.";
       retryBtn.addEventListener("click", () => {
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";

@@ -1111,7 +1111,7 @@
    *   from the textarea before this render's rebuild — restored here instead of the payload value so a
    *   THEME_IMAGE_REVIEW push arriving mid-edit never discards what the user typed
    */
-  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy, descriptionsStale, descriptionsDirection, draft) {
+  function buildThemeReviewCreativeDirectionSection(themeId, currentDirection, busy, descriptionsStale, descriptionsDirection, draft, locked) {
     const section = document.createElement("div");
     section.className = "theme-review-names-descriptions theme-review-creative-direction-panel";
 
@@ -1159,7 +1159,8 @@
       rederiveBtn.type = "button";
       rederiveBtn.className = "skill-btn theme-review-rederive-descriptions";
       rederiveBtn.textContent = "Re-derive descriptions";
-      rederiveBtn.title = "Saves your creative-direction edit first";
+      rederiveBtn.title = locked ? "Account locked" : "Saves your creative-direction edit first";
+      rederiveBtn.disabled = Boolean(locked);
       rederiveBtn.addEventListener("click", () => {
         rederiveBtn.disabled = true;
         rederiveBtn.textContent = "Re-deriving…";
@@ -1497,6 +1498,8 @@
     unavailable: "Theme Service unavailable — no credits were charged",
     unreachable: "Theme Service unavailable — no credits were charged",
     rate_limited: "Too many requests, try again shortly",
+    content_blocked: "This prompt was blocked by content screening. No credit was spent.",
+    account_locked: "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock.",
   };
 
   function openThemeBuilderFromReview() {
@@ -1576,6 +1579,25 @@
       notice.textContent = THEME_ATTEMPT_ERROR_TEXT.rate_limited;
       return notice;
     }
+    if (item.error_kind === "content_blocked") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-contentblocked";
+      notice.appendChild(document.createTextNode(THEME_ATTEMPT_ERROR_TEXT.content_blocked + " "));
+      const link = document.createElement("a");
+      link.className = "muted tsp-link";
+      link.href = "README.md#acceptable-use";
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Acceptable use";
+      notice.appendChild(link);
+      return notice;
+    }
+    if (item.error_kind === "account_locked") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-accountlocked";
+      notice.textContent = THEME_ATTEMPT_ERROR_TEXT.account_locked;
+      return notice;
+    }
     return null;
   }
 
@@ -1611,6 +1633,8 @@
     // render pass regardless of item count/kind (even with zero items or no
     // environment board) since the list is fully rebuilt from scratch above —
     // prepending it fresh here can never duplicate it.
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const reviewAccountLocked = items.some((item) => item.error_kind === "account_locked");
     themeImageReviewList.appendChild(
       buildThemeReviewCreativeDirectionSection(
         reviewThemeId,
@@ -1619,10 +1643,10 @@
         Boolean(payload.descriptionsStale),
         payload.descriptionsDirection,
         reviewUiState.creativeDirectionDraft,
+        reviewAccountLocked,
       ),
     );
 
-    const items = Array.isArray(payload.items) ? payload.items : [];
     const waitingForReviewItemId = payload.waiting_for_review_item_id || "";
     const accepted = items.filter((item) => item.status === "accepted").length;
     const rejected = items.filter((item) => item.status === "rejected").length;
@@ -1954,12 +1978,15 @@
       // current review gate while generation is active is safe — it queues
       // behind the in-flight write rather than racing it. Only this item's
       // own busy state disables the button now.
-      const retryBtnBaseDisabled = retryBusy;
+      const itemLocked = item.error_kind === "account_locked";
+      const retryBtnBaseDisabled = retryBusy || itemLocked;
       retryBtn.disabled = retryBtnBaseDisabled;
-      retryBtn.title = (!item.image_src && !payload.generation_active
-        ? "Generate this unfinished image using the current visual description."
-        : "Generate a replacement using the current visual description.")
-        + " Saves your creative-direction edit first.";
+      retryBtn.title = itemLocked
+        ? "Account locked"
+        : (!item.image_src && !payload.generation_active
+          ? "Generate this unfinished image using the current visual description."
+          : "Generate a replacement using the current visual description.")
+          + " Saves your creative-direction edit first.";
       retryBtn.addEventListener("click", () => {
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";

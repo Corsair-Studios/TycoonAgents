@@ -1598,7 +1598,7 @@
     return currency === "USD" ? "$" + amount : amount + " " + currency;
   }
 
-  function renderPackGrid(pricing, onBuy) {
+  function renderPackGrid(pricing, onBuy, disabled) {
     const grid = tspEl("div", "tsp-pack-grid");
     const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
     for (const pack of packs) {
@@ -1608,6 +1608,10 @@
       btn.className = "tsp-pack";
       btn.appendChild(tspEl("b", null, String(pack.credits)));
       btn.appendChild(document.createTextNode(formatPackPrice(pack)));
+      if (disabled) {
+        btn.disabled = true;
+        btn.title = "Account locked";
+      }
       btn.addEventListener("click", () => onBuy(pack));
       grid.appendChild(btn);
     }
@@ -1755,6 +1759,14 @@
     balanceRow.appendChild(tspEl("span", "tsp-balance-num", (typeof status.credits === "number" ? status.credits : 0) + " credits"));
     container.appendChild(balanceRow);
 
+    if (status.locked) {
+      container.appendChild(tspNotice("warn",
+        "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock."));
+    } else if (typeof status.strikes === "number" && status.strikes > 0) {
+      container.appendChild(tspEl("p", "muted tsp-strikes-notice",
+        status.strikes + " recent content-policy strike" + (status.strikes === 1 ? "" : "s") + ". 3 locks the account."));
+    }
+
     if (insufficient) {
       container.appendChild(tspNotice("warn",
         "Not enough credits for this theme (needs ~" + typical.min + "–" + typical.max + "). Buy more to continue."));
@@ -1767,10 +1779,16 @@
         "A theme typically takes " + typical.min + "–" + typical.max + " credits. One attempt per board is the minimum; retries cost the same as the first attempt."));
     }
 
-    container.appendChild(tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ }));
+    const buyCreditsBtn = tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ });
+    if (status.locked) {
+      buyCreditsBtn.disabled = true;
+      buyCreditsBtn.title = "Account locked";
+    }
+    container.appendChild(buyCreditsBtn);
     container.appendChild(renderPackGrid(pricing, (pack) => {
+      if (status.locked) return;
       postThemeService("THEME_SERVICE_BUY_CREDITS", { pack: pack.id });
-    }));
+    }, Boolean(status.locked)));
 
     container.appendChild(tspEl("p", "muted tsp-caveat",
       "Results depend on your prompts. Every attempt that returns an image is billed, including retries. Re-slicing is free. Only attempts that fail outright are refunded."));
@@ -1831,6 +1849,19 @@
     tspClear(themeServicePanelBody);
     const s = themeServiceStatus;
     if (!s) return;
+
+    // p46-t3: last known lock state gates the Themes-modal Generate entry
+    // point too — the review card's own per-item locked handling
+    // (020-theme-plan-editor.js) covers Retry/Re-derive once a review is open.
+    if (themeStartGenerationBtn) {
+      if (s.locked) {
+        themeStartGenerationBtn.disabled = true;
+        themeStartGenerationBtn.title = "Account locked";
+      } else if (themeStartGenerationBtn.title === "Account locked") {
+        themeStartGenerationBtn.disabled = false;
+        themeStartGenerationBtn.title = "Saves your creative-direction edit first";
+      }
+    }
 
     if (s.pendingCheckout) {
       renderThemeServicePendingCheckout(themeServicePanelBody);

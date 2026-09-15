@@ -691,3 +691,64 @@ test('not_signed_in notice button opens the Theme Builder shell and posts OPEN_T
   assert.ok(h.posted.some((p: any) => p.type === 'OPEN_THEME_BUILDER'), 'clicking should post OPEN_THEME_BUILDER');
   h.win.close();
 });
+
+// ── content_blocked / account_locked notices (p46-t3) ──
+
+test('content_blocked renders the blocked notice with an Acceptable use link, and keeps Retry enabled', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'content_blocked', attemptCost: 0 })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-contentblocked'));
+  assert.ok(
+    notice.textContent.startsWith('This prompt was blocked by content screening. No credit was spent.'),
+    `unexpected notice text: ${notice.textContent}`,
+  );
+  const link = notice.querySelector('a');
+  assert.ok(link, 'expected an Acceptable use link');
+  assert.equal(link.textContent, 'Acceptable use');
+  assert.match(link.getAttribute('href'), /README\.md#acceptable-use/);
+  const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
+  assert.ok(retryBtn && !retryBtn.disabled, 'Retry must stay enabled so the user can edit the prompt');
+  h.win.close();
+});
+
+test('account_locked renders the locked notice and disables Retry and Re-derive descriptions', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    creative_direction: 'a direction',
+    descriptionsStale: true,
+    items: [baseReviewItem({ error_kind: 'account_locked', attemptCost: 0 })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-accountlocked'));
+  assert.equal(
+    notice.textContent,
+    'Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock.',
+  );
+  const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
+  assert.ok(retryBtn && retryBtn.disabled, 'Retry must be disabled when the account is locked');
+  const rederiveBtn = h.doc.querySelector('.theme-review-rederive-descriptions');
+  assert.ok(rederiveBtn && rederiveBtn.disabled, 'Re-derive descriptions must be disabled when the account is locked');
+  h.win.close();
+});
+
+test('blocked and locked zero-cost attempts do not change the shown creditsSpent total', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 5,
+    pricing: { ...PRICING, attemptCostByBoardType: { environment: 1 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 3,
+    items: [baseReviewItem({ error_kind: 'content_blocked', attemptCost: 0, lastAttemptRefunded: false })],
+  }));
+  assert.match(attemptCostLine(h), /Spent on this theme so far: 3 credits/);
+  h.win.close();
+});

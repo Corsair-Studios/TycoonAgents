@@ -125,6 +125,13 @@ Credits are what generation costs: every generation attempt spends credits, incl
 
 None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. Prompts and generated images only transit the Corsair Theme Service when you're actively generating — nothing else about the extension calls out over the network.
 
+### Acceptable use
+
+- Prompts and reference images are screened automatically before generation runs, and a blocked prompt spends no credits.
+- A generation the model refuses on content-policy grounds is refunded, but it still counts as a strike.
+- Three strikes within 24 hours lock the account, disabling both generation and purchases.
+- Locked accounts can request an unlock through **Submit Feedback**; the full wording lives in [`docs/theme-credits-terms-draft.md`](docs/theme-credits-terms-draft.md).
+
 ## Multi-LLM
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
