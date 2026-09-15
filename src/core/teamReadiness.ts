@@ -232,6 +232,14 @@ export interface CreateDefaultProbesOptions {
   env: NodeJS.ProcessEnv;
   /** Optional execFileSync-shaped override, forwarded to discoverCodexBinary's exec seam (tests only). */
   execSeam?: (command: string) => string;
+  /**
+   * Which host is wiring these probes. "vscode" (default, backward
+   * compatible) runs inside the Claude Code host itself, so "anthropic" has
+   * no separate binary to discover and is always available. "standalone"
+   * has no such host and must actually probe the `claude` CLI on PATH via
+   * execSeam before calling anthropic available.
+   */
+  hostKind?: "vscode" | "standalone";
 }
 
 const REACHABILITY_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -245,11 +253,34 @@ const REACHABILITY_CACHE_TTL_MS = 10 * 60 * 1000;
  */
 export function createDefaultProbes(opts: CreateDefaultProbesOptions): TeamReadinessProbes {
   const { root, env, execSeam } = opts;
+  const hostKind = opts.hostKind ?? "vscode";
   const reachabilityCache = new Map<string, { at: number; result: ReachabilityResult }>();
+
+  const probeClaudeCli = async (): Promise<VendorAvailability> => {
+    if (!execSeam) {
+      return { available: false, detail: "claude CLI not found on PATH" };
+    }
+    const candidates = process.platform === "win32" ? ["claude", "claude.cmd"] : ["claude"];
+    for (const bin of candidates) {
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => execSeam(`${bin} --version`)),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+        ]);
+        return { available: true, detail: "claude CLI found" };
+      } catch {
+        // try next candidate
+      }
+    }
+    return { available: false, detail: "claude CLI not found on PATH" };
+  };
 
   const vendorAvailable = async (vendor: string): Promise<VendorAvailability> => {
     const v = vendor.toLowerCase();
     if (v === "anthropic" || v === "claude" || v === "claude-code") {
+      if (hostKind === "standalone") {
+        return probeClaudeCli();
+      }
       return { available: true, detail: "native host vendor" };
     }
     if (v === "codex" || v === "openai") {

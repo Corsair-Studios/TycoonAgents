@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildTeamReadiness,
+  createDefaultProbes,
   formatReadinessReport,
   type TeamReadinessProbes,
   type VendorAvailability,
@@ -209,6 +210,50 @@ test("an agent's own missing env does not affect an unrelated agent needing no e
   assert.deepEqual(byId["needs-var-a"].missingEnv, ["VAR_A"]);
   assert.equal(byId["needs-nothing"].status, "ready");
   assert.deepEqual(byId["needs-nothing"].missingEnv, []);
+});
+
+test("createDefaultProbes standalone hostKind marks anthropic not_ready when claude CLI probe fails", async () => {
+  const probes = createDefaultProbes({
+    root: "/fake/root",
+    env: {},
+    hostKind: "standalone",
+    execSeam: () => {
+      throw new Error("not recognized as an internal or external command");
+    },
+  });
+  const availability = await probes.vendorAvailable("anthropic");
+  assert.equal(availability.available, false);
+  assert.equal(availability.detail, "claude CLI not found on PATH");
+  assert.ok(!availability.detail.match(/[\\/]/));
+});
+
+test("createDefaultProbes vscode hostKind never calls execSeam for anthropic", async () => {
+  let called = false;
+  const probes = createDefaultProbes({
+    root: "/fake/root",
+    env: {},
+    execSeam: () => {
+      called = true;
+      return "";
+    },
+  });
+  const availability = await probes.vendorAvailable("anthropic");
+  assert.equal(availability.available, true);
+  assert.equal(called, false);
+  assert.ok(!availability.detail.match(/[\\/]/));
+});
+
+test("createDefaultProbes standalone hostKind marks anthropic available when claude CLI probe succeeds", async () => {
+  const probes = createDefaultProbes({
+    root: "/fake/root",
+    env: {},
+    hostKind: "standalone",
+    execSeam: () => "1.2.3",
+  });
+  const availability = await probes.vendorAvailable("anthropic");
+  assert.equal(availability.available, true);
+  assert.equal(availability.detail, "claude CLI found");
+  assert.ok(!availability.detail.match(/[\\/]/));
 });
 
 test("formatReadinessReport produces stable plain-text lines", async () => {
