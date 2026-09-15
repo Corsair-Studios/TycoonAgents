@@ -3164,6 +3164,31 @@
     planSection.appendChild(planInstallBtn);
     setupConfigEl.appendChild(planSection);
 
+    // ── 1.7. Team setup export (p48-t3) ──
+    // Exports the current roster/routing/skills/mcp/delegation state to
+    // .claude/tycoon-team.json — no env var values, no absolute paths.
+    const teamSetupSection = buildSection("Team setup");
+    const teamSetupHint = document.createElement("p");
+    teamSetupHint.className = "settings-empty";
+    teamSetupHint.textContent = "Export the current agent roster, routing, skills, MCP servers, and delegation settings to .claude/tycoon-team.json — names only, never secrets.";
+    teamSetupSection.appendChild(teamSetupHint);
+    const teamSetupExportBtn = document.createElement("button");
+    teamSetupExportBtn.className = "skill-btn settings-btn";
+    teamSetupExportBtn.id = "team-setup-export-btn";
+    teamSetupExportBtn.textContent = "Export team setup";
+    const teamSetupNotice = document.createElement("p");
+    teamSetupNotice.className = "theme-review-retry-warning";
+    teamSetupNotice.id = "team-setup-export-notice";
+    teamSetupNotice.setAttribute("hidden", "");
+    teamSetupExportBtn.addEventListener("click", () => {
+      teamSetupExportBtn.disabled = true;
+      teamSetupNotice.setAttribute("hidden", "");
+      vscode.postMessage({ type: "EXPORT_TEAM_SETUP" });
+    });
+    teamSetupSection.appendChild(teamSetupExportBtn);
+    teamSetupSection.appendChild(teamSetupNotice);
+    setupConfigEl.appendChild(teamSetupSection);
+
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");

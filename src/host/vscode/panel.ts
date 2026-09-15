@@ -60,6 +60,7 @@ import {
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
+import { exportTeamSetup } from "./teamSetupHost";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1505,6 +1506,8 @@ export class TycoonPanel {
           await this._handleDesignDocAction((message as any).mode);
         } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
           await this._handleInstallProjectPlanSkill();
+        } else if (message.type === MSG.EXPORT_TEAM_SETUP) {
+          this._handleExportTeamSetup();
         } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
@@ -4591,6 +4594,30 @@ export class TycoonPanel {
       "Project-plan skill installed and its starter prompt was copied to your clipboard."
     );
     void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: true });
+  }
+
+  /**
+   * Export team setup (p48-t3): assemble the roster/routing/skills/mcp/
+   * delegation state via teamSetupHost.exportTeamSetup() and write
+   * .claude/tycoon-team.json. Wire shape mirrors the standalone's
+   * EXPORT_TEAM_SETUP handler exactly: { ok, path?, error? }, never an env
+   * var value or absolute path.
+   */
+  private _handleExportTeamSetup(): void {
+    const root = this._projectRoot();
+    if (!root) {
+      void this._panel.webview.postMessage({
+        type: MSG.TEAM_SETUP_EXPORTED,
+        payload: { ok: false, error: "No project root — open a folder first." },
+      });
+      return;
+    }
+    const result = exportTeamSetup({
+      root,
+      env: process.env,
+      version: this._currentExtensionVersion() ?? "0.0.0",
+    });
+    void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_EXPORTED, payload: result });
   }
 
   /**

@@ -3415,19 +3415,46 @@ if (typeof module !== "undefined" && module.exports) {
     return "";
   }
 
+  function packBonusPercent(pack) {
+    if (!pack || typeof pack.bonusCredits !== "number" || pack.bonusCredits <= 0) return null;
+    const base = pack.credits - pack.bonusCredits;
+    if (!(base > 0)) return null;
+    return Math.round((pack.bonusCredits / base) * 100);
+  }
+
   function renderPackGrid(pricing, onBuy, disabled) {
     const grid = tspEl("div", "tsp-pack-grid");
     const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
+
+    let bestPack = null;
+    let bestPercent = -1;
+    for (const pack of packs) {
+      if (!pack) continue;
+      const percent = packBonusPercent(pack);
+      if (percent === null) continue;
+      if (
+        percent > bestPercent ||
+        (percent === bestPercent && bestPack && pack.credits > bestPack.credits)
+      ) {
+        bestPercent = percent;
+        bestPack = pack;
+      }
+    }
+
     for (const pack of packs) {
       if (!pack) continue;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "tsp-pack";
+      if (bestPack && pack === bestPack) {
+        btn.appendChild(tspEl("span", "tsp-pack-chip", "Best value"));
+      }
       btn.appendChild(tspEl("span", "tsp-pack-label", String(pack.label || pack.id)));
       btn.appendChild(tspEl("b", null, String(pack.credits)));
       btn.appendChild(document.createTextNode(formatPackPrice(pack)));
-      if (typeof pack.bonusCredits === "number" && pack.bonusCredits > 0) {
-        btn.appendChild(tspEl("span", "muted tsp-pack-bonus", "includes +" + pack.bonusCredits + " bonus"));
+      const percent = packBonusPercent(pack);
+      if (percent !== null) {
+        btn.appendChild(tspEl("span", "tsp-pack-badge", "+" + percent + "% credits"));
       }
       if (disabled) {
         btn.disabled = true;
@@ -12327,6 +12354,18 @@ if (typeof module !== "undefined" && module.exports) {
       if (themeImageReviewSummary && payload.error) {
         themeImageReviewSummary.textContent = "Could not approve all: " + payload.error;
         themeImageReviewSummary.classList.add("theme-review-error");
+      }
+    } else if (msg && msg.type === "TEAM_SETUP_EXPORTED") {
+      const payload = msg.payload || {};
+      const exportBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-export-btn"));
+      const notice = document.getElementById("team-setup-export-notice");
+      if (exportBtn) exportBtn.disabled = false;
+      if (notice) {
+        notice.textContent = payload.ok
+          ? `Exported to ${payload.path || ".claude/tycoon-team.json"}.`
+          : "Could not export: " + (payload.error || "unknown error");
+        notice.classList.toggle("theme-review-status--error", !payload.ok);
+        notice.removeAttribute("hidden");
       }
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
@@ -21383,6 +21422,31 @@ if (typeof module !== "undefined" && module.exports) {
     });
     planSection.appendChild(planInstallBtn);
     setupConfigEl.appendChild(planSection);
+
+    // ── 1.7. Team setup export (p48-t3) ──
+    // Exports the current roster/routing/skills/mcp/delegation state to
+    // .claude/tycoon-team.json — no env var values, no absolute paths.
+    const teamSetupSection = buildSection("Team setup");
+    const teamSetupHint = document.createElement("p");
+    teamSetupHint.className = "settings-empty";
+    teamSetupHint.textContent = "Export the current agent roster, routing, skills, MCP servers, and delegation settings to .claude/tycoon-team.json — names only, never secrets.";
+    teamSetupSection.appendChild(teamSetupHint);
+    const teamSetupExportBtn = document.createElement("button");
+    teamSetupExportBtn.className = "skill-btn settings-btn";
+    teamSetupExportBtn.id = "team-setup-export-btn";
+    teamSetupExportBtn.textContent = "Export team setup";
+    const teamSetupNotice = document.createElement("p");
+    teamSetupNotice.className = "theme-review-retry-warning";
+    teamSetupNotice.id = "team-setup-export-notice";
+    teamSetupNotice.setAttribute("hidden", "");
+    teamSetupExportBtn.addEventListener("click", () => {
+      teamSetupExportBtn.disabled = true;
+      teamSetupNotice.setAttribute("hidden", "");
+      vscode.postMessage({ type: "EXPORT_TEAM_SETUP" });
+    });
+    teamSetupSection.appendChild(teamSetupExportBtn);
+    teamSetupSection.appendChild(teamSetupNotice);
+    setupConfigEl.appendChild(teamSetupSection);
 
 
     // ── 3c. Context budget ──

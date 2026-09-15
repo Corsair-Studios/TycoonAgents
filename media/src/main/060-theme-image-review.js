@@ -1319,6 +1319,18 @@
         themeImageReviewSummary.textContent = "Could not approve all: " + payload.error;
         themeImageReviewSummary.classList.add("theme-review-error");
       }
+    } else if (msg && msg.type === "TEAM_SETUP_EXPORTED") {
+      const payload = msg.payload || {};
+      const exportBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-export-btn"));
+      const notice = document.getElementById("team-setup-export-notice");
+      if (exportBtn) exportBtn.disabled = false;
+      if (notice) {
+        notice.textContent = payload.ok
+          ? `Exported to ${payload.path || ".claude/tycoon-team.json"}.`
+          : "Could not export: " + (payload.error || "unknown error");
+        notice.classList.toggle("theme-review-status--error", !payload.ok);
+        notice.removeAttribute("hidden");
+      }
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {

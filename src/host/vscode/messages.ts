@@ -201,6 +201,14 @@ export const MSG = {
   PROJECT_PLAN_ACTION: "projectPlanAction",
   PROJECT_PLAN_DONE: "projectPlanDone",
 
+  // ---- team setup export (p48-t3) ----------------------------------------
+  // Webview -> host, no payload: assemble roster/routing/skills/mcp/
+  // delegation state into a TeamManifest and write it to
+  // .claude/tycoon-team.json at the project root. Host -> webview reply
+  // carries { ok, path?, error? } — never env var values or absolute paths.
+  EXPORT_TEAM_SETUP: "EXPORT_TEAM_SETUP",
+  TEAM_SETUP_EXPORTED: "TEAM_SETUP_EXPORTED",
+
   // ---- engine / UEFN -------------------------------------------------------
   GET_ENGINE_STATUS: "getEngineStatus",
   ENGINE_STATUS: "engineStatus",

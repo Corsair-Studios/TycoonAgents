@@ -89,6 +89,7 @@ import {
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
+import { handleExportTeamSetupStandalone } from './teamSetupMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 import { createThemeServiceHost } from './themeServiceHost.mjs';
 
@@ -1317,6 +1318,19 @@ function handleBrowserMessage(msg) {
       // copy handleInstallPack's skills step uses (stageSkillTreeStandalone).
       handleProjectPlanActionStandalone();
       break;
+    case 'EXPORT_TEAM_SETUP': {
+      // Standalone analog of panel.ts's _handleExportTeamSetup (p48-t3) —
+      // assembles roster/routing/skills/mcp/delegation state and writes
+      // .claude/tycoon-team.json via the shared, compiled teamSetupHost.js.
+      const result = handleExportTeamSetupStandalone({
+        requireCompiledOrThrow,
+        repoRoot: REPO_ROOT,
+        projectRoot: primaryProjectRoot,
+        version: readRepoVersion(),
+      });
+      broadcast('message', { type: 'TEAM_SETUP_EXPORTED', payload: result });
+      break;
+    }
     // ── Submit feedback (spec: docs/FEEDBACK-PIPELINE-SPEC.md §5) ────────
     // Standalone analog of panel.ts's _handleSubmitFeedback /
     // _handleConfirmFeedbackSend (~line 7630, ~7702): same two-step
