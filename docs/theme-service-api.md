@@ -1,4 +1,4 @@
-# Corsair Theme Service — Client API Contract (v2)
+# Corsair Theme Service — Client API Contract (v3)
 
 This document is the client-side contract that the private `corsair-theme-service`
 repo must implement. It supersedes v1: the auth model now mirrors Speciary's
@@ -6,6 +6,11 @@ Supabase-Auth-direct approach (`D:\ACode\Speciary`) instead of a bespoke
 magic-link/device-token service, and pricing/ledger/webhook semantics mirror
 Speciary's Stripe store. Service-internal architecture stays out of scope
 (see `design-docs/theme-credits-prd.md`).
+
+**v3 changelog:** adds content-moderation screening ahead of ledger debit
+on `/api/generate` and `/api/plan`, a per-user provider safety identifier,
+a strikes/account-lock mechanism for provider content-policy refusals, and
+documents server-side rate-limit queuing/backoff and capacity scaling.
 
 ## Conventions
 
@@ -98,10 +103,12 @@ No Theme Service session store, device token, or JWT secret of its own.
 ### `GET /api/account`
 Response `200`:
 ```json
-{ "email": "user@example.com", "displayName": "optional", "role": "user", "credits": 42 }
+{ "email": "user@example.com", "displayName": "optional", "role": "user", "credits": 42, "locked": false, "strikes": 0 }
 ```
 401 if the bearer token is missing/invalid/expired (mirrors
 `server.ts`'s `GET /api/account` gate — verify-then-401 before any DB call).
+`locked` mirrors `accounts.locked` (see Strikes and account lock below);
+`strikes` is the trailing-24h `account_strikes` row count for this user.
 
 ## Pricing (public — no auth)
 
@@ -154,6 +161,10 @@ user id, Stripe Tax enabled on the session — same as Speciary's
 in the system browser; it never talks to Stripe directly, and never receives
 a Stripe key.
 
+A locked account (see Strikes and account lock below) gets `403
+{ "error": "account_locked" }` here too, before a Checkout Session is
+created.
+
 ## Generation
 
 ### `POST /api/generate`
@@ -178,6 +189,17 @@ Response `200`:
 Response `502` (provider failure, auto-refunded atomically server-side):
 ```json
 { "error": "provider_failed", "refunded": true, "credits": 42 }
+```
+
+Response `422` (content screening blocked the prompt/reference image before
+any ledger debit — see Content screening below):
+```json
+{ "error": "content_blocked" }
+```
+
+Response `403` (account locked — see Strikes and account lock below):
+```json
+{ "error": "account_locked" }
 ```
 
 ## Plan / description generation
@@ -223,7 +245,75 @@ Response `502` (provider failure, auto-refunded atomically server-side):
 
 Same auth (`Authorization: Bearer <access_token>`) and error codes as
 `/api/generate` (see the Error shape table below). Cost is `planCost` from
-`GET /api/pricing` (assumed `1` credit; the service may set it to `0`).
+`GET /api/pricing` (assumed `1` credit; the service may set it to `0`). Also
+returns `422 { "error": "content_blocked" }` (content screening) and
+`403 { "error": "account_locked" }` (locked account), same conditions as
+`/api/generate` above.
+
+## Content screening
+
+Before any ledger debit, `/api/generate` and `/api/plan` run the assembled
+prompt text — and, for `/api/generate`, any `referenceImages` entry the
+provider's moderation endpoint supports — through that provider's
+moderation/safety endpoint. On a moderation hit the service returns
+`422 { "error": "content_blocked" }` immediately: no `credit_ledger` row is
+written (no debit, so no refund either) and the underlying provider
+generation/plan call is never made. `idempotencyKey` semantics are
+unchanged — a retried key that was previously blocked is re-screened, not
+special-cased.
+
+## Safety identifier
+
+Every provider call (moderation and generation/plan alike) carries a
+per-user identifier so the provider can apply its own per-user abuse
+enforcement, sent in that provider's `user`/safety-identifier request
+field. The identifier is `sha256(<supabase user id>)` as a hex string —
+never the user's email, and never the raw Supabase user id. This is the
+only per-user signal sent to the provider; the service does not otherwise
+attribute a generation call to an individual outside its own ledger/DB.
+
+## Strikes and account lock
+
+A **provider content-policy refusal** — the provider itself declining to
+generate on policy grounds, distinct from a generic `provider_failed`
+outage/error — refunds the attempt exactly as a `provider_failed` refund
+does today (see Ledger semantics below), **and** additionally writes one
+row to a small ledger-adjacent `account_strikes` table:
+
+```sql
+account_strikes (
+  user_id    uuid not null,
+  attempt_id text not null,   -- the idempotencyKey of the refused attempt
+  created_at timestamptz not null default now()
+)
+```
+
+When a user's `account_strikes` rows in the trailing 24 hours reach
+`STRIKE_LOCK_THRESHOLD` (env var, default `3`), the service sets
+`accounts.locked = true` for that user. While locked, `/api/generate`,
+`/api/plan`, and `/api/store/checkout` all return `403
+{ "error": "account_locked" }` before doing any other work (auth still
+checked first, so an expired token still yields `401`). `GET /api/account`
+reports `locked` and the trailing-24h `strikes` count (see Account above)
+so the client can surface why the user is blocked. Unlocking is a manual
+operator action against the `accounts` table — there is no unlock
+endpoint.
+
+## Rate limits and scaling
+
+The service queues attempts server-side and, on a provider `429`, retries
+with exponential backoff for a bounded number of tries (e.g. 3) before
+giving up and surfacing `429 { "error": "rate_limited" }` to the client —
+the client never sees a provider `429` directly. Independent of that,
+per-account limits (`RATE_LIMIT_ATTEMPTS_PER_MIN`,
+`RATE_LIMIT_ATTEMPTS_PER_DAY` env vars) are enforced ahead of the provider
+call and are set below the provider's account-wide limit, so one heavy
+user cannot exhaust capacity for everyone else on the same provider
+account. Capacity grows by requesting provider usage-tier/limit increases
+and by shifting board types between the two configured providers
+(`OPENAI_API_KEY` / `GEMINI_API_KEY`) — **never** by rotating or pooling
+multiple API keys/accounts for the same provider; that is explicitly out
+of scope, always.
 
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 
@@ -270,7 +360,9 @@ Every non-2xx response is:
 | --- | --- | --- | --- |
 | 401 | `not_signed_in` | missing/invalid/expired access token | prompt sign-in |
 | 402 | `insufficient_credits` | balance too low for this attempt | show balance + "Buy credits" |
-| 429 | `rate_limited` | per-account/IP rate limit hit | "try again shortly" |
+| 403 | `account_locked` | account locked after repeated content-policy strikes | show locked state, no retry, contact support |
+| 422 | `content_blocked` | moderation screening blocked the prompt/image before any debit | show blocked state, no refund needed (never debited), let user edit prompt |
+| 429 | `rate_limited` | per-account/IP rate limit hit, or provider 429 exhausted retries | "try again shortly" |
 | 502 | `provider_failed` | image model call failed; auto-refunded | board failed, refunded, retry available |
 | 503 | `unavailable` | service itself is down/unreachable | "Theme Service unavailable" |
 | — | `unreachable` | network-level failure (no response), detected client-side | same UI state as 503 |
@@ -283,12 +375,19 @@ client-side: `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
 `STRIPE_WEBHOOK_SECRET`, any `STRIPE_PRICE_*`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`.
 
+Client-side error-kind enum (mirrors the `error` column of the Error
+shape table above — keep in sync): `not_signed_in`, `insufficient_credits`,
+`account_locked`, `content_blocked`, `rate_limited`, `provider_failed`,
+`unavailable`, `unreachable`.
+
 ## Service env vars (names only — mirrors Speciary's `render.yaml` pattern)
 
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
 `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MINI30`, `STRIPE_PRICE_STANDARD250`,
 `STRIPE_PRICE_BULK750`, `STRIPE_PRICE_WHALE2000`, `OPENAI_API_KEY`,
-`GEMINI_API_KEY`, `SERVICE_ALLOWED_ORIGINS`, `PORT`.
+`GEMINI_API_KEY`, `SERVICE_ALLOWED_ORIGINS`, `PORT`,
+`STRIKE_LOCK_THRESHOLD` (default `3`), `RATE_LIMIT_ATTEMPTS_PER_MIN`,
+`RATE_LIMIT_ATTEMPTS_PER_DAY`.
 
 (Speciary's `render.yaml` sets these as `sync: false` — Render-dashboard
 managed secrets, never committed — plus a plaintext `SERVICE_ALLOWED_ORIGINS`
