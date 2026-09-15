@@ -157,19 +157,19 @@ test("checkout -> completeCheckout grants pack credits", async () => {
   const res = await fakeFetch(`${ENDPOINT}/api/store/checkout`, {
     method: "POST",
     headers: authHeaders(body.access_token),
-    body: JSON.stringify({ pack: "mini30" }),
+    body: JSON.stringify({ pack: "starter45" }),
   });
   assert.equal(res.status, 200);
   const { url } = (await res.json()) as { url: string };
   const sessionId = url.split("/").pop()!;
   const row = helpers.completeCheckout(sessionId);
   assert.ok(row);
-  assert.equal(row?.delta, 30);
-  assert.match(row!.ref!, /^stripe:.*:mini30$/);
+  assert.equal(row?.delta, 45);
+  assert.match(row!.ref!, /^stripe:.*:starter45$/);
 
   const meRes = await fakeFetch(`${ENDPOINT}/api/account`, { headers: authHeaders(body.access_token) });
   const me = (await meRes.json()) as { credits: number };
-  assert.equal(me.credits, 30);
+  assert.equal(me.credits, 45);
 
   // Replay-safe: completing again is a no-op.
   const replay = helpers.completeCheckout(sessionId);
@@ -190,8 +190,8 @@ test("generate debits the ledger and returns an image", async () => {
   assert.equal(res.status, 200);
   const gen = (await res.json()) as { image: string; attemptCost: number; credits: number; refunded: boolean };
   assert.ok(gen.image.startsWith("data:image/png"));
-  assert.equal(gen.attemptCost, 1);
-  assert.equal(gen.credits, 4);
+  assert.equal(gen.attemptCost, 2);
+  assert.equal(gen.credits, 3);
   assert.equal(gen.refunded, false);
 });
 

@@ -283,7 +283,7 @@ test("checkout -> completeCheckout raises credits", async () => {
   await client.requestMagicLink("buyer@example.com");
   await client.verifyMagicLink("buyer@example.com", "123456");
 
-  const checkout = await client.createCheckoutSession("mini30");
+  const checkout = await client.createCheckoutSession("starter45");
   assert.equal(checkout.ok, true);
   if (!checkout.ok) return;
   const sessionId = checkout.value.url.split("/").pop()!;
@@ -293,13 +293,13 @@ test("checkout -> completeCheckout raises credits", async () => {
   const status = await client.getStatus();
   assert.equal(status.ok, true);
   if (!status.ok) return;
-  assert.equal(status.value.credits, 30);
+  assert.equal(status.value.credits, 45);
 });
 
 test("generate debits, retry debits again, failNextGenerate refunds with zero net", async () => {
   const { fake, client } = setupClient();
   const account = fake.helpers.createAccount("gen@example.com");
-  fake.helpers.grant(account.id, 5);
+  fake.helpers.grant(account.id, 10);
   await client.requestMagicLink("gen@example.com");
   await client.verifyMagicLink("gen@example.com", "123456");
 
@@ -310,7 +310,7 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
     size: "1024x1024",
   });
   assert.equal(first.ok, true);
-  if (first.ok) assert.equal(first.value.credits, 4);
+  if (first.ok) assert.equal(first.value.credits, 8); // objects_01 costs 2
 
   const second = await client.generateAttempt({
     idempotencyKey: "k2",
@@ -319,7 +319,7 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
     size: "1024x1024",
   });
   assert.equal(second.ok, true);
-  if (second.ok) assert.equal(second.value.credits, 3);
+  if (second.ok) assert.equal(second.value.credits, 6);
 
   fake.helpers.failNextGenerate();
   const third = await client.generateAttempt({
@@ -332,7 +332,7 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
   if (!third.ok) {
     assert.equal(third.error.kind, "provider_failed");
     assert.equal(third.error.refunded, true);
-    assert.equal(third.error.credits, 3); // net zero vs pre-attempt balance
+    assert.equal(third.error.credits, 6); // net zero vs pre-attempt balance
   }
 });
 
@@ -483,6 +483,49 @@ test("getPricing surfaces planCost", async () => {
   const res = await client.getPricing();
   assert.equal(res.ok, true);
   if (res.ok) assert.equal(res.value.planCost, 1);
+});
+
+test("getPricing surfaces pack label, bonusCredits, and typicalTheme.typical when present", async () => {
+  const { client } = setupClient();
+  const res = await client.getPricing();
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.typicalTheme.typical, 95);
+  const theme95 = res.value.packs.find((p) => p.id === "theme95");
+  assert.ok(theme95);
+  assert.equal(theme95?.label, "Theme");
+  assert.equal(theme95?.bonusCredits, 5);
+});
+
+test("getPricing still succeeds when the response omits label, bonusCredits, and typicalTheme.typical (older server)", async () => {
+  const oldPricingFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/pricing")) {
+      return new Response(
+        JSON.stringify({
+          attemptCostByBoardType: { objects_01: 2 },
+          planCost: 1,
+          typicalTheme: { min: 55, max: 170 },
+          packs: [{ id: "starter45", credits: 45, priceCents: 499, currency: "usd" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    throw new Error(`unexpected request in oldPricingFetch: ${url}`);
+  }) as typeof fetch;
+  const client = createThemeServiceClient({
+    fetch: oldPricingFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const res = await client.getPricing();
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.typicalTheme.typical, undefined);
+  assert.equal(res.value.packs[0].label, undefined);
+  assert.equal(res.value.packs[0].bonusCredits, undefined);
 });
 
 test("planRequest debits planCost and echoes the requester's kind/input as output", async () => {

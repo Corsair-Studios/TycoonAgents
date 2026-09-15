@@ -193,7 +193,7 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
     const verifyRes = await client.verifyMagicLink(email, '123456');
     assert.equal(verifyRes.ok, true);
     const accountId = fake.state.accountsByEmail.get(email)!;
-    fake.helpers.grant(accountId, 30);
+    fake.helpers.grant(accountId, 1000);
 
     setThemeImageGenerator(createServiceImageGenerator(client));
     setThemePlanRequester(createServicePlanRequester(client));
@@ -206,7 +206,7 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
       const planRows = fake.state.ledger.filter((r) => r.ref?.startsWith('plan:'));
       assert.equal(planRows.length, 1, 'planRequest must debit exactly one ledger row');
       assert.equal(planRows[0].delta, -planCost);
-      assert.equal(fake.state.balances.get(accountId), 30 - planCost, 'balance after planning must reflect planCost debited');
+      assert.equal(fake.state.balances.get(accountId), 1000 - planCost, 'balance after planning must reflect planCost debited');
 
       const progress: string[] = [];
       await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, (m) => progress.push(m));
@@ -216,16 +216,23 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
 
       const spendRowsAfterGenerate = fake.state.ledger.filter((r) => r.ref?.startsWith('attempt:'));
       assert.equal(spendRowsAfterGenerate.length, boardCount, 'ledger spend rows must equal the number of boards generated');
+      // Cost per board varies by boardType (see DEFAULT_PRICING in
+      // test/helpers/fakeThemeService.ts); derive the expected total from
+      // the actual boards generated rather than assuming 1 credit each.
+      const costForBoardType = (boardType: string | undefined) =>
+        fake.state.pricing.attemptCostByBoardType[boardType ?? ''] ?? 1;
+      const totalBoardCost = review.entries.reduce((sum, entry) => sum + costForBoardType(entry.item.boardType), 0);
       assert.equal(
         fake.state.balances.get(accountId),
-        30 - planCost - boardCount,
-        'balance after generating all boards must be 30 minus planCost minus one credit per board',
+        1000 - planCost - totalBoardCost,
+        'balance after generating all boards must be 30 minus planCost minus the sum of each board type\'s cost',
       );
       for (const entry of review.entries) {
         assert.equal(entry.item.error_kind, undefined, `${entry.item.id} must generate cleanly`);
       }
 
       // ---- (2) retry one board -> one more spend row ----
+      const environmentCost = costForBoardType(review.entries.find((e) => e.item.id === 'environment')!.item.boardType);
       const ledgerBeforeRetry = fake.state.ledger.length;
       await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {});
       const spendRowsAfterRetry = fake.state.ledger.filter((r) => r.ref?.startsWith('attempt:'));
@@ -233,8 +240,8 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
       assert.equal(fake.state.ledger.length, ledgerBeforeRetry + 1);
       assert.equal(
         fake.state.balances.get(accountId),
-        30 - planCost - boardCount - 1,
-        'balance after the retry must reflect the extra attempt',
+        1000 - planCost - totalBoardCost - environmentCost,
+        'balance after the retry must reflect the extra attempt at the environment board\'s cost',
       );
       const reviewAfterRetry = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
 
@@ -364,7 +371,7 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
     await client.requestMagicLink(email);
     await client.verifyMagicLink(email, '123456');
     const accountId = fake.state.accountsByEmail.get(email)!;
-    fake.helpers.grant(accountId, 30);
+    fake.helpers.grant(accountId, 300);
 
     // Revoke the access token (but not the refresh token) mid-run, exactly
     // as if it had naturally expired between calls.
@@ -403,7 +410,7 @@ test('content_blocked, policy-refusal strikes, auto-lock, and 24h strike expiry 
     await client.requestMagicLink(email);
     await client.verifyMagicLink(email, '123456');
     const accountId = fake.state.accountsByEmail.get(email)!;
-    fake.helpers.grant(accountId, 30);
+    fake.helpers.grant(accountId, 300);
 
     setThemeImageGenerator(createServiceImageGenerator(client));
     try {
@@ -510,4 +517,29 @@ test('src/extension and src/host reference no direct provider hostname or API-ke
       assert.equal(pattern.test(contents), false, `${path.relative(process.cwd(), file)} must not reference ${pattern}`);
     }
   }
+});
+
+// p47-t4: per-board-type pricing — a roster_agent attempt debits 3 and an
+// objects_01 attempt debits 2, matching DEFAULT_PRICING.attemptCostByBoardType
+// in test/helpers/fakeThemeService.ts, verified against the fake's ledger.
+test('generateAttempt debits the exact per-board-type cost against the fake ledger', async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const client = createThemeServiceClient({ fetch: fake.fetch, tokenStore: memoryTokenStore(), endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const email = 'per-board-cost@example.com';
+  const account = fake.helpers.createAccount(email);
+  fake.helpers.grant(account.id, 20);
+  await client.requestMagicLink(email);
+  await client.verifyMagicLink(email, '123456');
+
+  const rosterRes = await client.generateAttempt({ idempotencyKey: 'roster-1', boardType: 'roster_agent', prompt: 'x', size: '1024x1024' });
+  assert.equal(rosterRes.ok, true);
+  const rosterRow = fake.state.ledger.find((r) => r.ref === 'attempt:roster-1');
+  assert.ok(rosterRow);
+  assert.equal(rosterRow?.delta, -3, 'a roster_agent attempt must debit exactly 3');
+
+  const objectsRes = await client.generateAttempt({ idempotencyKey: 'objects-1', boardType: 'objects_01', prompt: 'x', size: '1024x1024' });
+  assert.equal(objectsRes.ok, true);
+  const objectsRow = fake.state.ledger.find((r) => r.ref === 'attempt:objects-1');
+  assert.ok(objectsRow);
+  assert.equal(objectsRow?.delta, -2, 'an objects_01 attempt must debit exactly 2');
 });

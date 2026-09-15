@@ -268,7 +268,7 @@ test('balance and buy: BUY_CREDITS opens checkout, status shows pendingCheckout 
   const beforeCredits = statuses[statuses.length - 1].credits;
   assert.equal(beforeCredits, 0);
 
-  await host.handleBuyCredits('mini30');
+  await host.handleBuyCredits('starter45');
   assert.equal(openExternalCalls.length, 1);
   const checkoutUrl = openExternalCalls[0];
   assert.match(checkoutUrl, /^https:\/\/checkout\.stripe\.com\//);
@@ -280,7 +280,7 @@ test('balance and buy: BUY_CREDITS opens checkout, status shows pendingCheckout 
   assert.ok(ledgerRow, 'fake completeCheckout must find the pending session');
 
   const snapshotAfter = await host.getStatusSnapshot();
-  assert.equal(snapshotAfter.credits, 30, 'balance must reflect the completed checkout (mini30 pack)');
+  assert.equal(snapshotAfter.credits, 45, 'balance must reflect the completed checkout (starter45 pack)');
 });
 
 test('generate debits per attempt via client.generateAttempt; failNextGenerate refunds with error_kind; insufficient credits reports error_kind insufficient_credits', async (t) => {
@@ -293,6 +293,7 @@ test('generate debits per attempt via client.generateAttempt; failNextGenerate r
     await host.handleVerify('gen@example.com', '123456');
     const client = host.getClient();
 
+    const objectsCost = fake.state.pricing.attemptCostByBoardType.objects_01;
     const before = (await client.getStatus()).value.credits;
     const ok = await client.generateAttempt({
       idempotencyKey: 'attempt-1',
@@ -301,7 +302,7 @@ test('generate debits per attempt via client.generateAttempt; failNextGenerate r
     });
     assert.equal(ok.ok, true, 'first generate attempt must succeed');
     const afterOk = (await client.getStatus()).value.credits;
-    assert.equal(before - afterOk, 1, 'balance must debit exactly attemptCostByBoardType.objects_01 (1)');
+    assert.equal(before - afterOk, objectsCost, 'balance must debit exactly attemptCostByBoardType.objects_01');
 
     fake.helpers.failNextGenerate();
     const beforeFail = afterOk;
@@ -316,8 +317,9 @@ test('generate debits per attempt via client.generateAttempt; failNextGenerate r
     const afterFail = (await client.getStatus()).value.credits;
     assert.equal(afterFail, beforeFail, 'a refunded failed attempt must leave the balance unchanged (debit then refund nets to zero)');
 
-    // Drain remaining credits, then attempt with none left.
-    while ((await client.getStatus()).value.credits > 0) {
+    // Drain remaining credits (down to less than one attempt's cost), then
+    // attempt with insufficient balance left.
+    while ((await client.getStatus()).value.credits >= objectsCost) {
       const key = `drain-${(await client.getStatus()).value.credits}`;
       // eslint-disable-next-line no-await-in-loop
       await client.generateAttempt({ idempotencyKey: key, boardType: 'objects_01', input: {} });
@@ -371,7 +373,7 @@ test('secrets: no broadcast payload or console output ever contains the fake-iss
   try {
     await host.handleRequestMagicLink('secret@example.com');
     await host.handleVerify('secret@example.com', '123456');
-    await host.handleBuyCredits('mini30');
+    await host.handleBuyCredits('starter45');
     await host.handleGoogleStart();
     await host.handleSignOut();
   } finally {
