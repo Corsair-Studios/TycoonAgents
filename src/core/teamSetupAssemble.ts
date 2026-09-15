@@ -49,6 +49,14 @@ export interface TeamSetupAssembleRoutingAgent {
    *  slot (see RoutingSlot.fallback in src/core/routingProfile.ts) — empty
    *  only when the slot truly has none. */
   fallbackChain: string[];
+  /** Env var NAMES (never values) this agent's OWN primary slot requires —
+   *  its endpointEnv/apiKeyEnv names only. Omit/empty when the primary slot
+   *  needs no env. Readiness checks only THIS agent's own list, never the
+   *  manifest-wide requiredEnv union. */
+  envNames?: string[];
+  /** Env var NAMES per fallback chain entry, keyed by that entry's label as
+   *  it appears in `fallbackChain`. */
+  fallbackEnvNames?: Record<string, string[]>;
 }
 
 export interface TeamSetupAssembleInput {
@@ -57,7 +65,13 @@ export interface TeamSetupAssembleInput {
   /** One resolved Backend per agent — from buildRoutingView(...).agents. */
   routingAgents: TeamSetupAssembleRoutingAgent[];
   /** Optional resolved orchestrator backend — from buildRoutingView(...).orchestrator. */
-  orchestrator?: { id: string; backend: Backend; fallbackChain: string[] };
+  orchestrator?: {
+    id: string;
+    backend: Backend;
+    fallbackChain: string[];
+    envNames?: string[];
+    fallbackEnvNames?: Record<string, string[]>;
+  };
   /**
    * Presence-only probe (never a value) for every endpointEnv/apiKeyEnv name
    * collected across routingAgents + orchestrator — from routingHostOps'
@@ -74,11 +88,20 @@ export interface TeamSetupAssembleInput {
   planPointer?: string;
 }
 
-function backendToRouting(backend: Backend, fallbackChain: string[]): TeamManifestRouting {
+function backendToRouting(
+  backend: Backend,
+  fallbackChain: string[],
+  envNames?: string[],
+  fallbackEnvNames?: Record<string, string[]>,
+): TeamManifestRouting {
   const out: TeamManifestRouting = { fallbackChain: [...fallbackChain] };
   if (backend.vendor !== undefined) out.vendor = backend.vendor;
   if (backend.model !== undefined) out.model = backend.model;
   if (backend.costModelClass !== undefined) out.costClass = backend.costModelClass;
+  if (envNames && envNames.length > 0) out.envNames = [...envNames];
+  if (fallbackEnvNames && Object.keys(fallbackEnvNames).length > 0) {
+    out.fallbackEnvNames = Object.fromEntries(Object.entries(fallbackEnvNames).map(([k, v]) => [k, [...v]]));
+  }
   return out;
 }
 
@@ -97,12 +120,14 @@ export function assembleTeamSetupInput(input: TeamSetupAssembleInput): TeamManif
 
   const routing: Record<string, TeamManifestRouting> = {};
   for (const agent of input.routingAgents) {
-    routing[agent.id] = backendToRouting(agent.backend, agent.fallbackChain);
+    routing[agent.id] = backendToRouting(agent.backend, agent.fallbackChain, agent.envNames, agent.fallbackEnvNames);
   }
   if (input.orchestrator) {
     routing[input.orchestrator.id || "orchestrator"] = backendToRouting(
       input.orchestrator.backend,
       input.orchestrator.fallbackChain,
+      input.orchestrator.envNames,
+      input.orchestrator.fallbackEnvNames,
     );
   }
 

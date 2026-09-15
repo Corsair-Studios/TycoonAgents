@@ -33,6 +33,19 @@ export interface TeamManifestRouting {
   model?: string;
   fallbackChain: string[];
   costClass?: CostModelClass;
+  /** Env var NAMES (never values) required by this agent's own primary
+   *  slot — the union of its endpointEnv/credentialEnv names. Absent or
+   *  empty means this agent's primary slot needs no env. Readiness checks
+   *  ONLY this list for the primary candidate, never the manifest-wide
+   *  requiredEnv union (p50-t1 follow-up: an unrelated agent's missing var
+   *  must not mark every agent not_ready). */
+  envNames?: string[];
+  /** Env var NAMES (never values) required by each fallback chain entry,
+   *  keyed by that entry's "vendor/model" label as it appears in
+   *  `fallbackChain` (or just "vendor" / "model" when only one is set —
+   *  matches fallbackSlotLabel() in src/host/vscode/teamSetupHost.ts). A
+   *  fallback entry with no key here needs no env. */
+  fallbackEnvNames?: Record<string, string[]>;
 }
 
 export interface TeamManifestRequiredEnv {
@@ -89,15 +102,29 @@ function sortRoster(roster: TeamManifestRosterEntry[]): TeamManifestRosterEntry[
   return [...roster].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function sortFallbackEnvNames(map: Record<string, string[]> | undefined): Record<string, string[]> | undefined {
+  if (!map) return undefined;
+  const keys = Object.keys(map).sort((a, b) => a.localeCompare(b));
+  if (keys.length === 0) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const key of keys) {
+    out[key] = [...map[key]].sort((a, b) => a.localeCompare(b));
+  }
+  return out;
+}
+
 function sortRouting(routing: Record<string, TeamManifestRouting>): Record<string, TeamManifestRouting> {
   const out: Record<string, TeamManifestRouting> = {};
   for (const key of Object.keys(routing).sort((a, b) => a.localeCompare(b))) {
     const slot = routing[key];
+    const fallbackEnvNames = sortFallbackEnvNames(slot.fallbackEnvNames);
     out[key] = {
       ...(slot.vendor !== undefined ? { vendor: slot.vendor } : {}),
       ...(slot.model !== undefined ? { model: slot.model } : {}),
       fallbackChain: [...slot.fallbackChain],
       ...(slot.costClass !== undefined ? { costClass: slot.costClass } : {}),
+      ...(slot.envNames !== undefined ? { envNames: [...slot.envNames].sort((a, b) => a.localeCompare(b)) } : {}),
+      ...(fallbackEnvNames !== undefined ? { fallbackEnvNames } : {}),
     };
   }
   return out;
@@ -214,6 +241,8 @@ function scanForForbiddenStrings(value: unknown, path: string): string | null {
   return null;
 }
 
+const ENV_VAR_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
 export function validateTeamManifest(manifest: TeamManifest): TeamManifestValidationResult {
   if (manifest.schemaVersion !== TEAM_MANIFEST_SCHEMA_VERSION) {
     return { ok: false, field: "schemaVersion", reason: "unsupported schema version" };
@@ -222,6 +251,26 @@ export function validateTeamManifest(manifest: TeamManifest): TeamManifestValida
   for (const entry of manifest.requiredEnv ?? []) {
     if (Object.prototype.hasOwnProperty.call(entry, "value")) {
       return { ok: false, field: "requiredEnv", reason: "env entry carries a value property; names only" };
+    }
+  }
+
+  for (const agentId of Object.keys(manifest.routing ?? {})) {
+    const slot = manifest.routing[agentId];
+    for (const name of slot.envNames ?? []) {
+      if (typeof name !== "string" || !ENV_VAR_NAME_PATTERN.test(name)) {
+        return { ok: false, field: `routing.${agentId}.envNames`, reason: "env var names only (^[A-Z][A-Z0-9_]*$)" };
+      }
+    }
+    for (const label of Object.keys(slot.fallbackEnvNames ?? {})) {
+      for (const name of slot.fallbackEnvNames![label]) {
+        if (typeof name !== "string" || !ENV_VAR_NAME_PATTERN.test(name)) {
+          return {
+            ok: false,
+            field: `routing.${agentId}.fallbackEnvNames.${label}`,
+            reason: "env var names only (^[A-Z][A-Z0-9_]*$)",
+          };
+        }
+      }
     }
   }
 
@@ -296,6 +345,20 @@ export function parseTeamManifest(text: string): ParseTeamManifestResult {
     const slot = routing[key] as Record<string, unknown>;
     if (!slot || !isStringArray(slot.fallbackChain)) {
       return { ok: false, field: `routing.${key}`, reason: "malformed routing slot" };
+    }
+    if (slot.envNames !== undefined && !isStringArray(slot.envNames)) {
+      return { ok: false, field: `routing.${key}.envNames`, reason: "not a string array" };
+    }
+    if (slot.fallbackEnvNames !== undefined) {
+      const fen = slot.fallbackEnvNames as Record<string, unknown>;
+      if (!fen || typeof fen !== "object" || Array.isArray(fen)) {
+        return { ok: false, field: `routing.${key}.fallbackEnvNames`, reason: "not an object" };
+      }
+      for (const label of Object.keys(fen)) {
+        if (!isStringArray(fen[label])) {
+          return { ok: false, field: `routing.${key}.fallbackEnvNames.${label}`, reason: "not a string array" };
+        }
+      }
     }
   }
   if (
