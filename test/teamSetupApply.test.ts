@@ -245,7 +245,9 @@ test("local-only routing fields survive apply: custom field kept, managed model 
 });
 
 test("malicious roster id (path traversal): apply refused, no file written outside .claude/agents", () => {
-  const rootB = tmpRoot();
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "teamsetup-parent-"));
+  const rootB = path.join(parent, "rootB");
+  fs.mkdirSync(rootB, { recursive: true });
   try {
     fs.mkdirSync(path.join(rootB, ".claude"), { recursive: true });
     const manifest = {
@@ -261,14 +263,15 @@ test("malicious roster id (path traversal): apply refused, no file written outsi
     };
     fs.writeFileSync(path.join(rootB, ".claude", "tycoon-team.json"), JSON.stringify(manifest, null, 2), "utf8");
 
-    const parentBefore = fs.readdirSync(path.dirname(rootB));
+    const parentBefore = fs.readdirSync(parent);
     const report = apply(rootB);
     assert.equal(report.ok, false);
-    const parentAfter = fs.readdirSync(path.dirname(rootB));
+    const parentAfter = fs.readdirSync(parent);
     assert.deepEqual(parentAfter, parentBefore, "no file must be created outside root B");
+    assert.deepEqual(parentAfter, ["rootB"], "parent must contain only root B");
     assert.ok(!fs.existsSync(path.join(rootB, ".claude", "agents")));
   } finally {
-    fs.rmSync(rootB, { recursive: true, force: true });
+    fs.rmSync(parent, { recursive: true, force: true });
   }
 });
 
