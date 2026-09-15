@@ -19,6 +19,7 @@ import { initLog, log } from "./log";
 import { resolveProviderId } from "../../core/providerSelection";
 import type { ProviderId } from "../../core/providerSelection";
 import { createProvider } from "./providerFactory";
+import { maybeShowProviderKeyMigrationNotice } from "./providerKeyMigrationNotice";
 
 let provider: Provider | undefined;
 // p13-t7: module state captured once the panel/provider are first started,
@@ -258,6 +259,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Boot the Theme Factory / Theater lifecycle controller (webview view, generateTheme command, telemetry heartbeat).
   activateTheater(context, bundledThemesReady);
+
+  // p45-t2: one-time notice for anyone still holding a legacy provider image
+  // API key in SecretStorage now that generation routes through the Theme
+  // Service host. Fire-and-forget; never blocks activation.
+  maybeShowProviderKeyMigrationNotice({
+    secrets: context.secrets,
+    globalState: context.globalState,
+    showInformationMessage: (message, ...items) => vscode.window.showInformationMessage(message, ...items),
+  }).catch((err) => {
+    console.error("TycoonAgents: provider key migration notice failed:", err instanceof Error ? err.message : err);
+  });
 }
 
 export function deactivate(): void {

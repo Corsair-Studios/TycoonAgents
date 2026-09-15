@@ -3463,6 +3463,7 @@ if (typeof module !== "undefined" && module.exports) {
 
     container.appendChild(tspEl("small", "note", "Signing in opens your browser. Your Corsair account is created on first sign-in."));
     container.appendChild(tspEl("small", "note", "Hand-made and imported themes never need an account."));
+    container.appendChild(tspEl("small", "note", "Your theme prompts and the images we generate are sent to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one. The extension itself holds no image-provider API key of yours."));
   }
 
   // C2. Waiting for browser sign-in (after GOOGLE_START).
@@ -17636,7 +17637,7 @@ if (typeof module !== "undefined" && module.exports) {
     const discNeverStrong = document.createElement("strong");
     discNeverStrong.textContent = "What's never sent:";
     discBody3.appendChild(discNeverStrong);
-    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens. Separately: theme prompts and generated images go to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one — and the extension holds no image-provider API key of yours."));
     discDetails3.appendChild(discBody3);
     discLi3.appendChild(discDetails3);
     discList.appendChild(discLi3);

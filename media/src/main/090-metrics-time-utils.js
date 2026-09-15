@@ -955,7 +955,7 @@
     const discNeverStrong = document.createElement("strong");
     discNeverStrong.textContent = "What's never sent:";
     discBody3.appendChild(discNeverStrong);
-    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens."));
+    discBody3.appendChild(document.createTextNode(" your source code, file contents, project names (only redacted paths), API keys (they're removed), or anything running in the background. Nothing leaves your machine until you press Send — and you'll see the exact data being sent right before that happens. Separately: theme prompts and generated images go to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one — and the extension holds no image-provider API key of yours."));
     discDetails3.appendChild(discBody3);
     discLi3.appendChild(discDetails3);
     discList.appendChild(discLi3);

@@ -6172,3 +6172,17 @@ test('Eligible savings: pure priced Anthropic delegated agents render the three 
     h.win.close();
   }
 });
+
+test('media/main.js Theme Service disclosure names Corsair Theme Service and is generate-only', () => {
+  const src = readFileSync(MAIN_JS_PATH, 'utf8');
+  assert.match(
+    src,
+    /Your theme prompts and the images we generate are sent to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one\. The extension itself holds no image-provider API key of yours\./,
+    'Theme Service panel must disclose that prompts/images are sent to the Corsair Theme Service only on generate, and that the extension holds no image-provider API key'
+  );
+  assert.match(
+    src,
+    /Separately: theme prompts and generated images go to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one — and the extension holds no image-provider API key of yours\./,
+    'The feedback "what\'s never sent" disclosure block must also name the Corsair Theme Service generate-only condition'
+  );
+});

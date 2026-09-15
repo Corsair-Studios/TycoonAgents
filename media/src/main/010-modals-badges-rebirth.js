@@ -1656,6 +1656,7 @@
 
     container.appendChild(tspEl("small", "note", "Signing in opens your browser. Your Corsair account is created on first sign-in."));
     container.appendChild(tspEl("small", "note", "Hand-made and imported themes never need an account."));
+    container.appendChild(tspEl("small", "note", "Your theme prompts and the images we generate are sent to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one. The extension itself holds no image-provider API key of yours."));
   }
 
   // C2. Waiting for browser sign-in (after GOOGLE_START).
