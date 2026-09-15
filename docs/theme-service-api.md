@@ -21,6 +21,12 @@ increased (100 total/10 bonus, and 205 total/25 bonus respectively);
 clients may compute and display each pack's bonus percentage and tag the
 best one "Best value".
 
+**v3.3 changelog:** documents required backend input-handling rules
+(parameterized DB access, pack-id/board-type/idempotency-key validation,
+prompt/text length limits via `PROMPT_MAX_CHARS`/`IMAGE_MAX_BYTES`, no text
+in logs/URLs/headers, `nosniff` JSON responses) and adds the `bad_request`
+(400) error kind.
+
 ## Conventions
 
 - All requests/responses are JSON (`Content-Type: application/json`) unless noted.
@@ -334,6 +340,36 @@ and by shifting board types between the two configured providers
 multiple API keys/accounts for the same provider; that is explicitly out
 of scope, always.
 
+## Backend input handling (required)
+
+All database access goes through the Supabase client or parameterized
+queries; the service never builds SQL by string concatenation, and every
+ledger write (spend, refund, grant) uses the client with typed parameters —
+no raw string-built statements anywhere near `credit_ledger`.
+
+`pack` on `POST /api/store/checkout` is validated against the fixed pack id
+list returned by `GET /api/pricing` before any Stripe call is made. An
+unknown id returns `400 { "error": "bad_request" }` — no Stripe API call, no
+ledger row.
+
+`prompt` and every other text field on `POST /api/generate` and
+`POST /api/plan` are accepted only from the JSON body (never query string or
+headers), must be strings, and are length-limited (`PROMPT_MAX_CHARS` env
+var, default `4000`); reference image data is limited by `IMAGE_MAX_BYTES`
+env var, default `8` MiB. A field over its limit or of the wrong type
+returns `400 { "error": "bad_request" }` before any provider call or debit.
+This text is never interpolated into URLs, headers, shell commands, or file
+paths, and is never written to logs verbatim — log a hash or length only,
+never the prompt/text content itself.
+
+`Idempotency-Key` and `boardType` are validated against a fixed charset (for
+the key) and the known board-type list respectively before use; a value
+outside either returns `400 { "error": "bad_request" }`.
+
+Every response is served as `application/json` with
+`X-Content-Type-Options: nosniff`; user-supplied text is never reflected
+back into HTML.
+
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 
 Append-only rows, keyed by `(user_id, created_at)`
@@ -377,6 +413,7 @@ Every non-2xx response is:
 
 | HTTP | `error` | Meaning | Client UI state |
 | --- | --- | --- | --- |
+| 400 | `bad_request` | invalid/oversized input (pack id, prompt/text field, idempotency key, board type) | show validation error, let user fix input |
 | 401 | `not_signed_in` | missing/invalid/expired access token | prompt sign-in |
 | 402 | `insufficient_credits` | balance too low for this attempt | show balance + "Buy credits" |
 | 403 | `account_locked` | account locked after repeated content-policy strikes | show locked state, no retry, contact support |
@@ -395,9 +432,9 @@ client-side: `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
 `GEMINI_API_KEY`.
 
 Client-side error-kind enum (mirrors the `error` column of the Error
-shape table above — keep in sync): `not_signed_in`, `insufficient_credits`,
-`account_locked`, `content_blocked`, `rate_limited`, `provider_failed`,
-`unavailable`, `unreachable`.
+shape table above — keep in sync): `bad_request`, `not_signed_in`,
+`insufficient_credits`, `account_locked`, `content_blocked`, `rate_limited`,
+`provider_failed`, `unavailable`, `unreachable`.
 
 ## Service env vars (names only — mirrors Speciary's `render.yaml` pattern)
 
