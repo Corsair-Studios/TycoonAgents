@@ -3102,6 +3102,10 @@ if (typeof module !== "undefined" && module.exports) {
     showSetup();
     vscode.postMessage({ type: "checkInstall" });
     vscode.postMessage({ type: "getSettings" });
+    // p50-t2: check for team-setup drift every time Settings opens (Team
+    // setup section lives here), so the "Team setup changed. Apply?" notice
+    // stays current without a separate poll.
+    vscode.postMessage({ type: "GET_TEAM_SETUP_DRIFT" });
   });
 
   if (menuThemesBtn) {
@@ -12386,6 +12390,78 @@ if (typeof module !== "undefined" && module.exports) {
         notice.classList.toggle("theme-review-status--error", !payload.ok);
         notice.removeAttribute("hidden");
       }
+      const driftApplyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-drift-apply-btn"));
+      if (driftApplyBtn) driftApplyBtn.disabled = false;
+      if (payload.ok) {
+        // Re-request drift so the "Team setup changed. Apply?" notice
+        // clears once the applied stamp's exportedAt catches up.
+        vscode.postMessage({ type: "GET_TEAM_SETUP_DRIFT" });
+      }
+    } else if (msg && msg.type === "TEAM_READINESS_REPORT") {
+      const payload = msg.payload || {};
+      const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-readiness-check-btn"));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Check readiness";
+      }
+      const reportEl = document.getElementById("team-readiness-report");
+      if (reportEl) {
+        reportEl.textContent = "";
+        if (!payload.ok || !payload.report) {
+          const errEl = document.createElement("p");
+          errEl.className = "theme-review-status--error";
+          errEl.textContent = "Could not check readiness: " + (payload.error || "unknown error");
+          reportEl.appendChild(errEl);
+        } else {
+          const summaryEl = document.createElement("p");
+          summaryEl.className = "team-readiness-summary";
+          summaryEl.textContent = payload.report.summary && payload.report.summary.text ? payload.report.summary.text : "";
+          reportEl.appendChild(summaryEl);
+          const list = document.createElement("ul");
+          list.className = "team-readiness-list";
+          for (const agent of payload.report.agents || []) {
+            const item = document.createElement("li");
+            item.className = "team-readiness-item";
+            const nameEl = document.createElement("span");
+            nameEl.className = "team-readiness-name";
+            nameEl.textContent = agent.id;
+            const chipEl = document.createElement("span");
+            chipEl.className = "team-readiness-chip team-readiness-chip--" + (agent.status || "not_ready");
+            chipEl.textContent = agent.status === "ready" ? "ready" : agent.status === "fallback" ? "fallback" : "not ready";
+            item.appendChild(nameEl);
+            item.appendChild(chipEl);
+            let detailText = "";
+            if (agent.status === "fallback" && agent.fallbackUsed) {
+              detailText = "uses " + (agent.fallbackUsed.vendor || "fallback");
+            } else if (Array.isArray(agent.missingEnv) && agent.missingEnv.length > 0) {
+              detailText = "missing " + agent.missingEnv.join(", ");
+            } else if (agent.status === "not_ready" && agent.detail) {
+              detailText = agent.detail;
+            }
+            if (detailText) {
+              const detailEl = document.createElement("span");
+              detailEl.className = "team-readiness-detail";
+              detailEl.textContent = detailText;
+              item.appendChild(detailEl);
+            }
+            list.appendChild(item);
+          }
+          reportEl.appendChild(list);
+        }
+        reportEl.removeAttribute("hidden");
+      }
+    } else if (msg && msg.type === "TEAM_SETUP_DRIFT") {
+      const payload = msg.payload || {};
+      const notice = document.getElementById("team-setup-drift-notice");
+      if (notice) {
+        if (payload.drift) {
+          notice.removeAttribute("hidden");
+        } else {
+          notice.setAttribute("hidden", "");
+        }
+      }
+      const driftApplyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-drift-apply-btn"));
+      if (driftApplyBtn) driftApplyBtn.disabled = false;
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
@@ -21481,6 +21557,72 @@ if (typeof module !== "undefined" && module.exports) {
     });
     teamSetupSection.appendChild(teamSetupApplyBtn);
     teamSetupSection.appendChild(teamSetupNotice);
+
+    // ── 1.7c. Team setup drift notice (p50-t2) ──
+    // Populated/shown by the GET_TEAM_SETUP_DRIFT / TEAM_SETUP_DRIFT round
+    // trip fired when Settings opens (010-modals-badges-rebirth.js). Apply
+    // re-runs Apply; Dismiss hides it for this session only.
+    const teamSetupDriftNotice = document.createElement("div");
+    teamSetupDriftNotice.className = "theme-review-retry-warning";
+    teamSetupDriftNotice.id = "team-setup-drift-notice";
+    teamSetupDriftNotice.setAttribute("hidden", "");
+    const teamSetupDriftText = document.createElement("span");
+    teamSetupDriftText.textContent = "Team setup changed. Apply?";
+    teamSetupDriftNotice.appendChild(teamSetupDriftText);
+    const teamSetupDriftApplyBtn = document.createElement("button");
+    teamSetupDriftApplyBtn.className = "skill-btn settings-btn";
+    teamSetupDriftApplyBtn.id = "team-setup-drift-apply-btn";
+    teamSetupDriftApplyBtn.textContent = "Apply";
+    teamSetupDriftApplyBtn.addEventListener("click", () => {
+      teamSetupDriftApplyBtn.disabled = true;
+      vscode.postMessage({ type: "APPLY_TEAM_SETUP" });
+    });
+    const teamSetupDriftDismissBtn = document.createElement("button");
+    teamSetupDriftDismissBtn.className = "skill-btn settings-btn";
+    teamSetupDriftDismissBtn.id = "team-setup-drift-dismiss-btn";
+    teamSetupDriftDismissBtn.textContent = "Dismiss";
+    teamSetupDriftDismissBtn.addEventListener("click", () => {
+      teamSetupDriftNotice.setAttribute("hidden", "");
+    });
+    teamSetupDriftNotice.appendChild(teamSetupDriftApplyBtn);
+    teamSetupDriftNotice.appendChild(teamSetupDriftDismissBtn);
+    teamSetupSection.appendChild(teamSetupDriftNotice);
+
+    // ── 1.7d. Readiness report (p50-t2) ──
+    // "Check readiness" builds a TeamReadinessReport from the committed
+    // .claude/tycoon-team.json (src/core/teamReadiness.ts) and renders a
+    // compact per-agent list with a summary line on top.
+    const teamReadinessHint = document.createElement("p");
+    teamReadinessHint.className = "settings-empty";
+    teamReadinessHint.textContent = "Check whether every agent in the exported team setup resolves to a usable backend.";
+    teamSetupSection.appendChild(teamReadinessHint);
+
+    const teamReadinessProbeLabel = document.createElement("label");
+    teamReadinessProbeLabel.className = "settings-checkbox-row";
+    const teamReadinessProbeCheckbox = document.createElement("input");
+    teamReadinessProbeCheckbox.type = "checkbox";
+    teamReadinessProbeCheckbox.id = "team-readiness-probe-checkbox";
+    teamReadinessProbeLabel.appendChild(teamReadinessProbeCheckbox);
+    teamReadinessProbeLabel.appendChild(document.createTextNode(" Probe reachability (may use vendor quota)"));
+    teamSetupSection.appendChild(teamReadinessProbeLabel);
+
+    const teamReadinessBtn = document.createElement("button");
+    teamReadinessBtn.className = "skill-btn settings-btn";
+    teamReadinessBtn.id = "team-readiness-check-btn";
+    teamReadinessBtn.textContent = "Check readiness";
+    teamReadinessBtn.addEventListener("click", () => {
+      teamReadinessBtn.disabled = true;
+      teamReadinessBtn.textContent = "Checking…";
+      vscode.postMessage({ type: "CHECK_TEAM_READINESS", payload: { probeReachability: teamReadinessProbeCheckbox.checked } });
+    });
+    teamSetupSection.appendChild(teamReadinessBtn);
+
+    const teamReadinessReportEl = document.createElement("div");
+    teamReadinessReportEl.id = "team-readiness-report";
+    teamReadinessReportEl.className = "team-readiness-report";
+    teamReadinessReportEl.setAttribute("hidden", "");
+    teamSetupSection.appendChild(teamReadinessReportEl);
+
     setupConfigEl.appendChild(teamSetupSection);
 
 

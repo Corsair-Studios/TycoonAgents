@@ -1350,6 +1350,78 @@
         notice.classList.toggle("theme-review-status--error", !payload.ok);
         notice.removeAttribute("hidden");
       }
+      const driftApplyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-drift-apply-btn"));
+      if (driftApplyBtn) driftApplyBtn.disabled = false;
+      if (payload.ok) {
+        // Re-request drift so the "Team setup changed. Apply?" notice
+        // clears once the applied stamp's exportedAt catches up.
+        vscode.postMessage({ type: "GET_TEAM_SETUP_DRIFT" });
+      }
+    } else if (msg && msg.type === "TEAM_READINESS_REPORT") {
+      const payload = msg.payload || {};
+      const btn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-readiness-check-btn"));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Check readiness";
+      }
+      const reportEl = document.getElementById("team-readiness-report");
+      if (reportEl) {
+        reportEl.textContent = "";
+        if (!payload.ok || !payload.report) {
+          const errEl = document.createElement("p");
+          errEl.className = "theme-review-status--error";
+          errEl.textContent = "Could not check readiness: " + (payload.error || "unknown error");
+          reportEl.appendChild(errEl);
+        } else {
+          const summaryEl = document.createElement("p");
+          summaryEl.className = "team-readiness-summary";
+          summaryEl.textContent = payload.report.summary && payload.report.summary.text ? payload.report.summary.text : "";
+          reportEl.appendChild(summaryEl);
+          const list = document.createElement("ul");
+          list.className = "team-readiness-list";
+          for (const agent of payload.report.agents || []) {
+            const item = document.createElement("li");
+            item.className = "team-readiness-item";
+            const nameEl = document.createElement("span");
+            nameEl.className = "team-readiness-name";
+            nameEl.textContent = agent.id;
+            const chipEl = document.createElement("span");
+            chipEl.className = "team-readiness-chip team-readiness-chip--" + (agent.status || "not_ready");
+            chipEl.textContent = agent.status === "ready" ? "ready" : agent.status === "fallback" ? "fallback" : "not ready";
+            item.appendChild(nameEl);
+            item.appendChild(chipEl);
+            let detailText = "";
+            if (agent.status === "fallback" && agent.fallbackUsed) {
+              detailText = "uses " + (agent.fallbackUsed.vendor || "fallback");
+            } else if (Array.isArray(agent.missingEnv) && agent.missingEnv.length > 0) {
+              detailText = "missing " + agent.missingEnv.join(", ");
+            } else if (agent.status === "not_ready" && agent.detail) {
+              detailText = agent.detail;
+            }
+            if (detailText) {
+              const detailEl = document.createElement("span");
+              detailEl.className = "team-readiness-detail";
+              detailEl.textContent = detailText;
+              item.appendChild(detailEl);
+            }
+            list.appendChild(item);
+          }
+          reportEl.appendChild(list);
+        }
+        reportEl.removeAttribute("hidden");
+      }
+    } else if (msg && msg.type === "TEAM_SETUP_DRIFT") {
+      const payload = msg.payload || {};
+      const notice = document.getElementById("team-setup-drift-notice");
+      if (notice) {
+        if (payload.drift) {
+          notice.removeAttribute("hidden");
+        } else {
+          notice.setAttribute("hidden", "");
+        }
+      }
+      const driftApplyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-drift-apply-btn"));
+      if (driftApplyBtn) driftApplyBtn.disabled = false;
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {

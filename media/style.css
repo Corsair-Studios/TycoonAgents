@@ -5007,6 +5007,93 @@ td.col-status {
   display: none;
 }
 
+/* Team setup drift notice (p50-t2): reuses .theme-review-retry-warning's
+   amber accent, laid out as a row with its Apply/Dismiss buttons. */
+#team-setup-drift-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#team-setup-drift-notice[hidden] {
+  display: none;
+}
+
+#team-setup-drift-notice .settings-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* Team setup readiness report (p50-t2). */
+.settings-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin: 4px 0;
+}
+
+.team-readiness-report[hidden] {
+  display: none;
+}
+
+.team-readiness-summary {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+
+.team-readiness-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-readiness-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.team-readiness-name {
+  min-width: 96px;
+  font-weight: 500;
+}
+
+.team-readiness-chip {
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.team-readiness-chip--ready {
+  background: var(--vscode-testing-iconPassed, #2ea043);
+  color: #fff;
+}
+
+.team-readiness-chip--fallback {
+  background: var(--vscode-editorWarning-foreground, #cca700);
+  color: #1a1a1a;
+}
+
+.team-readiness-chip--not_ready {
+  background: var(--vscode-testing-iconFailed, #f14c4c);
+  color: #fff;
+}
+
+.team-readiness-detail {
+  color: var(--vscode-descriptionForeground);
+}
+
 /* Per-attempt cost line + refund/error notices above the Generate/Retry
    controls (p43-t2/p43-t3). */
 .theme-attempt-cost {

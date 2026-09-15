@@ -3203,6 +3203,72 @@
     });
     teamSetupSection.appendChild(teamSetupApplyBtn);
     teamSetupSection.appendChild(teamSetupNotice);
+
+    // ── 1.7c. Team setup drift notice (p50-t2) ──
+    // Populated/shown by the GET_TEAM_SETUP_DRIFT / TEAM_SETUP_DRIFT round
+    // trip fired when Settings opens (010-modals-badges-rebirth.js). Apply
+    // re-runs Apply; Dismiss hides it for this session only.
+    const teamSetupDriftNotice = document.createElement("div");
+    teamSetupDriftNotice.className = "theme-review-retry-warning";
+    teamSetupDriftNotice.id = "team-setup-drift-notice";
+    teamSetupDriftNotice.setAttribute("hidden", "");
+    const teamSetupDriftText = document.createElement("span");
+    teamSetupDriftText.textContent = "Team setup changed. Apply?";
+    teamSetupDriftNotice.appendChild(teamSetupDriftText);
+    const teamSetupDriftApplyBtn = document.createElement("button");
+    teamSetupDriftApplyBtn.className = "skill-btn settings-btn";
+    teamSetupDriftApplyBtn.id = "team-setup-drift-apply-btn";
+    teamSetupDriftApplyBtn.textContent = "Apply";
+    teamSetupDriftApplyBtn.addEventListener("click", () => {
+      teamSetupDriftApplyBtn.disabled = true;
+      vscode.postMessage({ type: "APPLY_TEAM_SETUP" });
+    });
+    const teamSetupDriftDismissBtn = document.createElement("button");
+    teamSetupDriftDismissBtn.className = "skill-btn settings-btn";
+    teamSetupDriftDismissBtn.id = "team-setup-drift-dismiss-btn";
+    teamSetupDriftDismissBtn.textContent = "Dismiss";
+    teamSetupDriftDismissBtn.addEventListener("click", () => {
+      teamSetupDriftNotice.setAttribute("hidden", "");
+    });
+    teamSetupDriftNotice.appendChild(teamSetupDriftApplyBtn);
+    teamSetupDriftNotice.appendChild(teamSetupDriftDismissBtn);
+    teamSetupSection.appendChild(teamSetupDriftNotice);
+
+    // ── 1.7d. Readiness report (p50-t2) ──
+    // "Check readiness" builds a TeamReadinessReport from the committed
+    // .claude/tycoon-team.json (src/core/teamReadiness.ts) and renders a
+    // compact per-agent list with a summary line on top.
+    const teamReadinessHint = document.createElement("p");
+    teamReadinessHint.className = "settings-empty";
+    teamReadinessHint.textContent = "Check whether every agent in the exported team setup resolves to a usable backend.";
+    teamSetupSection.appendChild(teamReadinessHint);
+
+    const teamReadinessProbeLabel = document.createElement("label");
+    teamReadinessProbeLabel.className = "settings-checkbox-row";
+    const teamReadinessProbeCheckbox = document.createElement("input");
+    teamReadinessProbeCheckbox.type = "checkbox";
+    teamReadinessProbeCheckbox.id = "team-readiness-probe-checkbox";
+    teamReadinessProbeLabel.appendChild(teamReadinessProbeCheckbox);
+    teamReadinessProbeLabel.appendChild(document.createTextNode(" Probe reachability (may use vendor quota)"));
+    teamSetupSection.appendChild(teamReadinessProbeLabel);
+
+    const teamReadinessBtn = document.createElement("button");
+    teamReadinessBtn.className = "skill-btn settings-btn";
+    teamReadinessBtn.id = "team-readiness-check-btn";
+    teamReadinessBtn.textContent = "Check readiness";
+    teamReadinessBtn.addEventListener("click", () => {
+      teamReadinessBtn.disabled = true;
+      teamReadinessBtn.textContent = "Checking…";
+      vscode.postMessage({ type: "CHECK_TEAM_READINESS", payload: { probeReachability: teamReadinessProbeCheckbox.checked } });
+    });
+    teamSetupSection.appendChild(teamReadinessBtn);
+
+    const teamReadinessReportEl = document.createElement("div");
+    teamReadinessReportEl.id = "team-readiness-report";
+    teamReadinessReportEl.className = "team-readiness-report";
+    teamReadinessReportEl.setAttribute("hidden", "");
+    teamSetupSection.appendChild(teamReadinessReportEl);
+
     setupConfigEl.appendChild(teamSetupSection);
 
 

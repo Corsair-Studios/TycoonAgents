@@ -218,6 +218,22 @@ export const MSG = {
   APPLY_TEAM_SETUP: "APPLY_TEAM_SETUP",
   TEAM_SETUP_APPLIED: "TEAM_SETUP_APPLIED",
 
+  // ---- team setup readiness + drift (p50-t2) ------------------------------
+  // Webview -> host, payload { probeReachability?: boolean }: read
+  // .claude/tycoon-team.json and build a TeamReadinessReport (src/core/
+  // teamReadiness.ts). Host -> webview reply carries
+  // { ok, report?, text?, error? } — detail strings are sanitized for
+  // absolute paths, never env var values.
+  CHECK_TEAM_READINESS: "CHECK_TEAM_READINESS",
+  TEAM_READINESS_REPORT: "TEAM_READINESS_REPORT",
+
+  // Webview -> host, no payload: compare .claude/tycoon-team.json's
+  // exportedAt against the applied stamp's exportedAt (embedded date
+  // fields only, never mtimes). Host -> webview reply carries
+  // { hasManifest, drift, manifestExportedAt?, appliedExportedAt? }.
+  GET_TEAM_SETUP_DRIFT: "GET_TEAM_SETUP_DRIFT",
+  TEAM_SETUP_DRIFT: "TEAM_SETUP_DRIFT",
+
   // ---- engine / UEFN -------------------------------------------------------
   GET_ENGINE_STATUS: "getEngineStatus",
   ENGINE_STATUS: "engineStatus",

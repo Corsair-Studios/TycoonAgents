@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 /**
  * @param {object} opts
@@ -76,5 +77,63 @@ export function handleApplyTeamSetupStandalone({ requireCompiledOrThrow, repoRoo
     });
   } catch (err) {
     return { ok: false, changed: false, steps: [], missingAgents: [], error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/**
+ * Standalone-side "Check team readiness" handler (p50-t2). Binds
+ * `buildTeamReadinessHost` (out/src/host/vscode/teamSetupHost.js) with
+ * `hostKind: 'standalone'` and an execSeam wired to child_process's
+ * execFileSync (argv array only — never a shell string) so the codex/
+ * opencode discovery probes can run under plain Node the same way they do
+ * inside the VS Code host.
+ *
+ * @param {object} opts
+ * @param {(jsPath: string, label: string) => any} opts.requireCompiledOrThrow
+ * @param {string} opts.repoRoot
+ * @param {string|null} opts.projectRoot
+ * @param {boolean} [opts.probeReachability]
+ * @returns {Promise<{ ok: boolean, report?: object, text?: string, error?: string }>}
+ */
+export async function handleCheckTeamReadinessStandalone({ requireCompiledOrThrow, repoRoot, projectRoot, probeReachability }) {
+  if (!projectRoot) {
+    return { ok: false, error: 'No project root resolved' };
+  }
+  try {
+    const teamSetupHostPath = path.join(repoRoot, 'out', 'src', 'host', 'vscode', 'teamSetupHost.js');
+    const { buildTeamReadinessHost } = requireCompiledOrThrow(teamSetupHostPath, 'teamSetupHost');
+    const execSeam = (command) => execFileSync(command, { encoding: 'utf8' });
+    return await buildTeamReadinessHost({
+      root: projectRoot,
+      env: process.env,
+      probeReachability: !!probeReachability,
+      hostKind: 'standalone',
+      execSeam,
+    });
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+/**
+ * Standalone-side "Get team setup drift" handler (p50-t2). Thin wrapper
+ * around `getTeamSetupDriftHost` (out/src/host/vscode/teamSetupHost.js).
+ *
+ * @param {object} opts
+ * @param {(jsPath: string, label: string) => any} opts.requireCompiledOrThrow
+ * @param {string} opts.repoRoot
+ * @param {string|null} opts.projectRoot
+ * @returns {{ hasManifest: boolean, drift: boolean, manifestExportedAt?: string, appliedExportedAt?: string }}
+ */
+export function handleGetTeamSetupDriftStandalone({ requireCompiledOrThrow, repoRoot, projectRoot }) {
+  if (!projectRoot) {
+    return { hasManifest: false, drift: false };
+  }
+  try {
+    const teamSetupHostPath = path.join(repoRoot, 'out', 'src', 'host', 'vscode', 'teamSetupHost.js');
+    const { getTeamSetupDriftHost } = requireCompiledOrThrow(teamSetupHostPath, 'teamSetupHost');
+    return getTeamSetupDriftHost(projectRoot);
+  } catch {
+    return { hasManifest: false, drift: false };
   }
 }

@@ -1295,6 +1295,10 @@
     showSetup();
     vscode.postMessage({ type: "checkInstall" });
     vscode.postMessage({ type: "getSettings" });
+    // p50-t2: check for team-setup drift every time Settings opens (Team
+    // setup section lives here), so the "Team setup changed. Apply?" notice
+    // stays current without a separate poll.
+    vscode.postMessage({ type: "GET_TEAM_SETUP_DRIFT" });
   });
 
   if (menuThemesBtn) {

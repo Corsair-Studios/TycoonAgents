@@ -90,7 +90,7 @@ import {
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
-import { handleExportTeamSetupStandalone, handleApplyTeamSetupStandalone } from './teamSetupMessages.mjs';
+import { handleExportTeamSetupStandalone, handleApplyTeamSetupStandalone, handleCheckTeamReadinessStandalone, handleGetTeamSetupDriftStandalone } from './teamSetupMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 import { createThemeServiceHost } from './themeServiceHost.mjs';
 
@@ -1371,6 +1371,33 @@ function handleBrowserMessage(msg) {
         delegationMode,
       });
       broadcast('message', { type: 'TEAM_SETUP_APPLIED', payload: result });
+      break;
+    }
+    case 'CHECK_TEAM_READINESS': {
+      // Standalone analog of panel.ts's _handleCheckTeamReadiness (p50-t2) —
+      // builds a TeamReadinessReport from .claude/tycoon-team.json via the
+      // shared, compiled teamSetupHost.js's buildTeamReadinessHost().
+      handleCheckTeamReadinessStandalone({
+        requireCompiledOrThrow,
+        repoRoot: REPO_ROOT,
+        projectRoot: primaryProjectRoot,
+        probeReachability: !!payload.probeReachability,
+      })
+        .then((result) => broadcast('message', { type: 'TEAM_READINESS_REPORT', payload: result }))
+        .catch((err) => {
+          console.error('[tycoonagents-standalone] CHECK_TEAM_READINESS failed:', err);
+          broadcast('message', { type: 'TEAM_READINESS_REPORT', payload: { ok: false, error: 'internal error' } });
+        });
+      break;
+    }
+    case 'GET_TEAM_SETUP_DRIFT': {
+      // Standalone analog of panel.ts's _handleGetTeamSetupDrift (p50-t2).
+      const result = handleGetTeamSetupDriftStandalone({
+        requireCompiledOrThrow,
+        repoRoot: REPO_ROOT,
+        projectRoot: primaryProjectRoot,
+      });
+      broadcast('message', { type: 'TEAM_SETUP_DRIFT', payload: result });
       break;
     }
     // ── Submit feedback (spec: docs/FEEDBACK-PIPELINE-SPEC.md §5) ────────

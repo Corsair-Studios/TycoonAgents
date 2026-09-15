@@ -43,6 +43,13 @@ import {
   type TeamSetupInstallers,
 } from "../../core/teamSetupApply";
 import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, FOREIGN_LLM_AGENTS, type PackAgent } from "./packCatalog";
+import { parseTeamManifest } from "../../core/teamSetup";
+import {
+  buildTeamReadiness,
+  createDefaultProbes,
+  formatReadinessReport,
+  type TeamReadinessReport,
+} from "../../core/teamReadiness";
 import {
   mergeTycoonHooks,
   mergeManagedSubagentDepthEnv,
@@ -80,6 +87,33 @@ function fallbackSlotLabel(slot: RoutingSlot): string {
 function fallbackChainOf(slot: RoutingSlot | null): string[] {
   if (!slot || !slot.fallback) return [];
   return slot.fallback.map(fallbackSlotLabel).filter((s) => s.length > 0);
+}
+
+/** Env var NAMES (never values) a single RoutingSlot itself requires — its own endpointEnv/credentialEnv, names only. */
+function slotEnvNames(slot: RoutingSlot | null | undefined): string[] {
+  if (!slot) return [];
+  const names: string[] = [];
+  if (slot.endpointEnv) names.push(slot.endpointEnv);
+  if (slot.credentialEnv) names.push(slot.credentialEnv);
+  return names;
+}
+
+/**
+ * Env var names per fallback chain entry, keyed by the SAME "vendor/model"
+ * label fallbackChainOf() produces for that entry (fallbackSlotLabel), so
+ * teamReadiness.ts can look a fallback's env names up by the label already
+ * in fallbackChain. Entries with no endpointEnv/credentialEnv are omitted.
+ */
+function fallbackEnvNamesOf(slot: RoutingSlot | null): Record<string, string[]> | undefined {
+  if (!slot || !slot.fallback) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const fb of slot.fallback) {
+    const label = fallbackSlotLabel(fb);
+    if (!label) continue;
+    const names = slotEnvNames(fb);
+    if (names.length > 0) out[label] = names;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -166,13 +200,22 @@ export function exportTeamSetup(opts: ExportTeamSetupOptions): ExportTeamSetupRe
         /* missing/unreadable agent file => not hand-written */
       }
       const slot = resolveAgentSlot(profile, a.id, { hasHandWrittenBackend: handWrittenBackend });
-      return { id: a.id, backend: a.backend, fallbackChain: fallbackChainOf(slot) };
+      return {
+        id: a.id,
+        backend: a.backend,
+        fallbackChain: fallbackChainOf(slot),
+        envNames: slotEnvNames(slot),
+        fallbackEnvNames: fallbackEnvNamesOf(slot),
+      };
     });
+    const orchestratorSlot = resolveOrchestratorSlot(profile);
     const orchestrator = routingView.orchestrator.id
       ? {
           id: routingView.orchestrator.id,
           backend: routingView.orchestrator.backend,
-          fallbackChain: fallbackChainOf(resolveOrchestratorSlot(profile)),
+          fallbackChain: fallbackChainOf(orchestratorSlot),
+          envNames: slotEnvNames(orchestratorSlot),
+          fallbackEnvNames: fallbackEnvNamesOf(orchestratorSlot),
         }
       : undefined;
 
@@ -350,4 +393,113 @@ export function applyTeamSetupHost(opts: ApplyTeamSetupHostOptions): ApplyTeamSe
     applyMcp: opts.applyMcp ?? null,
   };
   return applyTeamSetupCore({ root: opts.root, env: opts.env, version: opts.version, installers });
+}
+
+// ---------------------------------------------------------------------------
+// Readiness + drift (plan task p50-t2). Both are read-only: neither writes
+// .claude/tycoon-team.json, routing.json, nor the applied stamp.
+// ---------------------------------------------------------------------------
+
+export interface BuildTeamReadinessHostOptions {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  probeReachability?: boolean;
+  /** "vscode" (default) or "standalone" — forwarded to createDefaultProbes' hostKind option. */
+  hostKind?: "vscode" | "standalone";
+  /** Standalone-only: execFileSync-shaped seam (argv arrays only), forwarded to createDefaultProbes. */
+  execSeam?: (command: string) => string;
+}
+
+export interface BuildTeamReadinessHostResult {
+  ok: boolean;
+  report?: TeamReadinessReport;
+  text?: string;
+  error?: string;
+}
+
+/** Strips anything that looks like an absolute filesystem path (drive-letter or /Users//home/ style) from a detail string, replacing it with "<path>". */
+function sanitizeDetailPaths(detail: string): string {
+  return detail
+    .replace(/[A-Za-z]:[\\/][^\s"']+/g, "<path>")
+    .replace(/\/(?:Users|home)\/[^\s"']+/g, "<path>");
+}
+
+function sanitizeReadinessReport(report: TeamReadinessReport): TeamReadinessReport {
+  return {
+    ...report,
+    agents: report.agents.map((a) => ({
+      ...a,
+      detail: sanitizeDetailPaths(a.detail),
+      ...(a.reachability ? { reachability: { ...a.reachability, detail: sanitizeDetailPaths(a.reachability.detail) } } : {}),
+    })),
+  };
+}
+
+/**
+ * Reads .claude/tycoon-team.json, builds a TeamReadinessReport via
+ * createDefaultProbes(), and returns both the structured report and its
+ * plain-text rendering (formatReadinessReport). Detail strings are
+ * sanitized for absolute paths before returning — see sanitizeDetailPaths.
+ */
+export async function buildTeamReadinessHost(opts: BuildTeamReadinessHostOptions): Promise<BuildTeamReadinessHostResult> {
+  let manifestText: string;
+  try {
+    manifestText = fs.readFileSync(path.join(opts.root, ".claude", "tycoon-team.json"), "utf8");
+  } catch {
+    return { ok: false, error: "No team manifest found. Export team setup first." };
+  }
+  const parsed = parseTeamManifest(manifestText);
+  if (!parsed.ok) {
+    return { ok: false, error: `${parsed.field}: ${parsed.reason}` };
+  }
+  const probes = createDefaultProbes({
+    root: opts.root,
+    env: opts.env,
+    hostKind: opts.hostKind ?? "vscode",
+    ...(opts.execSeam ? { execSeam: opts.execSeam } : {}),
+  });
+  const report = await buildTeamReadiness(parsed.manifest, probes, { probeReachability: !!opts.probeReachability });
+  const sanitized = sanitizeReadinessReport(report);
+  return { ok: true, report: sanitized, text: formatReadinessReport(sanitized) };
+}
+
+export interface TeamSetupDriftResult {
+  hasManifest: boolean;
+  drift: boolean;
+  manifestExportedAt?: string;
+  appliedExportedAt?: string;
+}
+
+/**
+ * Compares .claude/tycoon-team.json's `exportedAt` against
+ * .claude/tycoon/team-setup-applied.json's `exportedAt` — embedded date
+ * fields only, never file mtimes. `drift` is true when a manifest exists
+ * and either no stamp exists or the stamped exportedAt differs.
+ */
+export function getTeamSetupDriftHost(root: string): TeamSetupDriftResult {
+  let manifestText: string;
+  try {
+    manifestText = fs.readFileSync(path.join(root, ".claude", "tycoon-team.json"), "utf8");
+  } catch {
+    return { hasManifest: false, drift: false };
+  }
+  const parsed = parseTeamManifest(manifestText);
+  if (!parsed.ok) {
+    return { hasManifest: false, drift: false };
+  }
+  const manifestExportedAt = parsed.manifest.exportedAt;
+
+  let appliedExportedAt: string | undefined;
+  try {
+    const raw = fs.readFileSync(path.join(root, ".claude", "tycoon", "team-setup-applied.json"), "utf8").trim();
+    if (raw !== "") {
+      const stampParsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof stampParsed.exportedAt === "string") appliedExportedAt = stampParsed.exportedAt;
+    }
+  } catch {
+    /* missing/invalid stamp => no appliedExportedAt */
+  }
+
+  const drift = appliedExportedAt === undefined || appliedExportedAt !== manifestExportedAt;
+  return { hasManifest: true, drift, manifestExportedAt, ...(appliedExportedAt !== undefined ? { appliedExportedAt } : {}) };
 }

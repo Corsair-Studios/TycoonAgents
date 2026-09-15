@@ -60,7 +60,7 @@ import {
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
-import { exportTeamSetup, applyTeamSetupHost } from "./teamSetupHost";
+import { exportTeamSetup, applyTeamSetupHost, buildTeamReadinessHost, getTeamSetupDriftHost } from "./teamSetupHost";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1510,6 +1510,10 @@ export class TycoonPanel {
           this._handleExportTeamSetup();
         } else if (message.type === MSG.APPLY_TEAM_SETUP) {
           this._handleApplyTeamSetup();
+        } else if (message.type === MSG.CHECK_TEAM_READINESS) {
+          void this._handleCheckTeamReadiness((message as any).payload as { probeReachability?: boolean } | undefined);
+        } else if (message.type === MSG.GET_TEAM_SETUP_DRIFT) {
+          this._handleGetTeamSetupDrift();
         } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
@@ -4655,6 +4659,45 @@ export class TycoonPanel {
       applyMcp: null,
     });
     void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_APPLIED, payload: result });
+  }
+
+  /**
+   * Readiness report (p50-t2): reads .claude/tycoon-team.json and builds a
+   * TeamReadinessReport via teamSetupHost.buildTeamReadinessHost(). Reply
+   * shape { ok, report?, text?, error? } mirrors EXPORT/APPLY handlers.
+   */
+  private async _handleCheckTeamReadiness(payload: { probeReachability?: boolean } | undefined): Promise<void> {
+    const root = this._projectRoot();
+    if (!root) {
+      void this._panel.webview.postMessage({
+        type: MSG.TEAM_READINESS_REPORT,
+        payload: { ok: false, error: "No project root — open a folder first." },
+      });
+      return;
+    }
+    const result = await buildTeamReadinessHost({
+      root,
+      env: process.env,
+      probeReachability: !!payload?.probeReachability,
+    });
+    void this._panel.webview.postMessage({ type: MSG.TEAM_READINESS_REPORT, payload: result });
+  }
+
+  /**
+   * Drift check (p50-t2): compares the manifest's exportedAt against the
+   * applied stamp's exportedAt via teamSetupHost.getTeamSetupDriftHost().
+   */
+  private _handleGetTeamSetupDrift(): void {
+    const root = this._projectRoot();
+    if (!root) {
+      void this._panel.webview.postMessage({
+        type: MSG.TEAM_SETUP_DRIFT,
+        payload: { hasManifest: false, drift: false },
+      });
+      return;
+    }
+    const result = getTeamSetupDriftHost(root);
+    void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_DRIFT, payload: result });
   }
 
   /**
