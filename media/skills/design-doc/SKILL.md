@@ -66,9 +66,3 @@ For each `.docx` in `./design-docs/`:
 2. Summarize what the project is intended to be per the doc.
 3. Flag mismatches between the doc's intent and what's actually in the codebase.
 4. Recommend which TycoonAgents packs or agents to install to close the gaps.
-
-## Notes
-
-- Base everything on the actual codebase, not assumptions about intent.
-- Flag gaps and unknowns explicitly rather than filling them with guesses.
-- This skill is designed for an **edit → re-review loop**: generate → human edits in Word → re-review to check alignment.

@@ -24,13 +24,10 @@ covers Verse/device authoring conventions and how the agents use the bridge's
 
 ## Setup & prerequisites
 
-Live-editor control needs Power Tools installed and connected (see
-**Relationship to Power Tools** above). Without it, this skill still covers
-Verse/device authoring.
-
-- **Node.js on your PATH** — Power Tools' MCP server runs via `node`.
-- **Verify the connection** with `uefn_status` once Power Tools is installed
-  and UEFN is running with the project open.
+Full bridge install steps, requirements, and troubleshooting live in the
+**uefn-bridge** skill — see that skill's `Requirements` and `Installation`
+sections. Without the bridge connected, this skill still covers Verse/device
+authoring.
 
 ## Agents & digest auto-detection
 
