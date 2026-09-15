@@ -23,6 +23,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 import {
+  computeRosterHash,
   parseTeamManifest,
   TEAM_MANIFEST_SCHEMA_VERSION,
   type TeamManifest,
@@ -92,6 +93,11 @@ interface AppliedStamp {
   exportedAt: string;
   appliedAt: string;
   schemaVersion: number;
+  /** sha256 hex of the roster as applied (computeRosterHash, src/core/teamSetup.ts). */
+  rosterHash: string;
+  /** Whether this apply seeded routing.json from the manifest (true only on
+   *  the first apply on a clone, before routing.json exists locally). */
+  routingSeeded: boolean;
 }
 
 function manifestPath(root: string): string {
@@ -126,6 +132,8 @@ function readAppliedStamp(root: string): AppliedStamp | null {
     exportedAt: parsed.exportedAt,
     appliedAt: parsed.appliedAt,
     schemaVersion: typeof parsed.schemaVersion === "number" ? parsed.schemaVersion : TEAM_MANIFEST_SCHEMA_VERSION,
+    rosterHash: typeof parsed.rosterHash === "string" ? parsed.rosterHash : "",
+    routingSeeded: typeof parsed.routingSeeded === "boolean" ? parsed.routingSeeded : false,
   };
 }
 
@@ -275,32 +283,13 @@ export function applyTeamSetup(opts: ApplyTeamSetupOptions): ApplyTeamSetupRepor
     }
   }
 
-  // Idempotency pre-check: has this exact exportedAt already been applied,
-  // and would the routing merge be a no-op? If so, skip every write.
+  // Idempotency pre-check: has this exact exportedAt already been applied?
+  // If so, skip every write — routing.json is never re-touched by a repeat
+  // apply (see the roster-authoritative/routing-is-a-reference decision
+  // below), so exportedAt alone is sufficient.
   const priorStamp = readAppliedStamp(root);
-  const existingRouting = readJsonSafe(routingProfilePath(root));
-  const existingAgents = (existingRouting?.agents as Record<string, unknown> | undefined) ?? {};
-  const existingOrchestrator = existingRouting?.orchestrator as Record<string, unknown> | undefined;
-
-  let routingWouldChange = false;
-  const nextAgents: Record<string, unknown> = { ...existingAgents };
-  let nextOrchestrator: Record<string, unknown> | undefined = existingOrchestrator;
-  for (const [agentId, managed] of Object.entries(manifest.routing)) {
-    const isOrchestrator = agentId === "orchestrator";
-    const current = isOrchestrator
-      ? existingOrchestrator
-      : (existingAgents[agentId] as Record<string, unknown> | undefined);
-    const merged = mergeManagedRoutingFields(current, managed);
-    if (merged.changed) routingWouldChange = true;
-    if (isOrchestrator) {
-      nextOrchestrator = merged.slot;
-    } else {
-      nextAgents[agentId] = merged.slot;
-    }
-  }
-
   const alreadyApplied = priorStamp !== null && priorStamp.exportedAt === manifest.exportedAt;
-  if (alreadyApplied && !routingWouldChange) {
+  if (alreadyApplied) {
     return { ok: true, changed: false, steps: [{ name: "apply", status: "skipped", detail: "already applied; no changes" }], missingAgents: [] };
   }
 
@@ -315,23 +304,46 @@ export function applyTeamSetup(opts: ApplyTeamSetupOptions): ApplyTeamSetupRepor
     }
   }
 
-  // (4) Merge routing.json — team-managed fields only.
-  if (routingWouldChange) {
+  // (4) Seed routing.json from the manifest ONLY on a fresh clone where it
+  // does not exist yet. The roster is authoritative; routing.json is a
+  // local reference the user is free to edit afterward — once it exists,
+  // apply never touches it again, even when the manifest's vendor/model
+  // changed (decision, 2026-09-15).
+  const routingPath = routingProfilePath(root);
+  const routingFileExists = fs.existsSync(routingPath);
+  // "Kept" only when the file exists AND parses as a JSON object; an empty
+  // or unparsable file is treated the same as absent (review nit).
+  const existingRoutingParsed = routingFileExists ? readJsonSafe(routingPath) : null;
+  const routingIsReadableObject = existingRoutingParsed !== null;
+  let routingSeeded = false;
+  if (!routingIsReadableObject) {
+    const nextAgents: Record<string, unknown> = {};
+    let nextOrchestrator: Record<string, unknown> | undefined;
+    for (const [agentId, managed] of Object.entries(manifest.routing)) {
+      const merged = mergeManagedRoutingFields(undefined, managed);
+      if (agentId === "orchestrator") {
+        nextOrchestrator = merged.slot;
+      } else {
+        nextAgents[agentId] = merged.slot;
+      }
+    }
     try {
-      const nextProfile: Record<string, unknown> = {
-        ...(existingRouting ?? { version: 1 }),
-        agents: nextAgents,
-      };
+      const nextProfile: Record<string, unknown> = { version: 1, agents: nextAgents };
       if (nextOrchestrator !== undefined) {
         nextProfile.orchestrator = nextOrchestrator;
       }
-      writeFileAtomic(routingProfilePath(root), `${JSON.stringify(nextProfile, null, 2)}\n`);
-      steps.push({ name: "routing", status: "done", detail: "merged team-managed routing fields" });
+      writeFileAtomic(routingPath, `${JSON.stringify(nextProfile, null, 2)}\n`);
+      steps.push({
+        name: "routing",
+        status: "done",
+        detail: routingFileExists ? "seeded: local routing file was unreadable" : "seeded routing from manifest",
+      });
+      routingSeeded = true;
     } catch (e) {
-      steps.push({ name: "routing", status: "failed", detail: sanitizeFsError(e, root, routingProfilePath(root)) });
+      steps.push({ name: "routing", status: "failed", detail: sanitizeFsError(e, root, routingPath) });
     }
   } else {
-    steps.push({ name: "routing", status: "skipped", detail: "no team-managed routing changes" });
+    steps.push({ name: "routing", status: "skipped", detail: "local routing kept" });
   }
 
   // (5) Install hooks (portable installer, both hosts must provide this).
@@ -379,6 +391,8 @@ export function applyTeamSetup(opts: ApplyTeamSetupOptions): ApplyTeamSetupRepor
         exportedAt: manifest.exportedAt,
         appliedAt,
         schemaVersion: manifest.schemaVersion,
+        rosterHash: computeRosterHash(manifest.roster),
+        routingSeeded,
       });
       steps.push({ name: "stamp", status: "done" });
     } catch (e) {

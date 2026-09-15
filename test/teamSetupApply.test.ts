@@ -203,7 +203,7 @@ test("apply twice: second run reports changed:false and files unchanged", () => 
   }
 });
 
-test("local-only routing fields survive apply: custom field kept, managed model updated", () => {
+test("routing.json already exists: apply skips routing entirely, local fields and manifest-managed fields both left untouched", () => {
   const rootA = tmpRoot();
   const rootB = tmpRoot();
   try {
@@ -213,31 +213,102 @@ test("local-only routing fields survive apply: custom field kept, managed model 
     fs.copyFileSync(path.join(rootA, ".claude", "tycoon-team.json"), path.join(rootB, ".claude", "tycoon-team.json"));
     fs.copyFileSync(path.join(rootA, "CLAUDE.md"), path.join(rootB, "CLAUDE.md"));
 
-    fs.writeFileSync(
-      path.join(rootB, ".claude", "tycoon", "routing.json"),
-      JSON.stringify(
-        {
-          version: 1,
-          agents: {
-            "coding-specialist": {
-              vendor: "anthropic",
-              model: "some-old-local-model",
-              mcpServer: "local-custom-tool",
-            },
+    const localRoutingText = JSON.stringify(
+      {
+        version: 1,
+        agents: {
+          "coding-specialist": {
+            vendor: "anthropic",
+            model: "some-old-local-model",
+            mcpServer: "local-custom-tool",
           },
         },
-        null,
-        2,
-      ),
-      "utf8",
+      },
+      null,
+      2,
     );
+    fs.writeFileSync(path.join(rootB, ".claude", "tycoon", "routing.json"), localRoutingText, "utf8");
 
     const report = apply(rootB);
     assert.equal(report.ok, true, report.error);
+    const routingStep = report.steps.find((s) => s.name === "routing");
+    assert.equal(routingStep?.status, "skipped");
+    assert.equal(routingStep?.detail, "local routing kept");
+
+    // routing.json is byte-identical: the manifest's model ("sonnet") is
+    // never written over the local value, and the local-only field survives
+    // untouched because the whole step is skipped.
+    const routingAfter = fs.readFileSync(path.join(rootB, ".claude", "tycoon", "routing.json"), "utf8");
+    assert.equal(routingAfter, localRoutingText);
+
+    const stamp = JSON.parse(
+      fs.readFileSync(path.join(rootB, ".claude", "tycoon", "team-setup-applied.json"), "utf8"),
+    );
+    assert.equal(stamp.routingSeeded, false);
+    assert.equal(typeof stamp.rosterHash, "string");
+    assert.ok(stamp.rosterHash.length > 0);
+  } finally {
+    fs.rmSync(rootA, { recursive: true, force: true });
+    fs.rmSync(rootB, { recursive: true, force: true });
+  }
+});
+
+test("fresh clone: first apply seeds routing.json from the manifest and stamps routingSeeded:true", () => {
+  const rootA = tmpRoot();
+  const rootB = tmpRoot();
+  try {
+    seedFixtureProject(rootA);
+    exportTeamSetup({ root: rootA, env: process.env, version: "0.0.1" });
+    fs.mkdirSync(path.join(rootB, ".claude"), { recursive: true });
+    fs.copyFileSync(path.join(rootA, ".claude", "tycoon-team.json"), path.join(rootB, ".claude", "tycoon-team.json"));
+    fs.copyFileSync(path.join(rootA, "CLAUDE.md"), path.join(rootB, "CLAUDE.md"));
+    assert.ok(!fs.existsSync(path.join(rootB, ".claude", "tycoon", "routing.json")));
+
+    const report = apply(rootB);
+    assert.equal(report.ok, true, report.error);
+    const routingStep = report.steps.find((s) => s.name === "routing");
+    assert.equal(routingStep?.status, "done");
+    assert.equal(routingStep?.detail, "seeded routing from manifest");
 
     const routing = JSON.parse(fs.readFileSync(path.join(rootB, ".claude", "tycoon", "routing.json"), "utf8"));
     assert.equal(routing.agents["coding-specialist"].model, "sonnet");
-    assert.equal(routing.agents["coding-specialist"].mcpServer, "local-custom-tool");
+
+    const stamp = JSON.parse(
+      fs.readFileSync(path.join(rootB, ".claude", "tycoon", "team-setup-applied.json"), "utf8"),
+    );
+    assert.equal(stamp.routingSeeded, true);
+    assert.equal(typeof stamp.rosterHash, "string");
+    assert.ok(stamp.rosterHash.length > 0);
+  } finally {
+    fs.rmSync(rootA, { recursive: true, force: true });
+    fs.rmSync(rootB, { recursive: true, force: true });
+  }
+});
+
+test("zero-byte routing.json: treated as unreadable, seeded from manifest, routingSeeded true", () => {
+  const rootA = tmpRoot();
+  const rootB = tmpRoot();
+  try {
+    seedFixtureProject(rootA);
+    exportTeamSetup({ root: rootA, env: process.env, version: "0.0.1" });
+    fs.mkdirSync(path.join(rootB, ".claude", "tycoon"), { recursive: true });
+    fs.copyFileSync(path.join(rootA, ".claude", "tycoon-team.json"), path.join(rootB, ".claude", "tycoon-team.json"));
+    fs.copyFileSync(path.join(rootA, "CLAUDE.md"), path.join(rootB, "CLAUDE.md"));
+    fs.writeFileSync(path.join(rootB, ".claude", "tycoon", "routing.json"), "", "utf8");
+
+    const report = apply(rootB);
+    assert.equal(report.ok, true, report.error);
+    const routingStep = report.steps.find((s) => s.name === "routing");
+    assert.equal(routingStep?.status, "done");
+    assert.equal(routingStep?.detail, "seeded: local routing file was unreadable");
+
+    const routing = JSON.parse(fs.readFileSync(path.join(rootB, ".claude", "tycoon", "routing.json"), "utf8"));
+    assert.equal(routing.agents["coding-specialist"].model, "sonnet");
+
+    const stamp = JSON.parse(
+      fs.readFileSync(path.join(rootB, ".claude", "tycoon", "team-setup-applied.json"), "utf8"),
+    );
+    assert.equal(stamp.routingSeeded, true);
   } finally {
     fs.rmSync(rootA, { recursive: true, force: true });
     fs.rmSync(rootB, { recursive: true, force: true });

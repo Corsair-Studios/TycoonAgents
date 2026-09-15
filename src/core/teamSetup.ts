@@ -19,6 +19,8 @@
 // nothing here currently requires that copy step.
 // ---------------------------------------------------------------------------
 
+import { createHash } from "crypto";
+
 import type { CostModelClass } from "./agentBackend";
 
 export const TEAM_MANIFEST_SCHEMA_VERSION = 1 as const;
@@ -114,6 +116,20 @@ export interface BuildTeamManifestOptions {
 
 function sortRoster(roster: TeamManifestRosterEntry[]): TeamManifestRosterEntry[] {
   return [...roster].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * Deterministic sha256 hex digest of a roster: sorted by id, each entry
+ * serialized as `${id}\t${displayName}`, entries joined by "\n". Pure —
+ * used by both the exporter (drift comparison) and applyTeamSetup
+ * (src/core/teamSetupApply.ts) to stamp what roster shape was applied,
+ * without recording the roster contents themselves in the stamp.
+ */
+export function computeRosterHash(roster: TeamManifestRosterEntry[]): string {
+  const serialized = sortRoster(roster)
+    .map((entry) => `${entry.id}\t${entry.displayName}`)
+    .join("\n");
+  return createHash("sha256").update(serialized, "utf8").digest("hex");
 }
 
 function sortFallbackEnvNames(map: Record<string, string[]> | undefined): Record<string, string[]> | undefined {
