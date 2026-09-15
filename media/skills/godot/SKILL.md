@@ -66,4 +66,4 @@ func take_damage(amount: int) -> void:
 
 ## TycoonAgents integration
 
-TycoonAgents shows a live **Godot connection chip** in the agent visualization panel when the Godot MCP bridge is active, so you can see engine connectivity at a glance. Route Godot-specific implementation work (scenes, GDScript, signal wiring, scene tree changes) to the engine specialist agent rather than editing `.tscn`/`.gd` files from the orchestrator directly.
+TycoonAgents shows a live **Godot connection chip** in the agent visualization panel when the Godot MCP bridge is active, so you can see engine connectivity at a glance. Route Godot-specific implementation work (scenes, GDScript, signal wiring, scene tree changes) to coding-specialist rather than editing `.tscn`/`.gd` files from the orchestrator directly.

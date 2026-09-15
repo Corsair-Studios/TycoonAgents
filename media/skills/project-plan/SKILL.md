@@ -36,15 +36,16 @@ State lives at `.claude/tycoon/plan.json`, created if missing and re-read at the
       "acceptanceCriteria": ["string"],
       "dependsOn": ["string"],
       "status": "pending",
-      "verifyAttempts": 0
+      "verifyAttempts": 0,
+      "notes": "string"
     }
   ],
   "currentPhaseId": "string",
-  "currentTaskId": "string"
+  "currentTaskId": null
 }
 ```
 
-`phase.gate` is one of `pending` / `approved`. `task.status` is one of `pending` / `active` / `verifying` / `done` / `needs_fix` / `skipped`. The panel writes `gate` and `status` overrides; this skill writes everything else. Never hand-wave a field — write the whole object shape on every save, even if a value hasn't changed.
+`phase.gate` is one of `pending` / `approved`. `task.status` is one of `pending` / `active` / `verifying` / `done` / `needs_fix` / `skipped` / `blocked`. `task.notes` is optional free text — used to record why a task is blocked or any other status context. `currentTaskId` is `string | null` — set it to `null` at decompose and whenever no task is active. The panel writes `gate` and `status` overrides; this skill writes everything else. Never hand-wave a field — write the whole object shape on every save, even if a value hasn't changed.
 
 **Hard rule — whole-file writes only.** ALWAYS write `.claude/tycoon/plan.json` by serializing the entire plan object in memory and writing the whole file with the Write tool. NEVER use incremental or partial text edits on `plan.json` — no Edit tool, no sed-style boundary edits, no hand-splicing a single field in place. A single dropped `},` / `{` boundary between two adjacent objects in the `tasks` array is enough to corrupt the JSON and freeze the panel on stale state (it will keep rendering the last frame it successfully read, including a finished task that still shows "active" with retry/skip controls). After every write, re-read the file and `JSON.parse` it to confirm it is valid before continuing; if the parse fails, rewrite the whole file again from the in-memory plan object — do not attempt to patch the broken text.
 

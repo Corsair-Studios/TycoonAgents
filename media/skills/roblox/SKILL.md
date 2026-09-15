@@ -81,5 +81,5 @@ grantCoins:FireServer(10)
 
 TycoonAgents shows a live **Roblox connection chip** in the panel when an MCP-based Roblox
 Studio bridge is connected. Delegate Roblox implementation work (Luau scripts, DataModel
-changes, Studio plugin actions) to the engine specialist agent rather than hand-editing Luau
+changes, Studio plugin actions) to coding-specialist rather than hand-editing Luau
 files yourself.

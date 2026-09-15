@@ -84,9 +84,11 @@ npx playwright show-report              # open the last run's HTML report
   Use fresh contexts/pages per test (the default with `@playwright/test`) and
   reset app state (fixtures, API calls, `page.context().clearCookies()`)
   rather than relying on run order.
-- A `click()` that silently no-ops usually means the locator matched zero or
-  multiple elements — check with `.count()` before assuming the app is
-  broken.
+- Locator actions are strict: if a locator resolves to more than one element,
+  `.click()` and similar actions throw a strictness error rather than acting
+  on the first match. Use `.first()`, `.nth()`, or a more specific locator
+  instead of assuming the first element was clicked; a locator matching zero
+  elements times out waiting for it to appear rather than no-oping silently.
 
 ## In this project
 

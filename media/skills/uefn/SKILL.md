@@ -36,10 +36,10 @@ Verse/device authoring.
 
 Installing the UEFN pack creates two agents:
 
-- **Verse Expert** — authors and refactors Verse device scripts and island
+- **verse-expert** — authors and refactors Verse device scripts and island
   gameplay.
-- **Auditor** — reviews and validates Verse for correctness, deprecations, and
-  API compliance (it does not author features).
+- **uefn-auditor** — reviews and validates Verse for correctness, deprecations,
+  and API compliance (it does not author features).
 
 Both agents **auto-detect the current API**. Before writing or auditing, they
 recursively search the UEFN data root (`%LOCALAPPDATA%\UnrealEditorFortnite`)

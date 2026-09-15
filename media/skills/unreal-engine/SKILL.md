@@ -71,4 +71,4 @@ protected:
 
 ## TycoonAgents integration
 
-TycoonAgents shows a live **Unreal connection chip** in the agent visualization panel when the Unreal MCP bridge is active. Route Unreal-specific implementation work (Actors, Components, Blueprint graphs, C++ gameplay classes) to the engine specialist agent rather than editing `Source/`/`Content/` files from the orchestrator directly. For UEFN/Fortnite-specific work, use the `uefn`/`uefn-bridge` skills instead.
+TycoonAgents shows a live **Unreal connection chip** in the agent visualization panel when the Unreal MCP bridge is active. Route Unreal-specific implementation work (Actors, Components, Blueprint graphs, C++ gameplay classes) to coding-specialist rather than editing `Source/`/`Content/` files from the orchestrator directly. For UEFN/Fortnite-specific work, use the `uefn`/`uefn-bridge` skills instead.

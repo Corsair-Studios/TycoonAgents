@@ -76,4 +76,4 @@ public class PlayerMovement : MonoBehaviour
 
 ## TycoonAgents integration
 
-TycoonAgents shows a live **Unity connection chip** in the agent visualization panel when the Unity MCP bridge is active. Route Unity-specific implementation work (scenes, prefabs, C# components, Inspector wiring) to the engine specialist agent rather than editing `.unity`/`.prefab`/`.cs` files from the orchestrator directly.
+TycoonAgents shows a live **Unity connection chip** in the agent visualization panel when the Unity MCP bridge is active. Route Unity-specific implementation work (scenes, prefabs, C# components, Inspector wiring) to coding-specialist rather than editing `.unity`/`.prefab`/`.cs` files from the orchestrator directly.
