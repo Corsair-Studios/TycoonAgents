@@ -7,7 +7,7 @@
 
 The Corsair Theme Service is a hosted feature that generates theme artwork
 (sprite sheets, boards) from an AI image model on Corsair's behalf, so you
-never need your own OpenAI or Google API key. Uploading your own images or
+never need your own API key. Uploading your own images or
 hand-making a theme never uses this service, needs no account, and stays
 fully offline.
 
@@ -32,8 +32,7 @@ store a password.
 - **Re-slicing** an already-generated image from its raw data is free —
   it makes no model call.
 - Credits have **no cash value** and cannot be redeemed for money.
-- Credit expiry: **TBD — reviewer to confirm whether credits expire and,
-  if so, after how long.**
+- Credits **do not expire**.
 
 ## 4. Refunds
 
@@ -42,9 +41,10 @@ store a password.
   or no image). This is automatic and does not require contacting support.
 - Credits are **never refunded** because you dislike an image that was
   successfully returned — that attempt used a real model call.
-- **Purchase refunds** (returning money for unused credits) are handled
-  through Stripe at Corsair's discretion. Policy and conditions:
-  **TBD — reviewer to define a refund window/policy, if any.**
+- **Purchase refunds** (returning money for unused credits) are at
+  Corsair's discretion and are processed through Stripe, our payment
+  provider. Request one through the app's feedback channel. Stripe's own
+  terms apply to the payment itself: https://stripe.com/legal/ssa
 
 ## 5. No guarantee of output quality
 
@@ -53,7 +53,8 @@ depends heavily on the prompts and reference images you provide, and on
 the underlying model's behavior, which is outside Corsair's control. Trial
 and error, including retries, should be expected — especially for a first
 theme. Corsair does not guarantee that any attempt will produce a
-satisfactory or "correct" result.
+satisfactory or "correct" result. Image quality can also vary over time
+with the availability and updates of the underlying model.
 
 ## 6. Data handling
 
@@ -62,11 +63,21 @@ satisfactory or "correct" result.
   identifiers tied to your account transit the Corsair Theme Service and,
   briefly, its underlying AI model provider, solely to produce that
   generation.
-- This data may be temporarily stored by the Theme Service and its model
-  provider for the purpose of completing and auditing that request.
-  Retention period: **TBD — reviewer to confirm how long prompts/images
-  are retained and whether they are used for any purpose beyond serving
-  the request.**
+- The Theme Service keeps a ledger entry for each attempt (account id,
+  board type, credit cost, timestamps, success or refund) so purchases and
+  refunds can be reconciled. Prompts and generated images are held by the
+  Theme Service only long enough to complete the request and return the
+  result to you; the service does not keep a copy of your images beyond
+  **[TBD: N days / no retention — Corsair to set when the backend
+  ships]**. Generation itself is performed by Corsair's AI model providers
+  (currently OpenAI and Google) under Corsair's own accounts. Their API
+  terms govern that processing: neither uses API inputs or outputs to
+  train their models, and each may retain request data briefly for abuse
+  and safety monitoring (OpenAI states up to 30 days; see
+  https://openai.com/policies/api-data-usage-policies and
+  https://ai.google.dev/gemini-api/terms). Corsair does not use your
+  prompts or images for any purpose other than serving your request and,
+  in aggregate, keeping the service running.
 - Uploading your own images or hand-making a theme sends nothing to
   Corsair and involves no account.
 - Corsair never asks for, receives, or stores any AI-provider API key of
@@ -88,10 +99,3 @@ account, or a purchase can be directed to Corsair Studios LLC through the
 app's existing feedback channel.
 
 ---
-
-**TBD items requiring reviewer decision before publication:**
-1. Whether purchased credits expire, and if so, after what period (§3).
-2. Purchase-refund policy and conditions for unused credit balances (§4).
-3. Retention period for prompts/generated images/account identifiers held
-   by the Theme Service and its model provider, and any use beyond
-   serving the immediate request (§6).
