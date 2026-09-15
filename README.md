@@ -54,7 +54,7 @@ It's **zero-runtime-AI**: all the reasoning happens in Claude Code; the extensio
 
 ## Self-contained & hook-driven
 
-The shipped extension makes **zero runtime AI calls of its own.** Everything you see is built from Claude Code **hooks** that record when agents are dispatched, work, and finish — the visualization and metrics are a normalized view of those records, nothing more. (Image generation for themes is an *authoring-time* convenience only; see below.)
+The shipped extension makes **zero runtime AI calls of its own.** Everything you see is built from **hooks** that record when agents are dispatched, work, and finish, captured by whichever harness is installed (Claude Code, OpenCode (Experimental), or Codex (Experimental)). The visualization and metrics are a normalized view of those records, nothing more. (Image generation for themes is an *authoring-time* convenience only; see below.)
 
 ## Setup
 
@@ -121,9 +121,9 @@ Opening the Theme Builder for the first time asks you to sign in — by an email
 
 Credits are what generation costs: every generation attempt spends credits, including retries, and the panel shows the cost before each attempt so you're never guessing. Attempts cost 2 credits for object, expression, and achievement boards and 3 credits for character, rival, and environment boards; a typical 23-board theme runs about 95 credits, a careful run about 55, and heavy retries up to about 170 — output quality tracks prompt quality, so a clear, specific prompt (see "Prompt tips" above) usually costs less than a vague one you keep retrying.
 
-**Buy credits** opens Stripe Checkout in your browser; your balance updates when you return to the panel. Three packs are available: Starter (45 credits, $4.99), Theme (100 credits including 10 bonus, $9.99), and Bundle (205 credits including 25 bonus, $19.99), with the bigger packs showing their bonus as a percentage. Refunds happen automatically only when the service call itself fails (a network or server error) — never for images you generated successfully but don't like, so spend a retry rather than expecting a refund on a result that just missed the mark. Re-slicing an existing image is always free, no matter how many times you do it.
+**Buy credits** opens Stripe Checkout in your browser; your balance updates when you return to the panel. Three packs are available: Starter (45 credits, $4.99), Theme (100 credits including 10 bonus, $9.99), and Bundle (205 credits including 25 bonus, $19.99), with the bigger packs showing their bonus as a percentage. Failed generations caused by provider or network errors, and generations the provider refuses on content-policy grounds, are refunded automatically; prompts blocked by content screening or a locked account are not charged at all. Credits are never refunded for images you generated successfully but don't like, so spend a retry rather than expecting a refund on a result that just missed the mark. Re-slicing an existing image is always free, no matter how many times you do it.
 
-None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. Prompts and generated images only transit the Corsair Theme Service when you're actively generating — nothing else about the extension calls out over the network.
+None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. The extension makes network calls only for Theme service sign-in, generation, and credit checkout (all Corsair-hosted), feedback submission, and the opt-in team readiness reachability probe; the agent harnesses (Claude Code, OpenCode, Codex) make their own separate calls.
 
 ### Acceptable use
 
