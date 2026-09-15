@@ -502,9 +502,9 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   assert.equal(claudeWorker?.label, "anthropic/claude-sonnet-4-6");
   assert.equal(claudeWorker?.vendor, "anthropic");
 
-  const codex = byId.get("openai/gpt-6-astra");
-  assert.ok(codex, "openai/gpt-6-astra preset should be present");
-  assert.equal(codex?.label, "openai/gpt-6-astra");
+  const codex = byId.get("openai/gpt-5.6-sol");
+  assert.ok(codex, "openai/gpt-5.6-sol preset should be present");
+  assert.equal(codex?.label, "openai/gpt-5.6-sol");
 
   for (const m of view.presets.models) {
     assert.ok(

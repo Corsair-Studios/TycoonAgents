@@ -110,7 +110,9 @@
     // placeholders — refresh via the update-pricing skill
     "openai/gpt-5": { perMtok: 8, weight: 12 },
     "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
-    // seed, unverified — codex-reviewer's current model (2026-09-07); refresh via update-pricing
+    // seed, unverified — codex-reviewer's current model (2026-09-15); refresh via update-pricing
+    "openai/gpt-5.6-sol": { perMtok: 1, weight: 0.7 },
+    // seed, unverified — higher-tier option, costlier than gpt-5.6-sol; refresh via update-pricing
     "openai/gpt-6-astra": { perMtok: 1.5, weight: 1 },
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
