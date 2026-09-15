@@ -7985,7 +7985,14 @@ export class TycoonPanel {
   }
 
   private _buildHookCommand(): string {
-    return `node ".claude/tycoon/tycoon-claude-hook.cjs"`;
+    // Portable, project-relative command — Claude Code runs hooks with
+    // cwd = project root, so this resolves correctly regardless of which
+    // machine or user account cloned the project. Forward slashes work on
+    // both Windows and POSIX; no quoting needed since the path has no
+    // spaces. isOurHookCommand() still matches this (and any legacy
+    // absolute-path form) by filename substring, so an existing
+    // absolute-path entry is replaced in place, not duplicated.
+    return `node .claude/tycoon/tycoon-claude-hook.cjs`;
   }
 
   private _readSettingsTolerant(settingsPath: string): any | null {

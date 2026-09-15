@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   mergeTycoonHooks,
   migrateLegacyHookMatchers,
@@ -746,6 +747,77 @@ test("syncRuntimeFile: leaves a byte-identical destination untouched (mtime unch
     assert.equal(fs.statSync(dest).mtimeMs, mtimeBefore);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- portable hook command (p48-t1) -----------------------------------
+
+test("portable hookCommand contains no absolute path and survives a machine-A -> machine-B copy", () => {
+  const projectA = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-hook-projA-"));
+  const projectB = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-hook-projB-"));
+  try {
+    // Simulate machine A: HOME=projectA/home, install a portable hook
+    // command + a project-local copy of the hook script under
+    // <projectA>/.claude/tycoon/.
+    const homeA = path.join(projectA, "home");
+    fs.mkdirSync(homeA, { recursive: true });
+    const tycoonDirA = path.join(projectA, ".claude", "tycoon");
+    fs.mkdirSync(tycoonDirA, { recursive: true });
+
+    // Minimal stand-in hook script (no compiled binary): reads stdin,
+    // exits 0. Mirrors tycoon-claude-hook.cjs's basic contract for this
+    // portability check without depending on its full behavior.
+    const hookScriptContent =
+      "#!/usr/bin/env node\n" +
+      "let data = '';\n" +
+      "process.stdin.on('data', (c) => { data += c; });\n" +
+      "process.stdin.on('end', () => { JSON.parse(data || '{}'); process.exit(0); });\n";
+    fs.writeFileSync(path.join(tycoonDirA, "tycoon-claude-hook.cjs"), hookScriptContent);
+
+    const hookCommand = "node .claude/tycoon/tycoon-claude-hook.cjs";
+    const merged = mergeTycoonHooks({}, hookCommand);
+    const settingsPath = path.join(projectA, ".claude", "settings.local.json");
+    fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+
+    // Assert the written command string carries no absolute path (neither
+    // POSIX nor Windows drive-letter form) and no reference to homeA.
+    const writtenSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const allCommands: string[] = [];
+    for (const event of Object.keys(writtenSettings.hooks)) {
+      for (const entry of writtenSettings.hooks[event]) {
+        for (const h of entry.hooks) allCommands.push(h.command);
+      }
+    }
+    assert.ok(allCommands.length > 0, "expected at least one hook command");
+    for (const c of allCommands) {
+      assert.equal(c, hookCommand);
+      assert.ok(!path.isAbsolute(c.replace(/^node\s+/, "")), `command must not be absolute: ${c}`);
+      assert.ok(!/^[A-Za-z]:[\\/]/.test(c), `command must not contain a drive-letter path: ${c}`);
+      assert.ok(!c.includes(homeA), `command must not reference machine A's HOME: ${c}`);
+    }
+
+    // Simulate cloning to machine B: copy the whole .claude/ folder to a
+    // different project root under a different HOME.
+    const homeB = path.join(projectB, "home");
+    fs.mkdirSync(homeB, { recursive: true });
+    fs.cpSync(path.join(projectA, ".claude"), path.join(projectB, ".claude"), { recursive: true });
+
+    const hookScriptPathB = path.join(projectB, ".claude", "tycoon", "tycoon-claude-hook.cjs");
+    assert.ok(fs.existsSync(hookScriptPathB), "hook script copy must exist on machine B");
+
+    // Spawn the portable command exactly as Claude Code would: cwd =
+    // project root, minimal SessionStart JSON on stdin, HOME pointed at
+    // machine B's own home dir (never machine A's).
+    const result = spawnSync("node", [".claude/tycoon/tycoon-claude-hook.cjs"], {
+      cwd: projectB,
+      env: { ...process.env, HOME: homeB, USERPROFILE: homeB },
+      input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "test" }),
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `hook script should exit 0 on machine B; stderr: ${result.stderr}`);
+  } finally {
+    fs.rmSync(projectA, { recursive: true, force: true });
+    fs.rmSync(projectB, { recursive: true, force: true });
   }
 });
 
