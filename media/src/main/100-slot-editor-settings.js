@@ -3234,6 +3234,19 @@
     teamSetupDriftNotice.appendChild(teamSetupDriftDismissBtn);
     teamSetupSection.appendChild(teamSetupDriftNotice);
 
+    // Routing-only drift (p52-t2): the manifest's exported routing.json
+    // reference changed but the roster (who's on the team) did not — the
+    // roster is authoritative and routing is a reference, so this is
+    // informational only and never offers an Apply button.
+    const teamSetupRoutingDriftNotice = document.createElement("div");
+    teamSetupRoutingDriftNotice.className = "theme-review-retry-warning";
+    teamSetupRoutingDriftNotice.id = "team-setup-routing-drift-notice";
+    teamSetupRoutingDriftNotice.setAttribute("hidden", "");
+    const teamSetupRoutingDriftText = document.createElement("span");
+    teamSetupRoutingDriftText.textContent = "Team routing changed (reference only)";
+    teamSetupRoutingDriftNotice.appendChild(teamSetupRoutingDriftText);
+    teamSetupSection.appendChild(teamSetupRoutingDriftNotice);
+
     // ── 1.7d. Readiness report (p50-t2) ──
     // "Check readiness" builds a TeamReadinessReport from the committed
     // .claude/tycoon-team.json (src/core/teamReadiness.ts) and renders a

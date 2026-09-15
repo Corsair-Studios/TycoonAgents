@@ -126,17 +126,17 @@ export async function handleCheckTeamReadinessStandalone({ requireCompiledOrThro
  * @param {(jsPath: string, label: string) => any} opts.requireCompiledOrThrow
  * @param {string} opts.repoRoot
  * @param {string|null} opts.projectRoot
- * @returns {{ hasManifest: boolean, drift: boolean, manifestExportedAt?: string, appliedExportedAt?: string }}
+ * @returns {{ hasManifest: boolean, drift: boolean, rosterChanged: boolean, routingChanged: boolean, manifestExportedAt?: string, appliedExportedAt?: string }}
  */
 export function handleGetTeamSetupDriftStandalone({ requireCompiledOrThrow, repoRoot, projectRoot }) {
   if (!projectRoot) {
-    return { hasManifest: false, drift: false };
+    return { hasManifest: false, drift: false, rosterChanged: false, routingChanged: false };
   }
   try {
     const teamSetupHostPath = path.join(repoRoot, 'out', 'src', 'host', 'vscode', 'teamSetupHost.js');
     const { getTeamSetupDriftHost } = requireCompiledOrThrow(teamSetupHostPath, 'teamSetupHost');
     return getTeamSetupDriftHost(projectRoot);
   } catch {
-    return { hasManifest: false, drift: false };
+    return { hasManifest: false, drift: false, rosterChanged: false, routingChanged: false };
   }
 }

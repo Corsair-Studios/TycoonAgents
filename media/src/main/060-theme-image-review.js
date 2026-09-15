@@ -1409,12 +1409,41 @@
             nameEl.textContent = agent.id;
             const chipEl = document.createElement("span");
             chipEl.className = "team-readiness-chip team-readiness-chip--" + (agent.status || "not_ready");
-            chipEl.textContent = agent.status === "ready" ? "ready" : agent.status === "fallback" ? "fallback" : "not ready";
+            chipEl.textContent =
+              agent.status === "ready"
+                ? "ready"
+                : agent.status === "fallback"
+                  ? "fallback"
+                  : agent.status === "default_fallback"
+                    ? "default fallback"
+                    : "not ready";
             item.appendChild(nameEl);
             item.appendChild(chipEl);
+            if (agent.routingMatches === false) {
+              const differsChip = document.createElement("span");
+              differsChip.className = "team-readiness-chip team-readiness-chip--differs";
+              differsChip.textContent = "differs";
+              item.appendChild(differsChip);
+            }
+            if (agent.status === "default_fallback") {
+              const warnChip = document.createElement("span");
+              warnChip.className = "team-readiness-chip team-readiness-chip--warn";
+              warnChip.textContent = "warn";
+              item.appendChild(warnChip);
+            }
+            const teamModel = agent.team || {};
+            const localModel = agent.local || teamModel;
+            const teamLabel = teamModel.vendor ? teamModel.vendor + (teamModel.model ? "/" + teamModel.model : "") : "-";
+            const localLabel = localModel.vendor ? localModel.vendor + (localModel.model ? "/" + localModel.model : "") : "-";
+            const routingEl = document.createElement("span");
+            routingEl.className = "team-readiness-routing";
+            routingEl.textContent = "team: " + teamLabel + " · you: " + localLabel;
+            item.appendChild(routingEl);
             let detailText = "";
             if (agent.status === "fallback" && agent.fallbackUsed) {
               detailText = "uses " + (agent.fallbackUsed.vendor || "fallback");
+            } else if (agent.status === "default_fallback" && agent.usedFallback) {
+              detailText = "will use default fallback: " + (agent.usedFallback.vendor || "fallback");
             } else if (Array.isArray(agent.missingEnv) && agent.missingEnv.length > 0) {
               detailText = "missing " + agent.missingEnv.join(", ");
             } else if (agent.status === "not_ready" && agent.detail) {
@@ -1434,12 +1463,23 @@
       }
     } else if (msg && msg.type === "TEAM_SETUP_DRIFT") {
       const payload = msg.payload || {};
+      // Roster is authoritative: the Apply prompt shows only for
+      // rosterChanged. routingChanged (manifest routing reference changed,
+      // roster unchanged) is informational only — no Apply button.
       const notice = document.getElementById("team-setup-drift-notice");
       if (notice) {
-        if (payload.drift) {
+        if (payload.rosterChanged) {
           notice.removeAttribute("hidden");
         } else {
           notice.setAttribute("hidden", "");
+        }
+      }
+      const routingNotice = document.getElementById("team-setup-routing-drift-notice");
+      if (routingNotice) {
+        if (payload.routingChanged && !payload.rosterChanged) {
+          routingNotice.removeAttribute("hidden");
+        } else {
+          routingNotice.setAttribute("hidden", "");
         }
       }
       const driftApplyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-drift-apply-btn"));

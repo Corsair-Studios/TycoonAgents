@@ -30,6 +30,7 @@
 // ---------------------------------------------------------------------------
 
 import type { TeamHarnessId, TeamManifest, TeamManifestRouting } from "./teamSetup";
+export type { TeamManifestRouting };
 
 const TEAM_HARNESS_IDS: readonly TeamHarnessId[] = ["claude-code", "codex", "opencode"];
 
@@ -41,7 +42,7 @@ export interface HarnessInstallStatus {
 
 export type HarnessInstalledMap = Record<TeamHarnessId, HarnessInstallStatus>;
 
-export type ReadinessStatus = "ready" | "fallback" | "not_ready";
+export type ReadinessStatus = "ready" | "fallback" | "default_fallback" | "not_ready";
 
 export interface VendorAvailability {
   available: boolean;
@@ -75,6 +76,24 @@ export interface TeamReadinessProbes {
 export interface BuildTeamReadinessOptions {
   /** When true, also calls probes.reachability for each agent's resolved (ready/fallback) slot. Defaults to false. */
   probeReachability?: boolean;
+  /**
+   * Per-agent LOCAL routing (what will actually run on THIS machine),
+   * keyed by roster id — see src/host/vscode/teamSetupHost.ts's
+   * buildTeamReadinessHost, which loads it from .claude/tycoon/routing.json
+   * via loadRoutingProfile/resolveAgentSlot. When an agent has an entry
+   * here, readiness is computed from THIS candidate list instead of the
+   * manifest's `routing[id]` (still kept as `team` for display/comparison).
+   * An agent with no entry here falls back to the manifest routing (e.g. a
+   * fresh clone with no local routing.json yet, before Apply).
+   */
+  localRouting?: Record<string, TeamManifestRouting | undefined>;
+  /**
+   * Top-level default-fallback candidate from the local routing profile's
+   * `defaultFallback` slot (see src/core/routingProfile.ts). Tried, as a
+   * last resort, only when no candidate in the (local or manifest) chain
+   * is available.
+   */
+  defaultFallback?: { vendor?: string; model?: string; requiredEnvNames?: string[] };
 }
 
 export interface AgentReadiness {
@@ -87,13 +106,23 @@ export interface AgentReadiness {
   missingEnv: string[];
   /** Set when status is "fallback": which fallback vendor/model was selected. */
   fallbackUsed?: { vendor?: string; model?: string; index: number };
+  /** Set when status is "default_fallback": the profile's top-level defaultFallback vendor/model used. */
+  usedFallback?: { vendor?: string; model?: string };
   reachability?: ReachabilityResult;
   detail: string;
+  /** The manifest's (exported) routing for this agent — display only. */
+  team: { vendor?: string; model?: string };
+  /** The LOCAL routing actually used to compute status (falls back to `team` when no local routing exists). */
+  local: { vendor?: string; model?: string };
+  /** False when `local` differs from `team` (a fresh clone before Apply, or hand-edited local routing.json). */
+  routingMatches: boolean;
 }
 
 export interface TeamReadinessSummary {
   ready: number;
   total: number;
+  /** Count of agents whose status is "default_fallback" — counted as runnable in `ready` but reported separately so the UI can flag them. */
+  warnings: number;
   text: string;
 }
 
@@ -165,8 +194,10 @@ export async function buildTeamReadiness(
   const agents: AgentReadiness[] = [];
 
   for (const entry of manifest.roster) {
-    const routing = manifest.routing[entry.id];
-    const candidates = buildCandidates(routing);
+    const teamRouting = manifest.routing[entry.id];
+    const localRoutingEntry = opts.localRouting?.[entry.id];
+    const effectiveRouting = localRoutingEntry ?? teamRouting;
+    const candidates = buildCandidates(effectiveRouting);
 
     let status: ReadinessStatus = "not_ready";
     let chosenVendor: string | undefined;
@@ -212,6 +243,35 @@ export async function buildTeamReadiness(
       }
     }
 
+    // Last resort: the local routing profile's top-level defaultFallback
+    // (p31-t1 / "(dfb)" chain fallback) — tried only when nothing in the
+    // (local or manifest) chain worked out above.
+    let usedFallback: AgentReadiness["usedFallback"];
+    if (status === "not_ready" && opts.defaultFallback && (opts.defaultFallback.vendor || opts.defaultFallback.model)) {
+      const dfCandidate: SlotCandidate = {
+        vendor: opts.defaultFallback.vendor,
+        model: opts.defaultFallback.model,
+        requiredEnvNames: opts.defaultFallback.requiredEnvNames ?? [],
+      };
+      const envMissing = missingEnvNames(dfCandidate.requiredEnvNames, probes.envSet);
+      let availability: VendorAvailability = { available: false, detail: "no vendor specified" };
+      if (dfCandidate.vendor) {
+        try {
+          availability = await probes.vendorAvailable(dfCandidate.vendor);
+        } catch {
+          availability = { available: false, detail: "vendor probe failed" };
+        }
+      }
+      if (availability.available && envMissing.length === 0) {
+        status = "default_fallback";
+        chosenVendor = dfCandidate.vendor;
+        chosenModel = dfCandidate.model;
+        missingEnv = [];
+        detail = availability.detail;
+        usedFallback = { vendor: dfCandidate.vendor, model: dfCandidate.model };
+      }
+    }
+
     let reachability: ReachabilityResult | undefined;
     if (opts.probeReachability && probes.reachability && status !== "not_ready" && chosenVendor) {
       try {
@@ -221,6 +281,12 @@ export async function buildTeamReadiness(
       }
     }
 
+    const team = { vendor: teamRouting?.vendor, model: teamRouting?.model };
+    const local = localRoutingEntry
+      ? { vendor: localRoutingEntry.vendor, model: localRoutingEntry.model }
+      : team;
+    const routingMatches = team.vendor === local.vendor && team.model === local.model;
+
     agents.push({
       id: entry.id,
       status,
@@ -228,12 +294,17 @@ export async function buildTeamReadiness(
       model: chosenModel,
       missingEnv,
       ...(fallbackUsed ? { fallbackUsed } : {}),
+      ...(usedFallback ? { usedFallback } : {}),
       ...(reachability ? { reachability } : {}),
       detail,
+      team,
+      local,
+      routingMatches,
     });
   }
 
-  const ready = agents.filter((a) => a.status === "ready" || a.status === "fallback").length;
+  const ready = agents.filter((a) => a.status === "ready" || a.status === "fallback" || a.status === "default_fallback").length;
+  const warnings = agents.filter((a) => a.status === "default_fallback").length;
   const total = agents.length;
 
   let installed: HarnessInstalledMap;
@@ -256,7 +327,8 @@ export async function buildTeamReadiness(
     summary: {
       ready,
       total,
-      text: `${ready} of ${total} agents ready · harness ${harnessOk ? "ok" : "missing"}`,
+      warnings,
+      text: `${ready} of ${total} agents ready · harness ${harnessOk ? "ok" : "missing"}${warnings > 0 ? ` · ${warnings} using default fallback` : ""}`,
     },
     harness,
   };
@@ -470,6 +542,15 @@ export function formatReadinessReport(report: TeamReadinessReport): string {
     if (agent.vendor) parts.push(agent.vendor + (agent.model ? `/${agent.model}` : ""));
     if (agent.status === "fallback" && agent.fallbackUsed) {
       parts.push(`(fallback #${agent.fallbackUsed.index + 1})`);
+    }
+    if (agent.status === "default_fallback" && agent.usedFallback) {
+      const label = agent.usedFallback.vendor
+        ? agent.usedFallback.vendor + (agent.usedFallback.model ? `/${agent.usedFallback.model}` : "")
+        : agent.usedFallback.model ?? "";
+      parts.push(`will use default fallback: ${label}`);
+    }
+    if (agent.routingMatches === false) {
+      parts.push("(differs from team routing)");
     }
     if (agent.missingEnv.length > 0) {
       parts.push(`missing env: ${agent.missingEnv.join(", ")}`);

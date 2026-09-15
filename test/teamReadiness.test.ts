@@ -317,3 +317,72 @@ test("a throwing harnessesInstalled probe is treated as not installed, never pro
   assert.equal(report.harness.ok, false);
   assert.equal(report.harness.installed.opencode.installed, false);
 });
+
+// ---------------------------------------------------------------------------
+// Local routing vs. team routing (p52-t2): roster is authoritative, routing
+// is a reference — readiness computes from opts.localRouting (what will
+// actually run) when present for an agent, but still reports the
+// manifest's routing as `team` for display/comparison.
+// ---------------------------------------------------------------------------
+
+test("local routing differing from team routing: status computed from local, routingMatches false, team/local both reported", async () => {
+  const manifest = sampleManifest();
+  // Manifest (team) routes coding-specialist to anthropic/sonnet, but the
+  // local machine's routing.json routes it to openai/gpt-5 instead.
+  const probes = makeProbes({
+    vendorAvailable: async (vendor: string) => {
+      if (vendor === "openai") return { available: true, detail: "found" };
+      return { available: true, detail: "native host vendor" };
+    },
+  });
+  const report = await buildTeamReadiness(manifest, probes, {
+    localRouting: {
+      "coding-specialist": { vendor: "openai", model: "gpt-5", fallbackChain: [] },
+    },
+  });
+  const agent = report.agents.find((a) => a.id === "coding-specialist")!;
+  assert.equal(agent.status, "ready");
+  assert.equal(agent.vendor, "openai");
+  assert.equal(agent.model, "gpt-5");
+  assert.equal(agent.routingMatches, false);
+  assert.deepEqual(agent.team, { vendor: "anthropic", model: "sonnet" });
+  assert.deepEqual(agent.local, { vendor: "openai", model: "gpt-5" });
+
+  // An agent with no localRouting entry falls back to the manifest routing
+  // and reports routingMatches true (local === team).
+  const other = report.agents.find((a) => a.id === "search-retrieval")!;
+  assert.equal(other.routingMatches, true);
+  assert.deepEqual(other.local, other.team);
+});
+
+test("default_fallback: used only when no candidate in the chain is available, counted as runnable with a separate warnings count", async () => {
+  const manifest = sampleManifest();
+  const probes = makeProbes({
+    vendorAvailable: async (vendor: string) => {
+      if (vendor === "local-vendor") return { available: true, detail: "always on" };
+      return { available: false, detail: "not found" };
+    },
+    envSet: () => false,
+  });
+  const report = await buildTeamReadiness(manifest, probes, {
+    defaultFallback: { vendor: "local-vendor", model: "local-model" },
+  });
+  assert.equal(report.summary.total, 3);
+  assert.equal(report.summary.ready, 3);
+  assert.equal(report.summary.warnings, 3);
+  assert.ok(report.summary.text.includes("3 using default fallback"));
+  for (const agent of report.agents) {
+    assert.equal(agent.status, "default_fallback");
+    assert.deepEqual(agent.usedFallback, { vendor: "local-vendor", model: "local-model" });
+  }
+  const text = formatReadinessReport(report);
+  assert.ok(text.includes("will use default fallback: local-vendor/local-model"));
+});
+
+test("default_fallback is never used when a real candidate is ready", async () => {
+  const report = await buildTeamReadiness(sampleManifest(), makeProbes(), {
+    defaultFallback: { vendor: "local-vendor", model: "local-model" },
+  });
+  assert.equal(report.summary.warnings, 0);
+  assert.ok(report.agents.every((a) => a.status !== "default_fallback"));
+});

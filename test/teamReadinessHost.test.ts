@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { buildTeamReadinessHost, getTeamSetupDriftHost } from "../src/host/vscode/teamSetupHost";
-import { buildTeamManifest, serializeTeamManifest, type TeamManifestInput } from "../src/core/teamSetup";
+import { buildTeamManifest, computeRosterHash, serializeTeamManifest, type TeamManifestInput } from "../src/core/teamSetup";
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "team-readiness-host-"));
@@ -179,47 +179,142 @@ test("readiness sanitization: an absolute path in a probe failure detail is scru
   }
 });
 
-test("drift: no stamp -> drift true, hasManifest true; matching stamp -> drift false; edited exportedAt -> drift true; no manifest -> hasManifest false", () => {
+test("drift: no stamp -> drift true (rosterChanged); matching stamp -> drift false; edited exportedAt only -> routingChanged true, rosterChanged false; no manifest -> hasManifest false", () => {
   const root = tmpRoot();
   try {
     // No manifest at all.
     const noManifest = getTeamSetupDriftHost(root);
     assert.equal(noManifest.hasManifest, false);
     assert.equal(noManifest.drift, false);
+    assert.equal(noManifest.rosterChanged, false);
+    assert.equal(noManifest.routingChanged, false);
 
     seedManifest(root);
     const exportedAt = readManifestExportedAt(root);
+    const rosterHash = computeRosterHash([
+      { id: "coding-specialist", displayName: "Coding Specialist" },
+      { id: "search-retrieval", displayName: "Search Retrieval" },
+    ]);
 
-    // Manifest present, no stamp yet.
+    // Manifest present, no stamp yet -> rosterChanged (missing stamp counts as changed).
     const noStamp = getTeamSetupDriftHost(root);
     assert.equal(noStamp.hasManifest, true);
     assert.equal(noStamp.drift, true);
+    assert.equal(noStamp.rosterChanged, true);
+    assert.equal(noStamp.routingChanged, false);
     assert.equal(noStamp.manifestExportedAt, exportedAt);
 
-    // Stamp matches.
+    // Stamp matches (same exportedAt and rosterHash).
     const stampDir = path.join(root, ".claude", "tycoon");
     fs.mkdirSync(stampDir, { recursive: true });
     fs.writeFileSync(
       path.join(stampDir, "team-setup-applied.json"),
-      JSON.stringify({ exportedAt, appliedAt: new Date().toISOString(), schemaVersion: 1 }),
+      JSON.stringify({ exportedAt, appliedAt: new Date().toISOString(), schemaVersion: 1, rosterHash }),
       "utf8",
     );
     const matched = getTeamSetupDriftHost(root);
     assert.equal(matched.hasManifest, true);
     assert.equal(matched.drift, false);
+    assert.equal(matched.rosterChanged, false);
+    assert.equal(matched.routingChanged, false);
     assert.equal(matched.appliedExportedAt, exportedAt);
 
-    // Edit manifest's exportedAt so it no longer matches the stamp.
+    // Edit manifest's exportedAt only (roster untouched) -> routingChanged
+    // true, rosterChanged false: informational drift, not an Apply prompt.
     const manifestPath = path.join(root, ".claude", "tycoon-team.json");
     const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     parsed.exportedAt = new Date(Date.now() + 1000).toISOString();
     fs.writeFileSync(manifestPath, JSON.stringify(parsed, null, 2), "utf8");
 
-    const driftedAgain = getTeamSetupDriftHost(root);
-    assert.equal(driftedAgain.hasManifest, true);
-    assert.equal(driftedAgain.drift, true);
-    assert.equal(driftedAgain.appliedExportedAt, exportedAt);
-    assert.equal(driftedAgain.manifestExportedAt, parsed.exportedAt);
+    const routingOnlyDrift = getTeamSetupDriftHost(root);
+    assert.equal(routingOnlyDrift.hasManifest, true);
+    assert.equal(routingOnlyDrift.drift, true);
+    assert.equal(routingOnlyDrift.rosterChanged, false);
+    assert.equal(routingOnlyDrift.routingChanged, true);
+    assert.equal(routingOnlyDrift.appliedExportedAt, exportedAt);
+    assert.equal(routingOnlyDrift.manifestExportedAt, parsed.exportedAt);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("drift: changing the roster (adding an entry) -> rosterChanged true even with a matching exportedAt stamp", () => {
+  const root = tmpRoot();
+  try {
+    seedManifest(root);
+    const exportedAt = readManifestExportedAt(root);
+    const rosterHash = computeRosterHash([
+      { id: "coding-specialist", displayName: "Coding Specialist" },
+      { id: "search-retrieval", displayName: "Search Retrieval" },
+    ]);
+    const stampDir = path.join(root, ".claude", "tycoon");
+    fs.mkdirSync(stampDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stampDir, "team-setup-applied.json"),
+      JSON.stringify({ exportedAt, appliedAt: new Date().toISOString(), schemaVersion: 1, rosterHash }),
+      "utf8",
+    );
+
+    // Mutate the manifest's roster (add an entry) without touching exportedAt.
+    const manifestPath = path.join(root, ".claude", "tycoon-team.json");
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    parsed.roster.push({ id: "new-agent", displayName: "New Agent" });
+    fs.writeFileSync(manifestPath, JSON.stringify(parsed, null, 2), "utf8");
+
+    const result = getTeamSetupDriftHost(root);
+    assert.equal(result.rosterChanged, true);
+    assert.equal(result.drift, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("buildTeamReadinessHost: local routing.json overrides the manifest's routing and reports team/local/routingMatches; defaultFallback resolves an otherwise-not_ready agent", async () => {
+  const root = tmpRoot();
+  try {
+    seedManifest(root);
+
+    // Local routing.json routes coding-specialist to a local-only vendor
+    // (not what the manifest exported) and defines a top-level
+    // defaultFallback so search-retrieval -- whose only candidate needs an
+    // unset FAKE_VAR -- still resolves as "runnable" via the default
+    // fallback rather than staying not_ready.
+    const routingDir = path.join(root, ".claude", "tycoon");
+    fs.mkdirSync(routingDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(routingDir, "routing.json"),
+      JSON.stringify({
+        version: 1,
+        agents: {
+          "coding-specialist": { vendor: "local-vendor", model: "local-model" },
+        },
+        defaultFallback: { vendor: "local-vendor", model: "local-model" },
+      }),
+      "utf8",
+    );
+
+    const execSeam = (command: string): string => {
+      if (command.includes("codex")) throw new Error("codex not found");
+      return "1.0.0";
+    };
+    const baseEnv: NodeJS.ProcessEnv = { ...process.env };
+    delete baseEnv.FAKE_VAR;
+
+    const result = await buildTeamReadinessHost({ root, env: baseEnv, hostKind: "standalone", execSeam });
+    assert.equal(result.ok, true, result.error);
+    const byId = new Map(result.report!.agents.map((a) => [a.id, a]));
+
+    const coding = byId.get("coding-specialist")!;
+    assert.equal(coding.status, "ready");
+    assert.deepEqual(coding.team, { vendor: "codex", model: "gpt-5" });
+    assert.deepEqual(coding.local, { vendor: "local-vendor", model: "local-model" });
+    assert.equal(coding.routingMatches, false);
+
+    const search = byId.get("search-retrieval")!;
+    assert.equal(search.status, "default_fallback");
+    assert.deepEqual(search.usedFallback, { vendor: "local-vendor", model: "local-model" });
+    assert.equal(result.report!.summary.warnings, 1);
+    assert.ok(result.text!.includes("will use default fallback: local-vendor/local-model"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

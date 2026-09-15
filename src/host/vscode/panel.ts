@@ -4693,7 +4693,7 @@ export class TycoonPanel {
     if (!root) {
       void this._panel.webview.postMessage({
         type: MSG.TEAM_SETUP_DRIFT,
-        payload: { hasManifest: false, drift: false },
+        payload: { hasManifest: false, rosterChanged: false, routingChanged: false, drift: false },
       });
       return;
     }

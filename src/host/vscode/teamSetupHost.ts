@@ -61,6 +61,7 @@ import {
   formatReadinessReport,
   type TeamReadinessReport,
 } from "../../core/teamReadiness";
+import { computeRosterHash, type TeamManifestRouting } from "../../core/teamSetup";
 import {
   mergeTycoonHooks,
   mergeManagedSubagentDepthEnv,
@@ -131,6 +132,25 @@ function fallbackEnvNamesOf(slot: RoutingSlot | null): Record<string, string[]> 
     if (names.length > 0) out[label] = names;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Adapts a resolved RoutingSlot (resolveAgentSlot's output) to the
+ * TeamManifestRouting shape teamReadiness.ts's buildCandidates() expects,
+ * reusing the same fallbackChainOf/slotEnvNames/fallbackEnvNamesOf helpers
+ * the manifest export path uses — so local-routing candidates are built
+ * identically to how the manifest's own routing was built at export time
+ * (p52-t2).
+ */
+function slotToManifestRouting(slot: RoutingSlot): TeamManifestRouting {
+  const out: TeamManifestRouting = { fallbackChain: fallbackChainOf(slot) };
+  if (slot.vendor) out.vendor = slot.vendor;
+  if (slot.model) out.model = slot.model;
+  const envNames = slotEnvNames(slot);
+  if (envNames.length > 0) out.envNames = envNames;
+  const fallbackEnvNames = fallbackEnvNamesOf(slot);
+  if (fallbackEnvNames) out.fallbackEnvNames = fallbackEnvNames;
+  return out;
 }
 
 /**
@@ -482,7 +502,30 @@ export async function buildTeamReadinessHost(opts: BuildTeamReadinessHostOptions
     hostKind: opts.hostKind ?? "vscode",
     ...(opts.execSeam ? { execSeam: opts.execSeam } : {}),
   });
-  const report = await buildTeamReadiness(parsed.manifest, probes, { probeReachability: !!opts.probeReachability });
+
+  // Local routing is authoritative for readiness (roster is authoritative
+  // for WHO is on the team; the manifest's routing is a reference of what
+  // was exported). Missing entries — e.g. a fresh clone before Apply —
+  // fall back to the manifest routing inside buildTeamReadiness itself.
+  const { profile } = loadRoutingProfile(opts.root);
+  const localRouting: Record<string, TeamManifestRouting | undefined> = {};
+  for (const entry of parsed.manifest.roster) {
+    const slot = resolveAgentSlot(profile, entry.id);
+    if (slot) localRouting[entry.id] = slotToManifestRouting(slot);
+  }
+  const defaultFallback = profile?.defaultFallback
+    ? {
+        vendor: profile.defaultFallback.vendor,
+        model: profile.defaultFallback.model,
+        requiredEnvNames: slotEnvNames(profile.defaultFallback),
+      }
+    : undefined;
+
+  const report = await buildTeamReadiness(parsed.manifest, probes, {
+    probeReachability: !!opts.probeReachability,
+    localRouting,
+    ...(defaultFallback ? { defaultFallback } : {}),
+  });
   const sanitized = sanitizeReadinessReport(report);
   return { ok: true, report: sanitized, text: formatReadinessReport(sanitized) };
 }
@@ -490,40 +533,62 @@ export async function buildTeamReadinessHost(opts: BuildTeamReadinessHostOptions
 export interface TeamSetupDriftResult {
   hasManifest: boolean;
   drift: boolean;
+  /** Roster changed since the last Apply: manifest's computeRosterHash differs from the applied stamp's rosterHash (or no stamp exists at all). Requires an Apply — the roster is authoritative. */
+  rosterChanged: boolean;
+  /** Manifest's exportedAt differs from the stamp's exportedAt while the roster itself is UNCHANGED — informational only (routing is a reference, not authoritative); never prompts an Apply on its own. */
+  routingChanged: boolean;
   manifestExportedAt?: string;
   appliedExportedAt?: string;
 }
 
 /**
- * Compares .claude/tycoon-team.json's `exportedAt` against
- * .claude/tycoon/team-setup-applied.json's `exportedAt` — embedded date
- * fields only, never file mtimes. `drift` is true when a manifest exists
- * and either no stamp exists or the stamped exportedAt differs.
+ * Compares .claude/tycoon-team.json against
+ * .claude/tycoon/team-setup-applied.json (p52-t2). The roster is
+ * authoritative: `rosterChanged` (computeRosterHash(manifest.roster) vs the
+ * stamp's `rosterHash`; a missing stamp counts as changed) is what should
+ * prompt an Apply. `routingChanged` fires only when `exportedAt` differs
+ * while the roster hash still matches — the manifest's routing is a
+ * reference snapshot, not authoritative, so it is surfaced informationally
+ * and never triggers an Apply prompt on its own. `drift` (kept for
+ * backward compatibility with existing callers/tests) is
+ * `rosterChanged || routingChanged`.
  */
 export function getTeamSetupDriftHost(root: string): TeamSetupDriftResult {
   let manifestText: string;
   try {
     manifestText = fs.readFileSync(path.join(root, ".claude", "tycoon-team.json"), "utf8");
   } catch {
-    return { hasManifest: false, drift: false };
+    return { hasManifest: false, drift: false, rosterChanged: false, routingChanged: false };
   }
   const parsed = parseTeamManifest(manifestText);
   if (!parsed.ok) {
-    return { hasManifest: false, drift: false };
+    return { hasManifest: false, drift: false, rosterChanged: false, routingChanged: false };
   }
   const manifestExportedAt = parsed.manifest.exportedAt;
+  const manifestRosterHash = computeRosterHash(parsed.manifest.roster);
 
   let appliedExportedAt: string | undefined;
+  let appliedRosterHash: string | undefined;
   try {
     const raw = fs.readFileSync(path.join(root, ".claude", "tycoon", "team-setup-applied.json"), "utf8").trim();
     if (raw !== "") {
       const stampParsed = JSON.parse(raw) as Record<string, unknown>;
       if (typeof stampParsed.exportedAt === "string") appliedExportedAt = stampParsed.exportedAt;
+      if (typeof stampParsed.rosterHash === "string") appliedRosterHash = stampParsed.rosterHash;
     }
   } catch {
-    /* missing/invalid stamp => no appliedExportedAt */
+    /* missing/invalid stamp => no appliedExportedAt/appliedRosterHash */
   }
 
-  const drift = appliedExportedAt === undefined || appliedExportedAt !== manifestExportedAt;
-  return { hasManifest: true, drift, manifestExportedAt, ...(appliedExportedAt !== undefined ? { appliedExportedAt } : {}) };
+  const rosterChanged = appliedRosterHash === undefined || appliedRosterHash !== manifestRosterHash;
+  const routingChanged = !rosterChanged && appliedExportedAt !== undefined && appliedExportedAt !== manifestExportedAt;
+  const drift = rosterChanged || routingChanged;
+  return {
+    hasManifest: true,
+    drift,
+    rosterChanged,
+    routingChanged,
+    manifestExportedAt,
+    ...(appliedExportedAt !== undefined ? { appliedExportedAt } : {}),
+  };
 }

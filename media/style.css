@@ -5099,6 +5099,23 @@ td.col-status {
   color: #fff;
 }
 
+.team-readiness-chip--default_fallback,
+.team-readiness-chip--warn {
+  background: var(--vscode-editorWarning-foreground, #cca700);
+  color: #1a1a1a;
+}
+
+.team-readiness-chip--differs {
+  background: var(--vscode-badge-background, #4d4d4d);
+  color: var(--vscode-badge-foreground, #fff);
+}
+
+.team-readiness-routing {
+  display: block;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
 .team-readiness-detail {
   color: var(--vscode-descriptionForeground);
 }
