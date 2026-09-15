@@ -1,108 +1,74 @@
-// test/packagingProviderStrings.test.ts
-//
-// Unit tests for findForbiddenProviderStrings (p45-t5), exercised against
-// in-memory fixtures rather than a built VSIX.
+/*
+ * TycoonAgents - https://x.com/thetrashbyrd
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
+ * Attribution header - optional; end users may remove it.
+ */
+
+// Pure unit tests for test/packagingProviderStrings.ts against in-memory
+// fixtures — no dist/ or VSIX build required. See
+// test/packagingManifest.check.ts for the real-VSIX integration checks.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findForbiddenProviderStrings } from "./packagingProviderStrings";
 
-test("flags the OpenAI hostname with path and pattern named", () => {
+import {
+  findForbiddenProviderStrings,
+  findForbiddenManifestContent,
+  isBinaryPath,
+} from "./packagingProviderStrings";
+
+test("findForbiddenProviderStrings: flags OpenAI/Google hostnames, package imports, and key-shaped strings", () => {
   const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/foo.js", text: 'fetch("https://api.openai.com/v1/chat")' },
+    { path: "extension/out/foo.js", text: "fetch('https://api.openai.com/v1/x')" },
+    { path: "extension/out/bar.js", text: "const k = 'sk-abcdefghijklmnopqrstuvwx';" },
+    { path: "extension/out/clean.js", text: "console.log('hello world');" },
+  ]);
+  const patterns = findings.map((f) => f.pattern);
+  assert.ok(patterns.includes("hostname:api.openai.com"));
+  assert.ok(patterns.includes("key:openai(sk-)"));
+  assert.equal(findings.filter((f) => f.path === "extension/out/clean.js").length, 0);
+});
+
+test("findForbiddenManifestContent: a bundled tycoon-team.json fails, naming the path", () => {
+  const findings = findForbiddenManifestContent([
+    { path: "extension/.claude/tycoon-team.json", text: '{"roster":[]}' },
+    { path: "extension/out/src/host/vscode/teamSetupHost.js", text: "export function exportTeamSetup() {}" },
   ]);
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].path, "extension/out/src/foo.js");
-  assert.equal(findings[0].pattern, "hostname:api.openai.com");
+  assert.equal(findings[0].path, "extension/.claude/tycoon-team.json");
+  assert.equal(findings[0].pattern, "forbidden-manifest");
 });
 
-test("flags the Google GenAI hostname", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/bar.js", text: "generativelanguage.googleapis.com/v1" },
+test("findForbiddenManifestContent: a bundled team-setup-applied.json also fails", () => {
+  const findings = findForbiddenManifestContent([
+    { path: "extension/.claude/tycoon/team-setup-applied.json", text: '{"exportedAt":"2026-01-01"}' },
   ]);
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "hostname:generativelanguage.googleapis.com");
+  assert.equal(findings[0].path, "extension/.claude/tycoon/team-setup-applied.json");
 });
 
-test("flags a shipped node_modules/openai package path", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/node_modules/openai/index.js", text: "module.exports = {}" },
+test("findForbiddenManifestContent: a manifest with a drive-letter path also fails on abs-path", () => {
+  const findings = findForbiddenManifestContent([
+    {
+      path: "extension/.claude/tycoon-team.json",
+      text: '{"note":"C:\\\\Users\\\\someone\\\\project\\\\out"}',
+    },
   ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "package:node_modules/openai/");
+  const patterns = findings.map((f) => f.pattern);
+  assert.ok(patterns.includes("forbidden-manifest"));
+  assert.ok(patterns.includes("abs-path"));
 });
 
-test("flags a shipped node_modules/@google/generative-ai package path", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/node_modules/@google/generative-ai/index.js", text: "" },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "package:node_modules/@google/generative-ai/");
-});
-
-test("flags a shipped node_modules/@google/genai package path", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/node_modules/@google/genai/index.js", text: "" },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "package:node_modules/@google/genai/");
-});
-
-test("flags a require() of a forbidden SDK in shipped JS", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/x.js", text: 'const { OpenAI } = require("openai");' },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "import:openai");
-});
-
-test("flags an import of @google/generative-ai in shipped JS", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/y.js", text: 'import { GoogleGenerativeAI } from "@google/generative-ai";' },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "import:@google/generative-ai");
-});
-
-test("flags an OpenAI-style key (sk- + 20+ chars)", () => {
-  const key = "sk-" + "A".repeat(25);
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/secret.js", text: `const k = "${key}";` },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "key:openai(sk-)");
-  assert.equal(findings[0].match, key);
-});
-
-test("does not flag a sk- prefix shorter than 20 chars", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/modelid.js", text: 'const model = "sk-short-id";' },
-  ]);
-  assert.deepEqual(findings, []);
-});
-
-test("flags a Google-style API key (AIza + 35 chars)", () => {
-  const key = "AIza" + "B".repeat(35);
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/gsecret.js", text: `key=${key}` },
-  ]);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].pattern, "key:google(AIza)");
-  assert.equal(findings[0].match, key);
-});
-
-test("a clean fixture passes with no findings", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "extension/out/src/clean.js", text: 'const routingUrl = "https://example.com/api";' },
+test("findForbiddenManifestContent: a clean tree with no manifest basenames passes", () => {
+  const findings = findForbiddenManifestContent([
+    { path: "extension/out/src/core/teamSetup.js", text: "export function buildTeamManifest() {}" },
     { path: "extension/package.json", text: '{"name":"tycoonagents"}' },
   ]);
   assert.deepEqual(findings, []);
 });
 
-test("multiple findings across entries are all reported", () => {
-  const findings = findForbiddenProviderStrings([
-    { path: "a.js", text: "api.openai.com" },
-    { path: "b.js", text: "AIza" + "C".repeat(35) },
-  ]);
-  assert.equal(findings.length, 2);
+test("isBinaryPath: recognizes known binary extensions and rejects text ones", () => {
+  assert.equal(isBinaryPath("extension/media/icon.png"), true);
+  assert.equal(isBinaryPath("extension/dist/tycoonagents-0.0.1.vsix"), true);
+  assert.equal(isBinaryPath("extension/out/src/core/teamSetup.js"), false);
 });

@@ -71,6 +71,50 @@ export function isBinaryPath(entryPath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
+// p51-t2: team-setup manifest / applied-stamp files must never ship in the
+// packaged VSIX — they are per-project generated artifacts written by
+// exportTeamSetup/applyTeamSetupHost (src/host/vscode/teamSetupHost.ts),
+// not extension source, and a bundled copy could leak a real project's
+// roster/routing shape or absolute paths into every install.
+const FORBIDDEN_MANIFEST_BASENAMES = ["tycoon-team.json", "team-setup-applied.json"];
+
+/**
+ * Flags any entry whose path ends with tycoon-team.json or
+ * team-setup-applied.json (these must never ship), and additionally runs
+ * the absolute-path and secret-key patterns over such an entry's content
+ * so a bundled manifest that also leaks a path/key is reported for both
+ * reasons.
+ */
+export function findForbiddenManifestContent(
+  entries: { path: string; text: string }[]
+): Finding[] {
+  const findings: Finding[] = [];
+
+  for (const { path: entryPath, text } of entries) {
+    const basename = entryPath.split(/[\\/]/).pop() ?? entryPath;
+    if (!FORBIDDEN_MANIFEST_BASENAMES.includes(basename)) continue;
+
+    findings.push({ path: entryPath, pattern: "forbidden-manifest", match: basename });
+
+    const absPathMatch = text.match(/[A-Za-z]:[\\/][^\s"']+/) ?? text.match(/\/(?:Users|home)\/[^\s"']+/);
+    if (absPathMatch) {
+      findings.push({ path: entryPath, pattern: "abs-path", match: absPathMatch[0] });
+    }
+
+    const openaiMatch = text.match(OPENAI_KEY_RE);
+    if (openaiMatch) {
+      findings.push({ path: entryPath, pattern: "key:openai(sk-)", match: openaiMatch[0] });
+    }
+
+    const googleMatch = text.match(GOOGLE_KEY_RE);
+    if (googleMatch) {
+      findings.push({ path: entryPath, pattern: "key:google(AIza)", match: googleMatch[0] });
+    }
+  }
+
+  return findings;
+}
+
 export function findForbiddenProviderStrings(
   entries: { path: string; text: string }[]
 ): Finding[] {

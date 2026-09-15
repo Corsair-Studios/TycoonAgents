@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { findForbiddenProviderStrings, isBinaryPath } from "./packagingProviderStrings";
+import { findForbiddenProviderStrings, findForbiddenManifestContent, isBinaryPath } from "./packagingProviderStrings";
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
@@ -197,5 +197,31 @@ test("packaged VSIX does not ship OpenAI/Google provider hostnames, SDKs, or key
       findings
         .map((f) => `${f.path} [${f.pattern}] "${f.match}"`)
         .join("; ")
+  );
+});
+
+test("packaged VSIX never ships a team-setup manifest or applied stamp (p51-t2)", () => {
+  const vsixPath = findVsix();
+  const allEntries = listVsixEntries(vsixPath);
+  const textEntries = allEntries.filter(
+    (e) => !isBinaryPath(e) && !/[[\]?*]/.test(e)
+  );
+
+  const entriesWithText = textEntries.map((entryPath) => {
+    const text = execFileSync("unzip", ["-p", vsixPath, entryPath], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 64,
+    });
+    return { path: entryPath, text };
+  });
+
+  const findings = findForbiddenManifestContent(entriesWithText);
+  assert.deepEqual(
+    findings,
+    [],
+    `VSIX ${path.basename(vsixPath)} ships a team-setup manifest/applied ` +
+      `stamp (must never be bundled — generated per-project by ` +
+      `exportTeamSetup/applyTeamSetupHost): ` +
+      findings.map((f) => `${f.path} [${f.pattern}] "${f.match}"`).join("; ")
   );
 });
