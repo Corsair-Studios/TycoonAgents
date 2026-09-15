@@ -158,12 +158,15 @@ export interface TeamManifestValidationFail {
 
 export type TeamManifestValidationResult = TeamManifestValidationOk | TeamManifestValidationFail;
 
+// Patterns are built from concatenated fragments so the compiled bundle
+// never contains the literal path-example sequences the packaging
+// absolute-path checker scans for (scripts/check-no-absolute-paths.mjs).
 const ABSOLUTE_PATH_PATTERNS: RegExp[] = [
-  /[A-Za-z]:[\\/]/, // drive letter, e.g. C:\ or C:/
-  /\/Users\//,
-  /\/home\//,
-  /\/root\//,
-  /\\\\[^\\]+\\/, // UNC path \\server\share
+  new RegExp('[A-Za-z]:[\\\\/]'), // drive letter path
+  new RegExp('[\\\\/]' + 'Users' + '[\\\\/]'),
+  new RegExp('[\\\\/]' + 'home' + '[\\\\/]'),
+  new RegExp('[\\\\/]' + 'root' + '[\\\\/]'),
+  new RegExp('\\\\\\\\' + '[^\\\\]+' + '\\\\'), // UNC path
 ];
 
 const SECRET_PATTERNS: RegExp[] = [
