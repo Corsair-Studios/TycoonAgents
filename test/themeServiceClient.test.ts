@@ -491,10 +491,10 @@ test("getPricing surfaces pack label, bonusCredits, and typicalTheme.typical whe
   assert.equal(res.ok, true);
   if (!res.ok) return;
   assert.equal(res.value.typicalTheme.typical, 95);
-  const theme95 = res.value.packs.find((p) => p.id === "theme95");
-  assert.ok(theme95);
-  assert.equal(theme95?.label, "Theme");
-  assert.equal(theme95?.bonusCredits, 5);
+  const theme100 = res.value.packs.find((p) => p.id === "theme100");
+  assert.ok(theme100);
+  assert.equal(theme100?.label, "Theme");
+  assert.equal(theme100?.bonusCredits, 10);
 });
 
 test("getPricing still succeeds when the response omits label, bonusCredits, and typicalTheme.typical (older server)", async () => {

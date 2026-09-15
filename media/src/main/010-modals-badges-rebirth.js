@@ -1608,19 +1608,46 @@
     return "";
   }
 
+  function packBonusPercent(pack) {
+    if (!pack || typeof pack.bonusCredits !== "number" || pack.bonusCredits <= 0) return null;
+    const base = pack.credits - pack.bonusCredits;
+    if (!(base > 0)) return null;
+    return Math.round((pack.bonusCredits / base) * 100);
+  }
+
   function renderPackGrid(pricing, onBuy, disabled) {
     const grid = tspEl("div", "tsp-pack-grid");
     const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
+
+    let bestPack = null;
+    let bestPercent = -1;
+    for (const pack of packs) {
+      if (!pack) continue;
+      const percent = packBonusPercent(pack);
+      if (percent === null) continue;
+      if (
+        percent > bestPercent ||
+        (percent === bestPercent && bestPack && pack.credits > bestPack.credits)
+      ) {
+        bestPercent = percent;
+        bestPack = pack;
+      }
+    }
+
     for (const pack of packs) {
       if (!pack) continue;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "tsp-pack";
+      if (bestPack && pack === bestPack) {
+        btn.appendChild(tspEl("span", "tsp-pack-chip", "Best value"));
+      }
       btn.appendChild(tspEl("span", "tsp-pack-label", String(pack.label || pack.id)));
       btn.appendChild(tspEl("b", null, String(pack.credits)));
       btn.appendChild(document.createTextNode(formatPackPrice(pack)));
-      if (typeof pack.bonusCredits === "number" && pack.bonusCredits > 0) {
-        btn.appendChild(tspEl("span", "muted tsp-pack-bonus", "includes +" + pack.bonusCredits + " bonus"));
+      const percent = packBonusPercent(pack);
+      if (percent !== null) {
+        btn.appendChild(tspEl("span", "tsp-pack-badge", "+" + percent + "% credits"));
       }
       if (disabled) {
         btn.disabled = true;

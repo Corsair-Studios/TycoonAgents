@@ -13,8 +13,13 @@ a strikes/account-lock mechanism for provider content-policy refusals, and
 documents server-side rate-limit queuing/backoff and capacity scaling.
 
 **v3.1 changelog:** final pricing — per-board-type attempt costs, three
-credit packs (`starter45`, `theme95`, `bundle195`) replacing the earlier
+credit packs (`starter45`, `theme100`, `bundle205`) replacing the earlier
 four illustrative packs, and an optional `typicalTheme.typical` field.
+
+**v3.2 changelog:** `theme100` and `bundle205` pack credits/bonusCredits
+increased (100 total/10 bonus, and 205 total/25 bonus respectively);
+clients may compute and display each pack's bonus percentage and tag the
+best one "Best value".
 
 ## Conventions
 
@@ -132,8 +137,8 @@ Response `200`:
   "typicalTheme": { "min": 55, "max": 170, "typical": 95 },
   "packs": [
     { "id": "starter45", "label": "Starter", "credits": 45,  "bonusCredits": 0,  "priceCents": 499,  "currency": "usd" },
-    { "id": "theme95",   "label": "Theme",   "credits": 95,  "bonusCredits": 5,  "priceCents": 999,  "currency": "usd" },
-    { "id": "bundle195", "label": "Bundle",  "credits": 195, "bonusCredits": 15, "priceCents": 1999, "currency": "usd" }
+    { "id": "theme100",   "label": "Theme",   "credits": 100, "bonusCredits": 10, "priceCents": 999,  "currency": "usd" },
+    { "id": "bundle205", "label": "Bundle",  "credits": 205, "bonusCredits": 25, "priceCents": 1999, "currency": "usd" }
   ]
 }
 ```
@@ -152,13 +157,15 @@ attempt (`attemptCostByBoardType`, `planCost`) is a server-side setting,
 always shown to the user before every attempt, and may change over time;
 this is how provider cost changes get absorbed without touching pack
 prices. Bonus credits are ordinary credits once granted — no separate
-accounting or expiry.
+accounting or expiry. Clients may display the bonus as a percentage of the
+base amount (`bonusCredits / (credits - bonusCredits)`, rounded to a whole
+number) and tag the pack with the highest percentage "Best value".
 
 ## Checkout
 
 ### `POST /api/store/checkout`
 ```json
-{ "pack": "theme95", "successUrl": "https://...", "cancelUrl": "https://..." }
+{ "pack": "theme100", "successUrl": "https://...", "cancelUrl": "https://..." }
 ```
 `successUrl`/`cancelUrl` optional — when omitted, the service derives both
 from the request's trusted `Origin`, same fallback `server.ts` uses for
@@ -395,8 +402,8 @@ shape table above — keep in sync): `not_signed_in`, `insufficient_credits`,
 ## Service env vars (names only — mirrors Speciary's `render.yaml` pattern)
 
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
-`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_STARTER45`, `STRIPE_PRICE_THEME95`,
-`STRIPE_PRICE_BUNDLE195`, `OPENAI_API_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_STARTER45`, `STRIPE_PRICE_THEME100`,
+`STRIPE_PRICE_BUNDLE205`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `SERVICE_ALLOWED_ORIGINS`, `PORT`,
 `STRIKE_LOCK_THRESHOLD` (default `3`), `RATE_LIMIT_ATTEMPTS_PER_MIN`,
 `RATE_LIMIT_ATTEMPTS_PER_DAY`.
@@ -431,7 +438,7 @@ value; the theme service should follow the same split.)
 1. Allow-list both auth redirect targets (`vscode://<publisher>.<extension>/theme-service-auth`
    and the standalone loopback origin) in the Supabase dashboard's Auth →
    URL Configuration.
-2. Create the three Stripe Price objects (`starter45`, `theme95`,
-   `bundle195`) and set their ids into `STRIPE_PRICE_*` env vars in the
+2. Create the three Stripe Price objects (`starter45`, `theme100`,
+   `bundle205`) and set their ids into `STRIPE_PRICE_*` env vars in the
    Render (or equivalent) dashboard.
 3. Enable Stripe Tax on the Checkout Session configuration.

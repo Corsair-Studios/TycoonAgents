@@ -204,8 +204,9 @@ async function bootThemePanelHarness() {
 const PRICING = {
   typicalTheme: { min: 8, max: 20, typical: 14 },
   packs: [
-    { id: 'starter45', credits: 45, priceCents: 500, currency: 'usd', label: 'Starter' },
-    { id: 'mega150', credits: 150, priceCents: 2000, currency: 'usd', label: 'Mega', bonusCredits: 10 },
+    { id: 'starter45', credits: 45, priceCents: 499, currency: 'usd', label: 'Starter', bonusCredits: 0 },
+    { id: 'theme100', credits: 100, priceCents: 999, currency: 'usd', label: 'Theme', bonusCredits: 10 },
+    { id: 'bundle205', credits: 205, priceCents: 1999, currency: 'usd', label: 'Bundle', bonusCredits: 25 },
   ],
 };
 
@@ -344,19 +345,28 @@ test('signed-in state renders email/provider, Sign out, credits, guidance, packs
   assert.match(tipsLink.getAttribute('href') || '', /#prompt-tips$/);
 
   const packButtons: any[] = Array.from(h.panelBody().querySelectorAll('.tsp-pack'));
-  assert.equal(packButtons.length, 2, 'both pricing packs should render as buttons');
+  assert.equal(packButtons.length, 3, 'all pricing packs should render as buttons');
 
   const starterCard = packButtons[0];
   assert.match(starterCard.querySelector('.tsp-pack-label')?.textContent || '', /Starter/);
   assert.equal((starterCard.querySelector('b')?.textContent || '').trim(), '45');
-  assert.match(starterCard.textContent || '', /\$5\.00/);
-  assert.equal(starterCard.querySelector('.tsp-pack-bonus'), null, 'no bonusCredits should render no bonus line');
+  assert.match(starterCard.textContent || '', /\$4\.99/);
+  assert.equal(starterCard.querySelector('.tsp-pack-badge'), null, 'no bonusCredits should render no badge');
+  assert.equal(starterCard.querySelector('.tsp-pack-chip'), null, 'starter is not best value');
 
-  const megaCard = packButtons[1];
-  assert.match(megaCard.querySelector('.tsp-pack-label')?.textContent || '', /Mega/);
-  assert.equal((megaCard.querySelector('b')?.textContent || '').trim(), '150');
-  assert.match(megaCard.textContent || '', /\$20\.00/);
-  assert.match(megaCard.querySelector('.tsp-pack-bonus')?.textContent || '', /includes \+10 bonus/);
+  const themeCard = packButtons[1];
+  assert.match(themeCard.querySelector('.tsp-pack-label')?.textContent || '', /Theme/);
+  assert.equal((themeCard.querySelector('b')?.textContent || '').trim(), '100');
+  assert.match(themeCard.textContent || '', /\$9\.99/);
+  assert.match(themeCard.querySelector('.tsp-pack-badge')?.textContent || '', /\+11% credits/);
+  assert.equal(themeCard.querySelector('.tsp-pack-chip'), null, 'theme100 is not best value');
+
+  const bundleCard = packButtons[2];
+  assert.match(bundleCard.querySelector('.tsp-pack-label')?.textContent || '', /Bundle/);
+  assert.equal((bundleCard.querySelector('b')?.textContent || '').trim(), '205');
+  assert.match(bundleCard.textContent || '', /\$19\.99/);
+  assert.match(bundleCard.querySelector('.tsp-pack-badge')?.textContent || '', /\+14% credits/);
+  assert.match(bundleCard.querySelector('.tsp-pack-chip')?.textContent || '', /Best value/);
 
   h.clickButtonByText('Sign out');
   const signOut = h.lastPosted('THEME_SERVICE_SIGN_OUT');

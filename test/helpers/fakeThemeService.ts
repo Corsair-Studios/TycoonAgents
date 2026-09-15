@@ -97,8 +97,8 @@ const DEFAULT_PRICING: Pricing = {
   typicalTheme: { min: 55, max: 170, typical: 95 },
   packs: [
     { id: "starter45", label: "Starter", credits: 45, bonusCredits: 0, priceCents: 499, currency: "usd" },
-    { id: "theme95", label: "Theme", credits: 95, bonusCredits: 5, priceCents: 999, currency: "usd" },
-    { id: "bundle195", label: "Bundle", credits: 195, bonusCredits: 15, priceCents: 1999, currency: "usd" },
+    { id: "theme100", label: "Theme", credits: 100, bonusCredits: 10, priceCents: 999, currency: "usd" },
+    { id: "bundle205", label: "Bundle", credits: 205, bonusCredits: 25, priceCents: 1999, currency: "usd" },
   ],
 };
 
