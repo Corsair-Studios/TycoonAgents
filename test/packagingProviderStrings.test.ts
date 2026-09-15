@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findForbiddenProviderStrings } from "./packagingManifest.check";
+import { findForbiddenProviderStrings } from "./packagingProviderStrings";
 
 test("flags the OpenAI hostname with path and pattern named", () => {
   const findings = findForbiddenProviderStrings([
