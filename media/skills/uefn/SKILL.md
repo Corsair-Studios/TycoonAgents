@@ -50,11 +50,12 @@ directory.
 
 ## Common-errors pre-flight reference
 
-Before writing or auditing any Verse, read `verse-common-errors.md` in this
-skill folder. It's the required pre-flight reference: the non-existent APIs
-and idioms LLMs commonly hallucinate into Verse, the highest-value
-compile-error rules (`set` for mutation, `<suspends>`, failure contexts,
-effect specifiers, options), and a reminder that the digest files always
-override memorized signatures.
+`verse-common-errors.md` in this skill folder is a last resort: consult it
+only after the Verse LSP / bridge diagnostics have failed to resolve an
+error, because reading it costs a large number of tokens. It documents the
+non-existent APIs and idioms LLMs commonly hallucinate into Verse, the
+highest-value compile-error rules (`set` for mutation, `<suspends>`, failure
+contexts, effect specifiers, options), and a reminder that the digest files
+always override memorized signatures.
 
 Source: Trashbyrd's Power Tools (the Python bridge + `uefn-server.ts` wrapper).
