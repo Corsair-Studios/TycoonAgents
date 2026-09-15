@@ -97,7 +97,9 @@ export interface ThemeServiceStatus {
 
 export interface ThemeServicePack {
   id: string;
+  label?: string;
   credits: number;
+  bonusCredits?: number;
   priceCents: number;
   currency: string;
 }
@@ -106,7 +108,7 @@ export interface ThemeServicePricing {
   attemptCostByBoardType: Record<string, number>;
   /** Credit cost of one /api/plan attempt (either `kind`); see docs/theme-service-api.md "Plan / description generation". */
   planCost: number;
-  typicalTheme: { min: number; max: number };
+  typicalTheme: { min: number; max: number; typical?: number };
   packs: ThemeServicePack[];
 }
 
@@ -683,14 +685,25 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
         ) {
           return { ok: false, error: invalidResponse("malformed pack entry") };
         }
-        packs.push({ id: p.id, credits: p.credits, priceCents: p.priceCents, currency: p.currency });
+        packs.push({
+          id: p.id,
+          label: typeof p.label === "string" ? p.label : undefined,
+          credits: p.credits,
+          bonusCredits: typeof p.bonusCredits === "number" ? p.bonusCredits : undefined,
+          priceCents: p.priceCents,
+          currency: p.currency,
+        });
       }
       return {
         ok: true,
         value: {
           attemptCostByBoardType,
           planCost: json.planCost,
-          typicalTheme: { min: json.typicalTheme.min, max: json.typicalTheme.max },
+          typicalTheme: {
+            min: json.typicalTheme.min,
+            max: json.typicalTheme.max,
+            typical: typeof json.typicalTheme.typical === "number" ? json.typicalTheme.typical : undefined,
+          },
           packs,
         },
       };

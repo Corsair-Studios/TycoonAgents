@@ -1598,6 +1598,16 @@
     return currency === "USD" ? "$" + amount : amount + " " + currency;
   }
 
+  function formatTypicalSentence(typical) {
+    if (typeof typical.typical === "number" && typeof typical.min === "number" && typeof typical.max === "number") {
+      return "A typical theme takes about " + typical.typical + " credits; a careful run about " + typical.min + ", heavy retries up to " + typical.max + ".";
+    }
+    if (typeof typical.min === "number" && typeof typical.max === "number") {
+      return "A typical theme takes " + typical.min + " to " + typical.max + " credits.";
+    }
+    return "";
+  }
+
   function renderPackGrid(pricing, onBuy, disabled) {
     const grid = tspEl("div", "tsp-pack-grid");
     const packs = pricing && Array.isArray(pricing.packs) ? pricing.packs : [];
@@ -1606,8 +1616,12 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "tsp-pack";
+      btn.appendChild(tspEl("span", "tsp-pack-label", String(pack.label || pack.id)));
       btn.appendChild(tspEl("b", null, String(pack.credits)));
       btn.appendChild(document.createTextNode(formatPackPrice(pack)));
+      if (typeof pack.bonusCredits === "number" && pack.bonusCredits > 0) {
+        btn.appendChild(tspEl("span", "muted tsp-pack-bonus", "includes +" + pack.bonusCredits + " bonus"));
+      }
       if (disabled) {
         btn.disabled = true;
         btn.title = "Account locked";
@@ -1774,9 +1788,10 @@
       container.appendChild(tspNotice("warn", status.error.message));
     }
 
-    if (typeof typical.min === "number" && typeof typical.max === "number") {
+    const typicalSentence = formatTypicalSentence(typical);
+    if (typicalSentence) {
       container.appendChild(tspEl("p", "tsp-guidance",
-        "A theme typically takes " + typical.min + "–" + typical.max + " credits. One attempt per board is the minimum; retries cost the same as the first attempt."));
+        typicalSentence + " One attempt per board is the minimum; retries cost the same as the first attempt."));
     }
 
     const buyCreditsBtn = tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ });

@@ -12,6 +12,10 @@ on `/api/generate` and `/api/plan`, a per-user provider safety identifier,
 a strikes/account-lock mechanism for provider content-policy refusals, and
 documents server-side rate-limit queuing/backoff and capacity scaling.
 
+**v3.1 changelog:** final pricing — per-board-type attempt costs, three
+credit packs (`starter45`, `theme95`, `bundle195`) replacing the earlier
+four illustrative packs, and an optional `typicalTheme.typical` field.
+
 ## Conventions
 
 - All requests/responses are JSON (`Content-Type: application/json`) unless noted.
@@ -116,37 +120,45 @@ Response `200`:
 ```json
 {
   "attemptCostByBoardType": {
-    "roster_agent": 1,
-    "rival_group": 1,
-    "objects_01": 1,
-    "objects_02": 1,
-    "environment": 1,
-    "expressions": 1,
-    "achievements": 1
+    "roster_agent": 3,
+    "rival_group": 3,
+    "objects_01": 2,
+    "objects_02": 2,
+    "environment": 3,
+    "expressions": 2,
+    "achievements": 2
   },
   "planCost": 1,
-  "typicalTheme": { "min": 12, "max": 30 },
+  "typicalTheme": { "min": 55, "max": 170, "typical": 95 },
   "packs": [
-    { "id": "mini30",     "credits": 30,   "priceCents": 299,  "currency": "usd" },
-    { "id": "standard250","credits": 250,  "priceCents": 1999, "currency": "usd" },
-    { "id": "bulk750",    "credits": 750,  "priceCents": 4999, "currency": "usd" },
-    { "id": "whale2000",  "credits": 2000, "priceCents": 9999, "currency": "usd" }
+    { "id": "starter45", "label": "Starter", "credits": 45,  "bonusCredits": 0,  "priceCents": 499,  "currency": "usd" },
+    { "id": "theme95",   "label": "Theme",   "credits": 95,  "bonusCredits": 5,  "priceCents": 999,  "currency": "usd" },
+    { "id": "bundle195", "label": "Bundle",  "credits": 195, "bonusCredits": 15, "priceCents": 1999, "currency": "usd" }
   ]
 }
 ```
 Pack ids mirror Speciary's `StoreItem`/`STORE_ITEM_PRICE_CENTS` map
-(`packages/service/src/stripe-store.ts:42`) and its four `STRIPE_PRICE_*` env
-names, renamed to the theme service's own four packs. Actual credit counts
-and prices are set by the service (Stripe Price objects, dashboard-managed);
-the values above are illustrative. `planCost` is the credit cost of one
-`POST /api/plan` attempt (either `kind`) — assumed `1` unless the operator
-sets it to `0`; see Plan / description generation below.
+(`packages/service/src/stripe-store.ts:42`) and its `STRIPE_PRICE_*` env
+names, renamed to the theme service's own three packs. `credits` is the
+total granted including any bonus; `label` and `bonusCredits` are optional
+for clients (a client that ignores them still gets a working `credits`
+total). `planCost` is the credit cost of one `POST /api/plan` attempt
+(either `kind`) — assumed `1` unless the operator sets it to `0`; see Plan
+/ description generation below.
+
+**Pricing rule:** the dollar price of a credit is fixed at the moment of
+purchase — a purchased credit's value never changes. The credit cost of an
+attempt (`attemptCostByBoardType`, `planCost`) is a server-side setting,
+always shown to the user before every attempt, and may change over time;
+this is how provider cost changes get absorbed without touching pack
+prices. Bonus credits are ordinary credits once granted — no separate
+accounting or expiry.
 
 ## Checkout
 
 ### `POST /api/store/checkout`
 ```json
-{ "pack": "standard250", "successUrl": "https://...", "cancelUrl": "https://..." }
+{ "pack": "theme95", "successUrl": "https://...", "cancelUrl": "https://..." }
 ```
 `successUrl`/`cancelUrl` optional — when omitted, the service derives both
 from the request's trusted `Origin`, same fallback `server.ts` uses for
@@ -383,8 +395,8 @@ shape table above — keep in sync): `not_signed_in`, `insufficient_credits`,
 ## Service env vars (names only — mirrors Speciary's `render.yaml` pattern)
 
 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
-`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MINI30`, `STRIPE_PRICE_STANDARD250`,
-`STRIPE_PRICE_BULK750`, `STRIPE_PRICE_WHALE2000`, `OPENAI_API_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_STARTER45`, `STRIPE_PRICE_THEME95`,
+`STRIPE_PRICE_BUNDLE195`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `SERVICE_ALLOWED_ORIGINS`, `PORT`,
 `STRIKE_LOCK_THRESHOLD` (default `3`), `RATE_LIMIT_ATTEMPTS_PER_MIN`,
 `RATE_LIMIT_ATTEMPTS_PER_DAY`.
@@ -403,7 +415,7 @@ value; the theme service should follow the same split.)
   `StripeLike`-interface pattern, `STORE_ITEM_PRICE_CENTS`/env-price-map
   loader (`stripe-store.ts:42,62-70`), `createCheckoutSession`
   (`stripe-store.ts:148`), and `handleWebhookEvent`
-  (`stripe-store.ts:165-176`). Rename `StoreItem` values to the four theme
+  (`stripe-store.ts:165-176`). Rename `StoreItem` values to the three theme
   packs; drop the subscription-mode branches (theme service is one-time
   packs only, no `STRIPE_PRICE_SUB_MONTHLY`).
 - **DB / repo pattern**: `db/migrations/001_accounts.sql`'s `credit_ledger`
@@ -419,7 +431,7 @@ value; the theme service should follow the same split.)
 1. Allow-list both auth redirect targets (`vscode://<publisher>.<extension>/theme-service-auth`
    and the standalone loopback origin) in the Supabase dashboard's Auth →
    URL Configuration.
-2. Create the four Stripe Price objects (`mini30`, `standard250`, `bulk750`,
-   `whale2000`) and set their ids into `STRIPE_PRICE_*` env vars in the
+2. Create the three Stripe Price objects (`starter45`, `theme95`,
+   `bundle195`) and set their ids into `STRIPE_PRICE_*` env vars in the
    Render (or equivalent) dashboard.
 3. Enable Stripe Tax on the Checkout Session configuration.

@@ -202,10 +202,10 @@ async function bootThemePanelHarness() {
 // ── Fixture payloads ────────────────────────────────────────────────────────
 
 const PRICING = {
-  typicalTheme: { min: 8, max: 20 },
+  typicalTheme: { min: 8, max: 20, typical: 14 },
   packs: [
-    { id: 'mini30', credits: 30, priceCents: 500, currency: 'usd' },
-    { id: 'mega150', credits: 150, priceCents: 2000, currency: 'usd' },
+    { id: 'starter45', credits: 45, priceCents: 500, currency: 'usd', label: 'Starter' },
+    { id: 'mega150', credits: 150, priceCents: 2000, currency: 'usd', label: 'Mega', bonusCredits: 10 },
   ],
 };
 
@@ -333,7 +333,7 @@ test('signed-in state renders email/provider, Sign out, credits, guidance, packs
   assert.match(text, /Email/); // provider label
   assert.match(text, /Sign out/);
   assert.match(text, /40 credits/);
-  assert.match(text, /8.{1,3}20 credits/); // guidance range, en/em-dash tolerant
+  assert.match(text, /A typical theme takes about 14 credits; a careful run about 8, heavy retries up to 20\./); // guidance sentence
   assert.match(text, /Results depend on your prompts/); // caveat
   assert.match(text, /Prompt tips/);
 
@@ -346,6 +346,18 @@ test('signed-in state renders email/provider, Sign out, credits, guidance, packs
   const packButtons: any[] = Array.from(h.panelBody().querySelectorAll('.tsp-pack'));
   assert.equal(packButtons.length, 2, 'both pricing packs should render as buttons');
 
+  const starterCard = packButtons[0];
+  assert.match(starterCard.querySelector('.tsp-pack-label')?.textContent || '', /Starter/);
+  assert.equal((starterCard.querySelector('b')?.textContent || '').trim(), '45');
+  assert.match(starterCard.textContent || '', /\$5\.00/);
+  assert.equal(starterCard.querySelector('.tsp-pack-bonus'), null, 'no bonusCredits should render no bonus line');
+
+  const megaCard = packButtons[1];
+  assert.match(megaCard.querySelector('.tsp-pack-label')?.textContent || '', /Mega/);
+  assert.equal((megaCard.querySelector('b')?.textContent || '').trim(), '150');
+  assert.match(megaCard.textContent || '', /\$20\.00/);
+  assert.match(megaCard.querySelector('.tsp-pack-bonus')?.textContent || '', /includes \+10 bonus/);
+
   h.clickButtonByText('Sign out');
   const signOut = h.lastPosted('THEME_SERVICE_SIGN_OUT');
   assert.ok(signOut, 'Sign out should post THEME_SERVICE_SIGN_OUT');
@@ -355,7 +367,7 @@ test('signed-in state renders email/provider, Sign out, credits, guidance, packs
   packButtonsAfter[0].dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
   const buy = h.lastPosted('THEME_SERVICE_BUY_CREDITS');
   assert.ok(buy, 'clicking a pack should post THEME_SERVICE_BUY_CREDITS');
-  assert.equal(buy.pack, 'mini30');
+  assert.equal(buy.pack, 'starter45');
   h.win.close();
 });
 
@@ -369,6 +381,15 @@ test('insufficient-credits branch warns and disables the generate button', async
   );
   assert.ok(disabledBtn, 'a disabled "need more credits" button should render');
   assert.equal(disabledBtn.disabled, true);
+  h.win.close();
+});
+
+test('typical-credits sentence falls back to a min-to-max phrasing when typical is absent', async () => {
+  const h = await bootThemePanelHarness();
+  const pricingNoTypical = { ...PRICING, typicalTheme: { min: 8, max: 20 } };
+  h.dispatch(themeBuilderOpened(signedInStatus({ pricing: pricingNoTypical })));
+  const text = h.panelText();
+  assert.match(text, /A typical theme takes 8 to 20 credits\./);
   h.win.close();
 });
 

@@ -14,7 +14,9 @@
 
 export interface PricingPack {
   id: string;
+  label?: string;
   credits: number;
+  bonusCredits?: number;
   priceCents: number;
   currency: string;
 }
@@ -22,7 +24,7 @@ export interface PricingPack {
 export interface Pricing {
   attemptCostByBoardType: Record<string, number>;
   planCost: number;
-  typicalTheme: { min: number; max: number };
+  typicalTheme: { min: number; max: number; typical?: number };
   packs: PricingPack[];
 }
 
@@ -83,21 +85,20 @@ export interface FakeThemeServiceOptions {
 
 const DEFAULT_PRICING: Pricing = {
   attemptCostByBoardType: {
-    roster_agent: 1,
-    rival_group: 1,
-    objects_01: 1,
-    objects_02: 1,
-    environment: 1,
-    expressions: 1,
-    achievements: 1,
+    roster_agent: 3,
+    rival_group: 3,
+    objects_01: 2,
+    objects_02: 2,
+    environment: 3,
+    expressions: 2,
+    achievements: 2,
   },
   planCost: 1,
-  typicalTheme: { min: 12, max: 30 },
+  typicalTheme: { min: 55, max: 170, typical: 95 },
   packs: [
-    { id: "mini30", credits: 30, priceCents: 299, currency: "usd" },
-    { id: "standard250", credits: 250, priceCents: 1999, currency: "usd" },
-    { id: "bulk750", credits: 750, priceCents: 4999, currency: "usd" },
-    { id: "whale2000", credits: 2000, priceCents: 9999, currency: "usd" },
+    { id: "starter45", label: "Starter", credits: 45, bonusCredits: 0, priceCents: 499, currency: "usd" },
+    { id: "theme95", label: "Theme", credits: 95, bonusCredits: 5, priceCents: 999, currency: "usd" },
+    { id: "bundle195", label: "Bundle", credits: 195, bonusCredits: 15, priceCents: 1999, currency: "usd" },
   ],
 };
 

@@ -135,7 +135,7 @@ test("BUY_CREDITS opens checkout URL and polling stops after credits rise", asyn
   await host.handleVerify("buyer@example.com", "123456");
   posted.length = 0;
 
-  await host.handleBuyCredits("mini30");
+  await host.handleBuyCredits("starter45");
   assert.equal(opened.length, 1);
   assert.ok(opened[0].startsWith("https://checkout.stripe.com/"));
   assert.equal(timers.activeCount(), 1);
@@ -169,7 +169,7 @@ test("dispose clears timers", async () => {
   const { fake, host, timers, advanceTime } = setup(() => now);
   await host.handleRequestMagicLink("d@example.com");
   await host.handleVerify("d@example.com", "123456");
-  await host.handleBuyCredits("mini30");
+  await host.handleBuyCredits("starter45");
   assert.equal(timers.activeCount(), 1);
   host.dispose();
   assert.equal(timers.activeCount(), 0);
@@ -181,7 +181,7 @@ test("pending-checkout polling stops on dispose and posts nothing further", asyn
   const { host, posted, timers, advanceTime } = setup(() => now);
   await host.handleRequestMagicLink("stopper@example.com");
   await host.handleVerify("stopper@example.com", "123456");
-  await host.handleBuyCredits("mini30");
+  await host.handleBuyCredits("starter45");
   assert.equal(timers.activeCount(), 1);
 
   host.dispose();
@@ -204,7 +204,7 @@ test("posted payloads never contain accessToken/refreshToken across the full sig
   await fake.fetch(opened[opened.length - 1]);
   const authCode = await fake.helpers.completeGoogleInBrowser();
   await host.handleGoogleComplete(authCode);
-  await host.handleBuyCredits("mini30");
+  await host.handleBuyCredits("starter45");
   advanceTime(5_000);
   await timers.tick();
   await new Promise((r) => setTimeout(r, 0));
@@ -240,7 +240,7 @@ test("BUY_CREDITS while locked posts account_locked with pendingCheckout false",
   await host.handleVerify("lockedbuyer@example.com", "123456");
   fake.helpers.lockAccount("lockedbuyer@example.com");
   posted.length = 0;
-  await host.handleBuyCredits("mini30");
+  await host.handleBuyCredits("starter45");
   const last = posted[posted.length - 1];
   assert.equal(last.error?.kind, "account_locked");
   assert.equal(last.pendingCheckout, false);

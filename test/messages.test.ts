@@ -449,7 +449,7 @@ test('THEME_SERVICE_GOOGLE_COMPLETE schema: code is optional (empty-submit guard
 });
 
 test('THEME_SERVICE_BUY_CREDITS schema: requires non-empty pack id', () => {
-  assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({ pack: 'mini30' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({ pack: 'starter45' }).success, true);
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({ pack: '' }).success, false);
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse({}).success, false);
 });
