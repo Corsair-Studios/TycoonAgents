@@ -33,6 +33,11 @@ store a password.
   it makes no model call.
 - Credits have **no cash value** and cannot be redeemed for money.
 - Credits **do not expire**.
+- The dollar price of a credit is fixed when you buy a pack. The credit
+  cost of an attempt is set by the service, is shown to you before every
+  attempt, and may change over time as our costs change.
+- Bonus credits included with a pack are ordinary credits and follow the
+  same rules.
 
 ## 4. Refunds
 
