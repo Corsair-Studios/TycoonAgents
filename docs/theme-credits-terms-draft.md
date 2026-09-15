@@ -91,6 +91,15 @@ that infringes another party's rights, or abusive/harassing content.
 Corsair may apply rate limits to generation and purchase requests to
 prevent abuse, and may suspend accounts that violate this section.
 
+Prompts and reference images are automatically screened before generation;
+a prompt blocked at screening spends no credits. If the AI model itself
+refuses a generation on content-policy grounds, that attempt is refunded
+but still counts as a strike against your account. Repeated strikes within
+a short window lock the account automatically. A locked account loses
+access to the Theme Service, and any remaining credits are not refunded.
+To request an unlock, use the app's feedback channel; unlocks are granted
+at Corsair's discretion.
+
 ## 8. Changes and contact
 
 Corsair may update these terms as the Theme Service evolves; material
