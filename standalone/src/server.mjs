@@ -90,7 +90,7 @@ import {
   handleApproveAllThemeImages,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
-import { handleExportTeamSetupStandalone } from './teamSetupMessages.mjs';
+import { handleExportTeamSetupStandalone, handleApplyTeamSetupStandalone } from './teamSetupMessages.mjs';
 import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
 import { createThemeServiceHost } from './themeServiceHost.mjs';
 
@@ -1346,6 +1346,31 @@ function handleBrowserMessage(msg) {
         version: readRepoVersion(),
       });
       broadcast('message', { type: 'TEAM_SETUP_EXPORTED', payload: result });
+      break;
+    }
+    case 'APPLY_TEAM_SETUP': {
+      // Standalone analog of panel.ts's _handleApplyTeamSetup (p49-t1) —
+      // re-runs installers from .claude/tycoon-team.json via the shared,
+      // compiled teamSetupHost.js's applyTeamSetupHost().
+      let delegationMode = 'flat';
+      try {
+        if (primaryProjectRoot) {
+          const { readExecutionConfig } = delegationDoctrineModule();
+          delegationMode = readExecutionConfig(path.join(primaryProjectRoot, '.claude')).delegation_mode === 'team_leads'
+            ? 'team_leads'
+            : 'flat';
+        }
+      } catch (err) {
+        console.error('[tycoonagents-standalone] APPLY_TEAM_SETUP: readExecutionConfig failed:', err);
+      }
+      const result = handleApplyTeamSetupStandalone({
+        requireCompiledOrThrow,
+        repoRoot: REPO_ROOT,
+        projectRoot: primaryProjectRoot,
+        version: readRepoVersion(),
+        delegationMode,
+      });
+      broadcast('message', { type: 'TEAM_SETUP_APPLIED', payload: result });
       break;
     }
     // ── Submit feedback (spec: docs/FEEDBACK-PIPELINE-SPEC.md §5) ────────

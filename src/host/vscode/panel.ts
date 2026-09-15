@@ -60,7 +60,7 @@ import {
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
-import { exportTeamSetup } from "./teamSetupHost";
+import { exportTeamSetup, applyTeamSetupHost } from "./teamSetupHost";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
 import { detectUefnProject } from "./uefnDetect";
@@ -1508,6 +1508,8 @@ export class TycoonPanel {
           await this._handleInstallProjectPlanSkill();
         } else if (message.type === MSG.EXPORT_TEAM_SETUP) {
           this._handleExportTeamSetup();
+        } else if (message.type === MSG.APPLY_TEAM_SETUP) {
+          this._handleApplyTeamSetup();
         } else if (message.type === MSG.LIST_THEMES) {
           const themes = await listThemes(this._globalStorageUri);
           void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
@@ -4618,6 +4620,41 @@ export class TycoonPanel {
       version: this._currentExtensionVersion() ?? "0.0.0",
     });
     void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_EXPORTED, payload: result });
+  }
+
+  /**
+   * Apply team setup (p49-t1): read .claude/tycoon-team.json and re-run
+   * installers via teamSetupHost.applyTeamSetupHost() (bound over the pure
+   * src/core/teamSetupApply.ts orchestrator). `hookSourceDir` points at the
+   * extension's bundled `hooks/` dir so the portable hook installer can sync
+   * tycoon-claude-hook.cjs + companions the same way `_handleInstallHooks`
+   * does. No opencode-config installer exists in this codebase yet, and MCP
+   * catalog apply is intentionally left unbound — a catalog entry's
+   * `thirdParty` confirmation is a modal, interactive gate
+   * (`_handleInstallMcp`) that Apply must never silently bypass — so both
+   * report as "skipped" with a detail explaining why.
+   */
+  private _handleApplyTeamSetup(): void {
+    const root = this._projectRoot();
+    if (!root) {
+      void this._panel.webview.postMessage({
+        type: MSG.TEAM_SETUP_APPLIED,
+        payload: { ok: false, changed: false, steps: [], missingAgents: [], error: "No project root — open a folder first." },
+      });
+      return;
+    }
+    const execCfg = readExecutionConfig(path.join(root, ".claude"));
+    const hookSourceDir = vscode.Uri.joinPath(this._extensionUri, "hooks").fsPath;
+    const result = applyTeamSetupHost({
+      root,
+      env: process.env,
+      version: this._currentExtensionVersion() ?? "0.0.0",
+      hookSourceDir,
+      delegationMode: this._coerceDelegationMode(execCfg.delegation_mode) === "team_leads" ? "team_leads" : "flat",
+      regenerateOpencodeConfig: null,
+      applyMcp: null,
+    });
+    void this._panel.webview.postMessage({ type: MSG.TEAM_SETUP_APPLIED, payload: result });
   }
 
   /**

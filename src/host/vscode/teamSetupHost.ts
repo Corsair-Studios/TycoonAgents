@@ -36,6 +36,20 @@ import {
 import { readExecutionConfig } from "./delegationDoctrine";
 import { assembleTeamSetupInput } from "../../core/teamSetupAssemble";
 import { buildTeamManifest, validateTeamManifest, serializeTeamManifest } from "../../core/teamSetup";
+import {
+  applyTeamSetup as applyTeamSetupCore,
+  type ApplyTeamSetupReport,
+  type StepResult,
+  type TeamSetupInstallers,
+} from "../../core/teamSetupApply";
+import { buildAgentMarkdown, agentMarkdownTier, REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, FOREIGN_LLM_AGENTS, type PackAgent } from "./packCatalog";
+import {
+  mergeTycoonHooks,
+  mergeManagedSubagentDepthEnv,
+  syncRuntimeFile,
+  cleanupForeignHookArtifacts,
+  RUNTIME_HOOK_FILES,
+} from "./hookInstall";
 
 export interface ExportTeamSetupOptions {
   root: string;
@@ -198,4 +212,142 @@ export function exportTeamSetup(opts: ExportTeamSetupOptions): ExportTeamSetupRe
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// "Apply team setup" (p49-t1, PRD Milestone 2). Host-agnostic — binds real
+// installers (agent seeding from packCatalog.ts, the portable hook install
+// from hookInstall.ts) over the pure src/core/teamSetupApply.ts orchestrator.
+// No `vscode` import: `hookSourceDir` (the directory holding the bundled
+// tycoon-claude-hook.cjs + companion runtime files) is passed in by the
+// caller, since only the caller knows whether that's the VS Code extension's
+// bundled `hooks/` dir or the standalone repo's `hooks/` dir.
+// ---------------------------------------------------------------------------
+
+export interface ApplyTeamSetupHostOptions {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  version: string;
+  /** Absolute path to the directory containing tycoon-claude-hook.cjs and
+   *  its companion runtime files (agentBackend.js, modelAliases.js, etc). */
+  hookSourceDir: string;
+  delegationMode?: "flat" | "team_leads";
+  /** Bound by the caller when this host has an opencode config installer;
+   *  omitted (reported "skipped") otherwise. */
+  regenerateOpencodeConfig?: (() => StepResult) | null;
+  /** Bound by the caller when this host can apply MCP catalog choices
+   *  (VS Code only today); omitted (reported "skipped") otherwise. */
+  applyMcp?: ((ids: string[]) => StepResult) | null;
+}
+
+function agentCatalogLookup(): Map<string, PackAgent> {
+  const map = new Map<string, PackAgent>();
+  for (const a of [...REGULAR_AGENTS, ...LEAD_AGENTS, ...REVIEWER_AGENTS, ...FOREIGN_LLM_AGENTS]) {
+    map.set(a.id, a);
+  }
+  return map;
+}
+
+/**
+ * Seeds (or refreshes) one roster entry's agent `.md` file, mirroring
+ * panel.ts's `_installAgentFiles` per-file logic: an unknown id is reported
+ * `{ ok: false }` (never fabricated), a foreign same-named file with a
+ * different tier is left untouched, and an existing file of the right tier
+ * is only rewritten when its generated content actually differs.
+ */
+function seedAgentFile(root: string, catalog: Map<string, PackAgent>, entry: { id: string }): StepResult {
+  const agent = catalog.get(entry.id);
+  if (!agent) {
+    return { ok: false, detail: "not in this host's agent catalog" };
+  }
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const agentPath = path.join(agentsDir, `${agent.id}.md`);
+    fs.mkdirSync(agentsDir, { recursive: true });
+    if (!fs.existsSync(agentPath)) {
+      fs.writeFileSync(agentPath, buildAgentMarkdown(agent));
+      return { ok: true, detail: "created" };
+    }
+    const existing = fs.readFileSync(agentPath, "utf8");
+    let existingTier: string | undefined;
+    try {
+      existingTier = agentMarkdownTier(existing);
+    } catch {
+      existingTier = undefined;
+    }
+    if (existingTier !== agent.tier) {
+      return { ok: true, detail: "foreign file with this id left untouched" };
+    }
+    const desired = buildAgentMarkdown(agent);
+    if (existing !== desired) {
+      fs.writeFileSync(agentPath, desired);
+      return { ok: true, detail: "refreshed" };
+    }
+    return { ok: true, detail: "unchanged" };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Portable hook install: syncs the runtime hook files and merges the
+ * TycoonAgents hook slots + managed subagent-depth env into
+ * `.claude/settings.local.json`, exactly as panel.ts's `_handleInstallHooks`
+ * does (steps 1-6), minus the VS Code-only agent/skill/CLAUDE.md wiring
+ * that isn't part of "install hooks". The hook command itself
+ * (`node .claude/tycoon/tycoon-claude-hook.cjs`) is already project-relative
+ * (see panel.ts's `_buildHookCommand`), so no vscode.Uri is needed here.
+ */
+function installPortableHooks(root: string, hookSourceDir: string, delegationMode: "flat" | "team_leads"): StepResult {
+  try {
+    const claudeDir = path.join(root, ".claude");
+    const tycoonDir = path.join(claudeDir, "tycoon");
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    cleanupForeignHookArtifacts(claudeDir);
+
+    for (const fileName of RUNTIME_HOOK_FILES) {
+      const src = path.join(hookSourceDir, fileName);
+      if (fs.existsSync(src)) {
+        syncRuntimeFile(src, path.join(tycoonDir, fileName));
+      }
+    }
+
+    const hookCommand = "node .claude/tycoon/tycoon-claude-hook.cjs";
+    const settingsPath = path.join(claudeDir, "settings.local.json");
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = fs.readFileSync(settingsPath, "utf8").trim();
+      if (raw !== "") {
+        const parsed = JSON.parse(raw);
+        if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* missing/invalid => default {} */
+    }
+    const mergedHooks = mergeTycoonHooks(existing, hookCommand);
+    const merged = mergeManagedSubagentDepthEnv(mergedHooks, delegationMode === "team_leads" ? "2" : "1");
+    fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Binds real installers over `applyTeamSetup` (src/core/teamSetupApply.ts)
+ * and runs it. Shared by panel.ts's `_handleApplyTeamSetup` and the
+ * standalone's `handleApplyTeamSetupStandalone` — both pass their own
+ * `hookSourceDir` and, where they have one, their own
+ * `regenerateOpencodeConfig`/`applyMcp` installer.
+ */
+export function applyTeamSetupHost(opts: ApplyTeamSetupHostOptions): ApplyTeamSetupReport {
+  const catalog = agentCatalogLookup();
+  const delegationMode = opts.delegationMode ?? "flat";
+  const installers: TeamSetupInstallers = {
+    seedAgent: (entry) => seedAgentFile(opts.root, catalog, entry),
+    installHooks: () => installPortableHooks(opts.root, opts.hookSourceDir, delegationMode),
+    regenerateOpencodeConfig: opts.regenerateOpencodeConfig ?? null,
+    applyMcp: opts.applyMcp ?? null,
+  };
+  return applyTeamSetupCore({ root: opts.root, env: opts.env, version: opts.version, installers });
 }

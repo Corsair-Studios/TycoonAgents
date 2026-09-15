@@ -209,6 +209,15 @@ export const MSG = {
   EXPORT_TEAM_SETUP: "EXPORT_TEAM_SETUP",
   TEAM_SETUP_EXPORTED: "TEAM_SETUP_EXPORTED",
 
+  // ---- team setup apply (p49-t1) -----------------------------------------
+  // Webview -> host, no payload: read .claude/tycoon-team.json and re-run
+  // installers (agent seeding, routing merge, hooks, opencode config, MCP
+  // catalog where available) via src/core/teamSetupApply.ts. Host -> webview
+  // reply carries the ApplyTeamSetupReport { ok, changed, steps, missingAgents,
+  // error? } — never env var values or absolute paths.
+  APPLY_TEAM_SETUP: "APPLY_TEAM_SETUP",
+  TEAM_SETUP_APPLIED: "TEAM_SETUP_APPLIED",
+
   // ---- engine / UEFN -------------------------------------------------------
   GET_ENGINE_STATUS: "getEngineStatus",
   ENGINE_STATUS: "engineStatus",

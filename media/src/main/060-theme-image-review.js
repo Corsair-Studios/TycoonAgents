@@ -1331,6 +1331,25 @@
         notice.classList.toggle("theme-review-status--error", !payload.ok);
         notice.removeAttribute("hidden");
       }
+    } else if (msg && msg.type === "TEAM_SETUP_APPLIED") {
+      const payload = msg.payload || {};
+      const applyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-apply-btn"));
+      const notice = document.getElementById("team-setup-export-notice");
+      if (applyBtn) applyBtn.disabled = false;
+      if (notice) {
+        if (payload.ok) {
+          const skipped = (payload.missingAgents || []).length
+            ? ` (unknown agent ids: ${payload.missingAgents.join(", ")})`
+            : "";
+          notice.textContent = payload.changed
+            ? `Team setup applied.${skipped}`
+            : `Already up to date.${skipped}`;
+        } else {
+          notice.textContent = "Could not apply: " + (payload.error || "unknown error");
+        }
+        notice.classList.toggle("theme-review-status--error", !payload.ok);
+        notice.removeAttribute("hidden");
+      }
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {

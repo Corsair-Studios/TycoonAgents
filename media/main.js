@@ -12367,6 +12367,25 @@ if (typeof module !== "undefined" && module.exports) {
         notice.classList.toggle("theme-review-status--error", !payload.ok);
         notice.removeAttribute("hidden");
       }
+    } else if (msg && msg.type === "TEAM_SETUP_APPLIED") {
+      const payload = msg.payload || {};
+      const applyBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("team-setup-apply-btn"));
+      const notice = document.getElementById("team-setup-export-notice");
+      if (applyBtn) applyBtn.disabled = false;
+      if (notice) {
+        if (payload.ok) {
+          const skipped = (payload.missingAgents || []).length
+            ? ` (unknown agent ids: ${payload.missingAgents.join(", ")})`
+            : "";
+          notice.textContent = payload.changed
+            ? `Team setup applied.${skipped}`
+            : `Already up to date.${skipped}`;
+        } else {
+          notice.textContent = "Could not apply: " + (payload.error || "unknown error");
+        }
+        notice.classList.toggle("theme-review-status--error", !payload.ok);
+        notice.removeAttribute("hidden");
+      }
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
@@ -21445,6 +21464,22 @@ if (typeof module !== "undefined" && module.exports) {
       vscode.postMessage({ type: "EXPORT_TEAM_SETUP" });
     });
     teamSetupSection.appendChild(teamSetupExportBtn);
+
+    // ── 1.7b. Team setup apply (p49-t1) ──
+    // Re-runs installers (agent seeding, routing merge, hooks, and — where
+    // this host has them — opencode config / MCP catalog) from a committed
+    // .claude/tycoon-team.json. Shares the notice element with Export so
+    // only one status line shows at a time.
+    const teamSetupApplyBtn = document.createElement("button");
+    teamSetupApplyBtn.className = "skill-btn settings-btn";
+    teamSetupApplyBtn.id = "team-setup-apply-btn";
+    teamSetupApplyBtn.textContent = "Apply team setup";
+    teamSetupApplyBtn.addEventListener("click", () => {
+      teamSetupApplyBtn.disabled = true;
+      teamSetupNotice.setAttribute("hidden", "");
+      vscode.postMessage({ type: "APPLY_TEAM_SETUP" });
+    });
+    teamSetupSection.appendChild(teamSetupApplyBtn);
     teamSetupSection.appendChild(teamSetupNotice);
     setupConfigEl.appendChild(teamSetupSection);
 

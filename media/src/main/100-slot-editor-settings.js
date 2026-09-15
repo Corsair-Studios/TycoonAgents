@@ -3186,6 +3186,22 @@
       vscode.postMessage({ type: "EXPORT_TEAM_SETUP" });
     });
     teamSetupSection.appendChild(teamSetupExportBtn);
+
+    // ── 1.7b. Team setup apply (p49-t1) ──
+    // Re-runs installers (agent seeding, routing merge, hooks, and — where
+    // this host has them — opencode config / MCP catalog) from a committed
+    // .claude/tycoon-team.json. Shares the notice element with Export so
+    // only one status line shows at a time.
+    const teamSetupApplyBtn = document.createElement("button");
+    teamSetupApplyBtn.className = "skill-btn settings-btn";
+    teamSetupApplyBtn.id = "team-setup-apply-btn";
+    teamSetupApplyBtn.textContent = "Apply team setup";
+    teamSetupApplyBtn.addEventListener("click", () => {
+      teamSetupApplyBtn.disabled = true;
+      teamSetupNotice.setAttribute("hidden", "");
+      vscode.postMessage({ type: "APPLY_TEAM_SETUP" });
+    });
+    teamSetupSection.appendChild(teamSetupApplyBtn);
     teamSetupSection.appendChild(teamSetupNotice);
     setupConfigEl.appendChild(teamSetupSection);
 
