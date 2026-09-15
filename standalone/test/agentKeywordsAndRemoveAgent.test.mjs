@@ -49,12 +49,13 @@ test('POST /message {type: "setAgentKeywords"} -> writes the pattern into agent-
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const updatedPromise = collectSseEvent(reader, 'settingsUpdated');
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setAgentKeywords', id: 'coding-specialist', pattern: 'implement|refactor' }),
     });
     assert.equal(res.status, 202);
@@ -86,12 +87,13 @@ test('POST /message {type: "removeAgent"} -> deletes the agent file, strips its 
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const removedPromise = collectSseEvent(reader, 'agentRemoved');
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'removeAgent', id: 'coding-specialist' }),
     });
     assert.equal(res.status, 202);
@@ -115,12 +117,13 @@ test('POST /message {type: "removeAgent"} with an unsafe id -> refuses, replies 
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const removedPromise = collectSseEvent(reader, 'agentRemoved');
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'removeAgent', id: '../../etc/passwd' }),
     });
     assert.equal(res.status, 202);

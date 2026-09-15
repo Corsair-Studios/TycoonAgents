@@ -179,7 +179,7 @@ test('startServer: /events is a live SSE stream that responds immediately', asyn
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const res = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const res = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
 
@@ -311,13 +311,14 @@ test('POST /message {type: "checkInstall"} -> broadcasts an "installState" reply
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     const installStatePromise = collectSseEvent(reader, 'installState');
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'checkInstall' }),
     });
     assert.equal(messageRes.status, 202);
@@ -346,12 +347,13 @@ test('POST /message {type: "getSkills"} -> broadcasts a "skills" reply built fro
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const skillsPromise = collectSseEvent(reader, 'skills');
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'getSkills' }),
     });
     assert.equal(messageRes.status, 202);
@@ -380,12 +382,13 @@ test('POST /message {type: "getMcp"} -> broadcasts a "mcp" reply built from medi
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const mcpPromise = collectSseEvent(reader, 'mcp');
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'getMcp' }),
     });
     assert.equal(messageRes.status, 202);
@@ -416,11 +419,12 @@ test('POST /message {type: "getPacks"} -> lists every catalog pack with installe
   try {
     const catalog = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'media', 'packs', 'catalog.json'), 'utf8'));
 
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const packsPromise = collectSseEvent(reader, 'packs');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'getPacks' }),
     });
     assert.equal(messageRes.status, 202);
@@ -456,11 +460,12 @@ test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identi
     const pack = catalog.find((p) => p.id === 'multi-llm');
     const { buildAgentMarkdown } = require('../../out/src/host/vscode/packCatalog.js');
 
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const installedPromise = collectSseEvent(reader, 'packInstalled');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'installPack', id: 'multi-llm', thirdParty: false, disclosures: [] }),
     });
     assert.equal(messageRes.status, 202);
@@ -477,6 +482,7 @@ test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identi
     const packsPromise = collectSseEvent(reader, 'packs');
     const getPacksRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'getPacks' }),
     });
     assert.equal(getPacksRes.status, 202);
@@ -521,7 +527,7 @@ test('POST /message {type: "ready"} -> broadcasts THEME_INITIALIZED for the auto
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     // Higher maxChunks than the 50 default: THEME_INITIALIZED's payload
@@ -533,6 +539,7 @@ test('POST /message {type: "ready"} -> broadcasts THEME_INITIALIZED for the auto
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'ready' }),
     });
     assert.equal(messageRes.status, 202);
@@ -555,13 +562,14 @@ test('POST /message {type: "getSettings"} -> broadcasts a "settings" reply that 
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     const settingsPromise = collectSseEvent(reader, 'settings');
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'getSettings' }),
     });
     assert.equal(messageRes.status, 202);
@@ -598,7 +606,7 @@ test('simulated browser boot sequence: every boot-handshake message gets a reply
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
 
@@ -613,7 +621,7 @@ test('simulated browser boot sequence: every boot-handshake message gets a reply
     const wantedTypes = new Set(expected.map(([, replyType]) => replyType));
 
     for (const [type] of expected) {
-      const res = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type }) });
+      const res = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type }) });
       assert.equal(res.status, 202, `POST /message {type: "${type}"} should 202`);
     }
 
@@ -668,7 +676,7 @@ test('/events connect (no "ready" POST): THEME_INITIALIZED arrives when the stor
     // startServer() awaits seedBundledThemesIntoStore() before accepting
     // connections, so the store already has the bundled default theme —
     // no 'ready' POST is sent here.
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     // THEME_INITIALIZED carries the full manifest+frames payload (frames.json
@@ -707,7 +715,7 @@ test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields
     // connections, so a fresh store already has survivors_vs_zombies seeded
     // in the modern per-directory layout (manifest.json/frames.json) —
     // exactly the on-disk shape the bug report describes.
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     // Drain the boot-time THEME_INITIALIZED first so it isn't mistaken for
@@ -716,7 +724,7 @@ test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'LIST_THEMES' }),
     });
     assert.equal(messageRes.status, 202);
@@ -753,7 +761,7 @@ test('/events connect (no "ready" POST): THEME_NONE arrives when the store is em
     // every /events connection, so this reproduces an empty-store client.
     fs.rmSync(path.join(dataDir, themesDirectoryPath()), { recursive: true, force: true });
 
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     assert.equal(eventsRes.status, 200);
     const reader = eventsRes.body.getReader();
     const none = await collectSseEvent(reader, 'THEME_NONE');
@@ -809,12 +817,13 @@ test('POST /message {type: "submitFeedback"} -> feedbackPreview carries the v1 p
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const previewPromise = collectSseEvent(reader, 'feedbackPreview');
 
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({
         type: 'submitFeedback',
         category: 'bug',
@@ -856,11 +865,12 @@ test('POST /message {type: "confirmFeedbackSend"} -> posts the retained body (wi
   let capturedBody = null;
   let capturedUrl = null;
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const previewPromise = collectSseEvent(reader, 'feedbackPreview');
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({
         type: 'submitFeedback',
         category: 'idea',
@@ -882,6 +892,7 @@ test('POST /message {type: "confirmFeedbackSend"} -> posts the retained body (wi
     const resultPromise = collectSseEvent(reader, 'feedbackResult');
     const confirmRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
     });
     assert.equal(confirmRes.status, 202);
@@ -911,11 +922,12 @@ test('POST /message {type: "confirmFeedbackSend"} -> network failure replies fee
   const controller = new AbortController();
   const originalFetch = globalThis.fetch;
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const previewPromise = collectSseEvent(reader, 'feedbackPreview');
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'submitFeedback', category: 'other', userDescription: 'x', includeDiagnostics: false }),
     });
     const preview = await previewPromise;
@@ -930,6 +942,7 @@ test('POST /message {type: "confirmFeedbackSend"} -> network failure replies fee
     const resultPromise = collectSseEvent(reader, 'feedbackResult');
     const confirmRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
     });
     assert.equal(confirmRes.status, 202);
@@ -949,6 +962,7 @@ test('POST /message {type: "confirmFeedbackSend"} -> network failure replies fee
     const retryResultPromise = collectSseEvent(reader, 'feedbackResult');
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'confirmFeedbackSend', ticketId: preview.ticketId }),
     });
     const retryResult = await retryResultPromise;
@@ -972,7 +986,7 @@ test('POST /message {type: "setDelegationMode", delegation_mode: "team_leads"} -
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     // A single setDelegationMode handler call broadcasts settingsUpdated
     // then a fresh settings — both can land in the SAME SSE chunk, so a
@@ -982,6 +996,7 @@ test('POST /message {type: "setDelegationMode", delegation_mode: "team_leads"} -
     const updatedPromise = sse.next('settingsUpdated');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setDelegationMode', delegation_mode: 'team_leads' }),
     });
     assert.equal(messageRes.status, 202);
@@ -1016,12 +1031,13 @@ test('POST /message {type: "setReviewEnabled", enabled: false} -> persists execu
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
 
     const enabledPromise = collectSseEvent(reader, 'settingsUpdated');
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setReviewEnabled', enabled: true }),
     });
     await enabledPromise;
@@ -1033,6 +1049,7 @@ test('POST /message {type: "setReviewEnabled", enabled: false} -> persists execu
     const disabledPromise = collectSseEvent(reader, 'settingsUpdated');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setReviewEnabled', enabled: false }),
     });
     assert.equal(messageRes.status, 202);
@@ -1061,11 +1078,12 @@ test('POST /message {type: "setSessionJournalEntries", entries: 99} -> clamps to
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const updatedPromise = collectSseEvent(reader, 'settingsUpdated');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setSessionJournalEntries', entries: 99 }),
     });
     assert.equal(messageRes.status, 202);
@@ -1094,7 +1112,7 @@ test('POST /message {type: "SET_PROJECT_PLAN_ENABLED", enabled: true} -> persist
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     // Match on enabled:true AND plan:null specifically (not just type)
     // because server.mjs's `initialMessageProviders`/`sseClients` are
@@ -1105,6 +1123,7 @@ test('POST /message {type: "SET_PROJECT_PLAN_ENABLED", enabled: true} -> persist
     const planStatePromise = collectSseEventMatching(reader, 'PLAN_STATE', (d) => d.enabled === true && d.plan === null);
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'SET_PROJECT_PLAN_ENABLED', enabled: true }),
     });
     assert.equal(messageRes.status, 202);
@@ -1167,7 +1186,7 @@ test('REQUEST_PLAN reflects a real .claude/tycoon/plan.json fixture (phases/task
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     // Match on the fixture's own title (not just type/enabled) — see
     // collectSseEventMatching's doc comment on cross-talk from concurrently
@@ -1175,6 +1194,7 @@ test('REQUEST_PLAN reflects a real .claude/tycoon/plan.json fixture (phases/task
     const planStatePromise = collectSseEventMatching(reader, 'PLAN_STATE', (d) => d.plan && d.plan.title === 'Test plan');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'REQUEST_PLAN' }),
     });
     assert.equal(messageRes.status, 202);
@@ -1201,11 +1221,12 @@ test('POST /message {type: "projectPlanAction"} -> re-stages media/skills/projec
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const donePromise = collectSseEvent(reader, 'projectPlanDone');
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'projectPlanAction' }),
     });
     assert.equal(messageRes.status, 202);
@@ -1238,7 +1259,7 @@ test('REQUEST_OFFLOAD_OFFER_STATE reflects execution.json flags and .mcp.json co
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
 
     // Drain the boot-handshake's own unconditional OFFLOAD_OFFER_STATE
@@ -1253,7 +1274,7 @@ test('REQUEST_OFFLOAD_OFFER_STATE reflects execution.json flags and .mcp.json co
     assert.equal(bootOffer.providerAvailable, false);
 
     const offerPromise1 = collectSseEvent(reader, 'OFFLOAD_OFFER_STATE');
-    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
+    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
     const offer1 = await offerPromise1;
     assert.equal(offer1.dismissed, false);
     assert.equal(offer1.accepted, false);
@@ -1277,7 +1298,7 @@ test('REQUEST_OFFLOAD_OFFER_STATE reflects execution.json flags and .mcp.json co
       'OFFLOAD_OFFER_STATE',
       (d) => d.dismissed === true && d.accepted === true && d.providerAvailable === true,
     );
-    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
+    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
     const offer2 = await offerPromise2;
     assert.equal(offer2.dismissed, true);
     assert.equal(offer2.accepted, true);

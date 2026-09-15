@@ -132,7 +132,7 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
   });
   const controller = new AbortController();
   try {
-    const res = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const res = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = res.body.getReader();
     let buffer = '';
     async function nextOfType(matchType, predicate = () => true, maxChunks = 100) {
@@ -158,7 +158,7 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
 
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', payload: { email: 'panel@example.com' } }),
     });
     // handleRequestMagicLink's own postFreshStatus() lands first (signedIn
@@ -169,7 +169,7 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
 
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', payload: { email: 'panel@example.com', code: '123456' } }),
     });
     const signedInStatus = await nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === true);
@@ -179,7 +179,7 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
 
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'OPEN_THEME_BUILDER' }),
     });
     const opened = await nextOfType('THEME_BUILDER_OPENED');

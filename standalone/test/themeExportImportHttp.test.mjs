@@ -249,6 +249,7 @@ test('POST /theme-import: valid archive -> 200 JSON {theme_id}, then appears in 
 
       const importRes = await fetch(`${runtime.url}/theme-import`, {
         method: 'POST',
+        headers: { 'X-Tycoon-Token': runtime.sessionToken },
         body: Buffer.from(bytes),
       });
       assert.equal(importRes.status, 200);
@@ -259,13 +260,14 @@ test('POST /theme-import: valid archive -> 200 JSON {theme_id}, then appears in 
       // Now drive a real LIST_THEMES round trip over the SSE channel: open
       // /events, POST {type: 'LIST_THEMES'} to /message, and wait for the
       // THEMES_LIST broadcast to include the just-imported theme.
-      const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+      const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
       assert.equal(eventsRes.status, 200);
       const reader = eventsRes.body.getReader();
       const listPromise = collectSseEvent(reader, MSG_WIRE.THEMES_LIST);
 
       const messageRes = await fetch(`${runtime.url}/message`, {
         method: 'POST',
+        headers: { 'X-Tycoon-Token': runtime.sessionToken },
         body: JSON.stringify({ type: MSG_WIRE.LIST_THEMES }),
       });
       assert.equal(messageRes.status, 202);
@@ -294,6 +296,7 @@ test('POST /theme-import: a non-zip garbage body -> 400 JSON { error }', async (
   try {
     const res = await fetch(`${runtime.url}/theme-import`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: 'this is definitely not a zip file',
     });
     assert.equal(res.status, 400);

@@ -46,7 +46,7 @@ test('EXPORT_TEAM_SETUP through startServer: SSE TEAM_SETUP_EXPORTED payload ok:
   });
   const controller = new AbortController();
   try {
-    const res = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const res = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = res.body.getReader();
     let buffer = '';
     async function nextOfType(matchType, maxChunks = 100) {
@@ -72,7 +72,7 @@ test('EXPORT_TEAM_SETUP through startServer: SSE TEAM_SETUP_EXPORTED payload ok:
 
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'EXPORT_TEAM_SETUP' }),
     });
 

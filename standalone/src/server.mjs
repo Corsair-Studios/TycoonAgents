@@ -45,6 +45,7 @@
 // function's doc comment below for the seam contract.
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -116,6 +117,22 @@ const THEME_SERVICE_STATUS_WIRE = 'THEME_SERVICE_STATUS';
 // instance's. Never logged, never included in a broadcast payload directly
 // (only postStatus's ThemeServiceHostStatus-shaped output is broadcast).
 let themeServiceHostInstance;
+
+// p49-t0: CSRF hardening. Minted fresh inside startServer() (never at module
+// load, so a second startServer() call in the same process — e.g. a test
+// harness — always gets its OWN token, never a stale prior instance's, same
+// posture as themeStore/themeServiceHostInstance above). In-memory only:
+// never logged, never written to disk. requestListener()'s
+// checkOriginAndToken() below reads this module-level var on every request,
+// so it always sees the CURRENT server instance's token.
+let sessionToken = '';
+
+// p49-t0 review fix: allowed Origins, derived from the REAL bound port
+// (server.address().port, set once listen() resolves — see startServer()
+// below) rather than trusted from the client-supplied Host header, which an
+// attacker fully controls. Exactly two origins are ever valid for a given
+// bound port: 127.0.0.1 and localhost.
+let allowedOrigins = new Set();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3004,7 +3021,7 @@ function handleThemeImport(req, res) {
 //     identically.
 // Defined entirely in this host page's inline <script>, BEFORE
 // /media/main.js is loaded below — media/main.js itself is never touched.
-function buildHostHtml() {
+function buildHostHtml(token) {
   let version = '';
   try {
     const pkgRaw = fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8');
@@ -3018,6 +3035,7 @@ function buildHostHtml() {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="tycoon-token" content="${token}" />
   <link href="/media/style.css" rel="stylesheet" />
   <title>TycoonAgents (standalone)</title>
   <script>
@@ -3028,6 +3046,16 @@ function buildHostHtml() {
     (function () {
       var STATE_KEY = 'tycoonagents:standalone:webviewState';
       var apiSingleton = null;
+      // p49-t0: CSRF token minted server-side per startServer() instance,
+      // injected into this page via the <meta name="tycoon-token"> tag
+      // above. Sent as the X-Tycoon-Token header on every POST
+      // (postToServer below, and the IMPORT_THEME upload further down) and
+      // as a ?token= query param on the /events EventSource connection
+      // (EventSource cannot set custom headers).
+      var TYCOON_TOKEN = (function () {
+        var el = document.querySelector('meta[name="tycoon-token"]');
+        return el ? el.getAttribute('content') : '';
+      })();
 
       function readState() {
         try {
@@ -3055,7 +3083,7 @@ function buildHostHtml() {
         try {
           fetch('/message', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Tycoon-Token': TYCOON_TOKEN },
             body: JSON.stringify(message),
           }).catch(function (err) {
             console.error('[tycoonagents-standalone] postMessage: /message request failed:', err);
@@ -3179,7 +3207,7 @@ function buildHostHtml() {
             .then(function (buf) {
               return fetch('/theme-import', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/zip' },
+                headers: { 'Content-Type': 'application/zip', 'X-Tycoon-Token': TYCOON_TOKEN },
                 body: buf,
               });
             })
@@ -3240,7 +3268,7 @@ function buildHostHtml() {
         // 'message' events so media/main.js's existing
         // window.addEventListener("message", e => ...) needs no changes.
         try {
-          var es = new EventSource('/events');
+          var es = new EventSource('/events?token=' + encodeURIComponent(TYCOON_TOKEN));
           es.addEventListener('message', function (evt) {
             try {
               var data = JSON.parse(evt.data);
@@ -3702,12 +3730,75 @@ function buildHostHtml() {
 }
 
 // ── HTTP server ──────────────────────────────────────────────────────────────
+//
+// p49-t0 CSRF hardening: the server binds loopback-only (127.0.0.1 by
+// default — see HOST above), but a loopback bind alone does not stop any web
+// page open in the user's browser from POSTing to it or opening an
+// EventSource against it (the browser will happily make loopback requests
+// from any origin). checkOriginAndToken() below is the single gate every
+// mutating/streaming route runs through BEFORE any side effect:
+//   - Origin, when the request carries one, must equal this exact request's
+//     own `http://<Host header>` — i.e. the page must actually have been
+//     served BY this server, not merely be pointing a fetch/EventSource at
+//     it from elsewhere. Requests with no Origin header (same-origin GETs,
+//     non-browser callers) are not rejected on this check alone.
+//   - `requireToken` routes (every POST, and GET /events) additionally must
+//     present the in-memory sessionToken minted in startServer(): header
+//     `X-Tycoon-Token` for POST bodies, `?token=` query param for
+//     GET /events (EventSource cannot set custom headers).
+// Every response — including token-free static GET routes — gets an
+// explicit `Access-Control-Allow-Origin` pinned to this request's own origin
+// (never `*`) and `X-Content-Type-Options: nosniff`.
+// Constant-time token compare: rejects on a length mismatch FIRST (never
+// feeds mismatched-length buffers to timingSafeEqual, which throws on
+// that), then compares bytes without leaking timing info about how many
+// leading bytes matched.
+function tokensMatch(presented, expected) {
+  if (typeof presented !== 'string' || !expected) return false;
+  const a = Buffer.from(presented, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function checkOriginAndToken(req, res, url, { requireToken }) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  const origin = req.headers.origin;
+  if (origin) {
+    if (!allowedOrigins.has(origin)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'forbidden' }));
+      return false;
+    }
+    // Echoed only when it matches one of this server's own origins —
+    // never a blanket '*' or an unvalidated reflection of the request.
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
+  if (requireToken) {
+    const headerToken = req.headers['x-tycoon-token'];
+    const queryToken = url.searchParams.get('token');
+    const presented = req.method === 'GET' ? queryToken : headerToken;
+    if (!tokensMatch(presented, sessionToken)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'forbidden' }));
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function requestListener(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   const pathname = url.pathname;
 
+  const requireToken = req.method === 'POST' || (req.method === 'GET' && pathname === '/events');
+  if (!checkOriginAndToken(req, res, url, { requireToken })) return;
+
   if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-    const html = buildHostHtml();
+    const html = buildHostHtml(sessionToken);
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Length': Buffer.byteLength(html),
@@ -3926,6 +4017,11 @@ export async function startServer({
   const { roots } = resolveProjectRoots({ argv, env, cwd });
   const [primary, ...secondary] = roots;
 
+  // p49-t0: fresh per-instance CSRF token — set here (not at module load) so
+  // a second startServer() call in the same process (test harness) never
+  // reuses a prior instance's token. In-memory only; never logged/persisted.
+  sessionToken = crypto.randomBytes(32).toString('hex');
+
   // Set here (not just captured in the closure below) so a fresh
   // startServer() call (e.g. a test harness spinning up multiple server
   // instances in the same process) always points RESTORE_PLAN_BACKUP at the
@@ -4104,6 +4200,12 @@ export async function startServer({
   const boundPort = server.address().port;
   const url = `http://${host}:${boundPort}`;
 
+  // p49-t0 review fix: allowed Origins derived from the REAL bound port,
+  // never from a client-controlled request header. Reset on every
+  // startServer() call so a second instance in the same process (tests)
+  // never validates against a stale prior instance's port.
+  allowedOrigins = new Set([`http://127.0.0.1:${boundPort}`, `http://localhost:${boundPort}`]);
+
   console.log(`[tycoonagents-standalone] serving on ${url}`);
   console.log(`[tycoonagents-standalone] media dir (in place): ${MEDIA_DIR}`);
   console.log(`[tycoonagents-standalone] watching project (primary, drives the board): ${primary.root}`);
@@ -4158,6 +4260,10 @@ export async function startServer({
     close,
     appData,
     themeDataDir,
+    // p49-t0: exposed for tests only (needed to set X-Tycoon-Token /
+    // ?token= on requests against this instance); never logged, never
+    // written to disk.
+    sessionToken,
   };
 }
 

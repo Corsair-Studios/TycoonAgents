@@ -63,11 +63,11 @@ test('POST /message {type: "getSettings"} -> settings.harness reports claude-cod
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const settingsPromise = collectSseEvent(reader, 'settings');
 
-    const res = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getSettings' }) });
+    const res = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'getSettings' }) });
     assert.equal(res.status, 202);
 
     const settings = await settingsPromise;
@@ -95,11 +95,12 @@ test('POST /message {type: "setHarness", provider: "opencode"} -> writes executi
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setHarness', provider: 'opencode' }),
     });
     assert.equal(res.status, 202);
@@ -136,11 +137,12 @@ test('a server started with TYCOON_PROVIDER set reports harness.source "env" reg
   const prevEnv = process.env.TYCOON_PROVIDER;
   process.env.TYCOON_PROVIDER = 'claude-code';
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setHarness', provider: 'opencode' }),
     });
     assert.equal(res.status, 202);
@@ -182,16 +184,16 @@ test('installCodexHooks/uninstallCodexHooks: install sets the config.toml marker
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
-    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getSettings' }) });
+    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'getSettings' }) });
     assert.equal(getRes.status, 202);
     let settings = await collector.next('settings');
     assert.equal(settings.payload.harness.effective, 'codex');
     assert.equal(settings.payload.harness.codexHooksInstalled, false);
 
-    const installRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'installCodexHooks' }) });
+    const installRes = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'installCodexHooks' }) });
     assert.equal(installRes.status, 202);
     settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexHooksInstalled === true);
     assert.equal(settings.payload.harness.codexHooksInstalled, true);
@@ -202,7 +204,7 @@ test('installCodexHooks/uninstallCodexHooks: install sets the config.toml marker
     const hooksJsonPath = path.join(projectRoot, '.codex', 'hooks.json');
     assert.equal(fs.existsSync(hooksJsonPath), true);
 
-    const uninstallRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'uninstallCodexHooks' }) });
+    const uninstallRes = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'uninstallCodexHooks' }) });
     assert.equal(uninstallRes.status, 202);
     settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexHooksInstalled === false);
     assert.equal(settings.payload.harness.codexHooksInstalled, false);
@@ -234,18 +236,18 @@ test('installCodexDispatcher/uninstallCodexDispatcher: install sets the dispatch
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
-    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getSettings' }) });
+    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'getSettings' }) });
     let settings = await collector.next('settings');
     assert.equal(settings.payload.harness.codexDispatcherInstalled, false);
 
-    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'installCodexDispatcher' }) });
+    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'installCodexDispatcher' }) });
     settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexDispatcherInstalled === true);
     assert.equal(settings.payload.harness.codexDispatcherInstalled, true);
 
-    await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'uninstallCodexDispatcher' }) });
+    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'uninstallCodexDispatcher' }) });
     settings = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.codexDispatcherInstalled === false);
     assert.equal(settings.payload.harness.codexDispatcherInstalled, false);
   } finally {

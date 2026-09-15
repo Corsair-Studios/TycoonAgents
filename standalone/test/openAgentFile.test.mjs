@@ -33,6 +33,7 @@ test('POST /message {type: "openAgentFile"} with an unsafe id -> refused, no chi
   try {
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'openAgentFile', id: '../../etc/passwd' }),
     });
     assert.equal(res.status, 202);
@@ -54,6 +55,7 @@ test('POST /message {type: "openAgentFile"} with a missing agent file -> refused
   try {
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'openAgentFile', id: 'no-such-agent' }),
     });
     assert.equal(res.status, 202);

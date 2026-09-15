@@ -86,11 +86,11 @@ test('POST /message {type: "getRouting"} -> broadcasts a "routing" reply with no
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const routingPromise = collectSseEvent(reader, 'routing');
 
-    const res = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getRouting' }) });
+    const res = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'getRouting' }) });
     assert.equal(res.status, 202);
 
     const routing = await routingPromise;
@@ -113,7 +113,7 @@ test('POST /message {type: "saveRouting"} -> writes routing.json, replies routin
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
     const profile = {
@@ -128,6 +128,7 @@ test('POST /message {type: "saveRouting"} -> writes routing.json, replies routin
     // message, not message.payload).
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'saveRouting', profile }),
     });
     assert.equal(res.status, 202);
@@ -157,7 +158,7 @@ test('POST /message {type: "saveRouting"} with defaultFallback -> routing.json o
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
     const defaultFallback = {
@@ -171,6 +172,7 @@ test('POST /message {type: "saveRouting"} with defaultFallback -> routing.json o
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'saveRouting', profile }),
     });
     assert.equal(res.status, 202);
@@ -185,7 +187,7 @@ test('POST /message {type: "saveRouting"} with defaultFallback -> routing.json o
     assert.deepEqual(routingAfterSave.payload.defaultFallback, defaultFallback);
 
     // Fresh getRouting confirms the read path independently of the save broadcast.
-    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'getRouting' }) });
+    const getRes = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'getRouting' }) });
     assert.equal(getRes.status, 202);
     const routing = await collector.next('routing', (d) => d.payload.defaultFallback !== undefined);
     assert.deepEqual(routing.payload.defaultFallback, defaultFallback);
@@ -209,10 +211,10 @@ test('POST /message {type: "clearRouting"} -> deletes routing.json and replies w
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
-    const res = await fetch(`${runtime.url}/message`, { method: 'POST', body: JSON.stringify({ type: 'clearRouting' }) });
+    const res = await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'clearRouting' }) });
     assert.equal(res.status, 202);
 
     await collector.next('routingSaved');
@@ -234,7 +236,7 @@ test('POST /message {type: "probeEnv"} -> replies envProbe with booleans only, d
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const probePromise = collectSseEvent(reader, 'envProbe');
 
@@ -242,6 +244,7 @@ test('POST /message {type: "probeEnv"} -> replies envProbe with booleans only, d
     // note above.
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'probeEnv', names: ['PATH', 'not-a-valid-name'] }),
     });
     assert.equal(res.status, 202);
@@ -278,12 +281,13 @@ test('POST /message {type: "setLocalEnvValue"} with flat name/value (real wire s
   });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const reader = eventsRes.body.getReader();
     const probePromise = collectSseEvent(reader, 'envProbe');
 
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'setLocalEnvValue', name: 'OLLAMA_API_KEY', value: 'sk-test-value' }),
     });
     assert.equal(res.status, 202);
@@ -310,7 +314,7 @@ test('POST /message {type: "saveRouting"} with a custom-endpoint agent (flat wir
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events`, { signal: controller.signal });
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
     const collector = createSseCollector(eventsRes.body.getReader());
 
     const profile = {
@@ -329,6 +333,7 @@ test('POST /message {type: "saveRouting"} with a custom-endpoint agent (flat wir
     };
     const res = await fetch(`${runtime.url}/message`, {
       method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
       body: JSON.stringify({ type: 'saveRouting', profile }),
     });
     assert.equal(res.status, 202);
