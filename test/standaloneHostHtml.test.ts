@@ -16,7 +16,8 @@ function extractBuildHostHtmlBody(): string {
     join(process.cwd(), 'standalone', 'src', 'server.mjs'),
     'utf8',
   );
-  const start = src.indexOf('function buildHostHtml()');
+  const match = /function buildHostHtml\s*\([^)]*\)\s*\{/.exec(src);
+  const start = match ? match.index : -1;
   assert.ok(start >= 0, 'buildHostHtml() should exist in standalone/src/server.mjs');
   // Grab a generous slice past the function start — the template literal
   // that builds the HTML lives entirely within a few hundred lines of it.
