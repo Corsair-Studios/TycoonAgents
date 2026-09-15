@@ -1926,6 +1926,7 @@ body {
 }
 
 .tsp-pack {
+  position: relative;
   font-family: inherit;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -1959,6 +1960,31 @@ body {
   display: block;
   font-size: 10px;
   margin-top: 2px;
+}
+
+.tsp-pack-badge {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.tsp-pack-chip {
+  position: absolute;
+  top: -7px;
+  right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  background: var(--success, #2ea043);
+  color: #fff;
 }
 
 .tsp-caveat {
