@@ -386,6 +386,94 @@ test('end-to-end: plan, generate, retry, re-slice, refund, and error paths again
   });
 });
 
+// p46-t5: content screening / strikes / account lock, end to end against
+// the real client + fake (blockNextPrompt/failNextGenerateWithPolicy/
+// lockAccount/unlockAccount added in 9387e21).
+test('content_blocked, policy-refusal strikes, auto-lock, and 24h strike expiry against the fake Theme Service', async () => {
+  let nowMs = 1_700_000_000_000;
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+  const atlas = new Jimp(400, 200, 0xff00ffff);
+  const pngDataUri = `data:image/png;base64,${(await atlas.getBufferAsync(Jimp.MIME_PNG)).toString('base64')}`;
+  const realImageFetch = withRealImages(fake.fetch, pngDataUri);
+
+  await withTempStore(async (globalStorageUri) => {
+    const tokenStore = memoryTokenStore();
+    const client = createThemeServiceClient({ fetch: realImageFetch, tokenStore, endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+    const email = 'strikes@example.com';
+    await client.requestMagicLink(email);
+    await client.verifyMagicLink(email, '123456');
+    const accountId = fake.state.accountsByEmail.get(email)!;
+    fake.helpers.grant(accountId, 30);
+
+    setThemeImageGenerator(createServiceImageGenerator(client));
+    try {
+      // ---- (1) blockNextPrompt -> content_blocked, cost 0, no ledger row, unchanged balance ----
+      // Isolated via client.generateAttempt directly (rather than the full
+      // generateTheme plan pipeline, which fires one attempt per board and
+      // would let the OTHER boards' successful attempts add unrelated
+      // ledger rows, masking the assertion below).
+      const themeId = 'strikes_theme';
+      const balanceBeforeBlock = fake.state.balances.get(accountId)!;
+      const ledgerLengthBeforeBlock = fake.state.ledger.length;
+      fake.helpers.blockNextPrompt();
+      const blockedAttempt = await client.generateAttempt({ idempotencyKey: 'blocked-1', boardType: 'environment', prompt: 'a blocked prompt', size: '1024x1024' });
+      assert.equal(blockedAttempt.ok, false);
+      assert.equal(!blockedAttempt.ok && blockedAttempt.error.kind, 'content_blocked');
+      assert.equal(fake.state.ledger.length, ledgerLengthBeforeBlock, 'a blocked prompt must never write a ledger row');
+      assert.equal(fake.state.balances.get(accountId), balanceBeforeBlock, 'a blocked prompt must never change the balance');
+
+      // Also verify the full generateTheme pipeline maps a blocked attempt
+      // to the review item's error_kind/attemptCost/lastAttemptRefunded.
+      const plan = buildPlan(themeId);
+      fake.helpers.blockNextPrompt();
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      let review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      let environment = review.entries.find((e) => e.item.id === 'environment')!;
+      assert.equal(environment.item.error_kind, 'content_blocked');
+      assert.equal(environment.item.attemptCost, 0);
+      assert.equal(environment.item.lastAttemptRefunded, false);
+
+      // ---- (2) failNextGenerateWithPolicy -> refunded attempt, strikes 1 ----
+      const balanceBeforePolicy = fake.state.balances.get(accountId)!;
+      fake.helpers.failNextGenerateWithPolicy();
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {}).catch(() => {});
+      assert.equal(fake.state.balances.get(accountId), balanceBeforePolicy, 'a policy-refused attempt must be refunded (net balance unchanged)');
+      let status = await client.getStatus();
+      assert.equal(status.ok, true);
+      assert.equal(status.ok && status.value.strikes, 1, 'one policy refusal must record one strike');
+      assert.equal(status.ok && status.value.locked, false);
+
+      // ---- (3) two more policy refusals within 24h -> auto-lock, next generate is account_locked ----
+      fake.helpers.failNextGenerateWithPolicy();
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {}).catch(() => {});
+      fake.helpers.failNextGenerateWithPolicy();
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {}).catch(() => {});
+      status = await client.getStatus();
+      assert.equal(status.ok && status.value.locked, true, 'three policy refusals within 24h must auto-lock the account');
+      assert.equal(status.ok && status.value.strikes, 3);
+
+      const ledgerLengthBeforeLockedAttempt = fake.state.ledger.length;
+      const balanceBeforeLockedAttempt = fake.state.balances.get(accountId)!;
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, 'environment', '', 'retry', {}).catch(() => {});
+      review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      environment = review.entries.find((e) => e.item.id === 'environment')!;
+      assert.equal(environment.item.error_kind, 'account_locked');
+      assert.equal(environment.item.attemptCost, 0);
+      assert.equal(fake.state.ledger.length, ledgerLengthBeforeLockedAttempt, 'an account_locked attempt must never write a ledger row');
+      assert.equal(fake.state.balances.get(accountId), balanceBeforeLockedAttempt, 'an account_locked attempt must never change the balance');
+
+      // ---- (4) unlockAccount + advancing now() past 24h clears strikes/lock state ----
+      fake.helpers.unlockAccount(email);
+      nowMs += 24 * 60 * 60 * 1000 + 1;
+      status = await client.getStatus();
+      assert.equal(status.ok && status.value.locked, false, 'unlockAccount must clear the locked flag');
+      assert.equal(status.ok && status.value.strikes, 0, 'strikes older than 24h must no longer count');
+    } finally {
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
 test('src/extension and src/host reference no direct provider hostname or API-key env var name (p44 covers standalone)', async () => {
   const forbidden = [
     /api\.openai\.com/i,

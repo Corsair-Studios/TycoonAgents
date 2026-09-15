@@ -752,3 +752,43 @@ test('blocked and locked zero-cost attempts do not change the shown creditsSpent
   assert.match(attemptCostLine(h), /Spent on this theme so far: 3 credits/);
   h.win.close();
 });
+
+// ── strikes warning / locked Buy-credits (p46-t5) ───────────────────────────
+
+test('one recent strike renders the singular strikes-warning line', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ strikes: 1, locked: false })));
+  const line = h.panelBody().querySelector('.tsp-strikes-notice');
+  assert.ok(line, 'expected a strikes-notice line');
+  assert.equal(line.textContent, '1 recent content-policy strike. 3 locks the account.');
+  h.win.close();
+});
+
+test('two recent strikes render the plural strikes-warning line', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ strikes: 2, locked: false })));
+  const line = h.panelBody().querySelector('.tsp-strikes-notice');
+  assert.ok(line, 'expected a strikes-notice line');
+  assert.equal(line.textContent, '2 recent content-policy strikes. 3 locks the account.');
+  h.win.close();
+});
+
+test('strikes-warning line is absent when strikes is 0 and when the account is locked', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ strikes: 0, locked: false })));
+  assert.equal(h.panelBody().querySelector('.tsp-strikes-notice'), null, 'no strikes line at 0 strikes');
+  h.dispatch(themeServiceStatus(signedInStatus({ strikes: 2, locked: true })));
+  assert.equal(h.panelBody().querySelector('.tsp-strikes-notice'), null, 'locked state shows the lock notice, not the strikes line');
+  h.win.close();
+});
+
+test('locked status disables the Buy credits button', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ locked: true, strikes: 3 })));
+  const buyBtn: any = Array.from(h.panelBody().querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Buy credits',
+  );
+  assert.ok(buyBtn, 'expected a Buy credits button');
+  assert.equal(buyBtn.disabled, true);
+  h.win.close();
+});

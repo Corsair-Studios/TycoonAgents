@@ -219,6 +219,35 @@ test("posted payloads never contain accessToken/refreshToken across the full sig
 // vscode-dependent host file not importable in this unit-test harness, so
 // this is a source guard on the exact wiring rather than a live mock —
 // guards against the visible-refresh call being dropped or misplaced.
+// p46-t5: THEME_SERVICE_STATUS carries locked/strikes; a checkout attempt
+// while locked posts account_locked without starting the pending-checkout poll.
+test("THEME_SERVICE_STATUS payload carries locked and strikes", async () => {
+  const { fake, host, posted } = setup();
+  await host.handleRequestMagicLink("locked@example.com");
+  await host.handleVerify("locked@example.com", "123456");
+  fake.helpers.lockAccount("locked@example.com");
+  posted.length = 0;
+  await host.handleGetStatus();
+  const last = posted[posted.length - 1];
+  assert.equal(last.locked, true);
+  assert.equal(typeof last.strikes, "number");
+  assertNoTokenLeak(posted);
+});
+
+test("BUY_CREDITS while locked posts account_locked with pendingCheckout false", async () => {
+  const { fake, host, posted, timers } = setup();
+  await host.handleRequestMagicLink("lockedbuyer@example.com");
+  await host.handleVerify("lockedbuyer@example.com", "123456");
+  fake.helpers.lockAccount("lockedbuyer@example.com");
+  posted.length = 0;
+  await host.handleBuyCredits("mini30");
+  const last = posted[posted.length - 1];
+  assert.equal(last.error?.kind, "account_locked");
+  assert.equal(last.pendingCheckout, false);
+  assert.equal(timers.activeCount(), 0, "a locked checkout attempt must never start the pending-checkout poll");
+  assertNoTokenLeak(posted);
+});
+
 test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGetStatus", () => {
   const fs = require("node:fs");
   const path = require("node:path");

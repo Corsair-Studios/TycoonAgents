@@ -413,3 +413,44 @@ test('token file: exists after sign-in under app-data secrets/, is owner-only on
   await host.handleSignOut();
   assert.equal(fs.existsSync(file), false, 'token file must be cleared after sign-out');
 });
+
+// p46-t5: content screening / strikes / account lock via the standalone
+// host + fake (lockAccount/blockNextPrompt added in 9387e21).
+test('status carries locked/strikes after lockAccount; generateAttempt while locked returns account_locked; blockNextPrompt leaves the balance unchanged', async (t) => {
+  const fake = createFakeThemeService();
+  const accountId = fake.helpers.createAccount('locked-standalone@example.com').id;
+  fake.helpers.grant(accountId, 10);
+  const { host, statuses } = newHost(t, fake);
+
+  await host.handleRequestMagicLink('locked-standalone@example.com');
+  await host.handleVerify('locked-standalone@example.com', '123456');
+  const client = host.getClient();
+
+  fake.helpers.lockAccount('locked-standalone@example.com');
+  statuses.length = 0;
+  await host.handleGetStatus();
+  const lockedStatus = statuses[statuses.length - 1];
+  assert.equal(lockedStatus.locked, true);
+  assert.equal(typeof lockedStatus.strikes, 'number');
+
+  const lockedAttempt = await client.generateAttempt({
+    idempotencyKey: 'locked-attempt-1',
+    boardType: 'objects_01',
+    input: {},
+  });
+  assert.equal(lockedAttempt.ok, false);
+  assert.equal(lockedAttempt.error.kind, 'account_locked');
+
+  fake.helpers.unlockAccount('locked-standalone@example.com');
+  const beforeBlock = (await client.getStatus()).value.credits;
+  fake.helpers.blockNextPrompt();
+  const blocked = await client.generateAttempt({
+    idempotencyKey: 'blocked-attempt-1',
+    boardType: 'objects_01',
+    input: {},
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.kind, 'content_blocked');
+  const afterBlock = (await client.getStatus()).value.credits;
+  assert.equal(afterBlock, beforeBlock, 'a blocked prompt must never change the balance');
+});
