@@ -44,42 +44,8 @@
 // themeGenerationBridge.mjs's header for the load-time guarantee this relies
 // on).
 
-import fsSync from 'node:fs';
-import path from 'node:path';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import * as genBridge from './themeGenerationBridge.mjs';
-import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore } from './themeMessages.mjs';
-
-// ── imageModels.ts bridge (out/src/extension/imageModels.js) ───────────────
-// Same lazy-createRequire posture as themeGenerationBridge.mjs/server.mjs's
-// imageModelsModule() (see their module headers): this module never touches
-// 'out/' at import time, only the first call that actually needs
-// resolveImageQuality() pays the require() cost. Reused here (rather than
-// reimplementing the low/medium/high allowlist) so buildImageOptions()'s
-// quality validation can never drift from imageClient.ts's
-// generateThemeImage()/resolveImageQuality() — the same function the VS Code
-// extension host calls.
-const __themeGenMsgFilename = fileURLToPath(import.meta.url);
-const __themeGenMsgDirname = path.dirname(__themeGenMsgFilename);
-const REPO_ROOT = path.resolve(__themeGenMsgDirname, '..', '..');
-const IMAGE_MODELS_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'imageModels.js');
-const requireCompiledModule = createRequire(import.meta.url);
-
-let _imageModelsModule;
-function imageModelsModule() {
-  if (!_imageModelsModule) {
-    if (!fsSync.existsSync(IMAGE_MODELS_JS)) {
-      throw new Error(
-        `[tycoonagents-standalone] themeGenerationMessages: out/src/extension/imageModels.js not found at ${IMAGE_MODELS_JS}. ` +
-          'The compiled `out/` directory is missing or stale — run `npx tsc -p .` from the repo root first, then ' +
-          'restart the standalone server.',
-      );
-    }
-    _imageModelsModule = requireCompiledModule(IMAGE_MODELS_JS);
-  }
-  return _imageModelsModule;
-}
+import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore, isThemeId } from './themeMessages.mjs';
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -114,43 +80,22 @@ function buildThemeInitPayload(manifest, frames, isEditorMode) {
 }
 
 /**
- * Translates server.mjs's getThemeImageConfig() output
- * (`{ provider, openaiApiKey, geminiApiKey }`, matching imageClient.ts's
- * `ThemeImageConfig`) into the shape themeService.ts's generation functions
- * actually accept (`ThemeImageGenerationOptions`: `{ provider, apiKey, ... }`
- * — see src/extension/imageClient.ts). This is the wire-shape ambiguity the
- * task brief flagged: panel.ts never passes ThemeImageConfig directly either
- * — it resolves a single provider+apiKey pair via resolveThemeImageSettings
- * first. `requestedProvider` (a message payload's optional `image_provider`
- * field) overrides the configured default, same as panel.ts's
- * `resolveThemeImageSettings(secrets, payload?.image_provider)`.
+ * p44-t2: image generation no longer takes a provider/apiKey/quality at
+ * all — themeService.ts's ThemeImageGenerationOptions is just
+ * `{ aspectRatio?, signal?, referenceImages?, transparentBackground? }`
+ * (src/extension/themeService.ts). Provider selection now lives entirely on
+ * the Corsair Theme Service side of the wired ThemeImageGenerator
+ * (themeGenerationBridge.mjs's wireThemeServiceGeneration, installed once at
+ * server startup). This mirrors panel.ts's GENERATE_THEME branch, which
+ * builds `imageOptions` as just `{ signal }` — see that branch's comment
+ * "payload.image_provider is unused now — planning routes through the Theme
+ * Service (p43-t7), not a user-chosen text provider," which applies equally
+ * here. `extra` merges in per-call fields (e.g. `{ signal }`).
  *
- * Also resolves the OpenAI-only `quality` field (mirrors panel.ts's
- * `resolveThemeImageSettings()` -> `imageOptions.quality = imageSettings.quality`
- * — see src/host/vscode/panel.ts's GENERATE_THEME branch): 'low' | 'medium' |
- * 'high', validated via the same resolveImageQuality() the extension uses
- * (never reimplemented), and left `undefined` for 'gemini' since Gemini has
- * no `quality` parameter and must never receive one.
- *
- * @param {() => { provider: 'openai'|'gemini', openaiApiKey?: string, geminiApiKey?: string, openaiQuality?: string }} getThemeImageConfig
- * @param {unknown} requestedProvider
- * @param {object} [extra] merged in last (e.g. `{ signal }`)
+ * @param {object} [extra]
  */
-function buildImageOptions(getThemeImageConfig, requestedProvider, extra = {}) {
-  const config = getThemeImageConfig();
-  const provider = requestedProvider === 'gemini' || requestedProvider === 'openai' ? requestedProvider : config.provider;
-  const apiKey = provider === 'gemini' ? config.geminiApiKey : config.openaiApiKey;
-  const quality = provider === 'openai' ? imageModelsModule().resolveImageQuality(config.openaiQuality) : undefined;
-  return { provider, apiKey, quality, ...extra };
-}
-
-function requireApiKey(imageOptions) {
-  if (imageOptions.apiKey) return;
-  const label = imageOptions.provider === 'openai' ? 'OpenAI' : 'Google Gemini';
-  throw new Error(
-    `No ${label} API key found. Set TYCOON_OPENAI_API_KEY or TYCOON_GEMINI_API_KEY in the standalone's ` +
-      'environment (see README.md).',
-  );
+function buildImageOptions(extra = {}) {
+  return { ...extra };
 }
 
 /** Mirrors panel.ts's `_waitForThemeImageAcceptance` exactly (same
@@ -191,7 +136,7 @@ function waitForThemeImageAcceptance(themeId, itemId, signal, options) {
 
 // ── PLAN_THEME -> THEME_PLAN_READY | THEME_PLAN_ERROR ──────────────────────
 // Mirrors panel.ts's MSG.PLAN_THEME branch.
-export async function handlePlanTheme(store, broadcast, getThemeImageConfig, payload) {
+export async function handlePlanTheme(store, broadcast, payload) {
   try {
     if (themeGenerationActive) {
       throw new Error('Wait for the current theme generation to finish before planning another theme.');
@@ -199,18 +144,13 @@ export async function handlePlanTheme(store, broadcast, getThemeImageConfig, pay
     const prompt = (payload?.prompt ?? '').trim();
     if (!prompt) throw new Error('Enter a theme name or description first.');
     // p43-t7 rerouted theme planning through the Corsair Theme Service's
-    // POST /api/plan (translator.ts's ThemePlanRequester seam) — the
-    // extension host wires that up (panel.ts's setThemePlanRequester); the
-    // standalone never does. No provider API key applies here any more —
-    // the image-generation-only key/quality resolution helpers further
-    // below in this file are a separate call path (see
-    // docs/theme-service-api.md's Generation section). Fail fast with the
-    // same p44-parity message handleGenerateTheme already uses for images,
-    // rather than restoring a provider secret-env-var read.
-    throw new Error(
-      'Theme Service planning not wired in standalone yet (see plan p44 for parity work). ' +
-        'Use the VS Code extension host to plan a theme for now.',
-    );
+    // POST /api/plan (translator.ts's ThemePlanRequester seam); p44-t2 wires
+    // that seam here too (server.mjs's wireThemeServiceGeneration call, next
+    // to configureThemeFileStore). payload.image_provider is unused now —
+    // planning routes through the Theme Service, not a user-chosen text
+    // provider (mirrors panel.ts's MSG.PLAN_THEME branch exactly).
+    const plan = await genBridge.planTheme(prompt, {});
+    broadcast('message', { type: MSG_WIRE.THEME_PLAN_READY, payload: { plan } });
   } catch (err) {
     broadcast('message', { type: MSG_WIRE.THEME_PLAN_ERROR, payload: { message: String(err) } });
   }
@@ -224,7 +164,7 @@ export async function handlePlanTheme(store, broadcast, getThemeImageConfig, pay
 // already `.catch()`s this the same way it does every other handler, and
 // every intermediate step streams over SSE via broadcast() rather than
 // blocking the POST /message response.
-export async function handleGenerateTheme(store, broadcast, getThemeImageConfig, payload) {
+export async function handleGenerateTheme(store, broadcast, payload) {
   if (themeGenerationActive) {
     broadcast('message', {
       type: MSG_WIRE.THEME_GENERATION_ERROR,
@@ -244,27 +184,44 @@ export async function handleGenerateTheme(store, broadcast, getThemeImageConfig,
     }
     if (resumeThemeId) generatedThemeId = resumeThemeId;
     themePauseForReview = payload?.pause_for_review !== false;
-    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider, {
-      signal: abortController.signal,
+    // p44-t2: image generation routes through the Corsair Theme Service via
+    // the ThemeImageGenerator seam wired at server startup
+    // (wireThemeServiceGeneration) — mirrors panel.ts's MSG.GENERATE_THEME
+    // branch exactly, including the resume_theme_id path and the
+    // pause-for-review waitForReview gate below.
+    const imageOptions = buildImageOptions({ signal: abortController.signal });
+    const onProgress = (msg) => broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: msg } });
+    const onReviewReady = (themeId) => {
+      generatedThemeId = themeId;
+      broadcast('message', { type: MSG_WIRE.THEME_REVIEW_READY, payload: { theme_id: themeId } });
+    };
+    const waitForReview = (themeId, itemId, reviewOptions) =>
+      themePauseForReview || reviewOptions?.requiresReplacement
+        ? waitForThemeImageAcceptance(themeId, itemId, abortController.signal, reviewOptions)
+        : undefined;
+    const result = resumeThemeId
+      ? await genBridge.resumeThemeGeneration(
+          store,
+          resumeThemeId,
+          onProgress,
+          () => abortController.signal.aborted,
+          onReviewReady,
+          imageOptions,
+          waitForReview,
+        )
+      : await genBridge.generateTheme(
+          store,
+          plan,
+          onProgress,
+          () => abortController.signal.aborted,
+          onReviewReady,
+          imageOptions,
+          waitForReview,
+        );
+    broadcast('message', {
+      type: MSG_WIRE.THEME_INITIALIZED,
+      payload: buildThemeInitPayload(result.manifest, result.frames, true),
     });
-    requireApiKey(imageOptions);
-
-    // p43-t1 rerouted the real pipeline's image generation through an
-    // injected ThemeImageGenerator seam (src/extension/themeService.js's
-    // setThemeImageGenerator/currentThemeImageGenerator) that only the
-    // extension host wires up (Corsair Theme Service client). The
-    // standalone never calls setThemeImageGenerator, so every board would
-    // throw a `ThemeGenerationServiceError({kind:'unavailable'})` on its
-    // FIRST image and then hang forever: generateAndReviewThemeItem's catch
-    // records the error and awaits waitForReview(..., {requiresReplacement:
-    // true}) for a replacement image nothing in standalone can ever supply.
-    // Fail fast here instead, before entering that pipeline at all.
-    // Standalone theme-image-generation parity is tracked as plan p44 — this
-    // is the deliberate interim behavior, not a bug to silently swallow.
-    throw new Error(
-      'Theme Service generation not wired in standalone yet (see plan p44 for parity work). ' +
-        'Use the VS Code extension host to generate theme images for now.',
-    );
   } catch (err) {
     if (abortController.signal.aborted) {
       broadcast('message', {
@@ -291,7 +248,7 @@ export async function handleGenerateTheme(store, broadcast, getThemeImageConfig,
 // optional character_name rename and the retry-during-active-generation gate
 // interplay (replacement / generatedReplacementReady / auto-accept when
 // pause-for-review is off).
-export async function handleRetryThemeImage(store, broadcast, getThemeImageConfig, payload) {
+export async function handleRetryThemeImage(store, broadcast, payload) {
   const themeId = payload?.theme_id ?? '';
   const itemId = payload?.item_id ?? '';
   if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
@@ -313,10 +270,9 @@ export async function handleRetryThemeImage(store, broadcast, getThemeImageConfi
   if (retryingDuringActiveGeneration) themeGenerationGateRetryActive = true;
 
   try {
-    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider, {
+    const imageOptions = buildImageOptions({
       signal: retryingDuringActiveGeneration ? themeGenerationAbortController?.signal : undefined,
     });
-    requireApiKey(imageOptions);
 
     const retryMode =
       payload?.mode === 'replace'
@@ -459,7 +415,7 @@ export async function handleResliceThemeImage(store, broadcast, payload) {
 // ── NORMALIZE_THEME_CHARACTER -> THEME_CHARACTER_NORMALIZE_STATE* /
 //    THEME_IMAGE_REVIEW / THEME_INITIALIZED
 // Mirrors panel.ts's MSG.NORMALIZE_THEME_CHARACTER branch.
-export async function handleNormalizeThemeCharacter(store, broadcast, getThemeImageConfig, payload) {
+export async function handleNormalizeThemeCharacter(store, broadcast, payload) {
   const themeId = payload?.theme_id ?? '';
   const itemId = payload?.item_id ?? '';
   if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
@@ -481,10 +437,9 @@ export async function handleNormalizeThemeCharacter(store, broadcast, getThemeIm
   if (normalizingDuringActiveGeneration) themeGenerationGateRetryActive = true;
 
   try {
-    const imageOptions = buildImageOptions(getThemeImageConfig, payload?.image_provider, {
+    const imageOptions = buildImageOptions({
       signal: normalizingDuringActiveGeneration ? themeGenerationAbortController?.signal : undefined,
     });
-    if (!imageOptions.apiKey) throw new Error('The selected image provider has no saved API key.');
 
     broadcast('message', {
       type: MSG_WIRE.THEME_CHARACTER_NORMALIZE_STATE,
@@ -684,17 +639,18 @@ export async function handleSetThemeCreativeDirection(store, broadcast, payload)
  * every *_descriptions field from the plan's current creative_direction, then
  * refresh the review payload (now carrying the new descriptions and a
  * cleared descriptionsStale flag) before the *_RESULT reply. */
-export async function handleRegenerateThemeDescriptions(store, broadcast, getThemeImageConfig, payload) {
+export async function handleRegenerateThemeDescriptions(store, broadcast, payload) {
   const themeId = payload?.theme_id ?? '';
   if (!isThemeId(themeId)) return;
   try {
-    // p43-t7: same Theme Service /api/plan reroute as handlePlanTheme above
-    // — not wired in standalone yet (plan p44). Fail fast instead of
-    // reading a provider API key.
-    throw new Error(
-      'Theme Service description regeneration not wired in standalone yet (see plan p44 for parity work). ' +
-        'Use the VS Code extension host for now.',
-    );
+    // p43-t7 rerouted this through the Theme Service's POST /api/plan
+    // (translator.ts's ThemePlanRequester seam, wired at server startup by
+    // wireThemeServiceGeneration — see handlePlanTheme above). Mirrors
+    // panel.ts's MSG.REGENERATE_THEME_DESCRIPTIONS branch exactly, including
+    // the review resync BEFORE the *_RESULT reply.
+    await genBridge.regenerateThemeDescriptions(store, themeId, {});
+    await handleGetThemeImageReview(store, broadcast, themeId);
+    broadcast('message', { type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT, payload: { ok: true, theme_id: themeId } });
   } catch (err) {
     broadcast('message', {
       type: MSG_WIRE.THEME_DESCRIPTIONS_REGENERATE_RESULT,

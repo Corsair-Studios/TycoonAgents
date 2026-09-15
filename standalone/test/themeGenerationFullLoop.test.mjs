@@ -1,26 +1,29 @@
-// TycoonAgents standalone — coverage for GENERATE_THEME's fail-fast guard
-// after p43-t1 rerouted the real themeService.ts pipeline's image
-// generation through an injected ThemeImageGenerator seam
-// (setThemeImageGenerator/currentThemeImageGenerator in
-// out/src/extension/themeService.js) that only the VS Code extension host
-// wires up (the Corsair Theme Service client). The standalone never calls
-// setThemeImageGenerator, so every real generation attempt threw a
-// `ThemeGenerationServiceError({kind:'unavailable'})` on its FIRST image and
-// then hung FOREVER: generateAndReviewThemeItem's catch recorded the error
-// and awaited waitForReview(..., {requiresReplacement: true}) for a
-// replacement image nothing in standalone could ever supply — no operator,
-// no review UI, no timeout. `npm run package`'s `npm run test:standalone`
-// step hung indefinitely on this file as a result.
+// TycoonAgents standalone — smoke coverage for p44-t2, which wired
+// PLAN_THEME/GENERATE_THEME through the Corsair Theme Service
+// (themeGenerationBridge.mjs's wireThemeServiceGeneration, installed by
+// server.mjs's startServer() right after themeServiceHostInstance is
+// created). This file previously asserted the p44-parity fail-fast guard
+// ("not wired in standalone yet") that handlePlanTheme/handleGenerateTheme
+// threw before this task — that guard is gone now that both routes call
+// through to setThemeImageGenerator/setThemePlanRequester like panel.ts
+// does. This test only asserts the handlers no longer produce that
+// standalone-specific gap message — it does not stand up a fake Theme
+// Service client end-to-end (that's p44-t4, owned by testing-specialist).
+// With no ThemeImageGenerator/ThemePlanRequester wired at all (neither
+// handler here calls wireThemeServiceGeneration), themeService.ts's/
+// translator.ts's own "not configured"/`ThemeGenerationServiceError`/
+// `ThemePlanServiceError` still fires — that's a DIFFERENT failure than the
+// standalone-specific guard this file used to assert, so the assertion
+// below only checks the old message is gone, not that generation succeeds.
 //
-// This file used to drive the REAL PLAN -> GENERATE -> EDIT -> APPROVE ->
-// EXPORT loop end-to-end against a mocked fetch (see git history for that
-// version). Standalone theme-image-generation parity is tracked as plan
-// p44; until that lands, handleGenerateTheme fails fast BEFORE entering the
-// real pipeline (see themeGenerationMessages.mjs's handleGenerateTheme,
-// right after requireApiKey), which this test now asserts directly instead
-// of exercising a path standalone cannot complete. When p44 wires a real (or
-// test-double) ThemeImageGenerator into the standalone, this file should be
-// restored to the full authoring-loop coverage described above.
+// GENERATE_THEME's first board-image failure (unwired -> `kind:
+// 'unavailable'`) makes generateAndReviewThemeItem's catch await
+// waitForReview(..., {requiresReplacement: true}) for a replacement no
+// operator can ever supply — same shape as the hang this file used to
+// guard against, just one level down the stack now. Cancelling
+// (CANCEL_THEME_GENERATION) immediately resolves that wait via the abort
+// signal, so the test below fires the cancel synchronously right after
+// starting generation rather than awaiting the call outright.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,7 +32,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createFsThemeFileStore } from '../src/themeFileStoreFs.mjs';
 import { configureThemeFileStore } from '../src/themeGenerationBridge.mjs';
-import { handlePlanTheme, handleGenerateTheme, resetThemeGenerationStateForTests } from '../src/themeGenerationMessages.mjs';
+import {
+  handlePlanTheme,
+  handleGenerateTheme,
+  handleCancelThemeGeneration,
+  resetThemeGenerationStateForTests,
+} from '../src/themeGenerationMessages.mjs';
 
 function mkTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-fullloop-'));
@@ -45,11 +53,7 @@ function callsOfType(calls, type) {
   return calls.filter((c) => c.data?.type === type);
 }
 
-function getThemeImageConfig() {
-  return { provider: 'openai', openaiApiKey: 'test-key', geminiApiKey: undefined };
-}
-
-test('GENERATE_THEME fails fast with a clear message instead of hanging (standalone has no ThemeImageGenerator wired — plan p44)', async (t) => {
+test('GENERATE_THEME/PLAN_THEME no longer fail with the retired "not wired in standalone" guard', async (t) => {
   const root = mkTempRoot();
   resetThemeGenerationStateForTests();
   const store = createFsThemeFileStore(root);
@@ -60,9 +64,6 @@ test('GENERATE_THEME fails fast with a clear message instead of hanging (standal
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // A minimal, already-normalized plan shape is enough — GENERATE_THEME
-  // must reject before ever touching the real generation pipeline, so no
-  // fetch/network mocking is needed here at all.
   const plan = {
     display_name: 'Cozy Pixel Bakery',
     creative_direction: 'warm pastel bakery vibes',
@@ -76,32 +77,28 @@ test('GENERATE_THEME fails fast with a clear message instead of hanging (standal
   };
 
   const genCalls = [];
-  await handleGenerateTheme(store, fakeBroadcast(genCalls), getThemeImageConfig, {
-    plan,
-    pause_for_review: false,
-    image_provider: 'openai',
-  });
+  const genPromise = handleGenerateTheme(store, fakeBroadcast(genCalls), { plan, pause_for_review: false });
+  // Fires before the pipeline's first await point resolves (see module
+  // header) — cancels rather than hangs on the unwired review gate.
+  handleCancelThemeGeneration(fakeBroadcast(genCalls));
+  await genPromise;
+  const genMessages = [...callsOfType(genCalls, 'THEME_GENERATION_ERROR'), ...callsOfType(genCalls, 'THEME_GENERATION_CANCELLED')];
+  assert.ok(genMessages.length > 0, 'GENERATE_THEME must terminate (error or cancelled), never hang');
+  for (const msg of genMessages) {
+    assert.doesNotMatch(
+      msg.data.payload.message,
+      /not wired in standalone/i,
+      'the p44-parity fail-fast guard must be gone — GENERATE_THEME now calls through to themeService.ts',
+    );
+  }
 
-  assert.equal(callsOfType(genCalls, 'THEME_GENERATION_CANCELLED').length, 0, 'this is a config failure, not a cancellation');
-  assert.equal(callsOfType(genCalls, 'THEME_REVIEW_READY').length, 0, 'must fail before any board is reviewed');
-  assert.equal(callsOfType(genCalls, 'THEME_INITIALIZED').length, 0, 'must fail before a theme is initialized');
-  const genError = callsOfType(genCalls, 'THEME_GENERATION_ERROR')[0];
-  assert.ok(genError, 'THEME_GENERATION_ERROR broadcast');
-  assert.match(
-    genError.data.payload.message,
-    /not wired in standalone/i,
-    'error names the standalone-specific gap, not a generic failure',
-  );
-
-  // PLAN_THEME (p43-t7) now routes through the same Theme Service
-  // /api/plan reroute as GENERATE_THEME's images — also unwired in
-  // standalone (plan p44) — so it fails fast with the same style of
-  // message rather than any provider API-key check (that check is gone).
   const planCalls = [];
-  await handlePlanTheme(store, fakeBroadcast(planCalls), () => ({ provider: 'openai', openaiApiKey: undefined }), {
-    prompt: 'A cozy pixel-art bakery tycoon',
-  });
+  await handlePlanTheme(store, fakeBroadcast(planCalls), { prompt: 'A cozy pixel-art bakery tycoon' });
   const planError = callsOfType(planCalls, 'THEME_PLAN_ERROR')[0];
   assert.ok(planError, 'THEME_PLAN_ERROR broadcast');
-  assert.match(planError.data.payload.message, /not wired in standalone/i);
+  assert.doesNotMatch(
+    planError.data.payload.message,
+    /not wired in standalone/i,
+    'the p44-parity fail-fast guard must be gone — PLAN_THEME now calls through to translator.ts',
+  );
 });

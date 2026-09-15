@@ -40,6 +40,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const THEME_SERVICE_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'themeService.js');
 const THEME_FILE_STORE_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'themeFileStore.js');
 const THEME_IMAGE_RETRY_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'themeImageRetry.js');
+const TRANSLATOR_JS = path.join(REPO_ROOT, 'out', 'src', 'extension', 'translator.js');
 
 const require = createRequire(import.meta.url);
 
@@ -76,6 +77,31 @@ function themeImageRetryModule() {
     _themeImageRetryModule = requireCompiled(THEME_IMAGE_RETRY_JS, 'out/src/extension/themeImageRetry.js');
   }
   return _themeImageRetryModule;
+}
+
+let _translatorModule;
+function translatorModule() {
+  if (!_translatorModule) {
+    _translatorModule = requireCompiled(TRANSLATOR_JS, 'out/src/extension/translator.js');
+  }
+  return _translatorModule;
+}
+
+/**
+ * Standalone analog of panel.ts's startup wiring (p44-t2):
+ *   setThemeImageGenerator(createServiceImageGenerator(host.getClient()));
+ *   setThemePlanRequester(createServicePlanRequester(host.getClient()));
+ * Installs both seams so themeService.ts's generateBoardImage()/planTheme()/
+ * regenerateThemeDescriptionsFromPlan() route through the real Corsair Theme
+ * Service client instead of throwing "no generator/requester configured".
+ * Call exactly once, right after themeServiceHostInstance is created in
+ * server.mjs's startServer() — see that call site for why it must run even
+ * when host options are injected by tests (the returned client is a fake in
+ * that case, and this wiring is what makes the fake reachable at all).
+ */
+export function wireThemeServiceGeneration(client) {
+  themeServiceModule().setThemeImageGenerator(themeServiceModule().createServiceImageGenerator(client));
+  translatorModule().setThemePlanRequester(translatorModule().createServicePlanRequester(client));
 }
 
 /**

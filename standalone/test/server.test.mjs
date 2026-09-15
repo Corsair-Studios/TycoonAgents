@@ -26,7 +26,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { startServer, ServerStartError, getThemeImageConfig, seedBundledThemesIntoStore } from '../src/server.mjs';
+import { startServer, ServerStartError, seedBundledThemesIntoStore } from '../src/server.mjs';
 import { ProjectRootError } from '../src/projectRoots.mjs';
 import { createFsThemeFileStore } from '../src/themeFileStoreFs.mjs';
 import { themesDirectoryPath } from '../src/themeFileStoreFs.mjs';
@@ -286,91 +286,10 @@ test('startServer: resolves appData + themeDataDir honoring TYCOON_STANDALONE_DA
   try {
     assert.equal(runtime.appData.dir, path.resolve(dataDir));
     assert.equal(runtime.themeDataDir, path.join(path.resolve(dataDir), 'themes'));
-    // Config shape matches ThemeImageConfig; no keys set -> defaults to
-    // provider only, no key properties present.
-    const config = runtime.getThemeImageConfig();
-    assert.deepEqual(config, { provider: 'openai', geminiModel: '', openaiModel: '', openaiQuality: '' });
   } finally {
     await runtime.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
-});
-
-test('startServer: getThemeImageConfig() picks up TYCOON_OPENAI_API_KEY / TYCOON_GEMINI_API_KEY / TYCOON_THEME_IMAGE_PROVIDER', async () => {
-  const projectRoot = mkTempProject();
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-appdata-'));
-  const runtime = await startServer({
-    argv: [projectRoot],
-    env: {
-      TYCOON_STANDALONE_PORT: '0',
-      TYCOON_STANDALONE_DATA_DIR: dataDir,
-      TYCOON_THEME_IMAGE_PROVIDER: 'gemini',
-      TYCOON_OPENAI_API_KEY: 'sk-test-openai',
-      TYCOON_GEMINI_API_KEY: 'test-gemini-key',
-    },
-    cwd: projectRoot,
-  });
-  try {
-    const config = runtime.getThemeImageConfig();
-    assert.deepEqual(config, {
-      provider: 'gemini',
-      openaiApiKey: 'sk-test-openai',
-      geminiApiKey: 'test-gemini-key',
-      geminiModel: '',
-      openaiModel: '',
-      openaiQuality: '',
-    });
-  } finally {
-    await runtime.close();
-    fs.rmSync(dataDir, { recursive: true, force: true });
-  }
-});
-
-test('getThemeImageConfig: standalone unit calls (no server) default provider to openai, omit unset keys', () => {
-  assert.deepEqual(getThemeImageConfig({ env: {} }), { provider: 'openai', geminiModel: '', openaiModel: '', openaiQuality: '' });
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'gemini' } }), { provider: 'gemini', geminiModel: '', openaiModel: '', openaiQuality: '' });
-  // Unrecognized provider values fall back to 'openai', same as the
-  // extension's normalizeThemeImageProvider().
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'bogus' } }), { provider: 'openai', geminiModel: '', openaiModel: '', openaiQuality: '' });
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_OPENAI_API_KEY: 'abc' } }), {
-    provider: 'openai',
-    openaiApiKey: 'abc',
-    geminiModel: '',
-    openaiModel: '',
-    openaiQuality: '',
-  });
-});
-
-test('getThemeImageConfig: env overrides an appData-persisted provider', () => {
-  const fakeAppData = { readJson: () => ({ provider: 'gemini' }) };
-  // No env provider set -> falls back to the persisted 'gemini'.
-  assert.deepEqual(getThemeImageConfig({ env: {}, appData: fakeAppData }), { provider: 'gemini', geminiModel: '', openaiModel: '', openaiQuality: '' });
-  // Explicit env provider always wins over the persisted value.
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_THEME_IMAGE_PROVIDER: 'openai' }, appData: fakeAppData }), {
-    provider: 'openai',
-    geminiModel: '',
-    openaiModel: '',
-    openaiQuality: '',
-  });
-});
-
-test('getThemeImageConfig: TYCOON_OPENAI_IMAGE_QUALITY env var is picked up as the RAW candidate (unresolved)', () => {
-  // getThemeImageConfig() stores the raw candidate; resolveImageQuality()
-  // validation happens in callers (handleSaveThemeImageSettings / buildImageOptions).
-  assert.deepEqual(getThemeImageConfig({ env: { TYCOON_OPENAI_IMAGE_QUALITY: 'high' } }), {
-    provider: 'openai',
-    geminiModel: '',
-    openaiModel: '',
-    openaiQuality: 'high',
-  });
-});
-
-test('getThemeImageConfig: persisted openaiQuality wins over TYCOON_OPENAI_IMAGE_QUALITY env fallback', () => {
-  const fakeAppData = { readJson: () => ({ openaiQuality: 'low' }) };
-  assert.deepEqual(
-    getThemeImageConfig({ env: { TYCOON_OPENAI_IMAGE_QUALITY: 'high' }, appData: fakeAppData }),
-    { provider: 'openai', geminiModel: '', openaiModel: '', openaiQuality: 'low' },
-  );
 });
 
 // ── Browser boot handshake (checkInstall / ready) ───────────────────────────
