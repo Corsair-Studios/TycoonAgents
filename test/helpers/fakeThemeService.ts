@@ -30,6 +30,12 @@ export interface Account {
   id: string;
   email: string;
   role: string;
+  locked: boolean;
+}
+
+interface StrikeRow {
+  accountId: string;
+  createdAt: number;
 }
 
 export interface LedgerRow {
@@ -65,6 +71,7 @@ export interface FakeThemeServiceState {
   generateRequests: GenerateRecord[];
   planRequests: PlanRecord[];
   pricing: Pricing;
+  strikes: StrikeRow[];
 }
 
 export interface FakeThemeServiceOptions {
@@ -96,6 +103,8 @@ const DEFAULT_PRICING: Pricing = {
 
 const DEFAULT_OTP_CODE = "123456";
 const ACCESS_TOKEN_TTL_SECONDS = 3600;
+const STRIKE_LOCK_THRESHOLD = 3;
+const STRIKE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -144,6 +153,13 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
     grant(accountId: string, credits: number, ref?: string): LedgerRow | undefined;
     failNextGenerate(): void;
     failNextPlan(): void;
+    /** Provider content-policy refusal (distinct from failNextGenerate's generic provider_failed outage): refunds the attempt exactly like failNextGenerate AND writes one account_strikes row — see docs/theme-service-api.md "Strikes and account lock". */
+    failNextGenerateWithPolicy(): void;
+    /** Next /api/generate or /api/plan call returns 422 content_blocked with no ledger entry (no debit, no refund) — docs/theme-service-api.md "Content screening". */
+    blockNextPrompt(): void;
+    /** Manually locks the account (as the STRIKE_LOCK_THRESHOLD auto-lock would); locked accounts get 403 account_locked on /api/generate, /api/plan, /api/store/checkout. */
+    lockAccount(email: string): void;
+    unlockAccount(email: string): void;
     setUnavailable(unavailable: boolean): void;
     completeGoogleInBrowser(): Promise<string>;
     completeCheckout(sessionId: string): LedgerRow | undefined;
@@ -178,11 +194,14 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
     generateRequests: [],
     planRequests: [],
     pricing,
+    strikes: [],
   };
 
   let unavailable = false;
   let failNextGenerateOnce = false;
   let failNextPlanOnce = false;
+  let failNextGenerateWithPolicyOnce = false;
+  let blockNextPromptOnce = false;
   // sessionId used by startGoogleSignIn's authorize call, held so
   // completeGoogleInBrowser (no args) can find the most recent one.
   let lastGoogleAuthCode: string | null = null;
@@ -191,11 +210,24 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
   function getOrCreateAccountByEmail(email: string): Account {
     const existingId = state.accountsByEmail.get(email);
     if (existingId) return state.accounts.get(existingId)!;
-    const account: Account = { id: nextId("acct"), email, role: "user" };
+    const account: Account = { id: nextId("acct"), email, role: "user", locked: false };
     state.accounts.set(account.id, account);
     state.accountsByEmail.set(email, account.id);
     state.balances.set(account.id, 0);
     return account;
+  }
+
+  function strikesWithin24h(accountId: string): number {
+    const cutoff = now() - STRIKE_WINDOW_MS;
+    return state.strikes.filter((s) => s.accountId === accountId && s.createdAt >= cutoff).length;
+  }
+
+  function recordStrike(accountId: string): void {
+    state.strikes.push({ accountId, createdAt: now() });
+    if (strikesWithin24h(accountId) >= STRIKE_LOCK_THRESHOLD) {
+      const account = state.accounts.get(accountId);
+      if (account) account.locked = true;
+    }
   }
 
   function issueSession(accountId: string): { access_token: string; refresh_token: string; expires_in: number; user: { id: string; email: string } } {
@@ -345,12 +377,19 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       if (path === "/api/account" && method === "GET") {
         const account = accountForBearer(headers.get("Authorization"));
         if (!account) return jsonResponse(401, { error: "not_signed_in" });
-        return jsonResponse(200, { email: account.email, role: account.role, credits: balanceOf(account.id) });
+        return jsonResponse(200, {
+          email: account.email,
+          role: account.role,
+          credits: balanceOf(account.id),
+          locked: account.locked,
+          strikes: strikesWithin24h(account.id),
+        });
       }
 
       if (path === "/api/store/checkout" && method === "POST") {
         const account = accountForBearer(headers.get("Authorization"));
         if (!account) return jsonResponse(401, { error: "not_signed_in" });
+        if (account.locked) return jsonResponse(403, { error: "account_locked" });
         const body = await readJsonBody(init);
         if (!isRecord(body) || typeof body.pack !== "string") return jsonResponse(400, { error: "invalid request" });
         const pack = state.pricing.packs.find((p) => p.id === body.pack);
@@ -363,6 +402,7 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       if (path === "/api/generate" && method === "POST") {
         const account = accountForBearer(headers.get("Authorization"));
         if (!account) return jsonResponse(401, { error: "not_signed_in" });
+        if (account.locked) return jsonResponse(403, { error: "account_locked" });
         const body = await readJsonBody(init);
         if (!isRecord(body) || typeof body.idempotencyKey !== "string") {
           return jsonResponse(400, { error: "invalid request" });
@@ -372,6 +412,14 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         const existing = state.generateRequests.find((r) => r.ref === attemptRef);
         if (existing) {
           return jsonResponse(existing.response.status, existing.response.body);
+        }
+        if (blockNextPromptOnce) {
+          blockNextPromptOnce = false;
+          // Content screening blocks before any debit — no ledger row, no
+          // idempotency-cached generateRequests entry (a retried key is
+          // re-screened, not special-cased — docs/theme-service-api.md
+          // "Content screening").
+          return jsonResponse(422, { error: "content_blocked" });
         }
         const cost = state.pricing.attemptCostByBoardType[boardType] ?? 1;
         const balance = balanceOf(account.id);
@@ -384,13 +432,16 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         state.balances.set(account.id, balance - cost);
         recordLedger({ userId: account.id, delta: -cost, reason: "spend-theme-attempt", ref: attemptRef });
 
-        if (failNextGenerateOnce) {
+        if (failNextGenerateOnce || failNextGenerateWithPolicyOnce) {
+          const isPolicy = failNextGenerateWithPolicyOnce;
           failNextGenerateOnce = false;
+          failNextGenerateWithPolicyOnce = false;
           // Refund.
           const refunded = balanceOf(account.id) + cost;
           state.balances.set(account.id, refunded);
           const refundRef = `refund:${body.idempotencyKey}`;
           recordLedger({ userId: account.id, delta: cost, reason: "refund-theme-attempt", ref: refundRef });
+          if (isPolicy) recordStrike(account.id);
           const respBody = { error: "provider_failed", refunded: true, credits: refunded };
           state.generateRequests.push({ ref: attemptRef, response: { status: 502, body: respBody } });
           return jsonResponse(502, respBody);
@@ -410,6 +461,7 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       if (path === "/api/plan" && method === "POST") {
         const account = accountForBearer(headers.get("Authorization"));
         if (!account) return jsonResponse(401, { error: "not_signed_in" });
+        if (account.locked) return jsonResponse(403, { error: "account_locked" });
         const body = await readJsonBody(init);
         if (
           !isRecord(body) ||
@@ -423,6 +475,10 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         const existingPlan = state.planRequests.find((r) => r.ref === planRef);
         if (existingPlan) {
           return jsonResponse(existingPlan.response.status, existingPlan.response.body);
+        }
+        if (blockNextPromptOnce) {
+          blockNextPromptOnce = false;
+          return jsonResponse(422, { error: "content_blocked" });
         }
         const cost = state.pricing.planCost;
         const balance = balanceOf(account.id);
@@ -491,6 +547,20 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
       },
       failNextPlan() {
         failNextPlanOnce = true;
+      },
+      failNextGenerateWithPolicy() {
+        failNextGenerateWithPolicyOnce = true;
+      },
+      blockNextPrompt() {
+        blockNextPromptOnce = true;
+      },
+      lockAccount(email) {
+        const account = getOrCreateAccountByEmail(email);
+        account.locked = true;
+      },
+      unlockAccount(email) {
+        const account = getOrCreateAccountByEmail(email);
+        account.locked = false;
       },
       setUnavailable(value) {
         unavailable = value;

@@ -555,3 +555,56 @@ test("planRequest requires auth (401 -> not_signed_in when no session)", async (
   assert.equal(res.ok, false);
   if (!res.ok) assert.equal(res.error.kind, "not_signed_in");
 });
+
+test("generateAttempt: 422 content_blocked maps to kind content_blocked, no debit", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("blocked@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("blocked@example.com");
+  await client.verifyMagicLink("blocked@example.com", "123456");
+
+  fake.helpers.blockNextPrompt();
+  const res = await client.generateAttempt({
+    idempotencyKey: "blocked-key",
+    boardType: "objects_01",
+    prompt: "blocked prompt",
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "content_blocked");
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (status.ok) assert.equal(status.value.credits, 5); // no ledger entry
+});
+
+test("generateAttempt: 403 account_locked maps to kind account_locked", async () => {
+  const { fake, client } = setupClient();
+  fake.helpers.createAccount("locked@example.com");
+  await client.requestMagicLink("locked@example.com");
+  await client.verifyMagicLink("locked@example.com", "123456");
+  fake.helpers.lockAccount("locked@example.com");
+
+  const res = await client.generateAttempt({
+    idempotencyKey: "locked-key",
+    boardType: "objects_01",
+    prompt: "x",
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "account_locked");
+});
+
+test("getStatus surfaces locked and strikes from /api/account", async () => {
+  const { fake, client } = setupClient();
+  fake.helpers.createAccount("strikes@example.com");
+  await client.requestMagicLink("strikes@example.com");
+  await client.verifyMagicLink("strikes@example.com", "123456");
+  fake.helpers.lockAccount("strikes@example.com");
+
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (status.ok) {
+    assert.equal(status.value.locked, true);
+    assert.equal(typeof status.value.strikes, "number");
+  }
+});

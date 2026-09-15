@@ -32,6 +32,8 @@ export const SUPABASE_ANON_KEY = "REPLACE_WITH_PROJECT_ANON_KEY";
 export type ThemeServiceErrorKind =
   | "not_signed_in"
   | "insufficient_credits"
+  | "content_blocked"
+  | "account_locked"
   | "rate_limited"
   | "provider_failed"
   | "unavailable"
@@ -89,6 +91,8 @@ export interface ThemeServiceStatus {
   displayName?: string;
   role?: string;
   credits?: number;
+  locked?: boolean;
+  strikes?: number;
 }
 
 export interface ThemeServicePack {
@@ -509,6 +513,16 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
             status: "error",
             error: { kind: "insufficient_credits", status: 402, message: errorField ?? "insufficient credits", credits },
           };
+        case 403:
+          return {
+            status: "error",
+            error: { kind: "account_locked", status: 403, message: errorField ?? "account locked" },
+          };
+        case 422:
+          return {
+            status: "error",
+            error: { kind: "content_blocked", status: 422, message: errorField ?? "content blocked" },
+          };
         case 429:
           return { status: "error", error: { kind: "rate_limited", status: 429, message: errorField ?? "rate limited" } };
         case 502:
@@ -632,6 +646,8 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
           displayName: typeof json.displayName === "string" ? json.displayName : undefined,
           role: json.role,
           credits: json.credits,
+          locked: typeof json.locked === "boolean" ? json.locked : undefined,
+          strikes: typeof json.strikes === "number" ? json.strikes : undefined,
         },
       };
     },

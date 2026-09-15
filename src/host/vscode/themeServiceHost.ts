@@ -37,6 +37,8 @@ export interface ThemeServiceHostStatus {
   email?: string;
   provider?: string;
   credits?: number;
+  locked?: boolean;
+  strikes?: number;
   pricing?: ThemeServicePricing;
   pendingCheckout?: boolean;
   error?: { kind: string; message: string };
@@ -127,6 +129,8 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       email: status.email,
       provider: status.role,
       credits: status.credits,
+      locked: status.locked,
+      strikes: status.strikes,
       pricing: lastCachedPricing,
       pendingCheckout,
     };

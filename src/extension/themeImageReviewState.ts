@@ -125,7 +125,7 @@ export interface ThemeImageReviewItem {
   /** Whether that last attempt was auto-refunded (provider_failed). */
   lastAttemptRefunded?: boolean;
   /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
-  error_kind?: 'not_signed_in' | 'insufficient_credits' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited';
+  error_kind?: 'not_signed_in' | 'insufficient_credits' | 'content_blocked' | 'account_locked' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited';
   /**
    * The Corsair Theme Service pricing key for this board (docs/theme-service-api.md's
    * `attemptCostByBoardType` — e.g. "roster_agent", "objects_01") — see
@@ -251,6 +251,7 @@ export async function setThemeImageReviewErrorKind(
   itemId: string,
   errorKind: NonNullable<ThemeImageReviewItem['error_kind']>,
   refunded?: boolean,
+  attemptCost?: number,
 ): Promise<ThemeImageReviewDocument | undefined> {
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   if (!document) return undefined;
@@ -259,6 +260,7 @@ export async function setThemeImageReviewErrorKind(
   item.status = 'pending';
   item.error_kind = errorKind;
   if (refunded !== undefined) item.lastAttemptRefunded = refunded;
+  if (attemptCost !== undefined) item.attemptCost = attemptCost;
   item.updated_at = new Date().toISOString();
   await writeReviewDocument(globalStorageUri, document);
   return document;

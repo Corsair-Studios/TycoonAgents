@@ -3097,6 +3097,8 @@ function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeIma
   switch (kind) {
     case 'not_signed_in':
     case 'insufficient_credits':
+    case 'content_blocked':
+    case 'account_locked':
     case 'unavailable':
     case 'unreachable':
     case 'provider_failed':
@@ -3114,7 +3116,19 @@ async function recordUserCorrectableGenerationError(
   error: unknown,
 ): Promise<boolean> {
   if (isThemeGenerationServiceError(error)) {
-    await setThemeImageReviewErrorKind(globalStorageUri, themeId, itemId, mapToReviewErrorKind(error.kind), error.refunded);
+    // content_blocked and account_locked are pre-debit failures — the ledger
+    // was never charged (no credit_ledger row at all, see docs/theme-service-api.md
+    // "Content screening" / "Strikes and account lock"), so the attempt cost
+    // recorded here is 0 and it is never a "refund" (nothing to refund).
+    const isBlockedOrLocked = error.kind === 'content_blocked' || error.kind === 'account_locked';
+    await setThemeImageReviewErrorKind(
+      globalStorageUri,
+      themeId,
+      itemId,
+      mapToReviewErrorKind(error.kind),
+      isBlockedOrLocked ? false : error.refunded,
+      isBlockedOrLocked ? 0 : undefined,
+    );
     console.error('TycoonAgents: Theme Service generation attempt failed.', {
       themeId,
       itemId,
