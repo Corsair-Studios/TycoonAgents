@@ -70,7 +70,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 ## What's shipped
 
 - **Bundled theme.** "Survivors vs Zombies" ships inside the VSIX and seeds automatically on first run, so a fresh install has a playable stage out of the box.
-- **Theme Builder.** The primary path on the Themes page — generate a custom theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts through the Corsair Theme Service. Sign-in and credits are coming in a future release; Theme Builder generation isn't available yet.
+- **Theme Builder.** The primary path on the Themes page — generate a custom theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts through the Corsair Theme Service. Opening it prompts you to sign in, then spends credits per generation attempt (see "Sign-in and credits" below).
 - **Import .zip.** The free, offline path, and always available: additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
 - **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
@@ -93,7 +93,7 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 The scene is **user-authored data** — you can generate your own theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts.
 
 1. **Open the Theme Builder** from the Themes panel — it's the primary path for creating a theme.
-2. **Choose a model.** Pick a generation model — it defaults to **Latest (recommended)** and offers older/cheaper tiers if you'd rather save cost. Generation runs through the Corsair Theme Service using credits; sign-in and credits are coming in a future release, so Theme Builder generation isn't available yet.
+2. **Choose a model.** Pick a generation model — it defaults to **Latest (recommended)** and offers older/cheaper tiers if you'd rather save cost. Generation runs through the Corsair Theme Service using credits (see "Sign-in and credits" below).
 3. **Fill the generate form** — theme name, creative direction, and an environment description, plus per-slot editors for the characters (16), objects (21), enemies (4), expressions (8), badges (25), and decor (9).
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
@@ -117,9 +117,13 @@ Prefer to author outside VS Code? There's a **standalone theme host** in [`stand
 
 ### Sign-in and credits
 
-*(rolling out: sign-in and purchases require the Corsair Theme Service, which is not yet live)*
+Opening the Theme Builder for the first time asks you to sign in — by an emailed magic link, or with Google. In the standalone host, Google completes through a local browser callback; if that callback can't reach your browser session, a paste-the-code fallback finishes sign-in instead.
 
-Sign in with Google or an emailed one-time code. Your credit balance shows in the Theme Builder panel and as a chip on the Themes page. Credits are bought in packs through Stripe Checkout, opened in your browser. Each generation attempt costs credits per board — retries cost the same as the original attempt — while re-slicing an existing image is free, and a failed generation is refunded automatically. Imported `.zip` themes and hand-made themes never require an account.
+Credits are what generation costs: every generation attempt spends credits, including retries, priced per board by board type, and the panel shows the cost before each attempt so you're never guessing. As a rough guide, a typical theme takes roughly 14 to 40 credits depending on how many retries your prompts need — output quality tracks prompt quality, so a clear, specific prompt (see "Prompt tips" above) usually costs less than a vague one you keep retrying.
+
+**Buy credits** opens Stripe Checkout in your browser; your balance updates when you return to the panel. Refunds happen automatically only when the service call itself fails (a network or server error) — never for images you generated successfully but don't like, so spend a retry rather than expecting a refund on a result that just missed the mark. Re-slicing an existing image is always free, no matter how many times you do it.
+
+None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. Prompts and generated images only transit the Corsair Theme Service when you're actively generating — nothing else about the extension calls out over the network.
 
 ## Multi-LLM
 

@@ -83,9 +83,7 @@ net on the first theme-generation call.
 | `TYCOON_STANDALONE_PROJECT_ROOT` | Comma-separated project director(y/ies) to watch, used when no CLI directory argument is given. | current working directory |
 | `TYCOON_STANDALONE_DATA_DIR` | Overrides the OS-default app-data directory (`appData.mjs`). | per-OS (see below) |
 | `TYCOON_STANDALONE_NO_OPEN` | Set to `1` to suppress the `watch` command's automatic browser launch. | unset (browser opens) |
-| `TYCOON_OPENAI_API_KEY` | OpenAI (GPT Image) API key for theme image generation. | unset |
-| `TYCOON_GEMINI_API_KEY` | Google Gemini API key for theme image generation. | unset |
-| `TYCOON_THEME_IMAGE_PROVIDER` | Which provider to use: `openai` or `gemini`. | `openai` |
+| — | Theme image generation no longer takes provider API keys here — sign in from the Theme Builder panel (see "Sign-in and credits" in the main [`README.md`](../README.md#custom-themes)). | — |
 
 `TYCOON_STANDALONE_DATA_DIR`'s per-OS default (when unset): `%APPDATA%\TycoonAgents`
 on Windows, `~/Library/Application Support/TycoonAgents` on macOS, and
@@ -144,41 +142,13 @@ node src/cli.mjs install-hook <path-to-project> --opencode
 
 Safe to re-run — a file already present and byte-identical to the repo's copy is left alone. If a destination file exists with *different* content, it refuses and errors rather than overwriting; pass `--force` to overwrite it anyway. If the source files are missing from this repo's `hooks/` directory (the two `.js` files are built by `node scripts/copy-hook-runtime.mjs`, which needs `npx tsc -p .` first), the command fails with an explicit error naming what's missing.
 
-### Theme image generation — API keys
+### Theme image generation — sign-in
 
-The standalone has no OS keychain, so unlike the VS Code extension (which
-stores theme-image API keys in `vscode.SecretStorage`, backed by the OS
-keychain), the standalone reads them from **plain environment variables**:
-
-| Variable | Purpose |
-| --- | --- |
-| `TYCOON_OPENAI_API_KEY` | API key for the `openai` provider (GPT Image). |
-| `TYCOON_GEMINI_API_KEY` | API key for the `gemini` provider (Google Gemini). |
-| `TYCOON_THEME_IMAGE_PROVIDER` | `openai` or `gemini` — which provider is active. Defaults to `openai`. |
-
-```sh
-TYCOON_OPENAI_API_KEY=sk-... TYCOON_THEME_IMAGE_PROVIDER=openai node src/cli.mjs watch <path-to-project>
-```
-
-`server.mjs` exports `getThemeImageConfig()`, which resolves these into the
-same `{ provider, openaiApiKey?, geminiApiKey? }` shape the extension's
-`src/extension/imageClient.ts` (`ThemeImageConfig`) expects, and passes it
-straight into theme image generation unchanged (see
-`standalone/src/themeGenerationMessages.mjs`'s `buildImageOptions()`).
-Environment
-variables are currently the **only** source: `getThemeImageConfig()` also
-accepts an optional appData reader so a persisted `{ provider }` could act as
-a fallback in the future, but no writer exists yet — nothing persists a
-provider choice today, so it does not yet survive a restart without
-re-exporting the env var. An explicit `TYCOON_THEME_IMAGE_PROVIDER` always
-wins over that (currently empty) fallback.
-
-**Security note:** this is a deliberate step-down from the VS Code
-extension's OS-keychain-backed storage. Environment variables are visible to
-other processes on the same machine/user account and are not encrypted at
-rest. Do not commit them to shell history/dotfiles you share, and prefer a
-short-lived shell export or a local `.env`-style loader you keep out of
-version control over hardcoding a key anywhere in this repo.
+Theme image generation no longer takes a provider API key from the
+environment or the OS keychain: sign in from the Theme Builder panel (email
+magic link or Google) and generate against the Corsair Theme Service using
+credits — see "Sign-in and credits" in the main
+[`README.md`](../README.md#custom-themes).
 
 ## Running the theme host end to end
 
@@ -197,11 +167,12 @@ live agent visualization — it is not a separate process or port.
    request fails fast with an actionable "run `npx tsc -p .`" error (see
    `standalone/src/themeGenerationBridge.mjs` / `themeArchive.mjs`).
 
-2. **Set an image-provider API key** (see the table above) and start the
-   server, e.g.:
+2. **Start the server**, then sign in from the Theme Builder panel (email
+   magic link or Google) — see "Sign-in and credits" in the main
+   [`README.md`](../README.md#custom-themes):
 
    ```sh
-   TYCOON_OPENAI_API_KEY=sk-... node src/cli.mjs watch <path-to-project>
+   node src/cli.mjs watch <path-to-project>
    ```
 
 3. **Open the browser tab** the CLI auto-launches (or the printed URL if you
