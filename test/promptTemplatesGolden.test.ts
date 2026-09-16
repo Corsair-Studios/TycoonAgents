@@ -116,7 +116,7 @@ test('PROMPT_TEMPLATE_VERSION matches the golden fixtures\' recorded VERSION', (
 
 for (const [name, req] of Object.entries(REQUESTS)) {
   test(`assembleThemePrompt(${name}) matches its golden fixture byte for byte`, () => {
-    const expected = readFileSync(join(FIXTURES_DIR, `${name}.txt`), 'utf8');
+    const expected = readFileSync(join(FIXTURES_DIR, `${name}.txt`), 'utf8').replace(/\r\n/g, '\n');
     const { prompt, templateVersion } = assembleThemePrompt(req, { walkPoseGuideAttached: true });
     assert.equal(prompt, expected);
     assert.equal(templateVersion, PROMPT_TEMPLATE_VERSION);

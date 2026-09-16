@@ -90,6 +90,6 @@ const requests = {
 writeFileSync(join(DIR, 'VERSION'), `${PROMPT_TEMPLATE_VERSION}\n`, 'utf8');
 for (const [name, req] of Object.entries(requests)) {
   const { prompt } = assembleThemePrompt(req, { walkPoseGuideAttached: true });
-  writeFileSync(join(DIR, `${name}.txt`), prompt, 'utf8');
+  writeFileSync(join(DIR, `${name}.txt`), prompt.replace(/\r\n/g, '\n'), 'utf8');
   console.log('wrote', name);
 }
