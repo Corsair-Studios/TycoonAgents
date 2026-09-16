@@ -1,5 +1,7 @@
 # Corsair Theme Service — Client API Contract (v3)
 
+Operator setup: see theme-service-setup-guide.md
+
 This document is the client-side contract that the private `corsair-theme-service`
 repo must implement. It supersedes v1: the auth model now mirrors Speciary's
 Supabase-Auth-direct approach (`D:\ACode\Speciary`) instead of a bespoke
@@ -443,7 +445,8 @@ shape table above — keep in sync): `bad_request`, `not_signed_in`,
 `STRIPE_PRICE_BUNDLE205`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `SERVICE_ALLOWED_ORIGINS`, `PORT`,
 `STRIKE_LOCK_THRESHOLD` (default `3`), `RATE_LIMIT_ATTEMPTS_PER_MIN`,
-`RATE_LIMIT_ATTEMPTS_PER_DAY`.
+`RATE_LIMIT_ATTEMPTS_PER_DAY`, `PROMPT_MAX_CHARS` (default `4000`),
+`IMAGE_MAX_BYTES` (default `8` MiB).
 
 (Speciary's `render.yaml` sets these as `sync: false` — Render-dashboard
 managed secrets, never committed — plus a plaintext `SERVICE_ALLOWED_ORIGINS`
