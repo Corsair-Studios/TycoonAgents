@@ -21,6 +21,7 @@ import {
   mergeManagedSubagentDepthEnv,
   syncRuntimeFile,
   RUNTIME_HOOK_FILES,
+  enableMcpJsonServerInSettings,
 } from "../src/host/vscode/hookInstall";
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
@@ -827,4 +828,64 @@ test("RUNTIME_HOOK_FILES includes the hook script and its known runtime companio
   assert.ok(RUNTIME_HOOK_FILES.includes("modelAliases.js"));
   assert.ok(RUNTIME_HOOK_FILES.includes("delegationEnforcement.js"));
   assert.ok(RUNTIME_HOOK_FILES.includes("fallbackChain.js"));
+});
+
+function makeTmpEnableMcpDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-enable-mcp-"));
+}
+
+test("enableMcpJsonServerInSettings: existing hooks+env untouched, id added exactly once after two runs", () => {
+  const dir = makeTmpEnableMcpDir();
+  try {
+    const settingsPath = path.join(dir, "settings.local.json");
+    const original = {
+      env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1" },
+      hooks: {
+        UserPromptSubmit: [
+          { matcher: "", hooks: [{ type: "command", command: "node hook.cjs" }] },
+        ],
+      },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(original, null, 2), "utf8");
+
+    const changed1 = enableMcpJsonServerInSettings(dir, "codex");
+    assert.equal(changed1, true, "first run should write the file");
+
+    const changed2 = enableMcpJsonServerInSettings(dir, "codex");
+    assert.equal(changed2, false, "second run should be a no-op (already present)");
+
+    const result = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(result.env, original.env, "env must be untouched");
+    assert.deepEqual(result.hooks, original.hooks, "hooks must be untouched");
+    assert.deepEqual(result.enabledMcpjsonServers, ["codex"], "codex must appear exactly once");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("enableMcpJsonServerInSettings: creates settings.local.json when missing", () => {
+  const dir = makeTmpEnableMcpDir();
+  try {
+    const settingsPath = path.join(dir, "settings.local.json");
+    assert.equal(fs.existsSync(settingsPath), false);
+    const changed = enableMcpJsonServerInSettings(dir, "codex");
+    assert.equal(changed, true);
+    const result = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(result.enabledMcpjsonServers, ["codex"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("enableMcpJsonServerInSettings: unparseable existing file is logged and skipped, not clobbered", () => {
+  const dir = makeTmpEnableMcpDir();
+  try {
+    const settingsPath = path.join(dir, "settings.local.json");
+    fs.writeFileSync(settingsPath, "{ not valid json", "utf8");
+    const changed = enableMcpJsonServerInSettings(dir, "codex");
+    assert.equal(changed, false);
+    assert.equal(fs.readFileSync(settingsPath, "utf8"), "{ not valid json");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -48,6 +48,31 @@ export function mergeMcpServer(
  * preserved. The input is never mutated. No fs/vscode usage, so this is
  * unit-testable.
  */
+/**
+ * Pure merge of a server id into a parsed `settings.local.json`/`settings.json`
+ * object's `enabledMcpjsonServers` array, so Claude Code auto-approves a
+ * project `.mcp.json` server instead of leaving it "Pending approval" for
+ * non-interactive sessions. Returns a NEW object: the top level is shallow
+ * cloned, `enabledMcpjsonServers` is cloned (defaulting to `[]` when absent
+ * or not an array), and `id` is appended only if not already present
+ * (idempotent). All other keys (e.g. `env`, `hooks`, `permissions`) are
+ * preserved untouched. The input is never mutated. No fs/vscode usage, so
+ * this is unit-testable.
+ */
+export function mergeEnabledMcpJsonServer(
+  existing: Record<string, unknown>,
+  id: string
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...existing };
+  const srcList = existing.enabledMcpjsonServers;
+  const list: unknown[] = Array.isArray(srcList) ? [...srcList] : [];
+  if (!list.includes(id)) {
+    list.push(id);
+  }
+  result.enabledMcpjsonServers = list;
+  return result;
+}
+
 export function removeMcpServer(
   existing: Record<string, unknown>,
   id: string

@@ -248,7 +248,18 @@ export function workerAgentFingerprintMatches(content: string, agent: PackAgent)
     }
     const match = /^\s*model\s*:\s*(\S+)\s*$/.exec(lines[i]);
     if (match) {
-      modelMatches = match[1] === agent.model;
+      // A pre-repair legacy file may carry a vendor-prefixed value (e.g.
+      // `anthropic/haiku`) where the current catalog says `haiku` — match
+      // either the exact alias or that vendor-prefixed form. A backend-
+      // carrying agent's legacy file (codex-reviewer, gemini-reviewer,
+      // kimi-reviewer, claude-worker) instead observed in the wild copied
+      // its own `backend.model` id (e.g. `openai/gpt-5.6-sol`) into the
+      // top-level `model:` line, so also accept an exact match against
+      // `agent.backend.model` when present.
+      modelMatches =
+        match[1] === agent.model ||
+        match[1].endsWith(`/${agent.model}`) ||
+        (agent.backend !== undefined && match[1] === agent.backend.model);
       break;
     }
   }
@@ -303,6 +314,74 @@ export function resyncAgentRoleSection(content: string, newRole: string): string
   }
 
   return content.slice(0, bodyStart) + newRole + rest.slice(bodyEnd);
+}
+
+/** Top-level `model:` values Claude Code accepts without substitution
+ * (family aliases + `inherit`) or a full Anthropic model id (`claude-...`).
+ * A vendor-prefixed id like `anthropic/haiku` or `openai/gpt-5` is not in
+ * this set and gets rewritten to `agent.model` by
+ * {@link resyncAgentFrontmatterFields}. */
+const VALID_TOP_LEVEL_MODELS = new Set(["sonnet", "opus", "haiku", "inherit", "fable"]);
+
+/**
+ * Repair a managed agent file's frontmatter when it predates the `name`/
+ * `description` fields Claude Code requires to register a custom subagent
+ * (installed by an older `buildAgentMarkdown` that didn't emit them, or
+ * hand-authored before that requirement was known), or when its top-level
+ * `model:` is a vendor-prefixed id instead of an allowed family alias.
+ * Only the frontmatter block is touched — `name`/`description` are inserted
+ * when absent and an invalid top-level `model:` line is rewritten to
+ * `agent.model`; a nested `backend.model` line (2+ space indent) is never
+ * touched, since that is where vendor routing info belongs. Every line
+ * below the closing `---` — the body, including any user edits — is
+ * preserved byte-for-byte. Returns `null` when the frontmatter already has
+ * both required fields and a valid model (no-op), or when no `---\n...\n---`
+ * block is found at all (never touch a file whose shape isn't recognized).
+ */
+export function resyncAgentFrontmatterFields(content: string, agent: PackAgent): string | null {
+  const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
+  if (!fmMatch) {
+    return null;
+  }
+  const eol = fmMatch[0].includes("\r\n") ? "\r\n" : "\n";
+  const lines = fmMatch[1].split(/\r\n|\n/);
+
+  const hasName = lines.some((l) => /^name\s*:/.test(l));
+  const hasDescription = lines.some((l) => /^description\s*:/.test(l));
+  const description = agent.role && agent.role.trim() !== "" ? agent.role : agent.name;
+
+  let changed = false;
+  const prefixLines: string[] = [];
+  if (!hasName) {
+    prefixLines.push(`name: ${agent.id}`);
+    changed = true;
+  }
+  if (!hasDescription) {
+    prefixLines.push(`description: ${JSON.stringify(description)}`);
+    changed = true;
+  }
+
+  const fixedLines = lines.map((l) => {
+    const m = /^(\s*)model\s*:\s*(.+?)\s*$/.exec(l);
+    if (!m || m[1].length > 0) {
+      return l; // not a model line, or a nested (indented) one like backend.model
+    }
+    if (VALID_TOP_LEVEL_MODELS.has(m[2]) || /^claude-/.test(m[2])) {
+      return l;
+    }
+    changed = true;
+    return `model: ${agent.model}`;
+  });
+
+  if (!changed) {
+    return null;
+  }
+
+  const newFmBody = [...prefixLines, ...fixedLines].join(eol);
+  return (
+    "---" + eol + newFmBody + eol + "---" + eol +
+    content.slice(fmMatch[0].length)
+  );
 }
 
 /**

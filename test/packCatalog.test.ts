@@ -15,9 +15,12 @@ import {
   agentMarkdownHasTycoonMarker,
   WORKING_DISCIPLINE_BODY,
   resyncAgentDisciplineSection,
+  resyncAgentFrontmatterFields,
+  workerAgentFingerprintMatches,
   REGULAR_AGENTS,
   LEAD_AGENTS,
   REVIEWER_AGENTS,
+  FOREIGN_LLM_AGENTS,
   workerAgentsForProject,
   UEFN_CONFLICT_AGENT_IDS,
   conflictingUefnAgents,
@@ -540,6 +543,271 @@ test("simulated _installWorkerAgents creates primary-agent.md for a UEFN project
     assert.ok(fs.existsSync(path.join(agentsDir, "primary-agent.md")), "primary-agent.md must be created for UEFN projects too");
     assert.ok(fs.existsSync(path.join(agentsDir, "search-retrieval.md")), "search-retrieval.md must still be created");
     assert.equal(fs.existsSync(path.join(agentsDir, "coding-specialist.md")), false, "coding-specialist must NOT be installed for UEFN projects");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// resyncAgentFrontmatterFields — frontmatter repair for a worker agent file
+// installed before buildAgentMarkdown emitted the `name`/`description`
+// fields Claude Code requires to register a custom subagent, or one whose
+// top-level `model:` is a vendor-prefixed id (e.g. `anthropic/haiku`). Only
+// the frontmatter block may change; the body is preserved byte-for-byte.
+// ---------------------------------------------------------------------------
+
+test("resyncAgentFrontmatterFields adds missing name/description and fixes a vendor-prefixed model, preserving the body", () => {
+  const agent = REGULAR_AGENTS.find((a) => a.id === "search-retrieval")!;
+  const legacy =
+    "---\nmodel: anthropic/haiku\ndisallowedTools: Agent\n---\n\n# Search & Retrieval Agent\n\n## Role\nCustom user-edited role text.\n";
+  const repaired = resyncAgentFrontmatterFields(legacy, agent);
+  assert.notEqual(repaired, null, "must report a change for a legacy file");
+  assert.match(repaired!, /^name: search-retrieval$/m, "name: must be inserted");
+  assert.match(repaired!, /^description: "/m, "description: must be inserted");
+  assert.match(repaired!, /^model: haiku$/m, "vendor-prefixed model must be rewritten to the canonical alias");
+  assert.ok(!/anthropic\/haiku/.test(repaired!), "the vendor-prefixed value must not remain anywhere in the file");
+  assert.ok(
+    repaired!.endsWith("# Search & Retrieval Agent\n\n## Role\nCustom user-edited role text.\n"),
+    "body below the frontmatter must be preserved byte-for-byte"
+  );
+});
+
+test("resyncAgentFrontmatterFields never touches a nested backend.model line", () => {
+  const agent = REGULAR_AGENTS.find((a) => a.id === "coding-specialist")!;
+  const legacy =
+    "---\nmodel: anthropic/sonnet\nbackend:\n  vendor: openai\n  model: openai/gpt-5\n---\n\nbody\n";
+  const repaired = resyncAgentFrontmatterFields(legacy, agent);
+  assert.notEqual(repaired, null);
+  assert.match(repaired!, /^model: sonnet$/m, "top-level model fixed");
+  assert.match(repaired!, /^\s{2}model: openai\/gpt-5$/m, "nested backend.model left untouched");
+});
+
+test("resyncAgentFrontmatterFields is a no-op (returns null) when frontmatter is already current", () => {
+  const agent = REGULAR_AGENTS.find((a) => a.id === "search-retrieval")!;
+  const current = buildAgentMarkdown(agent);
+  assert.equal(resyncAgentFrontmatterFields(current, agent), null, "an already-current file must not be reported changed");
+});
+
+test("resyncAgentFrontmatterFields returns null for a file with no recognizable frontmatter block", () => {
+  const agent = REGULAR_AGENTS.find((a) => a.id === "search-retrieval")!;
+  assert.equal(resyncAgentFrontmatterFields("no frontmatter here\n", agent), null);
+});
+
+// ---------------------------------------------------------------------------
+// Installer-level repair path: mirrors panel.ts's
+// `_ensureWorkerAgentRoleTextCurrent` write loop exactly (managed-check via
+// agentMarkdownHasTycoonMarker/workerAgentFingerprintMatches, then
+// resyncAgentFrontmatterFields, then write-if-different) since that private
+// method isn't independently exported/testable. Proves: an old-format file
+// we recognize as ours gets repaired with its body preserved, and a
+// same-named file we cannot prove is ours is left byte-for-byte untouched.
+// ---------------------------------------------------------------------------
+
+function simulateFrontmatterRepair(agentsDir: string, agents: PackAgent[]): void {
+  for (const a of agents) {
+    const agentPath = path.join(agentsDir, `${a.id}.md`);
+    let content: string;
+    try {
+      content = fs.readFileSync(agentPath, "utf8");
+    } catch {
+      continue;
+    }
+    const managed = agentMarkdownHasTycoonMarker(content) || workerAgentFingerprintMatches(content, a);
+    if (!managed) continue;
+    const updated = resyncAgentFrontmatterFields(content, a);
+    if (updated !== null && updated !== content) {
+      fs.writeFileSync(agentPath, updated);
+    }
+  }
+}
+
+test("simulated frontmatter repair fixes an old-format file we recognize as ours, preserving its user-edited body", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontmatterRepair-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const agent = REGULAR_AGENTS.find((a) => a.id === "coding-specialist")!;
+    const bodyMarker = `## Role\nMy own hand-edited notes for this agent.\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
+    const legacy = `---\nmodel: anthropic/sonnet\ndisallowedTools: Agent\n---\n\n# Coding Specialist\n\n${bodyMarker}`;
+    fs.writeFileSync(path.join(agentsDir, "coding-specialist.md"), legacy);
+
+    simulateFrontmatterRepair(agentsDir, [agent]);
+
+    const repaired = fs.readFileSync(path.join(agentsDir, "coding-specialist.md"), "utf8");
+    assert.match(repaired, /^name: coding-specialist$/m);
+    assert.match(repaired, /^description: "/m);
+    assert.match(repaired, /^model: sonnet$/m);
+    assert.ok(repaired.endsWith(bodyMarker), "user-edited body must survive the repair untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated frontmatter repair never touches a same-named file it cannot prove is ours", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontmatterRepair-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const agent = REGULAR_AGENTS.find((a) => a.id === "coding-specialist")!;
+    // Different model and no tycoon marker/keywords fingerprint -> not ours.
+    const foreign = "---\nmodel: opus\n---\n\n# Someone else's agent\n\n## Role\nUnrelated content.\n";
+    fs.writeFileSync(path.join(agentsDir, "coding-specialist.md"), foreign);
+
+    simulateFrontmatterRepair(agentsDir, [agent]);
+
+    const content = fs.readFileSync(path.join(agentsDir, "coding-specialist.md"), "utf8");
+    assert.equal(content, foreign, "a file we cannot identify as ours must be left byte-for-byte untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Non-worker repair paths: `_installAgentFiles` (LEAD_AGENTS/REVIEWER_AGENTS,
+// panel.ts) and `_handleInstallPack` (pack-shipped agents, e.g. the
+// multi-llm pack's FOREIGN_LLM_AGENTS, panel.ts). Both previously
+// recognized "ours" only via an exact `tier:`/tycoon_pack-marker match, so
+// an old-format file predating `name:`/`description:`/a valid `model:`
+// alias (and thus lacking that marker) fell into the "foreign, never
+// overwritten" branch and never healed. Both now also try
+// `workerAgentFingerprintMatches` + `resyncAgentFrontmatterFields` before
+// giving up on a file as foreign. These simulate functions mirror the
+// exact new branch order in panel.ts.
+// ---------------------------------------------------------------------------
+
+/** Mirrors panel.ts's `_installAgentFiles` per-file branch exactly, including the new fingerprint-repair fallback. */
+function simulateInstallAgentFiles(agentsDir: string, agents: PackAgent[]): void {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const a of agents) {
+    const agentPath = path.join(agentsDir, `${a.id}.md`);
+    if (!fs.existsSync(agentPath)) {
+      fs.writeFileSync(agentPath, buildAgentMarkdown(a));
+      continue;
+    }
+    const existing = fs.readFileSync(agentPath, "utf8");
+    let existingTier: string | undefined;
+    try {
+      existingTier = agentMarkdownTier(existing);
+    } catch {
+      existingTier = undefined;
+    }
+    if (existingTier === a.tier) {
+      const desired = buildAgentMarkdown(a);
+      if (existing !== desired) fs.writeFileSync(agentPath, desired);
+    } else if (workerAgentFingerprintMatches(existing, a)) {
+      const repaired = resyncAgentFrontmatterFields(existing, a);
+      if (repaired !== null) fs.writeFileSync(agentPath, repaired);
+    }
+    // else: foreign/legacy same-named file — never overwritten.
+  }
+}
+
+test("simulated _installAgentFiles repairs an old-format REVIEWER_AGENTS file (no tier: line) via fingerprint match, preserving body", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "installAgentFiles-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const agent = REVIEWER_AGENTS.find((a) => a.id === "reviewer")!;
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const bodyMarker = `## Role\nMy own customized review notes.\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
+    const legacy = `---\nmodel: anthropic/sonnet\ndisallowedTools: Agent\n---\n\n# Reviewer\n\n${bodyMarker}`;
+    fs.writeFileSync(path.join(agentsDir, "reviewer.md"), legacy);
+
+    simulateInstallAgentFiles(agentsDir, [agent]);
+
+    const repaired = fs.readFileSync(path.join(agentsDir, "reviewer.md"), "utf8");
+    assert.match(repaired, /^name: reviewer$/m);
+    assert.match(repaired, /^description: "/m);
+    assert.match(repaired, /^model: sonnet$/m);
+    assert.equal(/^tier:/m.test(repaired), false, "repair must not fabricate a tier: line — only name/description/model");
+    assert.ok(repaired.endsWith(bodyMarker), "user-edited body must survive the repair untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated _installAgentFiles never touches a same-named file that fails the fingerprint check", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "installAgentFiles-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const agent = REVIEWER_AGENTS.find((a) => a.id === "reviewer")!;
+    fs.mkdirSync(agentsDir, { recursive: true });
+    // Different model, no keywords fingerprint, no tier: line -> not ours.
+    const foreign = "---\nmodel: opus\n---\n\n# Someone else's reviewer\n\n## Role\nUnrelated.\n";
+    fs.writeFileSync(path.join(agentsDir, "reviewer.md"), foreign);
+
+    simulateInstallAgentFiles(agentsDir, [agent]);
+
+    const content = fs.readFileSync(path.join(agentsDir, "reviewer.md"), "utf8");
+    assert.equal(content, foreign, "a file we cannot identify as ours must be left byte-for-byte untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** Mirrors panel.ts's `_handleInstallPack` per-agent branch exactly, including the new fingerprint-repair fallback. */
+function simulateHandleInstallPack(agentsDir: string, packId: string, agents: PackAgent[]): void {
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const a of agents) {
+    const agentPath = path.join(agentsDir, `${a.id}.md`);
+    const generated = buildAgentMarkdown(a, packId);
+    if (!fs.existsSync(agentPath)) {
+      fs.writeFileSync(agentPath, generated);
+      continue;
+    }
+    const existingContent = fs.readFileSync(agentPath, "utf8");
+    if (agentMarkdownHasTycoonMarker(existingContent)) {
+      if (existingContent !== generated) fs.writeFileSync(agentPath, generated);
+    } else if (workerAgentFingerprintMatches(existingContent, a)) {
+      const repaired = resyncAgentFrontmatterFields(existingContent, a);
+      if (repaired !== null) fs.writeFileSync(agentPath, repaired);
+    } else {
+      const backupPath = `${agentPath}.bak`;
+      if (!fs.existsSync(backupPath)) fs.writeFileSync(backupPath, existingContent);
+      fs.writeFileSync(agentPath, generated);
+    }
+  }
+}
+
+test("simulated _handleInstallPack repairs an old-format FOREIGN_LLM_AGENTS file (no tycoon_pack marker) via fingerprint match, preserving body", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "installPack-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const bodyMarker = `## Role\nMy own customized Codex notes.\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
+    const legacy = `---\nmodel: ${agent.backend!.model}\ndisallowedTools: Agent\n---\n\n# Codex Reviewer\n\n${bodyMarker}`;
+    fs.writeFileSync(path.join(agentsDir, "codex-reviewer.md"), legacy);
+
+    simulateHandleInstallPack(agentsDir, "multi-llm", [agent]);
+
+    const repaired = fs.readFileSync(path.join(agentsDir, "codex-reviewer.md"), "utf8");
+    assert.match(repaired, /^name: codex-reviewer$/m);
+    assert.match(repaired, /^description: "/m);
+    assert.match(repaired, /^model: sonnet$/m, "top-level model must become the canonical alias, not the vendor id");
+    assert.equal(/^tycoon_pack:/m.test(repaired), false, "a fingerprint-repair must not fabricate the tycoon_pack marker");
+    assert.ok(fs.existsSync(path.join(agentsDir, "codex-reviewer.md.bak")) === false, "no backup file must be created for a repaired (not replaced) file");
+    assert.ok(repaired.endsWith(bodyMarker), "user-edited body must survive the repair untouched");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated _handleInstallPack never touches a same-named file that fails the fingerprint check (backs up and replaces instead)", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "installPack-"));
+  try {
+    const agentsDir = path.join(root, ".claude", "agents");
+    const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const foreign = "---\nmodel: opus\n---\n\n# A user's own codex-reviewer\n\n## Role\nUnrelated content, no keywords section.\n";
+    fs.writeFileSync(path.join(agentsDir, "codex-reviewer.md"), foreign);
+
+    simulateHandleInstallPack(agentsDir, "multi-llm", [agent]);
+
+    // Not ours by fingerprint -> falls to the true-foreign branch, which
+    // backs the original up and replaces it (existing, unchanged behavior
+    // for a genuinely foreign file) rather than leaving it untouched.
+    assert.ok(fs.existsSync(path.join(agentsDir, "codex-reviewer.md.bak")), "the original foreign content must be preserved in a .bak file");
+    assert.equal(fs.readFileSync(path.join(agentsDir, "codex-reviewer.md.bak"), "utf8"), foreign);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

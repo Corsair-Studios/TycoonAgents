@@ -33,7 +33,7 @@ import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/
 import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -196,6 +196,7 @@ import {
   findLegacyHookCommands,
   LEGACY_STATE_FILE_NAMES,
   syncRuntimeFile,
+  enableMcpJsonServerInSettings,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
@@ -3755,6 +3756,10 @@ export class TycoonPanel {
       const finalConfig = this._resolveCodexBinaryForInstall(id, resolvedConfig);
       const merged = mergeMcpServer(existing, id, finalConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+      // Auto-approve the newly-added server so `claude mcp list` doesn't
+      // leave it "Pending approval" (which times out non-interactive
+      // sessions) — see enableMcpJsonServerInSettings (hookInstall.ts).
+      enableMcpJsonServerInSettings(path.join(root, ".claude"), id);
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
         id,
@@ -4143,6 +4148,9 @@ export class TycoonPanel {
             const finalConfig = this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig);
             const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
             fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+            // Auto-approve so `claude mcp list` doesn't leave the pack's
+            // server "Pending approval" for non-interactive sessions.
+            enableMcpJsonServerInSettings(path.join(root, ".claude"), pack.mcp);
             results.mcp = "installed";
           }
         }
@@ -4182,6 +4190,20 @@ export class TycoonPanel {
               } else {
                 fs.writeFileSync(agentPath, generated);
                 agentResults.push({ id: a.id, status: "refreshed" });
+              }
+            } else if (workerAgentFingerprintMatches(existingContent, a)) {
+              // No tycoon_pack marker (predates it, or predates `name:`/
+              // `description:`/a valid `model:` alias entirely), but the
+              // `model:` alias + exact `## Keywords (for task routing)` body
+              // fingerprint it as ours — repair frontmatter only, preserving
+              // the rest byte-for-byte, rather than backing up and replacing
+              // the whole file as the true-foreign branch below does.
+              const repaired = resyncAgentFrontmatterFields(existingContent, a);
+              if (repaired !== null) {
+                fs.writeFileSync(agentPath, repaired);
+                agentResults.push({ id: a.id, status: "refreshed" });
+              } else {
+                agentResults.push({ id: a.id, status: "unchanged" });
               }
             } else {
               const backupPath = `${agentPath}.bak`;
@@ -5417,8 +5439,15 @@ export class TycoonPanel {
           }
           const managed = agentMarkdownHasTycoonMarker(content) || workerAgentFingerprintMatches(content, a);
           if (!managed) continue; // never touch a file we can't positively identify as ours
-          const roleUpdated = resyncAgentRoleSection(content, a.role);
-          let next = roleUpdated === null ? content : roleUpdated;
+          // Frontmatter repair: an install predating the `name`/`description`
+          // fields Claude Code requires to register a custom subagent (or
+          // carrying a vendor-prefixed `model:` id) never fixes itself, since
+          // this method otherwise only ever touches the Role/discipline
+          // sections below the frontmatter. Body text is untouched.
+          const frontmatterUpdated = resyncAgentFrontmatterFields(content, a);
+          let next = frontmatterUpdated === null ? content : frontmatterUpdated;
+          const roleUpdated = resyncAgentRoleSection(next, a.role);
+          next = roleUpdated === null ? next : roleUpdated;
           // Workers/reviewers are LEAVES — keep the "## Working discipline"
           // section current too (added/updated in the same read-modify-write).
           // The orchestrator is the only delegator, so it never carries it.
@@ -6373,6 +6402,19 @@ export class TycoonPanel {
             const desired = buildAgentMarkdown(a);
             if (existing !== desired) {
               fs.writeFileSync(agentPath, desired);
+            }
+          } else if (workerAgentFingerprintMatches(existing, a)) {
+            // Old-format file predating the `tier:` line (and possibly the
+            // `name:`/`description:` fields, or carrying a vendor-prefixed
+            // `model:`) so `agentMarkdownTier` can't match — but its
+            // `model:` alias + exact `## Keywords (for task routing)` body
+            // still fingerprint it as ours. Repair frontmatter only; never
+            // fully regenerate here, since a genuine foreign file could in
+            // principle fingerprint-match on those two signals alone and a
+            // tier mismatch is otherwise our only "not ours" signal for it.
+            const repaired = resyncAgentFrontmatterFields(existing, a);
+            if (repaired !== null) {
+              fs.writeFileSync(agentPath, repaired);
             }
           }
           // else: foreign/legacy same-named file — never overwritten.
