@@ -4,7 +4,7 @@ Operator setup: see theme-service-setup-guide.md
 
 This document is the client-side contract that the private `corsair-theme-service`
 repo must implement. It supersedes v1: the auth model now mirrors Speciary's
-Supabase-Auth-direct approach (`D:\ACode\Speciary`) instead of a bespoke
+Supabase-Auth-direct approach (the Speciary reference implementation) instead of a bespoke
 magic-link/device-token service, and pricing/ledger/webhook semantics mirror
 Speciary's Stripe store. Service-internal architecture stays out of scope
 (see `design-docs/theme-credits-prd.md`).
