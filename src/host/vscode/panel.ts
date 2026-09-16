@@ -6306,6 +6306,27 @@ export class TycoonPanel {
         // keeps the two writes independent regardless).
         seedProjectPlanEnabledDefault(root);
 
+        // 7a3. When Project Plan is enabled (freshly seeded true, or an
+        // existing user's prior on choice preserved by the seed above),
+        // land the project-plan skill (and the design-doc skill it
+        // consumes for milestone-plan templates) in this SAME install pass
+        // instead of waiting for the next panel-open auto-heal
+        // (_ensureProjectPlanSkillFresh) — previously a fresh install left
+        // `.claude/skills/project-plan` missing until that next activation
+        // (observed ~2min gap). Both copies are content-diff (never
+        // overwrite a user-edited SKILL.md); failures are logged, never
+        // thrown, matching this method's other best-effort install steps.
+        if (readProjectPlanEnabled(root)) {
+          const planResult = this._installProjectPlanSkill(root);
+          if (!planResult.ok && planResult.failed.length > 0) {
+            console.error("TycoonAgents: _handleInstallHooks project-plan skill copy failures:", planResult.failed);
+          }
+          const designDocResult = this._stageSkillTree("design-doc", root);
+          if (designDocResult.failed.length > 0) {
+            console.error("TycoonAgents: _handleInstallHooks design-doc skill copy failures:", designDocResult.failed);
+          }
+        }
+
         // 7c/7d. Lead agent files + keyword routing — only written for
         // team_leads. Flat mode leaves any previously-installed lead files
         // alone (Phase 2 handles removal on downgrade via setDelegationMode).
@@ -6368,6 +6389,13 @@ export class TycoonPanel {
       // first render, not just whatever existed before this install ran.
       // Best-effort — internally try/caught, never fails the hook install.
       this._ensureAgentKeywordsSeeded();
+
+      // 7g. Re-run the panel-open auto-heal for the project-plan skill in
+      // this same activation, so any staleness/heal logic added there later
+      // also applies to a fresh install/repair, not just the next panel
+      // open. Cheap no-op when the feature is off or the skill is already
+      // current (see 7a3 above and _ensureProjectPlanSkillFresh).
+      this._ensureProjectPlanSkillFresh();
 
       // 8. Success.
       void this._panel.webview.postMessage({
