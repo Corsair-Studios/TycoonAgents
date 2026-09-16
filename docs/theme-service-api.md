@@ -227,7 +227,8 @@ server-side from versioned templates it owns (see Migration below).
   },
   "slot": { "...": "board-specific fields — see below" },
   "userReferenceImages": ["data:image/png;base64,..."],
-  "options": { "seed": 12345, "retryOf": "uuid-v4" },
+  "options": { "seed": 12345, "retryOf": "uuid-v4", "backgroundMode": "magenta" },
+  "themeName": "string",
   "size": "1024x1024"
 }
 ```
@@ -236,17 +237,36 @@ server-side from versioned templates it owns (see Migration below).
 same as before (see Content screening), and capped by `IMAGE_MAX_BYTES` per
 image. `options` is optional; `options.retryOf` names the `idempotencyKey`
 of the attempt being retried, for server-side telemetry only.
+`options.backgroundMode` is `"magenta" | "transparent"` (default
+`"magenta"`); it selects which chroma-key convention the assembled prompt
+instructs the model to pad unused pixels with — solid `#FF00FF` magenta or
+fully transparent (alpha 0) — so client and server agree on how to key out
+the board's background. `themeName` is a required string carried alongside
+`theme` for client-side labeling; it is not folded into `theme.description`
+by the client — the service reads it from `theme.description` server-side
+but the field is still sent so it round-trips for retries and telemetry.
+
+A row-shaped field (used by several slots below) is a `RowSpec`:
+`{ "display_name": "string, max 80", "visual_description": "string, max 300 (optional)", "motion_hint": "string, max 120 (optional)", "is_ranged_rack": "boolean (optional)" }`.
 
 `slot` shape is board-type-specific:
 - `roster_agent`: `{ "name": "string, max 80", "description": "string, max 600", "bodyPlan": "biped" | "quadruped" }`.
   The service attaches its own pose-guide reference image for the given
   `bodyPlan` (see Migration below) — the client never sends pose guides.
-- `rival_group`: an array of `{ "name": "string", "description": "string" }`.
-- `objects_01`/`objects_02`, `expressions`, `achievements`, `environment`:
-  their existing descriptive fields carry over unchanged from the v3.3
-  free-text request shape, moved under `slot` — this doc does not otherwise
-  name them; confirm against the current client-side request builder before
-  implementing.
+- `rival_group`: an array of `RowSpec` (array length as the client-side builder requires).
+- `objects_01`: `{ "items": [RowSpec, ...] }` (array length as the builder requires).
+- `objects_02`: `{ "animated": [RowSpec, RowSpec], "static": [RowSpec, RowSpec, RowSpec], "poofDescription": "string, max 300 (optional)", "crateDescription": "string, max 300 (optional)" }`.
+- `expressions`: `{ "expressions": ["string, max 80", ...], "descriptions": ["string, max 300 (optional)", ...] }`.
+- `achievements`: `{ "achievements": ["string, max 80", ...], "descriptions": ["string, max 300 (optional)", ...] }`.
+- `environment`: no `slot` field (omit or send `{}`).
+- `background_decor`: `{ "seats": [RowSpec, RowSpec, RowSpec, RowSpec], "statics": [RowSpec, RowSpec, RowSpec, RowSpec], "animated": RowSpec, "projectileDescription": "string, max 300 (optional)" }`.
+- `emotes`: no `slot` field (omit or send `{}`).
+
+`background_decor` and `emotes` are additional board types the extension
+requests beyond the set in the `GET /api/pricing` example above; if
+per-attempt costs are configured for them they appear in that server's
+`attemptCostByBoardType` setting alongside the others — otherwise treat
+their cost as TBD server setting until configured.
 
 A request body containing a top-level `prompt` field (the removed v3.3
 free-text shape) is rejected `400 { "error": "bad_request", "code":
