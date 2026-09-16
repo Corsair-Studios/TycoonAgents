@@ -193,16 +193,20 @@ Render is used the same way it is for Speciary.
    workspace: its 2 custom domains, 500 build minutes, and 5 GB bandwidth
    cover a solo operator; Pro is only for team seats, audit logs, or
    bandwidth past 25 GB.
-   - **Stage 1 (setup and Stripe test mode):** Free instance, $0. It
-     spins down after ~15 minutes idle and cold-starts in 30-60 s. Stripe
+   - **Stage 1 (setup and Stripe test mode):** Free instance, $0 (limitations
+     apply). It spins down after ~15 minutes idle and cold-starts in 30-60 s. Stripe
      retries webhooks for up to 3 days, so purchases still land, just
      late. The extension's request timeout must exceed the cold-start
      window — no timeout was found configured in
      `src/core/themeServiceClient.ts`; this must be verified (and set if
      absent) before relying on the Free instance even for testing.
    - **Stage 2 (live payments on):** switch the one service to the
-     **Starter instance** (~$7/mo) so paying users never hit a cold
-     start.
+     **"Less than 1 CPU" instance** (0.5 CPU / 512 MB RAM, ~$7/mo) so
+     paying users never hit a cold start. The service is I/O-bound — it
+     mostly waits on OpenAI/Gemini API calls — so 0.5 CPU / 512 MB
+     suffices at launch; the 1 CPU $25/mo tier is only needed if the
+     backend ever processes images itself or concurrency reaches dozens
+     of simultaneous requests.
    - **Stage 3:** move to the **Pro workspace** only when a collaborator
      needs dashboard access or bandwidth exceeds 25 GB (several hundred
      themes a month).
@@ -347,7 +351,7 @@ during rollout:
    (triggering Google's verification review) or keep the consent screen
    text-only (no review required). Text-only is the faster path; a logo
    is a polish decision, not a functional requirement.
-5. **When to move Free -> Starter** — the trigger for switching the
-   Render instance from Free to Starter (~$7/mo): the first live (non-test)
-   Stripe payment, a fixed date, or first user complaint about a slow
-   first request. Not fixed by this guide.
+5. **When to move Free -> "Less than 1 CPU"** — the trigger for switching
+   the Render instance from Free to the "Less than 1 CPU" tier (~$7/mo):
+   the first live (non-test) Stripe payment, a fixed date, or first user
+   complaint about a slow first request. Not fixed by this guide.
