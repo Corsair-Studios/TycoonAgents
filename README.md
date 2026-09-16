@@ -98,7 +98,7 @@ The scene is **user-authored data** — you can generate your own theme (charact
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
 
-Character boards automatically attach a bundled walk pose guide (two-legged or four-legged, chosen per character with the Body control) as a reference image so row 1 walk frames stay consistent; it costs no extra credits and can be turned off with the **"Attach walk pose guide (Experimental)"** setting.
+Character boards get a walk pose guide (two-legged or four-legged, chosen per character with the Body control) attached by the service as a reference image so row 1 walk frames stay consistent, at no extra credit cost.
 
 Changing the creative direction after descriptions already exist marks them stale; use **Re-derive descriptions** to regenerate the text before generating or retrying images. See the [GitHub releases page](https://github.com/Corsair-Studios/TycoonAgents/releases) for what changed in recent versions.
 
@@ -124,6 +124,8 @@ Opening the Theme Builder for the first time asks you to sign in — by an email
 Credits are what generation costs: every generation attempt spends credits, including retries, and the panel shows the cost before each attempt so you're never guessing. Attempts cost 2 credits for object, expression, and achievement boards and 3 credits for character, rival, and environment boards; a typical 23-board theme runs about 95 credits, a careful run about 55, and heavy retries up to about 170 — output quality tracks prompt quality, so a clear, specific prompt (see "Prompt tips" above) usually costs less than a vague one you keep retrying.
 
 **Buy credits** opens Stripe Checkout in your browser; your balance updates when you return to the panel. Three packs are available: Starter (45 credits, $4.99), Theme (100 credits including 10 bonus, $9.99), and Bundle (205 credits including 25 bonus, $19.99), with the bigger packs showing their bonus as a percentage. Failed generations caused by provider or network errors, and generations the provider refuses on content-policy grounds, are refunded automatically; prompts blocked by content screening or a locked account are not charged at all. Credits are never refunded for images you generated successfully but don't like, so spend a retry rather than expecting a refund on a result that just missed the mark. Re-slicing an existing image is always free, no matter how many times you do it.
+
+Generation prompts are assembled by the Corsair Theme Service from your theme description, creative direction, and per-character fields — you don't hand-write the prompt sent to the model. The extension shows a preview of the assembled prompt before you generate, and notes if the service used a newer template than the one the preview was built from.
 
 None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. The extension makes network calls only for Theme service sign-in, generation, and credit checkout (all Corsair-hosted), feedback submission, and the opt-in team readiness reachability probe; the agent harnesses (Claude Code, OpenCode, Codex) make their own separate calls.
 
