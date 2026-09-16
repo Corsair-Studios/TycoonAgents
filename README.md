@@ -98,6 +98,8 @@ The scene is **user-authored data** — you can generate your own theme (charact
 4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
 
+Character boards automatically attach a bundled walk pose guide (two-legged or four-legged, chosen per character with the Body control) as a reference image so row 1 walk frames stay consistent; it costs no extra credits and can be turned off with the **"Attach walk pose guide (Experimental)"** setting.
+
 Changing the creative direction after descriptions already exist marks them stale; use **Re-derive descriptions** to regenerate the text before generating or retrying images. See the [GitHub releases page](https://github.com/Corsair-Studios/TycoonAgents/releases) for what changed in recent versions.
 
 Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or `node src/cli.mjs watch <project-path>`.
