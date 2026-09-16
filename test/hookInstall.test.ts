@@ -23,6 +23,7 @@ import {
   RUNTIME_HOOK_FILES,
   enableMcpJsonServerInSettings,
 } from "../src/host/vscode/hookInstall";
+import { mergeEnabledMcpJsonServer } from "../src/host/vscode/mcpCatalog";
 
 const cmd = "node /path/tycoon-claude-hook.cjs";
 
@@ -888,4 +889,18 @@ test("enableMcpJsonServerInSettings: unparseable existing file is logged and ski
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("mergeEnabledMcpJsonServer: blank id leaves settings unchanged", () => {
+  const existing = { env: { FOO: "bar" } };
+  const resultBlank = mergeEnabledMcpJsonServer(existing, "");
+  assert.deepEqual(resultBlank, existing, "blank id must leave the settings object unchanged");
+  const resultWhitespace = mergeEnabledMcpJsonServer(existing, "   ");
+  assert.deepEqual(resultWhitespace, existing, "whitespace-only id must leave the settings object unchanged");
+});
+
+test('mergeEnabledMcpJsonServer: non-array enabledMcpjsonServers field becomes ["codex"]', () => {
+  const existing = { enabledMcpjsonServers: "not-an-array" as unknown } as Record<string, unknown>;
+  const result = mergeEnabledMcpJsonServer(existing, "codex");
+  assert.deepEqual(result.enabledMcpjsonServers, ["codex"]);
 });

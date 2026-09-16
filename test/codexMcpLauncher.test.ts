@@ -214,6 +214,7 @@ function scrubbedEnv(overrides: NodeJS.ProcessEnv, emptyProjectRoot: string): No
   delete env["HOME"];
   delete env["APPDATA"];
   delete env["CODEX_CLI_PATH"];
+  delete env["CODEX_BINARY_PATH"];
   // Always set: keeps the node_modules signal (rung 2) from walking up to
   // this repo's real node_modules/@openai/codex install. Tests that
   // specifically exercise that signal would override it.
@@ -306,6 +307,23 @@ test("(override) CODEX_CLI_PATH pointing at a content-verified binary wins over 
 
     assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
     assert.ok(result.stdout.includes(`SELF:${overridePath}`), `expected the override binary to run, got stdout: ${result.stdout}`);
+    assert.ok(!(result.stderr || "").includes("openai.chatgpt"), "the extension bundle candidate must never be probed once the override wins");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(emptyProjectRoot, { recursive: true, force: true });
+  }
+});
+
+test("(override) CODEX_BINARY_PATH is honored (checked before CODEX_CLI_PATH)", () => {
+  const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));
+  const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
+  try {
+    const overridePath = writeFixtureStub(home, IS_WIN ? "codex.cmd" : "codex");
+    const env = scrubbedEnv({ ...homeOverride(home), CODEX_BINARY_PATH: overridePath }, emptyProjectRoot);
+    const result = runLauncher(["hello"], env);
+
+    assert.equal(result.status, 0, `expected success, stderr: ${result.stderr}`);
+    assert.ok(result.stdout.includes(`SELF:${overridePath}`), `expected the CODEX_BINARY_PATH binary to run, got stdout: ${result.stdout}`);
     assert.ok(!(result.stderr || "").includes("openai.chatgpt"), "the extension bundle candidate must never be probed once the override wins");
   } finally {
     rmSync(home, { recursive: true, force: true });

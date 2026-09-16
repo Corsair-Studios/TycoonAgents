@@ -116,6 +116,7 @@ Reuse these; do not invent a competing name for the same concept.
 | `UEFN_BRIDGE_DIR` | The bridge IPC directory. |
 | `UEFN_INSTALL_DIR` | The `UnrealEditorFortnite` editor-install folder itself (skips `LOCALAPPDATA`/`AppData\Local` derivation in `uefnDetect.ts`). |
 | `FORTNITE_INSTALL_DIR` | The Fortnite game install root (parent of `FortniteGame\Content\...`), used by `panel.ts`'s Python-bridge staging discovery. |
+| `CODEX_BINARY_PATH` (alias: `CODEX_CLI_PATH`) | The Codex CLI binary itself. |
 
 ## Related docs
 

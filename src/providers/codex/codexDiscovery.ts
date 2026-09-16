@@ -316,7 +316,9 @@ function compareExtensionFolderVersions(a: string, b: string): number {
 /**
  * Discovers and content-verifies the path to the Codex CLI binary,
  * following docs/PATH-DISCOVERY.md's discovery ladder:
- *   1. CODEX_BINARY_PATH env override — always wins, skips every other rung.
+ *   1. CODEX_BINARY_PATH (primary) or CODEX_CLI_PATH (alias, checked when
+ *      CODEX_BINARY_PATH is unset) env override — always wins, skips every
+ *      other rung.
  *   2. Multiple independent signals (PATH, npm global prefix, Homebrew,
  *      home-relative install dirs, the OpenAI ChatGPT VS Code extension's
  *      bundled binary), de-duplicated before probing.
@@ -334,9 +336,10 @@ export function discoverCodexBinary(opts?: CodexDiscoveryOptions): string {
   const exec = (opts && opts.exec) || defaultExec;
   const tried: string[] = [];
 
-  const override = process.env["CODEX_BINARY_PATH"];
+  const overrideVarName = process.env["CODEX_BINARY_PATH"] ? "CODEX_BINARY_PATH" : "CODEX_CLI_PATH";
+  const override = process.env["CODEX_BINARY_PATH"] || process.env["CODEX_CLI_PATH"];
   if (override) {
-    tried.push(`CODEX_BINARY_PATH=${override}`);
+    tried.push(`${overrideVarName}=${override}`);
     const resolved = probeCandidate(override, exec);
     if (resolved) {
       return resolved;
@@ -344,15 +347,15 @@ export function discoverCodexBinary(opts?: CodexDiscoveryOptions): string {
     if (probeRanButWrongContent(override, exec)) {
       throw new CodexDiscoveryError(
         "found-but-not-codex",
-        `CODEX_BINARY_PATH is set to "${override}", but running it with --version did not produce Codex CLI's ` +
+        `${overrideVarName} is set to "${override}", but running it with --version did not produce Codex CLI's ` +
           `expected output (a string starting with "${CODEX_VERSION_PREFIX}"). This does not look like the Codex CLI. ` +
-          `Verify CODEX_BINARY_PATH points at the real codex binary.`,
+          `Verify ${overrideVarName} points at the real codex binary.`,
         tried,
       );
     }
     throw new CodexDiscoveryError(
       "binary-absent",
-      `CODEX_BINARY_PATH is set to "${override}", but it could not be run (missing, or not the Codex CLI). ` +
+      `${overrideVarName} is set to "${override}", but it could not be run (missing, or not the Codex CLI). ` +
         `Verify the path and that the Codex CLI is installed there.`,
       tried,
     );

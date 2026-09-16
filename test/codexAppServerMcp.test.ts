@@ -340,3 +340,125 @@ process.exit(0);
     fs.rmSync(emptyProjectRoot, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 7. (p56-t4) Cross-platform (never skipped) end-to-end proof of the same
+//    fallback branch: drives the real MCP handshake (initialize + tools/list)
+//    over the launcher's stdio, through the app-server shim it hands off to.
+//    initialize/tools/list are answered by codex-app-server-mcp.cjs's own
+//    handleRequest() without ever spawning a real app-server child (see
+//    handleRequest() above — only tools/call touches AppServerClient), so the
+//    fake codex binary here only needs to content-verify as Codex (--version)
+//    and omit "mcp-server" from --help; it is never actually invoked with
+//    "app-server". Windows: .cmd shim (a plain-text batch file, never a
+//    compiled or renamed .exe). POSIX: a #!/bin/sh shebang script (chmod
+//    755) run via execve. Both are plain scripts wrapping this same fake
+//    Node source, matching the no-unsigned-exe test policy used throughout
+//    this file and codexMcpLauncher.test.ts.
+// ---------------------------------------------------------------------------
+
+function writeIncapableFakeCodexBinary(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-launcher-fallback-mcp-"));
+  const scriptPath = path.join(dir, "codex-fake.js");
+  fs.writeFileSync(
+    scriptPath,
+    [
+      'const args = process.argv.slice(2);',
+      'if (args[0] === "--version") { console.log("codex-cli 0.0.0-fallback-test"); process.exit(0); }',
+      'if (args[args.length - 1] === "--help") {',
+      '  console.log("Commands:\\n  version   Show version\\n  app-server   App server");',
+      '  process.exit(0);',
+      '}',
+      'process.exit(0);',
+    ].join("\n"),
+    "utf8",
+  );
+  if (process.platform === "win32") {
+    const cmdPath = path.join(dir, "codex-fake.cmd");
+    fs.writeFileSync(cmdPath, `@echo off\r\nnode "${scriptPath}" %*\r\n`, "utf8");
+    return cmdPath;
+  }
+  const shPath = path.join(dir, "codex-fake");
+  fs.writeFileSync(shPath, `#!/bin/sh\nexec node "${scriptPath}" "$@"\n`, "utf8");
+  fs.chmodSync(shPath, 0o755);
+  return shPath;
+}
+
+test("(launcher fallback, cross-platform) an MCP initialize + tools/list over stdio reaches the app-server shim, not exit 1", () => {
+  const binaryPath = writeIncapableFakeCodexBinary();
+  const emptyProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-launcher-fallback-mcp-empty-root-"));
+  const env: NodeJS.ProcessEnv = {
+    SystemRoot: process.env.SystemRoot,
+    windir: process.env.windir,
+    ComSpec: process.env.ComSpec,
+    PATHEXT: process.env.PATHEXT,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    SystemDrive: process.env.SystemDrive,
+    PATH: process.platform === "win32" ? NODE_BIN_DIR : `${NODE_BIN_DIR}:/bin:/usr/bin`,
+    CODEX_LAUNCHER_PROJECT_ROOT: emptyProjectRoot,
+    CODEX_CLI_PATH: binaryPath,
+  };
+
+  try {
+    const child = spawn(process.execPath, [LAUNCHER_PATH, "mcp-server"], {
+      env,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const responses: Record<number, unknown> = {};
+    let buffered = "";
+    child.stdout.on("data", (chunk) => {
+      buffered += chunk.toString();
+      let idx;
+      while ((idx = buffered.indexOf("\n")) !== -1) {
+        const line = buffered.slice(0, idx).trim();
+        buffered = buffered.slice(idx + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        if (typeof msg.id === "number") responses[msg.id] = msg;
+      }
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } }) + "\n");
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
+
+    return new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 15_000;
+      const poll = setInterval(() => {
+        if (responses[1] && responses[2]) {
+          clearInterval(poll);
+          try {
+            assert.ok(stderr.includes("falling back to the app-server"), `expected the fallback log line, got stderr:\n${stderr}`);
+            const initResult = (responses[1] as { result: { serverInfo: { name: string } } }).result;
+            assert.equal(initResult.serverInfo.name, "codex-app-server-mcp", "expected the app-server shim's own serverInfo, proving the launcher handed off to it");
+            const toolsResult = (responses[2] as { result: { tools: { name: string }[] } }).result;
+            const names = toolsResult.tools.map((t) => t.name);
+            assert.deepEqual(names.sort(), ["codex", "codex-reply"], `expected the adapter's tools/list response, got: ${JSON.stringify(names)}`);
+            child.kill();
+            resolve();
+          } catch (err) {
+            child.kill();
+            reject(err);
+          }
+        } else if (Date.now() > deadline) {
+          clearInterval(poll);
+          child.kill();
+          reject(new Error(`timed out waiting for initialize/tools-list responses; stderr so far:\n${stderr}`));
+        }
+      }, 50);
+    }).finally(() => {
+      fs.rmSync(path.dirname(binaryPath), { recursive: true, force: true });
+      fs.rmSync(emptyProjectRoot, { recursive: true, force: true });
+    });
+  } catch (err) {
+    fs.rmSync(path.dirname(binaryPath), { recursive: true, force: true });
+    fs.rmSync(emptyProjectRoot, { recursive: true, force: true });
+    throw err;
+  }
+});

@@ -13,7 +13,8 @@
  * Mirrors the discovery ladder in src/providers/codex/codexDiscovery.ts
  * and docs/PATH-DISCOVERY.md, in plain CommonJS (no TypeScript import,
  * Node built-ins only) so it can run directly via `node` from .mcp.json:
- *   1. CODEX_CLI_PATH env override wins if set AND it resolves to a real,
+ *   1. CODEX_BINARY_PATH (checked first) or CODEX_CLI_PATH (alias, checked
+ *      second) env override wins if set AND it resolves to a real,
  *      content-verified Codex binary. If the override is set but does not
  *      exist / doesn't verify, that is reported (not silently ignored) and
  *      discovery falls through to the remaining rungs.
@@ -40,7 +41,10 @@
  * location probed, and exits 1. Never silent, never a placeholder path.
  *
  * Env vars:
- *   CODEX_CLI_PATH             — override, rung 1 above.
+ *   CODEX_BINARY_PATH          — override, rung 1 above (checked first).
+ *   CODEX_CLI_PATH             — alias for CODEX_BINARY_PATH, rung 1 above
+ *     (checked second); also the internal handoff var this launcher sets
+ *     when it re-execs into hooks/codex-app-server-mcp.cjs (see main()).
  *   CODEX_LAUNCHER_PROJECT_ROOT — test-isolation seam for the node_modules
  *     signal (rung 2): when set, the node_modules walk starts at this dir
  *     ONLY (no process.cwd()/__dirname fallback), so a test can scrub
@@ -426,9 +430,10 @@ function discoverCodexBinary(requestedArgs, opts) {
     return false;
   }
 
-  const override = process.env["CODEX_CLI_PATH"];
+  const overrideVarName = process.env["CODEX_BINARY_PATH"] ? "CODEX_BINARY_PATH" : "CODEX_CLI_PATH";
+  const override = process.env["CODEX_BINARY_PATH"] || process.env["CODEX_CLI_PATH"];
   if (override) {
-    tried.push(`CODEX_CLI_PATH=${override}`);
+    tried.push(`${overrideVarName}=${override}`);
     const probed = probeCandidate(override, spawnSyncFn);
     if (probed.ok && hasCapability(override)) {
       return override;
@@ -437,7 +442,7 @@ function discoverCodexBinary(requestedArgs, opts) {
       // Override set but did not resolve — report it, then fall through to
       // the rest of the ladder rather than treating this as fatal.
       process.stderr.write(
-        `codex-mcp-launcher: CODEX_CLI_PATH="${override}" did not resolve to a working Codex CLI ` +
+        `codex-mcp-launcher: ${overrideVarName}="${override}" did not resolve to a working Codex CLI ` +
           `(expected output starting with "${CODEX_VERSION_PREFIX}") — falling back to discovery.\n`,
       );
     }
@@ -467,7 +472,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   const triedList = tried.map((t) => `  - ${t}`).join("\n");
   process.stderr.write(
     `codex-mcp-launcher: could not find a usable Codex CLI${wantsMcpServer ? " with an mcp-server subcommand" : ""}. Tried:\n${triedList}\n\n` +
-      `Set the CODEX_CLI_PATH environment variable to the codex binary's full path to override discovery.\n`,
+      `Set the CODEX_BINARY_PATH (or CODEX_CLI_PATH) environment variable to the codex binary's full path to override discovery.\n`,
   );
   process.exit(1);
 }

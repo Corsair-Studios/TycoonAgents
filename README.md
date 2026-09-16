@@ -158,6 +158,8 @@ TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/c
 
 Codex CLI 0.154 removed the `mcp-server` command TycoonAgents previously launched directly; a runtime shim now discovers the Codex binary and falls back to an `app-server`-based adapter when needed. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
+The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login accepts; `gpt-6-astra` is available as a higher tier. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
+
 ### Routing walkthrough
 
 1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code or OpenCode).

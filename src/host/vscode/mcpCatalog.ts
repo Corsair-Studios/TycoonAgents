@@ -57,14 +57,23 @@ export function mergeMcpServer(
  * or not an array), and `id` is appended only if not already present
  * (idempotent). All other keys (e.g. `env`, `hooks`, `permissions`) are
  * preserved untouched. The input is never mutated. No fs/vscode usage, so
- * this is unit-testable.
+ * this is unit-testable. A blank/whitespace-only `id` is rejected: the
+ * input is returned unchanged (no throw) since there is no valid server id
+ * to enable.
  */
 export function mergeEnabledMcpJsonServer(
   existing: Record<string, unknown>,
   id: string
 ): Record<string, unknown> {
+  if (!id || id.trim().length === 0) {
+    return existing;
+  }
   const result: Record<string, unknown> = { ...existing };
   const srcList = existing.enabledMcpjsonServers;
+  // When enabledMcpjsonServers already exists but isn't an array (e.g. a
+  // hand-edited or corrupted settings file), it's replaced with a fresh
+  // array rather than preserved or thrown on — the field is documented as
+  // an array, so a non-array value is treated as absent.
   const list: unknown[] = Array.isArray(srcList) ? [...srcList] : [];
   if (!list.includes(id)) {
     list.push(id);
