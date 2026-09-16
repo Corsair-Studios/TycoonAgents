@@ -19,16 +19,12 @@ import { join } from "node:path";
 interface RollupVendorRow {
   vendor: string;
   tokens: number;
-  costUsd: number | null;
-  costLabel: string;
   agents: number;
 }
 
 interface RollupClassRow {
   costModelClass: string;
   tokens: number;
-  costUsd: number | null;
-  costLabel: string;
 }
 
 interface RollupResult {
@@ -152,20 +148,13 @@ test("buildMetricsRollup sums tokens per vendor", () => {
   assert.equal(byVendor["google"].tokens, 200_000);
 });
 
-test("buildMetricsRollup sums tokens/cost per cost class", () => {
+test("buildMetricsRollup sums tokens per cost class", () => {
   const result = mod.buildMetricsRollup(fixture);
   const byClass = Object.fromEntries(result.byCostClass.map((c) => [c.costModelClass, c]));
 
   assert.equal(byClass["metered"].tokens, 1_000_000 + 200_000);
-  assert.ok(byClass["metered"].costUsd !== null && byClass["metered"].costUsd > 0);
-
   assert.equal(byClass["subscription"].tokens, 500_000);
-  assert.equal(byClass["subscription"].costUsd, null);
-  assert.equal(byClass["subscription"].costLabel, "quota");
-
   assert.equal(byClass["local"].tokens, 0);
-  assert.equal(byClass["local"].costUsd, null);
-  assert.equal(byClass["local"].costLabel, "local");
 });
 
 test("buildMetricsRollup counts fallback dispatches", () => {
@@ -178,9 +167,9 @@ test("buildMetricsRollup attributes fallback cost to the vendor that actually ra
   const byVendor = Object.fromEntries(result.byVendor.map((v) => [v.vendor, v]));
 
   // The fallback item is tagged fallbackOf: "codex-reviewer" (openai), but it
-  // actually ran as google/gemini-2.5-flash — its cost must land under google,
-  // and must NOT inflate openai's total beyond its own single item.
-  assert.ok(byVendor["google"].costUsd !== null && byVendor["google"].costUsd > 0);
+  // actually ran as google/gemini-2.5-flash — its tokens must land under
+  // google, and must NOT inflate openai's total beyond its own single item.
+  assert.equal(byVendor["google"].tokens, 200_000);
   assert.equal(byVendor["openai"].agents, 1);
 });
 

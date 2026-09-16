@@ -991,8 +991,8 @@
         tbody,
         COLSPAN,
         `${v.vendor} total — `,
-        `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
-        "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
+        `${fmtTokens(v.tokens)} tokens (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
+        "Sum of tokens for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
       );
     }
 
@@ -1001,8 +1001,8 @@
         tbody,
         COLSPAN,
         `${costClassLabel(c.costModelClass)} total — `,
-        `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
-        "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
+        `${fmtTokens(c.tokens)} tokens`,
+        "Sum of tokens for every agent in this billing class."
       );
     }
 

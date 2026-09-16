@@ -393,7 +393,7 @@
       metricsScopeAllEl.checked = metricsScope === "all";
     }
     if (metricsColTokensEl) {
-      metricsColTokensEl.textContent = "Tokens*";
+      metricsColTokensEl.textContent = "Tokens";
       metricsColTokensEl.title =
         metricsScope === "session"
           ? "Tokens used this session. Total tokens this agent has used in the current Claude Code session only."

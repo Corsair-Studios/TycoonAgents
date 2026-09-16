@@ -275,20 +275,16 @@ test("metrics table TOKENS column: includes cache-read tokens in the displayed t
 // not at face value, and not ignored entirely.
 // ---------------------------------------------------------------------------
 
-test("delegation hero: cache-read tokens are priced at ~0.1x in the Metered billed figure, not face value or zero", () => {
+test("delegation hero: cache-read tokens are counted into the Metered token total, not shown as a dollar figure", () => {
   const { doc, dispatch, errors } = bootMainJs();
-  // Orchestrator: opus (10 $/Mtok), no cache reads (isolates the agent side).
-  // Delegated agent: sonnet (4 $/Mtok), 0 billable tokens, 1,000,000
-  // cache-read tokens. The 2026-09-07 ledger rewrite replaced the single
-  // hero percentage with a "Where delegated work ran" ledger: the Metered
-  // row's billed $ figure still prices cache reads at 0.1x — face value
-  // would bill $4.00, ignoring them would bill $0.00 — the correct figure
-  // is (1e6/1e6)*4*0.1 = $0.40. The counterfactual/avoided figures now
-  // deliberately EXCLUDE cache-read tokens (billable-tokens-only, see
-  // buildDelegationLedger), so with 0 billable tokens the counterfactual is
-  // $0.00 and avoided clamps to $0.00 — that is the new intentional
-  // behavior, not a regression, and is asserted here too so a future change
-  // can't silently fold cache reads back into the counterfactual.
+  // Orchestrator: opus, no cache reads (isolates the agent side).
+  // Delegated agent: sonnet, 0 billable tokens, 1,000,000 cache-read tokens.
+  // The dollar-free rewrite (p60-t2) removed every $ figure from the
+  // Metrics/Delegation tabs: the Metered row now shows only the token
+  // total (billable + cache-read, still priced internally at 0.1x for the
+  // relative-ratio math, but never rendered as USD), and the ratio line
+  // built from fmtRatio replaces the old three-line counterfactual/billed/
+  // avoided block.
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
     {
@@ -307,9 +303,8 @@ test("delegation hero: cache-read tokens are priced at ~0.1x in the Metered bill
   const body = openDelegationTab(doc);
   assert.equal(body.querySelector(".delegation-hero-num"), null, "the headline percent was removed 2026-09-07");
   const text = String(body.textContent);
-  assert.match(text, /Metered \(API\):[^\n]*\$0\.40/i, `expected the Metered row billed at $0.40 (0.1x cache-read pricing), got: ${text}`);
-  assert.match(text, /Actually billed for delegated work:\s*\$0\.40/i, `expected $0.40 billed, got: ${text}`);
-  assert.match(text, /Estimated avoided.*\$0\.00/is, `cache-read-only work is excluded from the counterfactual, so avoided must clamp to $0.00, got: ${text}`);
+  assert.match(text, /Metered \(API\):\s*1M tokens/i, `expected the Metered row to report 1M tokens (billable + cache-read), got: ${text}`);
+  assert.doesNotMatch(text, /\$/, "the Metrics/Delegation tabs render no dollar figures");
   assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -349,7 +344,7 @@ test("delegation hero: NEGATIVE ANCHOR -- billable=0 and cacheReadTokens=0 is sk
 // fix, since cache reads are no longer counted at face value).
 // ---------------------------------------------------------------------------
 
-test("pricing disclaimer footer: Metrics tab and Delegation tab captions are textually identical and describe split cache-read pricing accurately", () => {
+test("pricing disclaimer footer: Metrics tab and Delegation tab captions are textually identical and state badges are relative-only, informational", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 500, activeMs: 1000, taskCount: 1 },
@@ -363,7 +358,7 @@ test("pricing disclaimer footer: Metrics tab and Delegation tab captions are tex
   openDelegationTab(doc);
   const delegationBody = doc.getElementById("delegation-stats");
   const delegationCaptions = [...delegationBody.querySelectorAll(".delegation-stats-caption")];
-  const delegationPricingCaption = delegationCaptions.find((c: any) => /Anthropic API token rates/i.test(c.textContent || ""));
+  const delegationPricingCaption = delegationCaptions.find((c: any) => /Relative cost badges/i.test(c.textContent || ""));
   assert.ok(delegationPricingCaption, "Delegation tab pricing caption should exist");
 
   assert.equal(
@@ -371,11 +366,11 @@ test("pricing disclaimer footer: Metrics tab and Delegation tab captions are tex
     delegationPricingCaption.textContent,
     "both footer occurrences must be textually identical",
   );
-  assert.doesNotMatch(
+  assert.equal(
     String(metricsCaption.textContent),
-    /well below what raw totals suggest/i,
-    "footer must not claim a real bill runs well below the shown total now that cache reads are priced (not ignored)",
+    "Relative cost badges compare published list rates and are informational only.",
+    "the dollar-free rewrite (p60-t2) replaced the pricing footnote with this exact relative-cost-only disclaimer",
   );
-  assert.doesNotMatch(String(metricsCaption.textContent), /nan|infinity/i);
+  assert.doesNotMatch(String(metricsCaption.textContent), /nan|infinity|\$/i);
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

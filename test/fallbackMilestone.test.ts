@@ -312,14 +312,12 @@ test("PRD M2 (3): computeStateFromRecords for a no-fallbackOf fixture matches th
   assert.equal(rollup.fallbackCount, 0, "no fallback dispatches occurred -> rollup fallbackCount must be 0");
   assert.equal(rollup.localTimeRows.length, 0);
 
-  const expectedCost = rollupMod.estCostUSDWithCache(metric!.tokens, metric!.cacheReadTokens, metric!.model!, metric!.costModelClass);
   const vendorRow = rollup.byVendor.find((v) => v.vendor === "anthropic");
   assert.ok(vendorRow, "anthropic vendor row should exist");
   assert.equal(vendorRow!.tokens, metric!.tokens + metric!.cacheReadTokens, "vendor row tokens must equal the agent's own tokens (single agent, no fallback redirection)");
-  assert.equal(vendorRow!.costUsd, expectedCost, "vendor row cost must equal the directly-computed per-agent cost, with no fallback-attribution diff");
   assert.equal(vendorRow!.agents, 1);
 
   const classRow = rollup.byCostClass.find((c) => c.costModelClass === "metered");
   assert.ok(classRow, "metered cost-class row should exist");
-  assert.equal(classRow!.costUsd, expectedCost, "cost-class row cost must equal the directly-computed per-agent cost");
+  assert.equal(classRow!.tokens, metric!.tokens + metric!.cacheReadTokens, "cost-class row tokens must equal the agent's own tokens");
 });

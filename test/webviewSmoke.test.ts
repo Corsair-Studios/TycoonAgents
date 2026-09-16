@@ -912,6 +912,18 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       const leadTokensCell = leadRow.querySelector('td.col-tokens');
       assert.ok(leadTokensCell, 'lead row should have a tokens cell');
       assert.equal(leadTokensCell.textContent, '800', "lead row shows its own tokens only, no team rollup sum");
+
+      // p60-t2 dollar-free rewrite: neither the Metrics tab (this rendered
+      // table, agent rows plus per-vendor/per-cost-class footer rows) nor
+      // the Delegation tab ever render a dollar figure.
+      const metricsTab = tbody.closest('section') || tbody.closest('div') || tbody;
+      assert.doesNotMatch(String(metricsTab.textContent), /\$/, 'Metrics tab must never render a "$" character');
+      const delegationTabBtn = doc.getElementById('delegation-tab-btn');
+      assert.ok(delegationTabBtn, 'the Delegation tab button should exist');
+      delegationTabBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      const delegationBody = doc.getElementById('delegation-stats');
+      assert.ok(delegationBody, 'delegation-stats body should exist');
+      assert.doesNotMatch(String(delegationBody.textContent), /\$/, 'Delegation tab must never render a "$" character');
     });
 
     // ── Step 9: flat projects (no leads) render exactly as before ───────────────
@@ -3846,7 +3858,7 @@ test('Start generation with a clean (never-dirtied) creative-direction textarea 
 // .model-radio labels) with the caption div (#metrics-scope-caption) right
 // after at ~L8991, and the #metrics-col-tokens <th> at ~L9001. Since feedback
 // issue #26, that header's visible textContent is the fixed short form
-// "Tokens*" in both scopes; the scope-dependent explanation moved to the
+// "Tokens" in both scopes; the scope-dependent explanation moved to the
 // `title` and `aria-label` attributes (media/main.js ~L338-347). All of the
 // actual scope SWITCHING behavior these tests exercise — updateMetricsScopeUI(),
 // currentScopeMetrics(), setMetricsScope() — lives in media/main.js
@@ -3863,7 +3875,7 @@ test('Metrics tab scope toggle: default scope is "all" on first render, before a
     assert.ok(!sessionEl.checked, 'the "This session" radio must NOT be checked by default');
     const tokensHeader = h.doc.getElementById('metrics-col-tokens');
     assert.ok(tokensHeader, 'the tokens column header should exist');
-    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text is now the short "Tokens*" form in both scopes');
+    assert.equal(tokensHeader.textContent, 'Tokens', 'header text is now the short "Tokens" form in both scopes');
     assert.equal(
       tokensHeader.title,
       'Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).',
@@ -3906,10 +3918,10 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     const sessionEl = h.doc.getElementById('metrics-scope-session');
 
     // Still "all" (default) right after this dispatch — nobody toggled yet.
-    // Visible textContent is now the scope-invariant "Tokens*" short form, so
+    // Visible textContent is now the scope-invariant "Tokens" short form, so
     // scope is pinned via the title/aria-label instead (the tooltip the
     // asterisk points to).
-    assert.equal(tokensHeader.textContent, 'Tokens*');
+    assert.equal(tokensHeader.textContent, 'Tokens');
     assert.match(tokensHeader.title, /all time/i, 'title must explain the "all time" scope');
     assert.equal(tokensHeader.getAttribute('aria-label'), 'Tokens used all time');
     assert.ok(caption.textContent && caption.textContent.length > 0, 'caption must be non-empty while scope is "all"');
@@ -3923,7 +3935,7 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     await h.flush();
     assert.equal(h.errors.length, 0, `errors after switching to session scope: ${h.errors.map(String).join('; ')}`);
 
-    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text stays the short "Tokens*" form after switching scope');
+    assert.equal(tokensHeader.textContent, 'Tokens', 'header text stays the short "Tokens" form after switching scope');
     assert.match(
       tokensHeader.title,
       /this session/i,
@@ -3942,7 +3954,7 @@ test('Metrics tab scope toggle: token column header and scope caption change bet
     allEl.checked = true;
     allEl.dispatchEvent(new h.win.Event('change', { bubbles: true }));
     await h.flush();
-    assert.equal(tokensHeader.textContent, 'Tokens*', 'header text stays the short "Tokens*" form after switching back');
+    assert.equal(tokensHeader.textContent, 'Tokens', 'header text stays the short "Tokens" form after switching back');
     assert.match(tokensHeader.title, /all time/i, 'title must switch back to explain the "all time" scope');
     assert.equal(
       tokensHeader.getAttribute('aria-label'),
@@ -6130,13 +6142,12 @@ test('Savings not shown: mixed-vendor delegated agents hide the counterfactual l
 
     const hiddenLine = delegationBody.querySelector('.delegation-stats-detail.delegation-savings-hidden');
     assert.ok(hiddenLine, 'the hidden-savings line should render when savings.eligible is false');
-    assert.match(hiddenLine.textContent, /^Savings not shown: mixed vendors$/);
+    assert.match(hiddenLine.textContent, /^Relative cost not shown: mixed vendors$/);
     assert.ok(hiddenLine.title && hiddenLine.title.length > 0, 'the hidden-savings line should carry a title listing the implicated agents');
 
     const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
-    assert.ok(!details.some((t: string) => /^If all delegated work had run/.test(t)), 'counterfactual line must not render when savings are hidden');
-    assert.ok(!details.some((t: string) => /^Actually billed for delegated work/.test(t)), 'billed line must not render when savings are hidden');
-    assert.ok(!details.some((t: string) => /^Estimated avoided/.test(t)), 'avoided line must not render when savings are hidden');
+    assert.ok(!details.some((t: string) => /^Delegated work ran at/.test(t)), 'the ratio line must not render when savings are hidden');
+    assert.doesNotMatch(String(delegationBody.textContent), /\$/, 'the Metrics/Delegation tabs render no dollar figures');
   } finally {
     h.win.close();
   }
@@ -6164,10 +6175,16 @@ test('Eligible savings: pure priced Anthropic delegated agents render the three 
     const hiddenLine = delegationBody.querySelector('.delegation-stats-detail.delegation-savings-hidden');
     assert.ok(!hiddenLine, 'the hidden-savings line must be absent when savings.eligible is true');
 
+    // Same vendor (anthropic), orchestrator priced (sonnet=4/Mtok), delegated
+    // 4000 tokens @ sonnet + 1000 tokens @ haiku(2/Mtok): billed = 0.018,
+    // counterfactual = 5000/1e6*4 = 0.02, ratio = 0.02/0.018 ≈ 1.11 ->
+    // fmtRatio -> "1.1".
     const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
-    assert.ok(details.some((t: string) => /^If all delegated work had run/.test(t)), 'counterfactual line must render when savings are eligible');
-    assert.ok(details.some((t: string) => /^Actually billed for delegated work/.test(t)), 'billed line must render when savings are eligible');
-    assert.ok(details.some((t: string) => /^Estimated avoided/.test(t)), 'avoided line must render when savings are eligible');
+    assert.ok(
+      details.some((t: string) => /^Delegated work ran at 1\.1× cheaper than running the same billable tokens on the orchestrator's model/.test(t)),
+      `expected the 1.1x ratio line to render when savings are eligible, got: ${JSON.stringify(details)}`
+    );
+    assert.doesNotMatch(String(delegationBody.textContent), /\$/, 'the Metrics/Delegation tabs render no dollar figures');
   } finally {
     h.win.close();
   }

@@ -152,8 +152,8 @@
    *     PRICE_TABLE key under that provider.
    *   - anything else resolves to DEFAULT_PRICE_KEY.
    * `costModelClass` does not change which key is returned — it only tells
-   * callers (see costModelClass()/fmtUSD call sites) whether to display a
-   * price at all versus "quota"/"local".
+   * callers (see costModelClass() call sites) whether to display a
+   * relative-cost comparison at all versus "quota"/"local".
    * @param {string|null|undefined} modelId
    * @param {string|null|undefined} [costModelClassHint]
    * @returns {string}
@@ -252,26 +252,6 @@
     const cacheRead = cacheReadTokens > 0 ? cacheReadTokens : 0;
     if (billable <= 0 && cacheRead <= 0) return null;
     return (billable / 1e6) * price + (cacheRead / 1e6) * price * 0.1;
-  }
-
-  /**
-   * Format an estimated $ figure. Prefixed with "~" by default (this is a
-   * rough blended estimate, never a billed/exact amount), e.g. "~$0.42",
-   * "<$0.01", "~$128". Returns "—" for null (unknown model / no tokens).
-   * Pass withTilde=false to omit the leading "~" (e.g. in a narrow column
-   * whose header already signals "estimate").
-   * @param {number|null} v
-   * @param {boolean} [withTilde=true]
-   * @returns {string}
-   */
-  function fmtUSD(v, withTilde) {
-    if (withTilde === undefined) withTilde = true;
-    const tilde = withTilde ? "~" : "";
-    if (v == null) return "—";
-    if (v <= 0) return `${tilde}$0.00`;
-    if (v < 0.01) return "<$0.01";
-    if (v < 100) return `${tilde}$${v.toFixed(2)}`;
-    return `${tilde}$${Math.round(v)}`;
   }
 
   /**
@@ -759,8 +739,8 @@
    * Pure: never mutates `agentMetrics` or any of its entries.
    * @param {Array<{id?:string, vendor?:string, model?:string, costModelClass?:string, tokens?:number, cacheReadTokens?:number, activeMs?:number, fallbackOf?:string, fallbackDepth?:number, fallbackCount?:number, name?:string}>|undefined} agentMetrics
    * @returns {{
-   *   byVendor: Array<{vendor:string, tokens:number, costUsd:number|null, costLabel:string, agents:number}>,
-   *   byCostClass: Array<{costModelClass:string, tokens:number, costUsd:number|null, costLabel:string}>,
+   *   byVendor: Array<{vendor:string, tokens:number, agents:number}>,
+   *   byCostClass: Array<{costModelClass:string, tokens:number}>,
    *   fallbackCount: number,
    *   localTimeRows: Array<{agent:string, vendor:string, model:string, activeMs:number}>
    * }}
@@ -823,12 +803,11 @@
   function buildMetricsRollup(agentMetrics) {
     const items = Array.isArray(agentMetrics) ? agentMetrics : [];
 
-    const vendorMap = new Map(); // vendor -> { tokens, costUsd, agents }
-    const classMap = new Map(); // costModelClass -> { tokens, costUsd }
+    const vendorMap = new Map(); // vendor -> { tokens, agents }
+    const classMap = new Map(); // costModelClass -> { tokens }
     let fallbackCount = 0;
     const localTimeRows = [];
     let totalTokens = 0;
-    let totalCostUsd = null;
     let totalAgents = 0;
 
     for (const item of items) {
@@ -840,28 +819,24 @@
       const model = item.model || "";
       const cls = costModelClass(model, item.costModelClass);
       const tokens = (item.tokens ?? 0) + (item.cacheReadTokens ?? 0);
-      const cost = estCostUSDWithCache(item.tokens, item.cacheReadTokens, model, item.costModelClass);
 
       let vEntry = vendorMap.get(vendor);
       if (!vEntry) {
-        vEntry = { tokens: 0, costUsd: null, agents: 0 };
+        vEntry = { tokens: 0, agents: 0 };
         vendorMap.set(vendor, vEntry);
       }
       vEntry.tokens += tokens;
       vEntry.agents += 1;
-      if (cost != null) vEntry.costUsd = (vEntry.costUsd ?? 0) + cost;
 
       totalTokens += tokens;
       totalAgents += 1;
-      if (cost != null) totalCostUsd = (totalCostUsd ?? 0) + cost;
 
       let cEntry = classMap.get(cls);
       if (!cEntry) {
-        cEntry = { tokens: 0, costUsd: null };
+        cEntry = { tokens: 0 };
         classMap.set(cls, cEntry);
       }
       cEntry.tokens += tokens;
-      if (cost != null) cEntry.costUsd = (cEntry.costUsd ?? 0) + cost;
 
       if (cls === "local" && !(tokens > 0)) {
         localTimeRows.push({
@@ -873,25 +848,15 @@
       }
     }
 
-    function costLabelFor(cls, costUsd) {
-      if (cls === "subscription") return "quota";
-      if (cls === "local") return "local";
-      return fmtUSD(costUsd);
-    }
-
     const byVendor = Array.from(vendorMap.entries()).map(([vendor, v]) => ({
       vendor,
       tokens: v.tokens,
-      costUsd: v.costUsd,
-      costLabel: v.costUsd != null ? fmtUSD(v.costUsd) : "—",
       agents: v.agents,
     }));
 
     const byCostClass = Array.from(classMap.entries()).map(([costModelClass, c]) => ({
       costModelClass,
       tokens: c.tokens,
-      costUsd: c.costUsd,
-      costLabel: costLabelFor(costModelClass, c.costUsd),
     }));
 
     return {
@@ -900,8 +865,6 @@
       fallbackCount,
       localTimeRows,
       totalTokens,
-      totalCostUsd,
-      totalCostLabel: totalCostUsd != null ? fmtUSD(totalCostUsd) : null,
       totalAgents,
     };
   }
@@ -1258,7 +1221,7 @@
 
     const tokensTd = document.createElement("td");
     tokensTd.className = "col-tokens";
-    tokensTd.title = "Total tokens this agent has consumed, including cache reads (cache reads are billed at ~0.1x the input rate — see the cost note below the table).";
+    tokensTd.title = "Total tokens this agent has consumed, including cache reads.";
     tokensTd.textContent = fmtTokens((agent.tokens ?? 0) + (agent.cacheReadTokens ?? 0));
     row.appendChild(tokensTd);
 
@@ -1424,15 +1387,13 @@
     const rollup = buildMetricsRollup(metrics);
     const FOOTER_COLSPAN = 6;
 
-    // Single compact summary row: "Total — <tokens>, ~$<cost> · <N> agents ·
-    // <F> fallbacks" (cost omitted when unknown, fallbacks omitted when
-    // zero). The per-vendor / per-billing-class breakdown that used to
-    // render as up to 7 separate rows now lives behind a collapsed
-    // disclosure (see buildMetricsFooterBreakdownRows), toggled by
+    // Single compact summary row: "Total — <tokens> tokens · <N> agents ·
+    // <F> fallbacks" (fallbacks omitted when zero). The per-vendor /
+    // per-billing-class breakdown that used to render as up to 7 separate
+    // rows now lives behind a collapsed disclosure (see
+    // buildMetricsFooterBreakdownRows), toggled by
     // #metrics-footer-disclosure-btn and persisted in localStorage.
-    const summaryParts = [`${fmtTokens(rollup.totalTokens)} tokens`];
-    if (rollup.totalCostLabel != null) summaryParts.push(rollup.totalCostLabel);
-    let summaryText = summaryParts.join(", ") + ` · ${rollup.totalAgents} agent${rollup.totalAgents === 1 ? "" : "s"}`;
+    let summaryText = `${fmtTokens(rollup.totalTokens)} tokens · ${rollup.totalAgents} agent${rollup.totalAgents === 1 ? "" : "s"}`;
     if (rollup.fallbackCount > 0) {
       summaryText += ` · ${rollup.fallbackCount} fallback${rollup.fallbackCount === 1 ? "" : "s"}`;
     }
@@ -1441,7 +1402,7 @@
       FOOTER_COLSPAN,
       "Total — ",
       summaryText,
-      "Sum of tokens and estimated cost across every agent. Open \"By vendor and billing\" below for the per-vendor and per-billing-class breakdown."
+      "Sum of tokens across every agent. Open \"By vendor and billing\" below for the per-vendor and per-billing-class breakdown."
     );
 
     const disclosureTr = document.createElement("tr");
@@ -1488,8 +1449,8 @@
           breakdownTbody,
           FOOTER_COLSPAN,
           `${vendorLabelFor(v.vendor)} total — `,
-          `${fmtTokens(v.tokens)} tokens, ${v.costLabel} (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
-          "Sum of tokens and estimated cost for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
+          `${fmtTokens(v.tokens)} tokens (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
+          "Sum of tokens for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
         );
       }
 
@@ -1498,8 +1459,8 @@
           breakdownTbody,
           FOOTER_COLSPAN,
           `${costClassLabel(c.costModelClass)} total — `,
-          `${fmtTokens(c.tokens)} tokens, ${c.costLabel}`,
-          "Sum of tokens and estimated cost for every agent in this billing class. Subscription models show \"quota\" and local models show \"local\" — neither has a comparable per-token dollar figure."
+          `${fmtTokens(c.tokens)} tokens`,
+          "Sum of tokens for every agent in this billing class."
         );
       }
 
@@ -1544,7 +1505,7 @@
       pricingCaption.id = "metrics-stats-caption";
       pricingCaption.className = "delegation-stats-caption";
       pricingCaption.textContent =
-        "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Cache reads are tracked separately and priced at ~0.1x the input rate in the estimate shown, so these figures already reflect the discount rather than overstating cost.";
+        "Relative cost badges compare published list rates and are informational only.";
       metricsBodyEl.appendChild(pricingCaption);
     }
   }
@@ -1771,9 +1732,7 @@
     const meteredRow = document.createElement("div");
     meteredRow.className = "delegation-stats-row";
     if (ledger.metered.tokens > 0) {
-      const unknownCount = ledger.metered.unknownModels.length;
-      const usdPart = unknownCount > 0 && ledger.metered.usd <= 0 ? "rate unknown" : fmtUSD(ledger.metered.usd);
-      meteredRow.textContent = `Metered (API): ${usdPart} · ${fmtTokens(ledger.metered.tokens)} tokens`;
+      meteredRow.textContent = `Metered (API): ${fmtTokens(ledger.metered.tokens)} tokens`;
     } else {
       meteredRow.textContent = "Metered (API): no tokens yet";
     }
@@ -1781,7 +1740,7 @@
     if (ledger.metered.unknownModels.length > 0) {
       const unknownNote = document.createElement("div");
       unknownNote.className = "delegation-stats-caption";
-      unknownNote.textContent = `${ledger.metered.unknownModels.length} model${ledger.metered.unknownModels.length === 1 ? "" : "s"} without a rate excluded from the dollar sum (${ledger.metered.unknownModels.join(", ")}).`;
+      unknownNote.textContent = `${ledger.metered.unknownModels.length} model${ledger.metered.unknownModels.length === 1 ? "" : "s"} without a published rate excluded from the relative-cost comparison (${ledger.metered.unknownModels.join(", ")}).`;
       hero.appendChild(unknownNote);
     }
 
@@ -1808,38 +1767,32 @@
     const savings = ledger.savings || { eligible: false, reason: "unavailable", agents: [] };
     const counterSection = document.createElement("div");
     if (ledger.counterfactualUsd == null) {
-      // Already honest with no eligibility gate needed: no fabricated number
-      // is shown here, just an explanation that a rate is missing.
+      // No published rate resolved yet for the orchestrator's model, so no
+      // relative comparison can be shown — just report the token volume.
       counterSection.className = "delegation-stats-detail";
-      counterSection.textContent = `If all delegated work had run on the orchestrator's model: estimate needs a rate (orchestrator model not detected yet). ${fmtTokens(ledger.billableTokens)} billable tokens delegated so far.`;
+      counterSection.textContent = `Relative cost vs. running on the orchestrator's model: rate not detected yet. ${fmtTokens(ledger.billableTokens)} billable tokens delegated so far.`;
       hero.appendChild(counterSection);
     } else if (!savings.eligible) {
-      // The three savings lines below assume one shared, priced vendor with
-      // real vendor-reported usage and a resolved orchestrator price — any
-      // other mix (a foreign-harness worker, mixed vendors, an unpriced
-      // model) makes the ratio fabricated, so show why instead of a number.
+      // The ratio below assumes one shared, priced vendor with real
+      // vendor-reported usage and a resolved orchestrator price — any other
+      // mix (a foreign-harness worker, mixed vendors, an unpriced model)
+      // makes the ratio fabricated, so show why instead of a number.
       counterSection.className = "delegation-stats-detail delegation-savings-hidden";
-      counterSection.textContent = `Savings not shown: ${savings.reason}`;
+      counterSection.textContent = `Relative cost not shown: ${savings.reason}`;
       if (savings.agents.length > 0) counterSection.title = savings.agents.join(", ");
       hero.appendChild(counterSection);
     } else {
       counterSection.className = "delegation-stats-detail";
-      counterSection.textContent = `If all delegated work had run on the orchestrator's model: ~${fmtUSD(ledger.counterfactualUsd, false)} (estimate)`;
+      const ratio = ledger.billedUsd > 0 ? ledger.counterfactualUsd / ledger.billedUsd : null;
+      counterSection.textContent =
+        ratio != null && ratio >= 1.05
+          ? `Delegated work ran at ${fmtRatio(ratio)}× cheaper than running the same billable tokens on the orchestrator's model (estimate, published list rates).`
+          : "Delegated work ran at roughly the same rate as the orchestrator's model (estimate, published list rates).";
       hero.appendChild(counterSection);
-
-      const billedLine = document.createElement("div");
-      billedLine.className = "delegation-stats-detail";
-      billedLine.textContent = `Actually billed for delegated work: ${fmtUSD(ledger.billedUsd, false)}`;
-      hero.appendChild(billedLine);
-
-      const avoidedLine = document.createElement("div");
-      avoidedLine.className = "delegation-stats-detail";
-      avoidedLine.textContent = `Estimated avoided: ~${fmtUSD(ledger.counterfactualUsd, false)} − ${fmtUSD(ledger.billedUsd, false)} ≈ ${fmtUSD(ledger.avoidedUsd, false)}`;
-      hero.appendChild(avoidedLine);
 
       const caveat = document.createElement("div");
       caveat.className = "delegation-stats-caption";
-      caveat.textContent = "Subscription and local work is excluded from the billed figure because it is not billed per token; spawn overhead is included in the counterfactual.";
+      caveat.textContent = "Subscription and local work is excluded from this comparison because it is not billed per token; spawn overhead is included in the estimate.";
       hero.appendChild(caveat);
     }
 
@@ -2167,7 +2120,7 @@
     const pricingCaption = document.createElement("div");
     pricingCaption.className = "delegation-stats-caption";
     pricingCaption.textContent =
-      "Cost comparisons use Anthropic API token rates — informational only. Claude subscriptions (Max/Pro) bill by plan, not per token. Cache reads are tracked separately and priced at ~0.1x the input rate in the estimate shown, so these figures already reflect the discount rather than overstating cost.";
+      "Relative cost badges compare published list rates and are informational only.";
     el.appendChild(pricingCaption);
 
     updateMetricsTabsUI();

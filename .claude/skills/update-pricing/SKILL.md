@@ -10,10 +10,12 @@ description: >
 # Update Pricing
 
 Refresh `MODEL_PRICE_PER_MTOK` in `media/main.js` from Anthropic's current
-published API token rates. The metrics panel shows a rough per-agent cost
-"lens" using a single BLENDED $/million-tokens number per model family (we only
-track TOTAL tokens — no input/output/cache split), computed as a **3:1
-input:output blend**: `(3*input + output) / 4`.
+published API token rates. This table drives only the panel's relative
+"N× cheaper" badges (e.g. per-agent "vs. orch." and the Delegation tab's
+ratio line) — no dollar amount is ever rendered in the Metrics or Delegation
+tabs, so the blended $/million-tokens number per model family exists purely
+as an internal comparison unit, computed as a **3:1 input:output blend**:
+`(3*input + output) / 4`.
 
 Follow these steps exactly.
 
