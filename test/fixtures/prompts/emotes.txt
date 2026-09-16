@@ -1,0 +1,18 @@
+Art direction (governs everything below): Brass gears, warm lantern light, playful mischief
+
+Create one animated emote-icon sprite board for the "Steampunk Carnival" theme.
+The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop or change the canvas aspect ratio.
+Divide the full canvas into an exact 5-column by 4-row grid of 20 equal cells: every cell is exactly 1/5 of the canvas width wide and 1/4 of the canvas height tall.
+Each cell is taller than it is wide (about 1.25:1); compose every subject to fit that cell shape.
+Keep every subject fully inside its own cell with clear empty padding on ALL FOUR sides — top, bottom, left, and right. The subject must never touch or cross any cell edge; anything drawn past a cell boundary is sliced off flat by the game, so a subject that touches its cell's bottom edge is an incorrect result.
+Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.
+Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind ANY subject. Each subject sits directly on the flat background with nothing framing, enclosing, or backing it. The background is ONE single uniform color filling the ENTIRE canvas edge to edge — identical behind every subject and in all padding — never a per-subject colored tile or panel.
+Paint every unused pixel solid #FF00FF magenta with no texture or gradient.
+Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.
+Each row is one emote animation with five left-to-right frames.
+Row 1: happy celebration / smile, five-frame animation.
+Row 2: sleep / low-energy Z state, five-frame animation.
+Row 3: idea / discovery / build insight, five-frame animation.
+Row 4: team action / rally, five-frame animation.
+Draw icon-only speech-bubble contents, not full characters. Keep one centered icon in each cell.
+No words, letters, numbers, or punctuation glyphs.

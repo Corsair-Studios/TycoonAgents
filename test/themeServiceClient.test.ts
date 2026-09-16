@@ -214,7 +214,7 @@ test("concurrent 401s share one session refresh", async () => {
   const [a, b, c] = await Promise.all([
     client2.getStatus(),
     client2.getStatus(),
-    client2.generateAttempt({ idempotencyKey: "concurrent-k1", boardType: "objects_01", prompt: "x", size: "1024x1024" }),
+    client2.generateAttempt({ idempotencyKey: "concurrent-k1", boardType: "objects_01", promptTemplateVersion: "test-v1", theme: { description: "a theme" }, themeName: "Test Theme", slot: { items: [{ display_name: "Chair" }] }, size: "1024x1024" }),
   ]);
   assert.equal(a.ok, true);
   assert.equal(b.ok, true);
@@ -261,7 +261,7 @@ test("concurrent 401s share one failed refresh: all callers get not_signed_in, s
   const [a, b, c] = await Promise.all([
     client2.getStatus(),
     client2.getStatus(),
-    client2.generateAttempt({ idempotencyKey: "concurrent-k2", boardType: "objects_01", prompt: "x", size: "1024x1024" }),
+    client2.generateAttempt({ idempotencyKey: "concurrent-k2", boardType: "objects_01", promptTemplateVersion: "test-v1", theme: { description: "a theme" }, themeName: "Test Theme", slot: { items: [{ display_name: "Chair" }] }, size: "1024x1024" }),
   ]);
   // getStatus reports "not signed in" as a successful, signed-out status
   // rather than an error; generateAttempt (which requires auth) errors.
@@ -306,7 +306,10 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
   const first = await client.generateAttempt({
     idempotencyKey: "k1",
     boardType: "objects_01",
-    prompt: "a chair",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(first.ok, true);
@@ -315,7 +318,10 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
   const second = await client.generateAttempt({
     idempotencyKey: "k2",
     boardType: "objects_01",
-    prompt: "another chair",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(second.ok, true);
@@ -325,7 +331,10 @@ test("generate debits, retry debits again, failNextGenerate refunds with zero ne
   const third = await client.generateAttempt({
     idempotencyKey: "k3",
     boardType: "objects_01",
-    prompt: "fails",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(third.ok, false);
@@ -345,8 +354,11 @@ test("idempotent replay of generateAttempt adds no new ledger row", async () => 
 
   const req = {
     idempotencyKey: "replay-key",
-    boardType: "objects_01",
-    prompt: "x",
+    boardType: "objects_01" as const,
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   };
   const first = await client.generateAttempt(req);
@@ -367,7 +379,10 @@ test("insufficient credits (402) is surfaced with the current balance", async ()
   const res = await client.generateAttempt({
     idempotencyKey: "poor-key",
     boardType: "objects_01",
-    prompt: "x",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(res.ok, false);
@@ -443,7 +458,7 @@ test("access token never appears in a request body", async () => {
   // 401s and the client attempts a refresh — the refresh token legitimately
   // appears in that request body by design. Only the access token must
   // never appear in any request body.
-  await spiedClient.generateAttempt({ idempotencyKey: "tok-check", boardType: "objects_01", prompt: "x", size: "1024x1024" });
+  await spiedClient.generateAttempt({ idempotencyKey: "tok-check", boardType: "objects_01", promptTemplateVersion: "test-v1", theme: { description: "a theme" }, themeName: "Test Theme", slot: { items: [{ display_name: "Chair" }] }, size: "1024x1024" });
   for (const body of bodies) {
     assert.doesNotMatch(body, /leak-check-access/);
   }
@@ -610,7 +625,10 @@ test("generateAttempt: 422 content_blocked maps to kind content_blocked, no debi
   const res = await client.generateAttempt({
     idempotencyKey: "blocked-key",
     boardType: "objects_01",
-    prompt: "blocked prompt",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(res.ok, false);
@@ -630,7 +648,10 @@ test("generateAttempt: 403 account_locked maps to kind account_locked", async ()
   const res = await client.generateAttempt({
     idempotencyKey: "locked-key",
     boardType: "objects_01",
-    prompt: "x",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
     size: "1024x1024",
   });
   assert.equal(res.ok, false);

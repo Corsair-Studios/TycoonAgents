@@ -17,6 +17,8 @@
  * "Auth — Supabase GoTrue REST, direct from the client".
  */
 
+import type { StructuredGenerateRequest } from "./themePromptTemplates";
+
 // Canonical production endpoints (docs/theme-service-api.md, Conventions),
 // same pattern as FEEDBACK_ENDPOINT in src/host/vscode/feedbackSubmit.ts:36.
 // Baked into every shipped release; repointable server-side without a
@@ -38,6 +40,7 @@ export type ThemeServiceErrorKind =
   | "provider_failed"
   | "unavailable"
   | "unreachable"
+  | "timeout"
   | "server_error"
   | "invalid_response";
 
@@ -77,6 +80,19 @@ export interface ThemeServiceClientOptions {
   now?: () => number;
   /** Injectable PKCE code-verifier generator; for deterministic tests. */
   createCodeVerifier?: () => string;
+  /**
+   * Extension/host version string sent as the `X-Tycoon-Client` header on
+   * every Theme Service request (v3.4), so the service can log/gate by
+   * client build. Optional for tests; omitted entirely when absent.
+   */
+  clientVersion?: string;
+  /**
+   * Bounds every Theme Service request with an AbortController so a hung
+   * connection can't stall the caller forever. Default 180_000ms (180s);
+   * override for tests or slower generation endpoints. Does not apply to
+   * the Supabase auth requests.
+   */
+  requestTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -116,19 +132,27 @@ export interface CheckoutSession {
   url: string;
 }
 
-export interface GenerateAttemptRequest {
+/**
+ * v3.4 structured /api/generate request (docs/theme-service-api.md
+ * "Generation", ~line 197): the client sends theme/board data only — no
+ * free-text `prompt` field — and the service assembles the model prompt
+ * server-side from {@link StructuredGenerateRequest}'s fields, which this
+ * extends with the wire-only `idempotencyKey` and `size`.
+ */
+export type GenerateAttemptRequest = StructuredGenerateRequest & {
   idempotencyKey: string;
-  boardType: string;
-  prompt: string;
-  referenceImages?: string[];
   size: string;
-}
+};
 
 export interface GenerateAttemptResponse {
   image: string;
   attemptCost: number;
   credits: number;
   refunded: boolean;
+  /** Template version the service actually used to assemble the prompt (may differ from the request's if the service has moved on). */
+  promptTemplateVersion?: string;
+  /** sha256 hex digest of the server-assembled prompt text, for client-side drift detection against the local preview. */
+  assembledPromptSha256?: string;
 }
 
 /**
@@ -317,6 +341,8 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   const tokenStore = opts.tokenStore;
   const now = opts.now ?? (() => Date.now());
   const createCodeVerifier: () => string | null = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
+  const clientVersion = opts.clientVersion;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
 
   async function loadSession(): Promise<StoredSession | null> {
     let raw: string | null;
@@ -467,6 +493,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
 
     async function once(): Promise<{ status: "ok"; value: unknown } | { status: "unauthorized" } | { status: "error"; error: ThemeServiceError }> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (clientVersion) headers["X-Tycoon-Client"] = clientVersion;
       if (init.auth) {
         let session = await loadSession();
         if (!session) return { status: "unauthorized" };
@@ -482,14 +509,29 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
         headers.Authorization = `Bearer ${session.accessToken}`;
       }
       let res: Response;
+      // Bounded request timeout (v3.4): the client previously had none, so a
+      // hung connection to the service could stall a caller indefinitely.
+      const timeoutController = typeof AbortController !== "undefined" ? new AbortController() : undefined;
+      const timeoutHandle = timeoutController
+        ? setTimeout(() => timeoutController.abort(), requestTimeoutMs)
+        : undefined;
       try {
         res = await fetchImpl(`${endpoint}${path}`, {
           method: init.method,
           headers,
           body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+          signal: timeoutController?.signal,
         });
       } catch (err) {
-        return { status: "error", error: { kind: "unreachable", message: err instanceof Error ? err.message : String(err) } };
+        const timedOut = timeoutController?.signal.aborted === true;
+        return {
+          status: "error",
+          error: timedOut
+            ? { kind: "timeout", message: `request timed out after ${requestTimeoutMs}ms` }
+            : { kind: "unreachable", message: err instanceof Error ? err.message : String(err) },
+        };
+      } finally {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       }
       let json: unknown = undefined;
       if (res.status !== 204) {
@@ -734,7 +776,14 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       }
       return {
         ok: true,
-        value: { image: json.image, attemptCost: json.attemptCost, credits: json.credits, refunded: json.refunded },
+        value: {
+          image: json.image,
+          attemptCost: json.attemptCost,
+          credits: json.credits,
+          refunded: json.refunded,
+          promptTemplateVersion: typeof json.promptTemplateVersion === "string" ? json.promptTemplateVersion : undefined,
+          assembledPromptSha256: typeof json.assembledPromptSha256 === "string" ? json.assembledPromptSha256 : undefined,
+        },
       };
     },
 

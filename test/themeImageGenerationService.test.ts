@@ -128,10 +128,11 @@ async function magentaAtlas(): Promise<Buffer> {
   return atlas.getBufferAsync(Jimp.MIME_PNG);
 }
 
+// p59-t4: v3.4 structured request — no free-text `prompt` field (see
+// src/extension/themeService.ts's ThemeImageGenerateRequest).
 interface FakeGenerateCall {
   idempotencyKey: string;
   boardType: string;
-  prompt: string;
   referenceImages?: string[];
   size: string;
 }

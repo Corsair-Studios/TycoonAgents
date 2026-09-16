@@ -1,0 +1,336 @@
+Create one production sprite board, not a poster, illustration, concept sheet, or character lineup.
+
+The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop the canvas to the 5:4 grid bounds.
+Inside that square canvas is an exact **5-column by 4-row grid** containing **20 equal-sized cells**.
+
+Every character must remain completely inside its own cell with generous empty padding on all sides. Nothing may cross cell boundaries.
+
+Do NOT draw:
+
+* grid lines
+* labels
+* numbers
+* captions
+* borders
+* scenery
+* backgrounds
+* floor shadows
+* props that are not explicitly requested
+* additional characters
+* UI elements
+* speech bubbles
+
+Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.
+
+Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind any character. Each character stands directly on the flat background with nothing framing, enclosing, or backing it — the background is ONE single uniform color/transparency filling the ENTIRE canvas edge to edge, identical behind every character and in all padding.
+
+NO BORDERS OR GRID ARTIFACTS (ABSOLUTE): the sheet contains ONLY the 20 character sprites on one flat solid-#FF00FF-magenta background. Do NOT draw an outer border or frame around the sheet, cell outlines, grid lines, gutter dividers, selection boxes or rectangles around any sprite, numbering, labels, or text, drop shadows outside the figure, or any backdrop other than that single flat magenta background. The magenta background runs edge to edge with NO framing of any kind.
+
+Every cell contains the EXACT SAME character:
+
+**"Gear Knight"** from the **Steampunk Carnival** theme.
+
+Appearance — depict this exact design: a brass-plated automaton knight
+
+Maintain absolute consistency across all 20 frames:
+
+* identical face
+* identical hairstyle
+* identical body proportions
+* identical costume
+* identical colors
+* identical equipment
+* identical rendering style
+* identical pixel scale
+* identical viewing angle
+
+# UNIVERSAL CHARACTER SCALE (STRICT)
+
+Character scale is a hard production-layout requirement, not a suggestion.
+Use the same camera distance and character scale used for every other character board in this theme.
+In walking and neutral-standing cells, the complete character from head to feet occupies exactly 72% of the cell height.
+Measure that 72% against each individual cell, never against the full canvas.
+A standing character below 68% or above 76% of its cell height is an incorrect result.
+Reserve the remaining approximately 28% as solid-magenta safety padding split above the head and below the feet.
+Keep a visible magenta gutter at every horizontal row boundary and below the entire fourth row.
+Do not leave oversized magenta margins around a small character.
+Do not zoom in or out based on the character costume, body type, equipment, or pose.
+Seated and action poses must preserve the same body scale as the standing poses; only the pose may change.
+UNIFORM SCALE (ALL 20 CELLS): the character head-to-feet height must be IDENTICAL in every one of the 20 cells — measure the same body height per cell across the walk, tool, combat, and celebration rows alike. Never enlarge an action, combat, or celebration pose relative to the walk row. A held weapon or an extended arm is accommodated by keeping the WHOLE figure inside the cell, never by drawing the character bigger.
+The bottom-row celebration poses (dance and victory) must keep both HANDS at or below SHOULDER height — never thrown above the head. Drawn this way the tallest point of every pose is the head, exactly like a standing pose, so each figure fits inside its cell at the SAME body scale with the same head-top padding.
+NEVER let any pixel cross the TOP edge of its cell — with special force on the entire fourth (bottom) row. If a pose would still cross the top boundary, lower the arms and hands further; do NOT fix it by shrinking one figure, which would make that character look smaller than the others.
+
+Center the character horizontally within every cell.
+
+HORIZONTAL CONTAINMENT (ALL 20 CELLS): every pose — including held weapons, the arms-extended ranged-aim pose, and the committed melee strike — must sit fully inside its cell with a clear magenta margin on BOTH the left AND the right. Keep that same horizontal safe margin on every cell. No weapon, limb, swing arc, or effect may touch or cross a cell's left or right edge or bleed into a neighboring cell. If an aim or strike would reach an edge, angle it more downward or pull the whole figure in — never widen past the margin and never enlarge the figure.
+
+Standing poses must share a consistent baseline inside each cell, with visible magenta safety padding below both feet.
+
+Render as crisp retro pixel art using a consistent three-quarter / isometric viewpoint.
+
+---
+
+# CELL CONTRACT (STRICT)
+
+Follow this exact order.
+
+## Row 1 (Cells 1-5) — WALK cycle (Cells 1-4) and back view (Cell 5)
+
+Walk pose guide (row 1, cells 1-4): the attached reference defines the four movement poses and their order, not identity or style; match them in order in row 1 cells 1-4; show the character’s RIGHT side in strict side profile facing screen-right; RED marks the near/right arm and leg, BLUE the far/left arm and leg, colours identify anatomy not clothing or skin; forward is screen-right toward the face. Frame 1 right foot forward contact: right heel on the ground with toes slightly raised, left leg extended back with toes on the ground and heel raised, left arm forward and right arm back, both feet touching the ground. Frame 2 left leg passing: right foot flat beneath the pelvis supporting, left knee bent forward with the whole left foot clear of the ground passing beneath or slightly behind the pelvis, arms close to the torso with the right moving forward and the left back, body rises slightly. Frame 3 left foot forward contact: mirror of frame 1 with the left heel down and the right toes back, right arm forward and left arm back. Frame 4 right leg passing: mirror of frame 2 with the left foot flat and the right foot clear, same slight rise as frame 2. Same character, proportions, limb lengths, face, clothing, lighting and scale in every cell; pelvis at the same horizontal position in each cell with only the small consistent rise in frames 2 and 4 and no recentering; head facing right without nodding; far-side limbs behind the body and near limbs; knees bend forward; arms swing opposite their same-side legs; at least one foot on the ground in every frame, a walk not a run; frame 4 differs from frame 1; do not mirror entire frames, duplicate poses, swap limb identities, add limbs, or turn the walk into hopping or high-knee marching; no skeleton lines, guide-colour overlays, floor lines or shadows.
+
+All five cells are drawn in the SAME three-quarter / isometric viewpoint as the rest of the board (do NOT switch to a flat side view), with the SAME character, costume, colors, and camera throughout.
+
+The first four frames of the animation sprite board form one complete, seamless locomotion cycle, arranged in playback order. Animate the creature moving in place, facing right in a consistent side view.
+
+Choose the gait appropriate to its anatomy: For a two-legged creature, use a natural walk with alternating feet and opposing arm swings, if it has arms. For a four-legged creature, use a gentle trot in which diagonal pairs move together: near-side front with far-side hind, and far-side front with near-side hind.
+
+Frame 1 — First contact: The first foot or diagonal pair reaches forward and contacts the ground. The opposite foot or pair trails behind, finishing its push-off. Use a comfortable, short stride.
+
+Frame 2 — First passing pose: The supporting leg or pair moves beneath the body as the body’s weight passes over it. The opposite leg or pair bends and swings forward beneath the body, with paws or feet visibly lifted clear of the ground.
+
+Frame 3 — Opposite contact: Reverse the roles from frame 1. The opposite foot or diagonal pair now reaches forward and contacts the ground, while the first trails behind and finishes pushing off.
+
+Frame 4 — Opposite passing pose: Reverse the roles from frame 2. The new supporting leg or pair carries the weight beneath the body while the first bends and swings forward, ready to return seamlessly to frame 1.
+
+Consistency and anatomy: Keep character design, proportions, facing direction, camera, scale, and ground line identical. Keep the torso centered, allowing only a subtle, consistent rise and fall. Bend all joints according to the creature’s anatomy. Supporting feet make firm ground contact; swinging feet clear the ground. Distinguish near-side and far-side limbs clearly. Maintain equal strides, balanced weight, and continuous movement through frames 1 → 2 → 3 → 4 → 1. Do not duplicate the first frame as the fourth frame.
+
+Cell 5 — the same character standing still, seen from directly behind, back to the viewer. Same costume, colors, and proportions as the rest of the row, just turned around; no legs mid-stride, no walking.
+
+Empty hands and no equipment.
+
+---
+
+## Row 2 (Cells 6-10)
+
+TOOL HANDLING ANIMATION
+
+Ready stance.
+
+Wind-up.
+
+Forward swing.
+
+Follow-through.
+
+Inspect handheld tool.
+
+TOP CONTAINMENT (row 2): keep the topmost point of the tool at or below the head throughout the wind-up, forward swing, and follow-through -- the tool arcs FORWARD and DOWNWARD, never raised straight overhead. The entire figure AND the tool must stay inside the cell with clear padding above the highest point; if a swing would push the tool past the top edge of the cell, lower the arc. Never let the tool or any pixel cross the top boundary of the cell.
+
+This is NOT a construction scene.
+
+The character is only demonstrating tool use.
+
+The tool never touches anything visible.
+
+The tool always swings through empty magenta space.
+
+---
+
+## Row 3 (Cells 11-15)
+
+COMBAT SEQUENCE
+
+HARD RULE: this character never mixes melee and ranged in one frame. MELEE frames must show a bare fist or melee weapon (such as a blade or baton) and NO firearm or ranged weapon anywhere on the body. RANGED frames must show the firearm or ranged weapon and NO melee weapon and no punch or kick. Each frame is exactly ONE combat modality.
+
+Melee wind-up: coiled back for a melee attack (fist/elbow or a handheld melee weapon such as a blade or baton drawn back and loaded), weight on the back foot. No firearm anywhere.
+
+Melee strike: the melee attack at full forward extension (a committed punch, kick, or melee-weapon swing landing), weight driving through. No firearm anywhere.
+
+Ranged aim: raising a ranged weapon (firearm or energy weapon) and sighting along it at an unseen off-screen target, arms extended and steady. No melee weapon.
+
+Ranged fire: firing the ranged weapon — show body recoil and follow-through only. No melee weapon.
+
+Defensive block or dodge: a defensive beat — a braced raised guard/block, or dodging with a sharp sidestep or lean.
+
+These are playful, non-graphic, non-contact actions suitable for a general-audience video game. They show movement only and never depict contact with another subject.
+
+Do NOT draw a muzzle flash, gunfire, muzzle smoke, tracer, projectile, energy blast, spark, or discharge effect on the ranged-fire frame — show body recoil/follow-through only; the projectile is composited separately by the game.
+
+Keep the entire tool or weapon (barrel, blade, swing arc, muzzle) fully inside the character's cell with magenta padding; it must never reach the cell edge or cross into an adjacent frame, including the melee-strike and ranged-fire frames.
+
+---
+
+## Row 4 (Cells 16-20)
+
+Bottom-row reminder: in the dance and victory cells keep both HANDS at or below shoulder height (fists pumped, elbows bent — NOT overhead) so the whole figure fits its cell just like a standing pose, with clear padding above the head. Do not raise arms above the head, and do not shrink the figure.
+
+Invisible-chair seated idle.
+
+Neutral standing idle.
+
+Dance step A: a lively dance beat — weight shifted onto one leg with the opposite knee raised slightly; both fists pumped to about SHOULDER height (elbows bent), hands never above the head.
+
+Dance step B: the opposite beat — weight and raised knee swapped to the other side, fists swung to shoulder height on that side; hands stay at or below shoulder height.
+
+Victory pose: a triumphant celebration — chin up, both fists clenched and raised only to SHOULDER / upper-chest height with elbows bent at the sides (NOT thrown overhead), so the head stays the highest point and the whole figure fits the cell.
+
+---
+
+# INVISIBLE CHAIR CONTRACT (ABSOLUTE)
+
+The seated pose is a MIME pose.
+
+The character must appear to be sitting on an invisible chair.
+
+The seated character faces to the right (screen-right), body and head oriented toward the right edge of the cell.
+
+The invisible chair is NOT drawn.
+
+The hips remain elevated above the floor exactly as though seated on a normal chair.
+
+The thighs are approximately horizontal.
+
+The knees are bent approximately 90 degrees.
+
+The lower legs point downward.
+
+The torso remains upright.
+
+The feet remain planted beneath the knees.
+
+The character is NOT sitting on the floor.
+
+The character is NOT kneeling.
+
+The character is NOT crouching.
+
+The character is NOT squatting.
+
+The character is NOT cross-legged.
+
+The character is NOT reclining.
+
+Do NOT draw:
+
+* chair
+* bench
+* stool
+* crate
+* rock
+* cushion
+* furniture
+* platform
+* box
+* seat
+* support object
+
+The support is completely invisible.
+
+---
+
+# MIME TOOL CONTRACT (ABSOLUTE)
+
+Construction animations are pantomimes.
+
+The character behaves exactly like a stage mime.
+
+Everything the tool interacts with is invisible.
+
+The animation represents body movement only.
+
+The construction target will be composited later during game development.
+
+Nothing may appear where the tool strikes.
+
+---
+
+# EMPTY TARGET CONTRACT (HIGHEST PRIORITY)
+
+The tool MUST NEVER contact any visible object.
+
+There is NOTHING in front of the tool.
+
+Do NOT draw:
+
+* walls
+* floors
+* beams
+* pipes
+* machinery
+* generators
+* robots
+* crates
+* barrels
+* workbenches
+* desks
+* tables
+* chairs
+* scaffolding
+* ladders
+* consoles
+* computers
+* monitors
+* holograms
+* blueprints
+* control panels
+* terminals
+* vehicles
+* rocks
+* trees
+* dirt
+* construction materials
+* repair targets
+* welding targets
+* partially completed objects
+* completed objects
+* anything being built
+
+If an object would normally exist, omit it completely.
+
+The tool must terminate in empty #FF00FF magenta space.
+
+No visible object may ever touch the tool.
+
+No impact target.
+
+No construction result.
+
+No object interaction.
+
+---
+
+# ANIMATION RULES
+
+One complete character per cell.
+
+No duplicate characters.
+
+No detached limbs.
+
+No cropped body parts.
+
+No cropped equipment.
+
+No effects crossing into adjacent cells.
+
+Every frame must function as an independent animation sprite.
+
+Within each row, the first cell defines that character's horizontal center, ground-contact baseline, and overall body scale.
+
+Every later cell in that same row keeps the same horizontal center, the same feet baseline, and the same overall body scale.
+
+Limbs, pose, and facial expression may change freely from cell to cell within a row.
+
+The whole body must never slide sideways, re-center, or change size across a row.
+
+Walking and running are animated IN PLACE — the game itself moves the sprite across the screen.
+
+A character that slides, re-centers, or changes size between cells of the same row is an incorrect result.
+
+---
+
+# CREATIVE DIRECTION
+
+Theme: Steampunk Carnival.
+
+Brass gears, warm lantern light, playful mischief
+
+Use dramatic lighting while preserving clean sprite readability.
+
+Maintain strong silhouettes suitable for game animation.
+
+Although the theme may imply a detailed environment, **do not render any part of the environment.**
+
+Characters only.
+
+Every unused pixel remains solid **#FF00FF** magenta.

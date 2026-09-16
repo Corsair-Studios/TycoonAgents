@@ -423,7 +423,14 @@ test('content_blocked, policy-refusal strikes, auto-lock, and 24h strike expiry 
       const balanceBeforeBlock = fake.state.balances.get(accountId)!;
       const ledgerLengthBeforeBlock = fake.state.ledger.length;
       fake.helpers.blockNextPrompt();
-      const blockedAttempt = await client.generateAttempt({ idempotencyKey: 'blocked-1', boardType: 'environment', prompt: 'a blocked prompt', size: '1024x1024' });
+      const blockedAttempt = await client.generateAttempt({
+        idempotencyKey: 'blocked-1',
+        boardType: 'environment',
+        promptTemplateVersion: 'test-v1',
+        theme: { description: 'a blocked theme' },
+        themeName: 'Blocked Theme',
+        size: '1024x1024',
+      });
       assert.equal(blockedAttempt.ok, false);
       assert.equal(!blockedAttempt.ok && blockedAttempt.error.kind, 'content_blocked');
       assert.equal(fake.state.ledger.length, ledgerLengthBeforeBlock, 'a blocked prompt must never write a ledger row');
@@ -531,13 +538,29 @@ test('generateAttempt debits the exact per-board-type cost against the fake ledg
   await client.requestMagicLink(email);
   await client.verifyMagicLink(email, '123456');
 
-  const rosterRes = await client.generateAttempt({ idempotencyKey: 'roster-1', boardType: 'roster_agent', prompt: 'x', size: '1024x1024' });
+  const rosterRes = await client.generateAttempt({
+    idempotencyKey: 'roster-1',
+    boardType: 'roster_agent',
+    promptTemplateVersion: 'test-v1',
+    theme: { description: 'a theme' },
+    themeName: 'Test Theme',
+    slot: { name: 'Hero', bodyPlan: 'biped' },
+    size: '1024x1024',
+  });
   assert.equal(rosterRes.ok, true);
   const rosterRow = fake.state.ledger.find((r) => r.ref === 'attempt:roster-1');
   assert.ok(rosterRow);
   assert.equal(rosterRow?.delta, -3, 'a roster_agent attempt must debit exactly 3');
 
-  const objectsRes = await client.generateAttempt({ idempotencyKey: 'objects-1', boardType: 'objects_01', prompt: 'x', size: '1024x1024' });
+  const objectsRes = await client.generateAttempt({
+    idempotencyKey: 'objects-1',
+    boardType: 'objects_01',
+    promptTemplateVersion: 'test-v1',
+    theme: { description: 'a theme' },
+    themeName: 'Test Theme',
+    slot: { items: [{ display_name: 'Chair' }] },
+    size: '1024x1024',
+  });
   assert.equal(objectsRes.ok, true);
   const objectsRow = fake.state.ledger.find((r) => r.ref === 'attempt:objects-1');
   assert.ok(objectsRow);

@@ -1520,6 +1520,13 @@
     } else if (msg && msg.type === "THEME_IMAGE_REVIEW") {
       if (msg.payload?.theme_id) reviewThemeId = msg.payload.theme_id;
       renderThemeImageReview(msg.payload || {});
+    } else if (msg && msg.type === "THEME_PROMPT_MISMATCH") {
+      // p59-t3: one-line notice when generateBoardImage's sha256 compare
+      // finds the service assembled the prompt from a newer template than
+      // the local preview used.
+      if (msg.payload?.message && typeof showToast === "function") {
+        showToast(msg.payload.message, "info");
+      }
     } else if (msg && (msg.type === "THEME_IMAGE_RETRY_STATE"
         || msg.type === "THEME_CHARACTER_RENAME_STATE"
         || msg.type === "THEME_CHARACTER_NORMALIZE_STATE")) {

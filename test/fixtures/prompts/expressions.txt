@@ -1,0 +1,26 @@
+Art direction (governs everything below): Brass gears, warm lantern light, playful mischief
+
+Create one expression-icon sprite sheet for the "Steampunk Carnival" theme.
+The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop or change the canvas aspect ratio.
+Divide the full canvas into an exact 4-column by 2-row grid of 8 equal cells: every cell is exactly 1/4 of the canvas width wide and 1/2 of the canvas height tall.
+Each cell is taller than it is wide (about 2.00:1); compose every subject to fit that cell shape.
+Keep every subject fully inside its own cell with clear empty padding on ALL FOUR sides — top, bottom, left, and right. The subject must never touch or cross any cell edge; anything drawn past a cell boundary is sliced off flat by the game, so a subject that touches its cell's bottom edge is an incorrect result.
+Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.
+Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind ANY subject. Each subject sits directly on the flat background with nothing framing, enclosing, or backing it. The background is ONE single uniform color filling the ENTIRE canvas edge to edge — identical behind every subject and in all padding — never a per-subject colored tile or panel.
+Paint every unused pixel solid #FF00FF magenta with no texture or gradient.
+Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.
+Draw exactly one bold, simple ICON in each cell, in row-major order. Every cell must instantly READ as the emotion named for it, even at very small sizes:
+Cell 1: happy
+Cell 2: angry
+Cell 3: confused
+Cell 4: excited
+Cell 5: sleepy
+Cell 6: love
+Cell 7: idea
+Cell 8: dazed
+APPEARANCE — the user may supply art direction per cell: where a cell line has "— <description>" after its emotion, follow that description and treat it as authoritative for the icon's STYLE and theme flavor (e.g. a serpent-styled heart, a themed music note, a spiral of tiny skulls for dazed). It must still be a single, bold, instantly-readable symbolic ICON that clearly reads as that emotion. Where a cell has NO description, draw a clean, universally-readable symbolic emote for that emotion (e.g. a heart for love, a spark or lightbulb for idea, a raised fist or scowl mark for anger, a music note for music, "zzz"-style marks for sleep).
+These are ICONS, NOT characters. Do NOT draw any face, head, eyes, mouth, hair, portrait, or full character in ANY cell — even if a description hints at one. Expression icons render very small, where a face or character will not read; keep every cell a bold, simple, high-contrast pictogram/symbol drawn LARGE and centered to fill most of its cell.
+Cell 8 ("Dazed / hit"): when NO description is given, default to the classic comic "seeing stars" motif (a small cluster of stars and/or a spiral). When a description IS given, follow that description instead (for example a bandage / Band-Aid) — do NOT fall back to stars or a swirl; just keep it a bold, simple icon with no face or head that still reads as hurt or dazed.
+Do NOT draw any speech bubble, balloon, callout, chat bubble, frame, border, panel, outline, or container around the icon — the app displays it inside its own bubble, so render ONLY the bare icon itself.
+Flat, bold, high-contrast icon art on solid magenta; centered in its cell.
+No words, letters, numbers, or punctuation glyphs.

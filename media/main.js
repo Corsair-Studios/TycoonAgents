@@ -12708,6 +12708,13 @@ if (typeof module !== "undefined" && module.exports) {
     } else if (msg && msg.type === "THEME_IMAGE_REVIEW") {
       if (msg.payload?.theme_id) reviewThemeId = msg.payload.theme_id;
       renderThemeImageReview(msg.payload || {});
+    } else if (msg && msg.type === "THEME_PROMPT_MISMATCH") {
+      // p59-t3: one-line notice when generateBoardImage's sha256 compare
+      // finds the service assembled the prompt from a newer template than
+      // the local preview used.
+      if (msg.payload?.message && typeof showToast === "function") {
+        showToast(msg.payload.message, "info");
+      }
     } else if (msg && (msg.type === "THEME_IMAGE_RETRY_STATE"
         || msg.type === "THEME_CHARACTER_RENAME_STATE"
         || msg.type === "THEME_CHARACTER_NORMALIZE_STATE")) {
@@ -21803,47 +21810,10 @@ if (typeof module !== "undefined" && module.exports) {
 
     setupConfigEl.appendChild(teamSetupSection);
 
-    // ── 3b2. Theme Builder (p58-t2) ──
-    // "Attach walk pose guide (Experimental)" — bundles a four-frame walk
-    // pose reference into character board generation so the image model has
-    // a motion cue to work from. Bound to lastSettings.attachWalkPoseGuide
-    // (boolean, default true when absent/undefined) and sent back via
-    // setAttachWalkPoseGuide, following the same
-    // read-from-lastSettings/post-on-change/re-render-on-"settings" pattern
-    // as the review-pass and session-journal rows above. Does not affect
-    // credit cost display (unchanged elsewhere).
-    const themeBuilderSettingsSection = buildSection("Theme Builder");
-    const walkPoseRow = document.createElement("div");
-    walkPoseRow.className = "settings-row";
-    walkPoseRow.dataset.agentRow = "attach-walk-pose-guide";
-    const walkPoseGroup = document.createElement("div");
-    walkPoseGroup.className = "delegation-mode-group";
-    const walkPoseOptLabel = document.createElement("label");
-    walkPoseOptLabel.className = "delegation-mode-option";
-    const walkPoseCheckbox = document.createElement("input");
-    walkPoseCheckbox.type = "checkbox";
-    walkPoseCheckbox.id = "attach-walk-pose-guide-checkbox";
-    walkPoseCheckbox.checked = lastSettings.attachWalkPoseGuide !== false;
-    walkPoseCheckbox.addEventListener("change", () => {
-      walkPoseCheckbox.disabled = true;
-      vscode.postMessage({ type: "setAttachWalkPoseGuide", enabled: walkPoseCheckbox.checked });
-    });
-    const walkPoseBody = document.createElement("span");
-    walkPoseBody.className = "delegation-mode-option-body";
-    const walkPoseLabelSpan = document.createElement("span");
-    walkPoseLabelSpan.className = "delegation-mode-option-label";
-    walkPoseLabelSpan.textContent = "Attach walk pose guide (Experimental)";
-    const walkPoseHelpSpan = document.createElement("span");
-    walkPoseHelpSpan.className = "delegation-mode-option-help";
-    walkPoseHelpSpan.textContent = "Adds a bundled four-frame walk pose reference to character board generation; no extra credits.";
-    walkPoseBody.appendChild(walkPoseLabelSpan);
-    walkPoseBody.appendChild(walkPoseHelpSpan);
-    walkPoseOptLabel.appendChild(walkPoseCheckbox);
-    walkPoseOptLabel.appendChild(walkPoseBody);
-    walkPoseGroup.appendChild(walkPoseOptLabel);
-    walkPoseRow.appendChild(walkPoseGroup);
-    themeBuilderSettingsSection.appendChild(walkPoseRow);
-    setupConfigEl.appendChild(themeBuilderSettingsSection);
+    // p59-t3: the "Attach walk pose guide (Experimental)" toggle was removed —
+    // the Theme Service now always attaches its own pose-guide reference
+    // image server-side for character boards (contract v3.4), so the client
+    // has nothing left to opt in or out of.
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");

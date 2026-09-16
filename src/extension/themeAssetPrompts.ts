@@ -248,12 +248,24 @@ export function buildRivalAtlasPrompt(
   if (rows.length < 1 || rows.length > RIVALS_PER_BOARD) {
     throw new Error('Rival boards carry one to four enemy rows.');
   }
-  const req: StructuredGenerateRequest = {
+  return assembleThemePrompt(buildRivalAtlasRequest(creativeDirection, themeName, rows, background)).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for a rival board, exposed so callers can send it to the v3.4 /api/generate endpoint directly instead of only its assembled prompt string. */
+export function buildRivalAtlasRequest(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeRivalBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): StructuredGenerateRequest {
+  if (rows.length < 1 || rows.length > RIVALS_PER_BOARD) {
+    throw new Error('Rival boards carry one to four enemy rows.');
+  }
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'rival_group',
     slot: rows.map(toRowSpec),
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 export interface CharacterAtlasPromptOptions {
@@ -276,7 +288,20 @@ export function buildCharacterAtlasPrompt(
   visualDescription?: string,
   options?: CharacterAtlasPromptOptions,
 ): string {
-  const req: StructuredGenerateRequest = {
+  const req = buildCharacterAtlasRequest(creativeDirection, characterName, themeName, background, visualDescription, options);
+  return assembleThemePrompt(req, { walkPoseGuideAttached: options?.walkPoseGuide !== undefined }).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for a character atlas board. */
+export function buildCharacterAtlasRequest(
+  creativeDirection: string,
+  characterName: string,
+  themeName: string,
+  background: BoardBackgroundMode = 'magenta',
+  visualDescription?: string,
+  options?: CharacterAtlasPromptOptions,
+): StructuredGenerateRequest {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'roster_agent',
     slot: {
@@ -285,18 +310,21 @@ export function buildCharacterAtlasPrompt(
       ...(visualDescription ? { description: visualDescription } : {}),
     },
   };
-  return assembleThemePrompt(req, { walkPoseGuideAttached: options?.walkPoseGuide !== undefined }).prompt;
 }
 
 export function buildEnvironmentPrompt(
   creativeDirection: string,
   themeName: string,
 ): string {
-  const req: StructuredGenerateRequest = {
+  return assembleThemePrompt(buildEnvironmentRequest(creativeDirection, themeName)).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for the environment board. */
+export function buildEnvironmentRequest(creativeDirection: string, themeName: string): StructuredGenerateRequest {
+  return {
     ...baseRequest(creativeDirection, themeName, 'magenta'),
     boardType: 'environment',
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 /**
@@ -318,6 +346,19 @@ export function buildObjectAtlasPrompt(
     : buildObjectBoard1Prompt(creativeDirection, themeName, rows, background);
 }
 
+/** p59-t3: the StructuredGenerateRequest for either object board, dispatched the same way as {@link buildObjectAtlasPrompt}. */
+export function buildObjectAtlasRequest(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): StructuredGenerateRequest {
+  const isBoard2 = rows.some((row) => row.kind === 'object_anim' || row.kind === 'poof' || row.kind === 'crate');
+  return isBoard2
+    ? buildObjectBoard2Request(creativeDirection, themeName, rows, background)
+    : buildObjectBoard1Request(creativeDirection, themeName, rows, background);
+}
+
 /**
  * Board 1 ("objects_01"): OBJECT_BOARD1_STATIC_COUNT (16) distinct STATIC
  * buildable objects, one per cell in row-major order (Cell 1..16) on a 4x4
@@ -329,6 +370,16 @@ export function buildObjectBoard1Prompt(
   rows: ThemeObjectBoardRow[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
+  return assembleThemePrompt(buildObjectBoard1Request(creativeDirection, themeName, rows, background)).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for object board 1. */
+export function buildObjectBoard1Request(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): StructuredGenerateRequest {
   if (rows.length !== OBJECT_BOARD1_STATIC_COUNT) {
     throw new Error(`Object board 1 requires exactly ${OBJECT_BOARD1_STATIC_COUNT} static-object cells.`);
   }
@@ -336,12 +387,11 @@ export function buildObjectBoard1Prompt(
     if (row.kind !== 'object_static') throw new Error('Object board 1 cells must all be static objects.');
     return toRowSpec(row);
   });
-  const req: StructuredGenerateRequest = {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'objects_01',
     slot: { items },
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 /**
@@ -357,6 +407,16 @@ export function buildObjectBoard2Prompt(
   rows: ThemeObjectBoardRow[],
   background: BoardBackgroundMode = 'magenta',
 ): string {
+  return assembleThemePrompt(buildObjectBoard2Request(creativeDirection, themeName, rows, background)).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for object board 2. */
+export function buildObjectBoard2Request(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeObjectBoardRow[],
+  background: BoardBackgroundMode = 'magenta',
+): StructuredGenerateRequest {
   const [rowA, rowB, poofRow, staticC, staticD, staticE, crateRow] = rows;
   if (
     rows.length !== OBJECT_ANIMATED_COUNT + OBJECT_BOARD2_STATIC_COUNT + 2
@@ -367,7 +427,7 @@ export function buildObjectBoard2Prompt(
   ) {
     throw new Error('Object board 2 requires exactly two animated objects, one poof entry, three static objects, and one crate entry.');
   }
-  const req: StructuredGenerateRequest = {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'objects_02',
     slot: {
@@ -377,7 +437,6 @@ export function buildObjectBoard2Prompt(
       ...(crateRow.visual_description ? { crateDescription: crateRow.visual_description } : {}),
     },
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 /**
@@ -396,6 +455,19 @@ export function buildBackgroundDecorPrompt(
   // the row's prompt text byte-identical to before this parameter existed.
   projectileDescription?: string,
 ): string {
+  return assembleThemePrompt(
+    buildBackgroundDecorRequest(creativeDirection, themeName, rows, background, projectileDescription),
+  ).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for the background-decor board. */
+export function buildBackgroundDecorRequest(
+  creativeDirection: string,
+  themeName: string,
+  rows: ThemeDecorBoardRow[][],
+  background: BoardBackgroundMode = 'magenta',
+  projectileDescription?: string,
+): StructuredGenerateRequest {
   if (rows.length !== 4) throw new Error('Background decor boards require exactly four rows.');
   const [seatRow, staticRow, animRow3, projectileRow] = rows;
   if (seatRow.length !== 4 || staticRow.length !== 4 || animRow3.length !== 1
@@ -403,7 +475,7 @@ export function buildBackgroundDecorPrompt(
     throw new Error('Background decor board layout must be 4 seats, 4 static decor, 1 animated decor, and 1 projectile FX row.');
   }
   const animDecor = animRow3[0];
-  const req: StructuredGenerateRequest = {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'background_decor',
     slot: {
@@ -413,7 +485,6 @@ export function buildBackgroundDecorPrompt(
       ...(projectileDescription ? { projectileDescription } : {}),
     },
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 export function buildExpressionAtlasPrompt(
@@ -423,12 +494,24 @@ export function buildExpressionAtlasPrompt(
   background: BoardBackgroundMode = 'magenta',
   descriptions?: string[],
 ): string {
-  const req: StructuredGenerateRequest = {
+  return assembleThemePrompt(
+    buildExpressionAtlasRequest(creativeDirection, themeName, expressions, background, descriptions),
+  ).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for the expression atlas board. */
+export function buildExpressionAtlasRequest(
+  creativeDirection: string,
+  themeName: string,
+  expressions: string[],
+  background: BoardBackgroundMode = 'magenta',
+  descriptions?: string[],
+): StructuredGenerateRequest {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'expressions',
     slot: { expressions, ...(descriptions ? { descriptions } : {}) },
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 export function buildAchievementAtlasPrompt(
@@ -438,12 +521,24 @@ export function buildAchievementAtlasPrompt(
   background: BoardBackgroundMode = 'magenta',
   descriptions?: string[],
 ): string {
-  const req: StructuredGenerateRequest = {
+  return assembleThemePrompt(
+    buildAchievementAtlasRequest(creativeDirection, themeName, achievements, background, descriptions),
+  ).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for the achievement atlas board. */
+export function buildAchievementAtlasRequest(
+  creativeDirection: string,
+  themeName: string,
+  achievements: string[],
+  background: BoardBackgroundMode = 'magenta',
+  descriptions?: string[],
+): StructuredGenerateRequest {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'achievements',
     slot: { achievements, ...(descriptions ? { descriptions } : {}) },
   };
-  return assembleThemePrompt(req).prompt;
 }
 
 /** Legacy four-emote animation prompt retained for retries of older themes. */
@@ -452,9 +547,17 @@ export function buildEmoteAtlasPrompt(
   themeName: string,
   background: BoardBackgroundMode = 'magenta',
 ): string {
-  const req: StructuredGenerateRequest = {
+  return assembleThemePrompt(buildEmoteAtlasRequest(creativeDirection, themeName, background)).prompt;
+}
+
+/** p59-t3: the StructuredGenerateRequest for the emote atlas board. */
+export function buildEmoteAtlasRequest(
+  creativeDirection: string,
+  themeName: string,
+  background: BoardBackgroundMode = 'magenta',
+): StructuredGenerateRequest {
+  return {
     ...baseRequest(creativeDirection, themeName, background),
     boardType: 'emotes',
   };
-  return assembleThemePrompt(req).prompt;
 }

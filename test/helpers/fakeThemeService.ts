@@ -92,6 +92,11 @@ const DEFAULT_PRICING: Pricing = {
     environment: 3,
     expressions: 2,
     achievements: 2,
+    // p59-t4: v3.4 adds these two board types; costs chosen to match the
+    // existing objects_01/objects_02 tier (both are similar-complexity
+    // static+animated boards) — see test/themeServiceEndToEnd.test.ts.
+    background_decor: 2,
+    emotes: 1,
   },
   planCost: 1,
   typicalTheme: { min: 55, max: 170, typical: 95 },

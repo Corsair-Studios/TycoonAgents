@@ -241,7 +241,10 @@ of the attempt being retried, for server-side telemetry only.
 `"magenta"`); it selects which chroma-key convention the assembled prompt
 instructs the model to pad unused pixels with — solid `#FF00FF` magenta or
 fully transparent (alpha 0) — so client and server agree on how to key out
-the board's background. `themeName` is a required string carried alongside
+the board's background. `options.retryNotes` is an optional string, max 600
+chars, screened as user text (see Content screening) — free-text revision
+notes from a "augment"/"custom" retry, appended to the assembled prompt.
+`themeName` is a required string carried alongside
 `theme` for client-side labeling; it is not folded into `theme.description`
 by the client — the service reads it from `theme.description` server-side
 but the field is still sent so it round-trips for retries and telemetry.

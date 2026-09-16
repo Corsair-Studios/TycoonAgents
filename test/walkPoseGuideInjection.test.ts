@@ -1,33 +1,25 @@
-// p58-t3: exercises the pure prompt-assembly side of the walk-pose-guide
-// feature — createReviewItems / buildReplacementPrompt (src/extension/themeService.ts)
-// deciding, per character_atlas item, whether to thread a walkPoseGuide
-// paragraph into item.prompt, gated on attachWalkPoseGuide + extensionRoot +
-// the PNG actually existing on disk (poseGuides.ts's loadWalkPoseGuide) and
-// effectiveCharacterBodyPlan's explicit-wins-over-inferred resolution.
+// p59-t4: exercises the walk-pose-guide side of createReviewItems /
+// buildReplacementPrompt (src/extension/themeService.ts) after the v3.4
+// migration removed client-side reference-image attachment: the service now
+// always attaches its own pose-guide image for roster_agent attempts
+// (docs/theme-service-api.md Migration), so createReviewItems/
+// buildReplacementPrompt no longer take attachWalkPoseGuide/extensionRoot —
+// the local preview prompt always includes the walk-pose-guide paragraph for
+// character boards, keyed only on effectiveCharacterBodyPlan's
+// explicit-wins-over-inferred bodyPlan resolution (src/core/bodyPlan.ts).
 //
-// COVERAGE LIMIT: attachWalkPoseGuideReference — the function that appends
-// the loaded PNG into ThemeImageGenerationOptions.referenceImages — is not
-// exported from themeService.ts and is only reachable through
-// generateAgentAsset/retryThemeImage, which call out to the real image
-// generation bridge. Exercising that path would require stubbing the theme
-// generation client end to end, which is out of scope here; this file
-// instead asserts prompt/image agreement at the level the module exposes:
-// the same imageOptions + bodyPlan resolution that gates both the prompt
-// paragraph (asserted directly) and the reference-image attachment (verified
-// by inspection at src/extension/themeService.ts:3579-3581 and :4399-4402,
-// which both call loadWalkPoseGuide with the identical bodyPlan/extensionRoot
-// pair used here).
+// The cases asserting client-side referenceImages PNG attachment
+// (attachWalkPoseGuide: false/PNG-missing-on-disk) are gone with that
+// feature; see test/helpers/fakeThemeService.ts / docs/theme-service-api.md
+// for the server-side attachment this replaced.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { ThemeManifest } from '../src/shared/types';
 import type { ThemePlan } from '../src/extension/themePlan';
 
 // themeService.ts does `import * as vscode from 'vscode'` at module scope;
-// stub it the same way test/themeItemDescriptions.test.ts does so this file's
+// stub it the same way other themeService.ts test files do so this file's
 // require chain resolves under plain `node --test`.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const NodeModule = require('module');
@@ -58,21 +50,10 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createReviewItems, buildReplacementPrompt } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { POSE_GUIDE_FILES } = require('../src/extension/poseGuides') as typeof import('../src/extension/poseGuides');
+const { createReviewItems, buildReplacementPrompt, effectiveCharacterBodyPlan } =
+  require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 
 const HEADING = 'Walk pose guide (row 1, cells 1-4):';
-const ONE_PIXEL_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-
-function makeExtensionRootWithGuides(): string {
-  const root = mkdtempSync(join(tmpdir(), 'pose-guide-injection-test-'));
-  mkdirSync(join(root, 'media', 'pose-guides'), { recursive: true });
-  writeFileSync(join(root, POSE_GUIDE_FILES.biped), Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
-  writeFileSync(join(root, POSE_GUIDE_FILES.quadruped), Buffer.from(ONE_PIXEL_PNG_BASE64, 'base64'));
-  return root;
-}
 
 function testManifest(): ThemeManifest {
   return {
@@ -125,119 +106,67 @@ function testPlan(overrides: Partial<ThemePlan> = {}): ThemePlan {
   };
 }
 
-test('character_atlas item with no explicit body_plan infers quadruped from description and attaches the guide', () => {
-  const root = makeExtensionRootWithGuides();
-  try {
-    const manifest = testManifest();
-    const plan = testPlan({ character_descriptions: ['a loyal dog companion'] });
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: true,
-      extensionRoot: root,
-    });
-    const agent = items.find((i) => i.id === 'agent_0')!;
-    assert.ok(agent.prompt.includes(HEADING));
-    // quadruped paragraph opens with the animal-specific lead-in.
-    assert.ok(agent.prompt.includes('show the animal'));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+test('body plan with no explicit override infers quadruped from description ("dog") and the local preview prompt includes the walk pose guide paragraph', () => {
+  const manifest = testManifest();
+  const plan = testPlan({ character_descriptions: ['a loyal dog companion'] });
+  assert.equal(effectiveCharacterBodyPlan(plan, 0), 'quadruped');
 
-test('missing PNG on disk: no paragraph in the prompt (prompt and image attachment agree)', () => {
-  // extensionRoot exists but has no media/pose-guides directory at all.
-  const root = mkdtempSync(join(tmpdir(), 'pose-guide-injection-missing-'));
-  try {
-    const manifest = testManifest();
-    const plan = testPlan({ character_descriptions: ['a loyal dog companion'] });
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: true,
-      extensionRoot: root,
-    });
-    const agent = items.find((i) => i.id === 'agent_0')!;
-    assert.ok(!agent.prompt.includes(HEADING));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta');
+  const agent = items.find((i) => i.id === 'agent_0')!;
+  assert.ok(agent.prompt.includes(HEADING));
+  // quadruped paragraph opens with the animal-specific lead-in.
+  assert.ok(agent.prompt.includes('show the animal'));
 });
 
 test('explicit body_plan "biped" wins over an inferred quadruped description', () => {
-  const root = makeExtensionRootWithGuides();
-  try {
-    const manifest = testManifest();
-    const plan = testPlan({
-      character_descriptions: ['a loyal dog companion'],
-      character_body_plans: ['biped'],
-    });
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: true,
-      extensionRoot: root,
-    });
-    const agent = items.find((i) => i.id === 'agent_0')!;
-    assert.ok(agent.prompt.includes(HEADING));
-    assert.ok(agent.prompt.includes('the character’s RIGHT side'));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+  const manifest = testManifest();
+  const plan = testPlan({
+    character_descriptions: ['a loyal dog companion'],
+    character_body_plans: ['biped'],
+  });
+  assert.equal(effectiveCharacterBodyPlan(plan, 0), 'biped', 'explicit bodyPlan must win over the inferred description');
+
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta');
+  const agent = items.find((i) => i.id === 'agent_0')!;
+  assert.ok(agent.prompt.includes(HEADING));
+  assert.ok(agent.prompt.includes('the character’s RIGHT side'));
+});
+
+test('rival item never gets a walk pose guide paragraph (roster_agent only)', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta');
+  const rivalItems = items.filter((i) => i.kind === 'rival_atlas');
+  assert.ok(rivalItems.length > 0, 'expected at least one rival_atlas item');
+  for (const rival of rivalItems) {
+    assert.ok(!rival.prompt.includes(HEADING));
   }
 });
 
-test('attachWalkPoseGuide: false yields no paragraph', () => {
-  const root = makeExtensionRootWithGuides();
-  try {
-    const manifest = testManifest();
-    const plan = testPlan({ character_descriptions: ['a loyal dog companion'] });
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: false,
-      extensionRoot: root,
-    });
-    const agent = items.find((i) => i.id === 'agent_0')!;
-    assert.ok(!agent.prompt.includes(HEADING));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+test('non-character boards (environment, objects, decor, expressions, achievements) never get the walk pose guide paragraph', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta');
+  for (const item of items) {
+    if (item.kind === 'character_atlas') continue;
+    assert.ok(!item.prompt.includes(HEADING), `${item.id} (${item.kind}) must not carry the walk pose guide paragraph`);
   }
 });
 
-test('rival item never gets a walk pose guide paragraph', () => {
-  const root = makeExtensionRootWithGuides();
-  try {
-    const manifest = testManifest();
-    const plan = testPlan();
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: true,
-      extensionRoot: root,
-    });
-    const rivalItems = items.filter((i) => i.kind === 'rival_atlas');
-    assert.ok(rivalItems.length > 0, 'expected at least one rival_atlas item');
-    for (const rival of rivalItems) {
-      assert.ok(!rival.prompt.includes(HEADING));
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('buildReplacementPrompt (retry path) agrees with createReviewItems on injection', () => {
-  const root = makeExtensionRootWithGuides();
-  try {
-    const manifest = testManifest();
-    const plan = testPlan({ character_descriptions: ['a knight in armor'], character_body_plans: undefined });
-    const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta', {
-      attachWalkPoseGuide: true,
-      extensionRoot: root,
-    });
-    const agent = items.find((i) => i.id === 'agent_0')!;
-    const retryPrompt = buildReplacementPrompt(
-      { ...agent, updated_at: new Date(0).toISOString() },
-      plan.creative_direction,
-      manifest,
-      plan,
-      'magenta',
-      false,
-      { attachWalkPoseGuide: true, extensionRoot: root },
-    );
-    assert.ok(agent.prompt.includes(HEADING));
-    assert.ok(retryPrompt.includes(HEADING));
-    assert.ok(retryPrompt.includes('the character’s RIGHT side'));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+test('buildReplacementPrompt (retry path) agrees with createReviewItems on the walk pose guide paragraph and bodyPlan', () => {
+  const manifest = testManifest();
+  const plan = testPlan({ character_descriptions: ['a knight in armor'], character_body_plans: undefined });
+  const items = createReviewItems(plan, manifest, plan.creative_direction, 'magenta');
+  const agent = items.find((i) => i.id === 'agent_0')!;
+  const retryPrompt = buildReplacementPrompt(
+    { ...agent, updated_at: new Date(0).toISOString() },
+    plan.creative_direction,
+    manifest,
+    plan,
+    'magenta',
+    false,
+  );
+  assert.ok(agent.prompt.includes(HEADING));
+  assert.ok(retryPrompt.includes(HEADING));
+  assert.ok(retryPrompt.includes('the character’s RIGHT side'));
 });

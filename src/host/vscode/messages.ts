@@ -96,10 +96,6 @@ export const MSG = {
   // host re-posts SETTINGS. Disabled client-side when settings.harness.source
   // is "env" or "setting" (a higher-precedence layer already decides it).
   SET_HARNESS: "setHarness",
-  // p58-t2: { value: boolean } — writes tycoonagents.themeBuilder.attachWalkPoseGuide
-  // to VS Code configuration, then the host re-posts SETTINGS
-  // (settings.themeBuilder.attachWalkPoseGuide reflects it immediately).
-  SET_ATTACH_WALK_POSE_GUIDE: "setAttachWalkPoseGuide",
   // p23-t11: install/uninstall the Codex notify hook (config.toml +
   // project .codex/hooks.json) and the tycoon-dispatcher MCP server entry
   // (config.toml only). No payload — always targets the current workspace
@@ -349,6 +345,16 @@ export const MSG = {
   RETRY_THEME_IMAGE: "RETRY_THEME_IMAGE",
   THEME_IMAGE_RETRY_STATE: "THEME_IMAGE_RETRY_STATE",
   RESLICE_THEME_IMAGE: "RESLICE_THEME_IMAGE",
+  // p59-t3: host -> webview only. Fired when generateBoardImage's sha256
+  // compare finds the service assembled the prompt from a newer template
+  // than the local preview used. Has a MSG_SCHEMAS entry (below) for
+  // documentation/type purposes, but — like every other outbound message
+  // (e.g. THEME_IMAGE_RETRY_STATE, just above) — it is never actually
+  // safeParse'd: MSG_SCHEMAS.*.safeParse(message) is only ever called on
+  // inbound webview -> host messages (see panel.ts's message.type === MSG.*
+  // branches), and there is no equivalent validation path on the outbound
+  // (host -> webview) direction to plug this schema into.
+  THEME_PROMPT_MISMATCH: "THEME_PROMPT_MISMATCH",
 
   // ---- theme planning / generation ----------------------------------------
   PLAN_THEME: "PLAN_THEME",
@@ -460,6 +466,10 @@ export const MSG_SCHEMAS = {
   // p40-t3: no payload beyond type.
   OPEN_THEME_BUILDER: z.object({}).passthrough(),
 
+  // p59-t3: host -> webview only, kept for documentation/type purposes — see
+  // the THEME_PROMPT_MISMATCH comment above for why it is never safeParse'd.
+  THEME_PROMPT_MISMATCH: z.object({ message: z.string(), templateVersion: z.string().optional() }).passthrough(),
+
   // ---- install / remove: skill, agent, pack -------------------------------
   // (dispatcher reads `message.id` directly, not a nested `.payload`)
   ID_ONLY: z.object({ id: z.string().min(1) }).passthrough(),
@@ -495,9 +505,6 @@ export const MSG_SCHEMAS = {
 
   // p18-t1: { value: boolean } — toggles the "Use multiple LLMs" setting.
   SET_USE_MULTIPLE_LLMS: z.object({ value: z.boolean() }).passthrough(),
-
-  // p58-t2: { enabled: boolean } — toggles tycoonagents.themeBuilder.attachWalkPoseGuide.
-  SET_ATTACH_WALK_POSE_GUIDE: z.object({ enabled: z.boolean() }).passthrough(),
 
   // p20-t1: { agentId: string } — clears one agent's explicit routing.json entry.
   CLEAR_AGENT_ROUTE: z.object({ agentId: z.string().min(1) }).passthrough(),

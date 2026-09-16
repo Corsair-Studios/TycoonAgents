@@ -105,6 +105,7 @@ import {
   resumeThemeGeneration,
   saveThemeTuning,
   setThemeImageGenerator,
+  setThemePromptMismatchNotifier,
   updateThemeCreativeDirection,
   regenerateThemeDescriptions,
   updateThemeImageReviewStatus,
@@ -957,6 +958,7 @@ export class TycoonPanel {
       postStatus: (status: ThemeServiceHostStatus) => {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
+      clientVersion: this._currentExtensionVersion() ?? undefined,
     });
     this._themeServiceHost.start();
     // Route every board-image generation attempt through this panel's
@@ -965,6 +967,14 @@ export class TycoonPanel {
     // session and refresh-in-flight coordination rather than building a
     // second client.
     setThemeImageGenerator(createServiceImageGenerator(this._themeServiceHost.getClient()));
+    // p59-t3: surfaces generateBoardImage's local-vs-service prompt-template
+    // drift notice (sha256 mismatch) as a one-way webview message.
+    setThemePromptMismatchNotifier((message, templateVersion) => {
+      void this._panel.webview.postMessage({
+        type: MSG.THEME_PROMPT_MISMATCH,
+        payload: templateVersion ? { message, templateVersion } : { message },
+      });
+    });
     // Same wiring for theme planning/description-regeneration text calls
     // (p43-t7) — reuses the same authenticated client/session as image
     // generation and status/checkout above.
@@ -1348,16 +1358,6 @@ export class TycoonPanel {
             this._handleSetUseMultipleLlms(parsedSetUseMultipleLlms.data.value);
           } else {
             console.error("TycoonAgents: setUseMultipleLlms payload rejected:", parsedSetUseMultipleLlms.error.message);
-          }
-        } else if (message.type === MSG.SET_ATTACH_WALK_POSE_GUIDE) {
-          const parsedSetAttachWalkPoseGuide = MSG_SCHEMAS.SET_ATTACH_WALK_POSE_GUIDE.safeParse(message);
-          if (parsedSetAttachWalkPoseGuide.success) {
-            this._handleSetAttachWalkPoseGuide(parsedSetAttachWalkPoseGuide.data.enabled);
-          } else {
-            console.error(
-              "TycoonAgents: setAttachWalkPoseGuide payload rejected:",
-              parsedSetAttachWalkPoseGuide.error.message,
-            );
           }
         } else if (message.type === MSG.CLEAR_AGENT_ROUTE) {
           const parsedClearAgentRoute = MSG_SCHEMAS.CLEAR_AGENT_ROUTE.safeParse(message);
@@ -2387,11 +2387,6 @@ export class TycoonPanel {
               retryMode,
               {
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
-                // p58-t2: see the matching imageOptions comment above.
-                extensionRoot: this._extensionUri.fsPath,
-                attachWalkPoseGuide: vscode.workspace
-                  .getConfiguration("tycoonagents")
-                  .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
               },
               (message) => void this._panel.webview.postMessage({
                 type: MSG.THEME_IMAGE_RETRY_STATE,
@@ -2551,13 +2546,6 @@ export class TycoonPanel {
             };
             const imageOptions = {
               signal: abortController.signal,
-              // p58-t2: gates loadWalkPoseGuide's reference-image attach for
-              // roster_agent (character_atlas) attempts only — see
-              // themeService.ts's attachWalkPoseGuideReference.
-              extensionRoot: this._extensionUri.fsPath,
-              attachWalkPoseGuide: vscode.workspace
-                .getConfiguration("tycoonagents")
-                .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
             };
             const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
               this._themePauseForReview || reviewOptions?.requiresReplacement
@@ -7565,13 +7553,6 @@ export class TycoonPanel {
         foreignManagedBlocks,
         harness: this._buildHarnessSettings(root),
         routing: this._buildRoutingVisibility(root),
-        // p58-t2: mirrors tycoonagents.themeBuilder.attachWalkPoseGuide
-        // (package.json default true) for the Theme Builder's walk pose-guide
-        // toggle (media/src/main/100-slot-editor-settings.js reads
-        // lastSettings.attachWalkPoseGuide, posts setAttachWalkPoseGuide back).
-        attachWalkPoseGuide: vscode.workspace
-          .getConfiguration("tycoonagents")
-          .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
       },
     });
   }
@@ -7854,25 +7835,6 @@ export class TycoonPanel {
       console.error("TycoonAgents: writeUseMultipleLlms failed:", err instanceof Error ? err.message : err);
     }
     this._handleGetSettings();
-  }
-
-  /** Handles MSG.SET_ATTACH_WALK_POSE_GUIDE (p58-t2): persists
-   * tycoonagents.themeBuilder.attachWalkPoseGuide as a user-scope VS Code
-   * setting, then re-posts SETTINGS so the Theme Builder toggle reflects it
-   * immediately. */
-  private _handleSetAttachWalkPoseGuide(enabled: boolean): void {
-    void vscode.workspace
-      .getConfiguration("tycoonagents")
-      .update("themeBuilder.attachWalkPoseGuide", enabled, vscode.ConfigurationTarget.Global)
-      .then(
-        () => this._handleGetSettings(),
-        (err) => {
-          console.error(
-            "TycoonAgents: updating themeBuilder.attachWalkPoseGuide failed:",
-            err instanceof Error ? err.message : err,
-          );
-        },
-      );
   }
 
   /**

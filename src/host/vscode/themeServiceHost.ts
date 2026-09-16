@@ -52,6 +52,8 @@ export interface ThemeServiceHostOptions {
   postStatus: (status: ThemeServiceHostStatus) => void;
   /** Injectable client for tests; defaults to a real one on the VS Code token store. */
   client?: ThemeServiceClient;
+  /** p59-t3: extension version sent as the X-Tycoon-Client header on every Theme Service request. */
+  clientVersion?: string;
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -93,7 +95,10 @@ export interface ThemeServiceHost {
  */
 export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServiceHost {
   const client: ThemeServiceClient =
-    opts.client ?? createThemeServiceClient({ tokenStore: createVsCodeThemeServiceTokenStore(opts.secrets) });
+    opts.client ?? createThemeServiceClient({
+      tokenStore: createVsCodeThemeServiceTokenStore(opts.secrets),
+      clientVersion: opts.clientVersion,
+    });
   const now = opts.now ?? (() => Date.now());
   const setIntervalImpl = opts.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const clearIntervalImpl = opts.clearInterval ?? ((handle: unknown) => clearInterval(handle as NodeJS.Timeout));

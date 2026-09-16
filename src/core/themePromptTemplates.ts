@@ -84,6 +84,15 @@ export type StructuredGenerateRequest = {
      * reproduce the extension's magenta/transparent chroma-key modes. Flag
      * for the contract owner — see report. */
     backgroundMode?: PromptBoardBackgroundMode;
+    /**
+     * Free-text revision notes for a retry's 'augment'/'custom' modes, max
+     * 600 chars (docs/theme-service-api.md options). assembleThemePrompt
+     * appends it to the assembled prompt exactly where the pre-v3.4
+     * client-side "REVISION NOTES — correct the previous result:" wrapper
+     * used to append user feedback, so output is unchanged for the same
+     * inputs.
+     */
+    retryNotes?: string;
   };
   /** themeName is required by every builder below but not named in the v3.4
    * slot table (it rides on `theme.description` server-side); the extension
@@ -843,6 +852,10 @@ export function assembleThemePrompt(
       const exhaustive: never = req;
       throw new Error(`Unknown boardType: ${JSON.stringify(exhaustive)}`);
     }
+  }
+  const retryNotes = req.options?.retryNotes;
+  if (retryNotes) {
+    prompt = `${prompt}\n\nREVISION NOTES — correct the previous result:\n${retryNotes}`;
   }
   return { prompt, templateVersion: req.promptTemplateVersion };
 }

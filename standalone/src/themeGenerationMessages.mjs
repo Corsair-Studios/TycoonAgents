@@ -44,19 +44,8 @@
 // themeGenerationBridge.mjs's header for the load-time guarantee this relies
 // on).
 
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as genBridge from './themeGenerationBridge.mjs';
 import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore, isThemeId } from './themeMessages.mjs';
-
-// p58-t2 review fix: the standalone app root that contains media/pose-guides
-// — same REPO_ROOT computation server.mjs uses for its own MEDIA_DIR
-// (path.resolve(dirname(this file), '..', '..'), since this file also lives
-// in standalone/src). Passed to the bridge as `extensionRoot` so
-// loadWalkPoseGuide (src/extension/poseGuides.ts) can resolve
-// media/pose-guides/*.png the same way the VS Code host does with its
-// extension root.
-const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -103,23 +92,15 @@ function buildThemeInitPayload(manifest, frames, isEditorMode) {
  * Service (p43-t7), not a user-chosen text provider," which applies equally
  * here. `extra` merges in per-call fields (e.g. `{ signal }`).
  *
- * p58-t2 review fix: also injects `extensionRoot` (EXTENSION_ROOT, above)
- * and `attachWalkPoseGuide` (the caller's current
- * readAttachWalkPoseGuideStandalone(primaryProjectRoot) value, threaded in
- * via each handler's `hostOptions` param below) — without these,
- * themeService.ts's walk-pose-guide attachment silently never fires on the
- * standalone path, since ThemeImageGenerationOptions has no other way to
- * learn where media/pose-guides lives outside a VS Code extension context.
+ * p59-t3: `extensionRoot`/`attachWalkPoseGuide` are gone — the Theme
+ * Service now always attaches its own pose-guide reference image
+ * server-side for roster_agent attempts (contract v3.4), so the standalone
+ * host has nothing left to inject here.
  *
  * @param {object} [extra]
- * @param {{extensionRoot?: string, attachWalkPoseGuide?: boolean}} [hostOptions]
  */
-function buildImageOptions(extra = {}, hostOptions = {}) {
-  return {
-    extensionRoot: hostOptions.extensionRoot ?? EXTENSION_ROOT,
-    attachWalkPoseGuide: hostOptions.attachWalkPoseGuide !== false,
-    ...extra,
-  };
+function buildImageOptions(extra = {}) {
+  return { ...extra };
 }
 
 /** Mirrors panel.ts's `_waitForThemeImageAcceptance` exactly (same
@@ -213,7 +194,7 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
     // (wireThemeServiceGeneration) — mirrors panel.ts's MSG.GENERATE_THEME
     // branch exactly, including the resume_theme_id path and the
     // pause-for-review waitForReview gate below.
-    const imageOptions = buildImageOptions({ signal: abortController.signal }, hostOptions);
+    const imageOptions = buildImageOptions({ signal: abortController.signal });
     const onProgress = (msg) => broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: msg } });
     const onReviewReady = (themeId) => {
       generatedThemeId = themeId;
@@ -296,7 +277,7 @@ export async function handleRetryThemeImage(store, broadcast, payload, hostOptio
   try {
     const imageOptions = buildImageOptions({
       signal: retryingDuringActiveGeneration ? themeGenerationAbortController?.signal : undefined,
-    }, hostOptions);
+    });
 
     const retryMode =
       payload?.mode === 'replace'

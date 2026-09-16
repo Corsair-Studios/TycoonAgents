@@ -174,6 +174,7 @@ export function createThemeServiceHost(opts) {
       endpoint: opts.endpoint,
       supabaseUrl: opts.supabaseUrl,
       supabaseAnonKey: opts.supabaseAnonKey,
+      clientVersion: opts.clientVersion,
     });
   }
 
