@@ -1,4 +1,5 @@
 import type { ThemeDecorBoardRow, ThemeObjectBoardRow, ThemeRivalBoardRow } from './themeImageReviewState';
+import { WALK_POSE_GUIDE_PARAGRAPHS } from '../core/walkPoseGuidePrompts';
 
 /**
  * Board background fill mode. 'magenta' is the legacy #FF00FF chroma-key
@@ -326,12 +327,25 @@ function boardContract(columns: number, rows: number, background: BoardBackgroun
   ].join('\n');
 }
 
+export interface CharacterAtlasPromptOptions {
+  /**
+   * p58-t2: set only when a walk pose-guide reference image is actually
+   * attached to this attempt (see themeService.ts's
+   * attachWalkPoseGuideReference / poseGuides.ts's loadWalkPoseGuide).
+   * Inserts the matching WALK_POSE_GUIDE_PARAGRAPHS entry
+   * (src/core/walkPoseGuidePrompts.ts) into row 1's instructions. Absent (the
+   * default) leaves row 1's text exactly as before.
+   */
+  walkPoseGuide?: 'biped' | 'quadruped';
+}
+
 export function buildCharacterAtlasPrompt(
   creativeDirection: string,
   characterName: string,
   themeName: string,
   background: BoardBackgroundMode = 'magenta',
   visualDescription?: string,
+  options?: CharacterAtlasPromptOptions,
 ): string {
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
@@ -416,6 +430,7 @@ export function buildCharacterAtlasPrompt(
     '',
     '## Row 1 (Cells 1-5) — WALK cycle (Cells 1-4) and back view (Cell 5)',
     '',
+    ...(options?.walkPoseGuide ? [WALK_POSE_GUIDE_PARAGRAPHS[options.walkPoseGuide], ''] : []),
     'All five cells are drawn in the SAME three-quarter / isometric viewpoint as the rest of the board (do NOT switch to a flat side view), with the SAME character, costume, colors, and camera throughout.',
     '',
     'The first four frames of the animation sprite board form one complete, seamless locomotion cycle, arranged in playback order. Animate the creature moving in place, facing right in a consistent side view.',

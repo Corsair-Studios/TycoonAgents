@@ -3284,6 +3284,47 @@
 
     setupConfigEl.appendChild(teamSetupSection);
 
+    // ── 3b2. Theme Builder (p58-t2) ──
+    // "Attach walk pose guide (Experimental)" — bundles a four-frame walk
+    // pose reference into character board generation so the image model has
+    // a motion cue to work from. Bound to lastSettings.attachWalkPoseGuide
+    // (boolean, default true when absent/undefined) and sent back via
+    // setAttachWalkPoseGuide, following the same
+    // read-from-lastSettings/post-on-change/re-render-on-"settings" pattern
+    // as the review-pass and session-journal rows above. Does not affect
+    // credit cost display (unchanged elsewhere).
+    const themeBuilderSettingsSection = buildSection("Theme Builder");
+    const walkPoseRow = document.createElement("div");
+    walkPoseRow.className = "settings-row";
+    walkPoseRow.dataset.agentRow = "attach-walk-pose-guide";
+    const walkPoseGroup = document.createElement("div");
+    walkPoseGroup.className = "delegation-mode-group";
+    const walkPoseOptLabel = document.createElement("label");
+    walkPoseOptLabel.className = "delegation-mode-option";
+    const walkPoseCheckbox = document.createElement("input");
+    walkPoseCheckbox.type = "checkbox";
+    walkPoseCheckbox.id = "attach-walk-pose-guide-checkbox";
+    walkPoseCheckbox.checked = lastSettings.attachWalkPoseGuide !== false;
+    walkPoseCheckbox.addEventListener("change", () => {
+      walkPoseCheckbox.disabled = true;
+      vscode.postMessage({ type: "setAttachWalkPoseGuide", enabled: walkPoseCheckbox.checked });
+    });
+    const walkPoseBody = document.createElement("span");
+    walkPoseBody.className = "delegation-mode-option-body";
+    const walkPoseLabelSpan = document.createElement("span");
+    walkPoseLabelSpan.className = "delegation-mode-option-label";
+    walkPoseLabelSpan.textContent = "Attach walk pose guide (Experimental)";
+    const walkPoseHelpSpan = document.createElement("span");
+    walkPoseHelpSpan.className = "delegation-mode-option-help";
+    walkPoseHelpSpan.textContent = "Adds a bundled four-frame walk pose reference to character board generation; no extra credits.";
+    walkPoseBody.appendChild(walkPoseLabelSpan);
+    walkPoseBody.appendChild(walkPoseHelpSpan);
+    walkPoseOptLabel.appendChild(walkPoseCheckbox);
+    walkPoseOptLabel.appendChild(walkPoseBody);
+    walkPoseGroup.appendChild(walkPoseOptLabel);
+    walkPoseRow.appendChild(walkPoseGroup);
+    themeBuilderSettingsSection.appendChild(walkPoseRow);
+    setupConfigEl.appendChild(themeBuilderSettingsSection);
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");

@@ -100,6 +100,11 @@
           "default": "",
           "description": "Image quality for OpenAI (low, medium, high). Leave blank to use medium. No effect on Google Gemini."
         },
+        "tycoonagents.themeBuilder.attachWalkPoseGuide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the bundled walk pose guide as a reference image when generating character boards (Experimental)."
+        },
         "tycoonagents.provider": {
           "type": "string",
           "enum": [

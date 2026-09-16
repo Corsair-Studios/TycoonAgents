@@ -96,6 +96,10 @@ export const MSG = {
   // host re-posts SETTINGS. Disabled client-side when settings.harness.source
   // is "env" or "setting" (a higher-precedence layer already decides it).
   SET_HARNESS: "setHarness",
+  // p58-t2: { value: boolean } — writes tycoonagents.themeBuilder.attachWalkPoseGuide
+  // to VS Code configuration, then the host re-posts SETTINGS
+  // (settings.themeBuilder.attachWalkPoseGuide reflects it immediately).
+  SET_ATTACH_WALK_POSE_GUIDE: "setAttachWalkPoseGuide",
   // p23-t11: install/uninstall the Codex notify hook (config.toml +
   // project .codex/hooks.json) and the tycoon-dispatcher MCP server entry
   // (config.toml only). No payload — always targets the current workspace
@@ -492,6 +496,9 @@ export const MSG_SCHEMAS = {
   // p18-t1: { value: boolean } — toggles the "Use multiple LLMs" setting.
   SET_USE_MULTIPLE_LLMS: z.object({ value: z.boolean() }).passthrough(),
 
+  // p58-t2: { enabled: boolean } — toggles tycoonagents.themeBuilder.attachWalkPoseGuide.
+  SET_ATTACH_WALK_POSE_GUIDE: z.object({ enabled: z.boolean() }).passthrough(),
+
   // p20-t1: { agentId: string } — clears one agent's explicit routing.json entry.
   CLEAR_AGENT_ROUTE: z.object({ agentId: z.string().min(1) }).passthrough(),
 
@@ -658,6 +665,10 @@ export const MSG_SCHEMAS = {
               item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'projectile', 'badge', 'expression']),
               id: z.string().min(1),
               description: z.string().max(400),
+              // p58-t2: 'character' rows only — explicit roster slot body plan
+              // from the Descriptions editor's body-plan control. undefined
+              // leaves the stored value untouched.
+              body_plan: z.enum(['biped', 'quadruped']).optional(),
             })
             .passthrough(),
         )

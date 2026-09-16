@@ -4357,6 +4357,11 @@ if (typeof module !== "undefined" && module.exports) {
           const rowId = textarea.getAttribute("data-row-id");
           if (rowId) descriptions[rowId] = textarea.value;
         }
+        const bodyPlans = {};
+        for (const control of card.querySelectorAll(".theme-body-plan-control")) {
+          const rowId = control.getAttribute("data-row-id");
+          if (rowId) bodyPlans[rowId] = control.dataset.value || "";
+        }
         drafts.set(itemId, {
           characterName: card.querySelector(".theme-review-name-input")?.value || "",
           // Single merged section now — namesOpen drives the one <details>
@@ -4367,6 +4372,7 @@ if (typeof module !== "undefined" && module.exports) {
           namesOpen: Boolean(card.querySelector(".theme-review-names-descriptions-details")?.open),
           names,
           descriptions,
+          bodyPlans,
         });
       }
     }
@@ -4541,6 +4547,25 @@ if (typeof module !== "undefined" && module.exports) {
    * @param {any} item a THEME_IMAGE_REVIEW review item
    * @returns {Array<{rowId: string, itemKind: "object"|"decor"|"rival"|"character", label: string, original: string}>}
    */
+  /**
+   * p58-t2: word-boundary, case-insensitive quadruped inference used when a
+   * character slot has no explicit `bodyPlan` set — mirrors the SAME word
+   * list the host uses for its own inference (contract shared with
+   * src/extension for pose-guide selection): dog, cat, wolf, fox, horse,
+   * cow, pig, sheep, deer, bear, lion, tiger, quadruped, four-legged, plus
+   * plurals. Matches against the character's description text (falling back
+   * to its name) and returns "quadruped" on a hit, "biped" otherwise — the
+   * inferred value is display-only until the user explicitly picks a
+   * control, at which point bodyPlan is written.
+   * @param {string} text
+   * @returns {"biped"|"quadruped"}
+   */
+  function inferBodyPlan(text) {
+    const words = ["dog", "cat", "wolf", "fox", "horse", "cow", "pig", "sheep", "deer", "bear", "lion", "tiger", "quadruped", "four-legged"];
+    const pattern = new RegExp("\\b(" + words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("s?|") + "s?)\\b", "i");
+    return pattern.test(String(text || "")) ? "quadruped" : "biped";
+  }
+
   function themeReviewDescriptionRows(item) {
     if (item.kind === "character_atlas") {
       return [{
@@ -4548,6 +4573,9 @@ if (typeof module !== "undefined" && module.exports) {
         itemKind: "character",
         label: "Visual description",
         original: item.character_description || "",
+        // "biped" | "quadruped" | undefined (auto — inferred client-side).
+        bodyPlan: item.body_plan === "biped" || item.body_plan === "quadruped" ? item.body_plan : undefined,
+        subject: item.subject || item.label || "",
       }];
     }
     if (item.kind === "object_atlas" && Array.isArray(item.object_rows)) {
@@ -4874,6 +4902,7 @@ if (typeof module !== "undefined" && module.exports) {
     const inputsDisabled = busy || disabledForGeneration;
     const nameInputs = [];
     const descInputs = [];
+    const bodyPlanControls = [];
     for (const row of rows) {
       // The build crate and poof effect are required for every theme (never
       // renamed or removed) — flag that once, right before the first of the
@@ -4930,6 +4959,101 @@ if (typeof module !== "undefined" && module.exports) {
         textarea.disabled = inputsDisabled;
         rowEl.appendChild(textarea);
         descInputs.push(textarea);
+
+        // p58-t2: character-only "Body" control — two-option toggle (two-
+        // legged / four-legged) plus a neutral "auto" state that shows the
+        // client-side inferred value (inferBodyPlan) until the user picks
+        // one explicitly. Draft persists via savedDraft.bodyPlans, mirroring
+        // the names/descriptions draft maps above.
+        if (row.descRow.itemKind === "character") {
+          const rowId = row.descRow.rowId;
+          const original = row.descRow.bodyPlan || "";
+          const draftHasEntry = savedDraft?.bodyPlans && Object.prototype.hasOwnProperty.call(savedDraft.bodyPlans, rowId);
+          let currentValue = draftHasEntry ? savedDraft.bodyPlans[rowId] : original;
+
+          const bodyControl = document.createElement("div");
+          bodyControl.className = "theme-body-plan-control";
+          bodyControl.dataset.rowId = rowId;
+          bodyControl.dataset.itemKind = "character";
+          bodyControl.dataset.original = original;
+          bodyControl.dataset.value = currentValue;
+
+          const bodyLabel = document.createElement("span");
+          bodyLabel.className = "theme-review-names-descriptions-label theme-body-plan-label";
+          bodyLabel.textContent = "Body";
+          bodyControl.appendChild(bodyLabel);
+
+          const bodyButtons = document.createElement("div");
+          bodyButtons.className = "theme-body-plan-buttons";
+          bodyButtons.setAttribute("role", "group");
+          bodyButtons.setAttribute("aria-label", "Body");
+
+          const bipedBtn = document.createElement("button");
+          bipedBtn.type = "button";
+          bipedBtn.className = "skill-btn theme-body-plan-btn";
+          bipedBtn.textContent = "Two-legged";
+          const quadrupedBtn = document.createElement("button");
+          quadrupedBtn.type = "button";
+          quadrupedBtn.className = "skill-btn theme-body-plan-btn";
+          quadrupedBtn.textContent = "Four-legged";
+          const resetBtn = document.createElement("button");
+          resetBtn.type = "button";
+          resetBtn.className = "link-button theme-body-plan-reset";
+          resetBtn.textContent = "Reset to auto";
+
+          const refreshBodyControl = () => {
+            const inferred = inferBodyPlan(textarea.value || row.descRow.subject);
+            const isAuto = !currentValue;
+            const effective = currentValue || inferred;
+            [[bipedBtn, "biped"], [quadrupedBtn, "quadruped"]].forEach(([btn, value]) => {
+              const pressed = effective === value;
+              btn.setAttribute("aria-pressed", String(pressed));
+              btn.classList.toggle("theme-body-plan-btn--pressed", pressed);
+              btn.classList.toggle("theme-body-plan-btn--auto", pressed && isAuto);
+              btn.disabled = inputsDisabled;
+            });
+            resetBtn.hidden = isAuto;
+            resetBtn.disabled = inputsDisabled;
+          };
+          bipedBtn.addEventListener("click", () => {
+            currentValue = "biped";
+            bodyControl.dataset.value = currentValue;
+            if (savedDraft) { savedDraft.bodyPlans = savedDraft.bodyPlans || {}; savedDraft.bodyPlans[rowId] = currentValue; }
+            refreshBodyControl();
+            updateApplyState();
+          });
+          quadrupedBtn.addEventListener("click", () => {
+            currentValue = "quadruped";
+            bodyControl.dataset.value = currentValue;
+            if (savedDraft) { savedDraft.bodyPlans = savedDraft.bodyPlans || {}; savedDraft.bodyPlans[rowId] = currentValue; }
+            refreshBodyControl();
+            updateApplyState();
+          });
+          resetBtn.addEventListener("click", () => {
+            currentValue = "";
+            bodyControl.dataset.value = currentValue;
+            if (savedDraft) { savedDraft.bodyPlans = savedDraft.bodyPlans || {}; savedDraft.bodyPlans[rowId] = currentValue; }
+            refreshBodyControl();
+            updateApplyState();
+          });
+          // The inferred (auto) value changes live as the description is
+          // edited, so re-render the control on every desc keystroke too.
+          textarea.addEventListener("input", refreshBodyControl);
+
+          bodyButtons.appendChild(bipedBtn);
+          bodyButtons.appendChild(quadrupedBtn);
+          bodyControl.appendChild(bodyButtons);
+          bodyControl.appendChild(resetBtn);
+
+          const bodyHelp = document.createElement("div");
+          bodyHelp.className = "theme-review-names-descriptions-hint theme-body-plan-help";
+          bodyHelp.textContent = "Two-legged suits upright humans and robots; Four-legged suits dog- and cat-like bodies.";
+          bodyControl.appendChild(bodyHelp);
+
+          refreshBodyControl();
+          rowEl.appendChild(bodyControl);
+          bodyPlanControls.push(bodyControl);
+        }
       }
       // Opt-in "Acts as turret" toggle — ONLY on animated buildable-object
       // rows. Gated on the runtime frame-array truth (themeImages[...].length
@@ -4977,9 +5101,11 @@ if (typeof module !== "undefined" && module.exports) {
     const dirtyDescriptionChanges = () => descInputs
       .map((input) => ({ input, trimmed: input.value.trim() }))
       .filter(({ input, trimmed }) => trimmed.length <= 400 && trimmed !== input.dataset.original);
+    const dirtyBodyPlanControls = () => bodyPlanControls
+      .filter((control) => control.dataset.value !== control.dataset.original);
     const updateApplyState = () => {
       applyBtn.disabled = inputsDisabled
-        || (dirtyNameChanges().length === 0 && dirtyDescriptionChanges().length === 0);
+        || (dirtyNameChanges().length === 0 && dirtyDescriptionChanges().length === 0 && dirtyBodyPlanControls().length === 0);
     };
     for (const input of nameInputs) input.addEventListener("input", updateApplyState);
     for (const input of descInputs) input.addEventListener("input", updateApplyState);
@@ -4997,13 +5123,34 @@ if (typeof module !== "undefined" && module.exports) {
         nameChanges.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, name: trimmed });
       }
       const descriptionChanges = [];
+      const descChangeByRowId = new Map();
       for (const input of descInputs) {
         const trimmed = input.value.trim();
         if (trimmed.length > 400 || trimmed === input.dataset.original) {
           if (trimmed.length > 400) input.value = input.dataset.original;
           continue;
         }
-        descriptionChanges.push({ item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed });
+        const change = { item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed };
+        descriptionChanges.push(change);
+        descChangeByRowId.set(input.dataset.rowId, change);
+      }
+      // p58-t2: bodyPlan rides in the SAME SET_THEME_ITEM_DESCRIPTIONS change
+      // entry as the description, alongside it — merging into an existing
+      // dirty-description entry for that row, or creating a description-only
+      // (unchanged text) entry when only bodyPlan changed. "" (Reset to
+      // auto) is sent as body_plan: undefined so the host clears it.
+      for (const control of bodyPlanControls) {
+        if (control.dataset.value === control.dataset.original) continue;
+        const rowId = control.dataset.rowId;
+        const bodyPlanValue = control.dataset.value || undefined;
+        const existing = descChangeByRowId.get(rowId);
+        if (existing) {
+          existing.body_plan = bodyPlanValue;
+        } else {
+          const change = { item_kind: control.dataset.itemKind, id: rowId, description: control.dataset.original === undefined ? "" : (descInputs.find((i) => i.dataset.rowId === rowId)?.dataset.original || ""), body_plan: bodyPlanValue };
+          descriptionChanges.push(change);
+          descChangeByRowId.set(rowId, change);
+        }
       }
       if (!nameChanges.length && !descriptionChanges.length) {
         updateApplyState();
@@ -5011,6 +5158,7 @@ if (typeof module !== "undefined" && module.exports) {
       }
       for (const input of nameInputs) input.disabled = true;
       for (const input of descInputs) input.disabled = true;
+      for (const control of bodyPlanControls) control.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
       applyBtn.disabled = true;
       applyBtn.textContent = "Saving...";
       statusEl.textContent = "";
@@ -21702,6 +21850,47 @@ if (typeof module !== "undefined" && module.exports) {
 
     setupConfigEl.appendChild(teamSetupSection);
 
+    // ── 3b2. Theme Builder (p58-t2) ──
+    // "Attach walk pose guide (Experimental)" — bundles a four-frame walk
+    // pose reference into character board generation so the image model has
+    // a motion cue to work from. Bound to lastSettings.attachWalkPoseGuide
+    // (boolean, default true when absent/undefined) and sent back via
+    // setAttachWalkPoseGuide, following the same
+    // read-from-lastSettings/post-on-change/re-render-on-"settings" pattern
+    // as the review-pass and session-journal rows above. Does not affect
+    // credit cost display (unchanged elsewhere).
+    const themeBuilderSettingsSection = buildSection("Theme Builder");
+    const walkPoseRow = document.createElement("div");
+    walkPoseRow.className = "settings-row";
+    walkPoseRow.dataset.agentRow = "attach-walk-pose-guide";
+    const walkPoseGroup = document.createElement("div");
+    walkPoseGroup.className = "delegation-mode-group";
+    const walkPoseOptLabel = document.createElement("label");
+    walkPoseOptLabel.className = "delegation-mode-option";
+    const walkPoseCheckbox = document.createElement("input");
+    walkPoseCheckbox.type = "checkbox";
+    walkPoseCheckbox.id = "attach-walk-pose-guide-checkbox";
+    walkPoseCheckbox.checked = lastSettings.attachWalkPoseGuide !== false;
+    walkPoseCheckbox.addEventListener("change", () => {
+      walkPoseCheckbox.disabled = true;
+      vscode.postMessage({ type: "setAttachWalkPoseGuide", enabled: walkPoseCheckbox.checked });
+    });
+    const walkPoseBody = document.createElement("span");
+    walkPoseBody.className = "delegation-mode-option-body";
+    const walkPoseLabelSpan = document.createElement("span");
+    walkPoseLabelSpan.className = "delegation-mode-option-label";
+    walkPoseLabelSpan.textContent = "Attach walk pose guide (Experimental)";
+    const walkPoseHelpSpan = document.createElement("span");
+    walkPoseHelpSpan.className = "delegation-mode-option-help";
+    walkPoseHelpSpan.textContent = "Adds a bundled four-frame walk pose reference to character board generation; no extra credits.";
+    walkPoseBody.appendChild(walkPoseLabelSpan);
+    walkPoseBody.appendChild(walkPoseHelpSpan);
+    walkPoseOptLabel.appendChild(walkPoseCheckbox);
+    walkPoseOptLabel.appendChild(walkPoseBody);
+    walkPoseGroup.appendChild(walkPoseOptLabel);
+    walkPoseRow.appendChild(walkPoseGroup);
+    themeBuilderSettingsSection.appendChild(walkPoseRow);
+    setupConfigEl.appendChild(themeBuilderSettingsSection);
 
     // ── 3c. Context budget ──
     const budgetSection = buildSection("Context budget");

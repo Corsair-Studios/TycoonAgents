@@ -1349,6 +1349,16 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: setUseMultipleLlms payload rejected:", parsedSetUseMultipleLlms.error.message);
           }
+        } else if (message.type === MSG.SET_ATTACH_WALK_POSE_GUIDE) {
+          const parsedSetAttachWalkPoseGuide = MSG_SCHEMAS.SET_ATTACH_WALK_POSE_GUIDE.safeParse(message);
+          if (parsedSetAttachWalkPoseGuide.success) {
+            this._handleSetAttachWalkPoseGuide(parsedSetAttachWalkPoseGuide.data.enabled);
+          } else {
+            console.error(
+              "TycoonAgents: setAttachWalkPoseGuide payload rejected:",
+              parsedSetAttachWalkPoseGuide.error.message,
+            );
+          }
         } else if (message.type === MSG.CLEAR_AGENT_ROUTE) {
           const parsedClearAgentRoute = MSG_SCHEMAS.CLEAR_AGENT_ROUTE.safeParse(message);
           if (parsedClearAgentRoute.success) {
@@ -2072,11 +2082,30 @@ export class TycoonPanel {
           const themeId = payload.theme_id;
           const boardId = payload.board_id ?? "";
           if (!/^[a-z0-9_]+$/.test(themeId)) return;
+          // p58-t2: whether a change entry carries a `body_plan` key at all is
+          // meaningful (present-but-undefined means "Reset to auto"; absent
+          // means "not touched" — see ThemeItemDescriptionChange's doc
+          // comment), and zod's `.optional()` can't be trusted to preserve
+          // that distinction through parsing. Check presence against the RAW
+          // payload instead of the zod-validated one.
+          const rawChanges = ((message as any).payload?.changes ?? []) as unknown[];
+          const changes: ThemeItemDescriptionChange[] = payload.changes.map((change, index) => {
+            const raw = rawChanges[index] as Record<string, unknown> | undefined;
+            const out: ThemeItemDescriptionChange = {
+              item_kind: change.item_kind,
+              id: change.id,
+              description: change.description,
+            };
+            if (raw && Object.prototype.hasOwnProperty.call(raw, "body_plan")) {
+              out.body_plan = change.body_plan;
+            }
+            return out;
+          });
           try {
             const result = await updateThemeItemDescriptionsBatch(
               this._globalStorageUri,
               themeId,
-              payload.changes as ThemeItemDescriptionChange[],
+              changes,
             );
             if (result.applied.length) {
               // updateThemeItemDescriptionsBatch also resyncs the affected boards'
@@ -2358,6 +2387,11 @@ export class TycoonPanel {
               retryMode,
               {
                 signal: retryingDuringActiveGeneration ? this._themeGenerationAbortController?.signal : undefined,
+                // p58-t2: see the matching imageOptions comment above.
+                extensionRoot: this._extensionUri.fsPath,
+                attachWalkPoseGuide: vscode.workspace
+                  .getConfiguration("tycoonagents")
+                  .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
               },
               (message) => void this._panel.webview.postMessage({
                 type: MSG.THEME_IMAGE_RETRY_STATE,
@@ -2517,6 +2551,13 @@ export class TycoonPanel {
             };
             const imageOptions = {
               signal: abortController.signal,
+              // p58-t2: gates loadWalkPoseGuide's reference-image attach for
+              // roster_agent (character_atlas) attempts only — see
+              // themeService.ts's attachWalkPoseGuideReference.
+              extensionRoot: this._extensionUri.fsPath,
+              attachWalkPoseGuide: vscode.workspace
+                .getConfiguration("tycoonagents")
+                .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
             };
             const waitForReview = async (themeId: string, itemId: string, reviewOptions?: ThemeImageReviewWaitOptions) => (
               this._themePauseForReview || reviewOptions?.requiresReplacement
@@ -7524,6 +7565,13 @@ export class TycoonPanel {
         foreignManagedBlocks,
         harness: this._buildHarnessSettings(root),
         routing: this._buildRoutingVisibility(root),
+        // p58-t2: mirrors tycoonagents.themeBuilder.attachWalkPoseGuide
+        // (package.json default true) for the Theme Builder's walk pose-guide
+        // toggle (media/src/main/100-slot-editor-settings.js reads
+        // lastSettings.attachWalkPoseGuide, posts setAttachWalkPoseGuide back).
+        attachWalkPoseGuide: vscode.workspace
+          .getConfiguration("tycoonagents")
+          .get<boolean>("themeBuilder.attachWalkPoseGuide", true),
       },
     });
   }
@@ -7806,6 +7854,25 @@ export class TycoonPanel {
       console.error("TycoonAgents: writeUseMultipleLlms failed:", err instanceof Error ? err.message : err);
     }
     this._handleGetSettings();
+  }
+
+  /** Handles MSG.SET_ATTACH_WALK_POSE_GUIDE (p58-t2): persists
+   * tycoonagents.themeBuilder.attachWalkPoseGuide as a user-scope VS Code
+   * setting, then re-posts SETTINGS so the Theme Builder toggle reflects it
+   * immediately. */
+  private _handleSetAttachWalkPoseGuide(enabled: boolean): void {
+    void vscode.workspace
+      .getConfiguration("tycoonagents")
+      .update("themeBuilder.attachWalkPoseGuide", enabled, vscode.ConfigurationTarget.Global)
+      .then(
+        () => this._handleGetSettings(),
+        (err) => {
+          console.error(
+            "TycoonAgents: updating themeBuilder.attachWalkPoseGuide failed:",
+            err instanceof Error ? err.message : err,
+          );
+        },
+      );
   }
 
   /**

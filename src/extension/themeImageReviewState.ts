@@ -99,6 +99,14 @@ export interface ThemeImageReviewItem {
   subject?: string;
   /** Character boards only: current plan.character_descriptions[slot_id] text, for the review UI's Descriptions editor. */
   character_description?: string;
+  /**
+   * Character boards only (p58-t2): the slot's EXPLICIT, user-set
+   * plan.character_body_plans[slot_id] — undefined when the user has never
+   * set one for this slot. The review UI infers a display value client-side
+   * (themeReviewDescriptionRows' inferBodyPlan) when this is undefined; never
+   * populate this field with an inferred value.
+   */
+  body_plan?: 'biped' | 'quadruped';
   /** Object board 2 (objects_02) only: current plan.crate_description text, for the review UI's Descriptions editor. Required (crate is never renamed/removed), but may be blank. */
   crate_description?: string;
   /** Object board 2 (objects_02) only: current plan.poof_description text, for the review UI's Descriptions editor. Required (poof is never renamed/removed), but may be blank. */

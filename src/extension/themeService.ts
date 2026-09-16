@@ -53,6 +53,9 @@ import {
 import { recoverReviewImages } from './themeReviewImages';
 import { composeRecoveredBoardImages, type RecoveredBoardFile } from './themeBoardRecovery';
 import { createEnvironmentShapeGuide, normalizeEnvironmentImage } from './environmentAsset';
+import { loadWalkPoseGuide } from './poseGuides';
+import { inferBodyPlan } from '../core/bodyPlan';
+import type { BodyPlan } from '../core/bodyPlan';
 import {
   acceptAllThemeImageReviewItems,
   inferLegacyReviewItem,
@@ -134,6 +137,20 @@ export interface ThemeImageGenerationOptions {
    * the Theme Service request never reads it.
    */
   transparentBackground?: boolean;
+  /**
+   * p58-t2: absolute extension/install root used to resolve the bundled walk
+   * pose-guide PNGs (see poseGuides.ts's loadWalkPoseGuide). Required, along
+   * with `attachWalkPoseGuide: true`, for a roster_agent (character_atlas)
+   * attempt to get a guide reference image attached. Undefined disables the
+   * feature regardless of `attachWalkPoseGuide`.
+   */
+  extensionRoot?: string;
+  /**
+   * p58-t2: mirrors the tycoonagents.themeBuilder.attachWalkPoseGuide VS Code
+   * setting (default true). Only ever consulted for roster_agent
+   * (character_atlas) attempts — never rival_group or other board types.
+   */
+  attachWalkPoseGuide?: boolean;
 }
 
 /**
@@ -1618,6 +1635,17 @@ export interface ThemeItemDescriptionChange {
   item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'projectile' | 'badge' | 'expression';
   id: string;
   description: string;
+  /**
+   * 'character' rows only (p58-t2): explicit user-set body plan for this
+   * roster slot, from the webview's slot-edit payload (snake_case to match
+   * the sibling `item_kind`/`description` wire fields). `undefined` leaves
+   * the slot's stored body plan untouched — the webview sends `undefined`
+   * (Reset to auto) explicitly when the user clears it, but a change entry
+   * that never mentions body_plan at all also leaves it untouched. See
+   * src/extension/themePlan.ts's `character_body_plans` and
+   * src/core/bodyPlan.ts's inferBodyPlan for the fallback when unset.
+   */
+  body_plan?: 'biped' | 'quadruped';
 }
 
 export interface ThemeItemDescriptionChangeResult {
@@ -1633,6 +1661,54 @@ function setPlanDescriptionAt(list: string[] | undefined, index: number, value: 
   while (arr.length <= index) arr.push('');
   arr[index] = value;
   return arr;
+}
+
+/** Same padding/set pattern as setPlanDescriptionAt, for the positional
+ * character_body_plans array (p58-t2). */
+function setPlanBodyPlanAt(
+  list: Array<'biped' | 'quadruped' | undefined> | undefined,
+  index: number,
+  value: 'biped' | 'quadruped' | undefined,
+): Array<'biped' | 'quadruped' | undefined> {
+  const arr = list ? [...list] : [];
+  while (arr.length <= index) arr.push(undefined);
+  arr[index] = value;
+  return arr;
+}
+
+/** Effective body plan for a character slot (p58-t2): the user-set
+ * plan.character_body_plans[slotId] always wins; otherwise infer from the
+ * slot's plan.character_descriptions[slotId] text. */
+export function effectiveCharacterBodyPlan(plan: Pick<ThemePlan, 'character_body_plans' | 'character_descriptions'>, slotId: number): BodyPlan {
+  const explicit = plan.character_body_plans?.[slotId];
+  if (explicit === 'biped' || explicit === 'quadruped') return explicit;
+  return inferBodyPlan(plan.character_descriptions?.[slotId]);
+}
+
+/**
+ * p58-t2: when `options.attachWalkPoseGuide` is on and an extensionRoot is
+ * available, loads the walk pose-guide PNG for `bodyPlan` (poseGuides.ts) and
+ * appends it to `options.referenceImages`. Returns `options` unchanged when
+ * the setting is off, no extensionRoot was supplied, or the PNG is missing on
+ * disk (loadWalkPoseGuide logs its own console.info in that case). Never
+ * called for rival_group or any board type other than roster_agent
+ * (character_atlas) — callers gate on item.kind themselves.
+ */
+function attachWalkPoseGuideReference(
+  options: ThemeImageGenerationOptions | undefined,
+  bodyPlan: BodyPlan,
+): ThemeImageGenerationOptions | undefined {
+  if (!options?.attachWalkPoseGuide || !options.extensionRoot) return options;
+  const dataUrl = loadWalkPoseGuide(options.extensionRoot, bodyPlan);
+  if (!dataUrl) return options;
+  const base64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : dataUrl;
+  return {
+    ...options,
+    referenceImages: [
+      ...(options.referenceImages ?? []),
+      { data: Buffer.from(base64, 'base64'), mimeType: 'image/png', filename: 'walk_pose_guide.png' },
+    ],
+  };
 }
 
 /**
@@ -1697,6 +1773,14 @@ export function applyThemeItemDescriptionChanges(
         continue;
       }
       plan.character_descriptions = setPlanDescriptionAt(plan.character_descriptions, agent.slot_id, description);
+      // Only touch character_body_plans when the change actually carries a
+      // body_plan key — the webview omits the key entirely for a
+      // description-only edit (see themeService.ts's ThemeItemDescriptionChange
+      // doc comment), and includes it (possibly as literal `undefined`, "Reset
+      // to auto") only when the user's body-plan control changed.
+      if (Object.prototype.hasOwnProperty.call(change, 'body_plan')) {
+        plan.character_body_plans = setPlanBodyPlanAt(plan.character_body_plans, agent.slot_id, change.body_plan);
+      }
     } else if (change.item_kind === 'badge') {
       // Badge/achievement descriptions are POSITIONAL: rowId is
       // `achievement_<index>` (see themeReviewDescriptionRows), aligning to
@@ -2093,6 +2177,7 @@ export async function generateTheme(
     manifest,
     creativeDirection,
     boardBackgroundModeForProvider(),
+    imageGenerationOptions,
   );
   await initializeThemeImageReviewDocument(globalStorageUri, themeId, plan.display_name, reviewItems);
   onReviewReady?.(themeId);
@@ -2140,6 +2225,7 @@ export async function resumeThemeGeneration(
     loadedTheme.manifest,
     themePlanCreativeDirection(plan),
     boardBackgroundModeForProvider(),
+    imageGenerationOptions,
   );
   const reviewItems = mergeResumedReviewItems(expectedItems, document.items);
 
@@ -2760,7 +2846,9 @@ export async function retryThemeImage(
 
   // 'replace' explicitly swaps the theme's creative direction for the user's
   // typed notes — that is what "replace" means.
-  const replacementPrompt = buildReplacementPrompt(item, notes, loadedTheme.manifest, currentPlan, backgroundMode);
+  const replacementPrompt = buildReplacementPrompt(
+    item, notes, loadedTheme.manifest, currentPlan, backgroundMode, false, imageGenerationOptions,
+  );
   // 'retry'/'augment' instead reroll the CURRENT template + manifest while
   // keeping the theme's OWN creative direction (from plan.json), not the
   // retry notes — a "reroll the current contract" refresh, not a content
@@ -2785,12 +2873,25 @@ export async function retryThemeImage(
       : `Regenerating ${item.label}...`,
   );
 
+  // Roster_agent (character_atlas) retries also get the walk pose-guide
+  // reference image (p58-t2) when enabled — never for other board kinds.
+  let retryImageOptions = imageGenerationOptions;
+  if (item.kind === 'character_atlas') {
+    const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] ?? item.id);
+    if (agentSlotId !== undefined && currentPlan) {
+      retryImageOptions = attachWalkPoseGuideReference(
+        imageGenerationOptions,
+        effectiveCharacterBodyPlan(currentPlan, agentSlotId),
+      ) ?? imageGenerationOptions;
+    }
+  }
+
   let generated: Buffer;
   let attempt: ThemeImageGenerateValue;
   try {
     attempt = item.kind === 'environment'
       ? await generateEnvironmentImage(themeId, item, prompt, imageGenerationOptions)
-      : await generateBoardImage(themeId, item, prompt, spriteBoardOptions(imageGenerationOptions));
+      : await generateBoardImage(themeId, item, prompt, spriteBoardOptions(retryImageOptions));
     generated = attempt.image;
   } catch (error) {
     await recordUserCorrectableGenerationError(globalStorageUri, themeId, item.id, error);
@@ -3464,26 +3565,42 @@ export function createReviewItems(
   manifest: ThemeManifest,
   creativeDirection: string,
   backgroundMode: BoardBackgroundMode = 'magenta',
+  // p58-t2: when supplied (only by the real generation paths — generateTheme's
+  // initial call and resumeThemeGeneration — never the resync/display-only
+  // callers below), threads the walk pose-guide paragraph into agent_N's
+  // prompt for exactly the slots that will actually get a reference image
+  // attached, so item.prompt (what's really sent to the model) stays in sync
+  // with attachWalkPoseGuideReference's own attach decision at generation time.
+  imageOptions?: Pick<ThemeImageGenerationOptions, 'extensionRoot' | 'attachWalkPoseGuide'>,
 ): Array<Omit<ThemeImageReviewItem, 'updated_at'>> {
   const characterCreativeDirection = `Creative direction: ${plan.creative_direction}`;
-  const characterItems = manifest.roster_agents.map((agent) => ({
-    id: `agent_${agent.slot_id}`,
-    filename: `agent_${String(agent.slot_id + 1).padStart(2, '0')}_${toSafeFileStem(agent.name)}.png`,
-    label: agent.name,
-    kind: 'character_atlas' as const,
-    status: 'pending' as const,
-    prompt: buildCharacterAtlasPrompt(
-      characterCreativeDirection,
-      agent.name,
-      plan.display_name,
-      backgroundMode,
-      (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
-    ),
-    revision: 0,
-    frame_keys: [`agent_${agent.slot_id}`],
-    subject: agent.name,
-    character_description: (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
-  }));
+  const characterItems = manifest.roster_agents.map((agent) => {
+    const bodyPlan = effectiveCharacterBodyPlan(plan, agent.slot_id);
+    const walkPoseGuide = imageOptions?.attachWalkPoseGuide && imageOptions.extensionRoot
+      && loadWalkPoseGuide(imageOptions.extensionRoot, bodyPlan) !== null
+      ? bodyPlan
+      : undefined;
+    return {
+      id: `agent_${agent.slot_id}`,
+      filename: `agent_${String(agent.slot_id + 1).padStart(2, '0')}_${toSafeFileStem(agent.name)}.png`,
+      label: agent.name,
+      kind: 'character_atlas' as const,
+      status: 'pending' as const,
+      prompt: buildCharacterAtlasPrompt(
+        characterCreativeDirection,
+        agent.name,
+        plan.display_name,
+        backgroundMode,
+        (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
+        walkPoseGuide ? { walkPoseGuide } : undefined,
+      ),
+      revision: 0,
+      frame_keys: [`agent_${agent.slot_id}`],
+      subject: agent.name,
+      character_description: (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
+      body_plan: plan.character_body_plans?.[agent.slot_id],
+    };
+  });
   let enemyItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
     const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest, plan.enemy_descriptions));
@@ -3679,7 +3796,11 @@ async function generateAgentAsset(
   options: ThemeImageGenerationOptions | undefined,
   onProgress: (message: string) => void,
 ): Promise<void> {
-  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(options));
+  const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] ?? item.id);
+  const agentOptions = agentSlotId !== undefined
+    ? attachWalkPoseGuideReference(options, effectiveCharacterBodyPlan(plan, agentSlotId))
+    : options;
+  const attempt = await generateBoardImage(plan.theme_id, item, item.prompt, spriteBoardOptions(agentOptions));
   const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
   const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
@@ -4195,7 +4316,7 @@ export function buildReplacementPrompt(
   manifest: ThemeManifest,
   plan?: Pick<ThemePlan,
     | 'expressions' | 'achievements' | 'objects' | 'object_motion_hints'
-    | 'character_descriptions' | 'object_descriptions' | 'decor_descriptions' | 'enemy_descriptions'
+    | 'character_descriptions' | 'character_body_plans' | 'object_descriptions' | 'decor_descriptions' | 'enemy_descriptions'
     | 'crate_description' | 'poof_description' | 'projectile_description'
   >,
   backgroundMode: BoardBackgroundMode = 'magenta',
@@ -4209,6 +4330,14 @@ export function buildReplacementPrompt(
   // for a legacy object board. Only the panel's _postThemeImageReview display
   // loop sets this true.
   preferPlanObjects = false,
+  // p58-t2: only supplied by callers whose prompt feeds real image GENERATION
+  // (retryThemeImage) — see createReviewItems' matching param. Threads the
+  // walk pose-guide paragraph into a character_atlas prompt for exactly the
+  // slot that will actually get a reference image attached at generation
+  // time (attachWalkPoseGuideReference), keeping prompt text and attached
+  // image in sync. Display-only callers (Copy/View prompt) omit it, so their
+  // output stays unaffected by the setting.
+  imageOptions?: Pick<ThemeImageGenerationOptions, 'extensionRoot' | 'attachWalkPoseGuide'>,
 ): string {
   if (item.kind === 'environment') return buildEnvironmentPrompt(creativeDirection, manifest.display_name);
   if (item.kind === 'object_atlas') {
@@ -4267,12 +4396,19 @@ export function buildReplacementPrompt(
   const characterDescription = agentSlotId !== undefined
     ? (plan?.character_descriptions?.[agentSlotId] ?? '').trim() || undefined
     : undefined;
+  const walkPoseGuide = agentSlotId !== undefined && plan && imageOptions?.attachWalkPoseGuide && imageOptions.extensionRoot
+    ? (() => {
+      const bodyPlan = effectiveCharacterBodyPlan(plan, agentSlotId);
+      return loadWalkPoseGuide(imageOptions.extensionRoot as string, bodyPlan) !== null ? bodyPlan : undefined;
+    })()
+    : undefined;
   return buildCharacterAtlasPrompt(
     creativeDirection,
     item.subject ?? item.label,
     manifest.display_name,
     backgroundMode,
     characterDescription,
+    walkPoseGuide ? { walkPoseGuide } : undefined,
   );
 }
 

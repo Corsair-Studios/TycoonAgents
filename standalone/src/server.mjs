@@ -695,12 +695,20 @@ function handleBrowserMessage(msg) {
       });
       break;
     case THEME_MSG_WIRE.GENERATE_THEME:
-      handleGenerateTheme(themeStore, broadcast, payload).catch((err) => {
+      // p58-t2 review fix: attachWalkPoseGuide must be read fresh per call
+      // (not captured once at startup) so a mid-session settings toggle
+      // takes effect on the next generation, mirroring readAttachWalkPoseGuideStandalone's
+      // own per-call file read.
+      handleGenerateTheme(themeStore, broadcast, payload, {
+        attachWalkPoseGuide: primaryProjectRoot ? readAttachWalkPoseGuideStandalone(primaryProjectRoot) : true,
+      }).catch((err) => {
         console.error('[tycoonagents-standalone] GENERATE_THEME failed:', err);
       });
       break;
     case THEME_MSG_WIRE.RETRY_THEME_IMAGE:
-      handleRetryThemeImage(themeStore, broadcast, payload).catch((err) => {
+      handleRetryThemeImage(themeStore, broadcast, payload, {
+        attachWalkPoseGuide: primaryProjectRoot ? readAttachWalkPoseGuideStandalone(primaryProjectRoot) : true,
+      }).catch((err) => {
         console.error('[tycoonagents-standalone] RETRY_THEME_IMAGE failed:', err);
       });
       break;
@@ -1321,6 +1329,11 @@ function handleBrowserMessage(msg) {
       // Standalone analog of panel.ts's _handleSetSessionJournalEntries
       // (~line 6282).
       handleSetSessionJournalEntriesStandalone(Number(msg.entries));
+      break;
+    case 'setAttachWalkPoseGuide':
+      // p58-t2: Theme Builder settings toggle mirror — see
+      // handleSetAttachWalkPoseGuideStandalone below.
+      handleSetAttachWalkPoseGuideStandalone(Boolean(msg.enabled));
       break;
     case 'SET_PROJECT_PLAN_ENABLED':
       // Standalone analog of panel.ts's MSG.SET_PROJECT_PLAN_ENABLED branch
@@ -2280,6 +2293,79 @@ function refreshDelegationSectionStandalone(root, mode, reviewEnabled, sessionJo
  * stubs — no per-project hook-diagnostic pass or context-budget scan is
  * wired up in the standalone yet (out of this task's scope).
  */
+/**
+ * p58-t2: Theme Builder "Attach walk pose guide (Experimental)" toggle
+ * persistence. Deliberately NOT stored in `.claude/tycoon/execution.json`
+ * (that file's shape is `ExecutionConfig`, owned by
+ * src/host/vscode/delegationDoctrine.ts) — a standalone-only sidecar file
+ * keeps this webview-only setting out of the shared execution-config
+ * contract. Default true when the file or field is absent.
+ */
+function attachWalkPoseGuideSettingsPath(root) {
+  return path.join(root, '.claude', 'tycoon', 'webview-settings.json');
+}
+
+function readAttachWalkPoseGuideStandalone(root) {
+  try {
+    const raw = fs.readFileSync(attachWalkPoseGuideSettingsPath(root), 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.attachWalkPoseGuide === 'boolean' ? parsed.attachWalkPoseGuide : true;
+  } catch {
+    return true;
+  }
+}
+
+function writeAttachWalkPoseGuideStandalone(root, enabled) {
+  const filePath = attachWalkPoseGuideSettingsPath(root);
+  let existing = {};
+  try {
+    existing = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {};
+  } catch {
+    existing = {};
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ ...existing, attachWalkPoseGuide: Boolean(enabled) }, null, 2));
+}
+
+/**
+ * Standalone analog of the settings-toggle handlers above (setDelegationMode/
+ * setReviewEnabled): persists the flag, replies `settingsUpdated`, then
+ * re-broadcasts a fresh `settings` payload.
+ */
+function handleSetAttachWalkPoseGuideStandalone(enabled) {
+  const root = primaryProjectRoot;
+  if (!root) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'attach-walk-pose-guide',
+      field: 'attachWalkPoseGuide',
+      error: 'No project root resolved',
+    });
+    return;
+  }
+  try {
+    writeAttachWalkPoseGuideStandalone(root, enabled);
+  } catch (err) {
+    broadcast('message', {
+      type: 'settingsUpdated',
+      ok: false,
+      id: 'attach-walk-pose-guide',
+      field: 'attachWalkPoseGuide',
+      error: String(err),
+    });
+    return;
+  }
+  broadcast('message', {
+    type: 'settingsUpdated',
+    ok: true,
+    id: 'attach-walk-pose-guide',
+    field: 'attachWalkPoseGuide',
+    attachWalkPoseGuide: Boolean(enabled),
+  });
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+}
+
 function buildStandaloneSettingsPayload() {
   let lastActivityAt = null;
   if (primaryProjectRoot) {
@@ -2351,12 +2437,17 @@ function buildStandaloneSettingsPayload() {
     }
   }
 
+  const attachWalkPoseGuide = primaryProjectRoot
+    ? readAttachWalkPoseGuideStandalone(primaryProjectRoot)
+    : true;
+
   return {
     hook: { installed: true, lastActivityAt },
     agents,
     delegation_mode,
     reviewEnabled,
     sessionJournalEntries,
+    attachWalkPoseGuide,
     delegationHealth: {
       directSearches: 0,
       directReads: 0,

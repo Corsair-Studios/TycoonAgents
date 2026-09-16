@@ -123,6 +123,16 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   character_descriptions?: string[];
+  /**
+   * Optional per-character explicit body plan (same length/order as
+   * `characters`, positional — index === slot_id). Undefined at an index
+   * means the user has not set it for that slot; the effective body plan is
+   * then inferred from character_descriptions[index] via
+   * src/core/bodyPlan.ts's inferBodyPlan. A user-set value here is never
+   * overwritten by the heuristic. Internal plan field only — NOT part of the
+   * immutable shared/types contract.
+   */
+  character_body_plans?: Array<'biped' | 'quadruped' | undefined>;
   environment: string;
   objects: string[];
   /**
@@ -319,6 +329,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
       || `A cohesive game-art interpretation of ${displayName}.`,
     characters,
     character_descriptions: alignDescriptions(input.characters, input.character_descriptions, characters),
+    character_body_plans: normalizeCharacterBodyPlans(input.character_body_plans, characters.length),
     environment: cleanValue(input.environment)
       || `A playable isometric environment inspired by ${displayName}.`,
     objects,
@@ -367,6 +378,26 @@ function normalizePositionalDescriptions(rawExtra: unknown, count: number): stri
     out.push(typeof value === 'string' ? value.trim() : '');
   }
   return out;
+}
+
+/**
+ * Positional per-slot body-plan normalizer (index === slot_id, same length as
+ * `characters`): pads/truncates to `count` entries, keeping only the literal
+ * 'biped'/'quadruped' values and dropping anything else to undefined (unset).
+ * Returns undefined when there is no body-plan data at all, so callers fall
+ * back to inferBodyPlan-only behavior.
+ */
+function normalizeCharacterBodyPlans(
+  rawExtra: unknown,
+  count: number,
+): Array<'biped' | 'quadruped' | undefined> | undefined {
+  if (!Array.isArray(rawExtra) || rawExtra.length === 0) return undefined;
+  const out: Array<'biped' | 'quadruped' | undefined> = [];
+  for (let i = 0; i < count; i += 1) {
+    const value = rawExtra[i];
+    out.push(value === 'biped' || value === 'quadruped' ? value : undefined);
+  }
+  return out.some((value) => value !== undefined) ? out : undefined;
 }
 
 /**

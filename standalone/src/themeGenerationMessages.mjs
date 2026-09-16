@@ -44,8 +44,19 @@
 // themeGenerationBridge.mjs's header for the load-time guarantee this relies
 // on).
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as genBridge from './themeGenerationBridge.mjs';
 import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore, isThemeId } from './themeMessages.mjs';
+
+// p58-t2 review fix: the standalone app root that contains media/pose-guides
+// — same REPO_ROOT computation server.mjs uses for its own MEDIA_DIR
+// (path.resolve(dirname(this file), '..', '..'), since this file also lives
+// in standalone/src). Passed to the bridge as `extensionRoot` so
+// loadWalkPoseGuide (src/extension/poseGuides.ts) can resolve
+// media/pose-guides/*.png the same way the VS Code host does with its
+// extension root.
+const EXTENSION_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -92,10 +103,23 @@ function buildThemeInitPayload(manifest, frames, isEditorMode) {
  * Service (p43-t7), not a user-chosen text provider," which applies equally
  * here. `extra` merges in per-call fields (e.g. `{ signal }`).
  *
+ * p58-t2 review fix: also injects `extensionRoot` (EXTENSION_ROOT, above)
+ * and `attachWalkPoseGuide` (the caller's current
+ * readAttachWalkPoseGuideStandalone(primaryProjectRoot) value, threaded in
+ * via each handler's `hostOptions` param below) — without these,
+ * themeService.ts's walk-pose-guide attachment silently never fires on the
+ * standalone path, since ThemeImageGenerationOptions has no other way to
+ * learn where media/pose-guides lives outside a VS Code extension context.
+ *
  * @param {object} [extra]
+ * @param {{extensionRoot?: string, attachWalkPoseGuide?: boolean}} [hostOptions]
  */
-function buildImageOptions(extra = {}) {
-  return { ...extra };
+function buildImageOptions(extra = {}, hostOptions = {}) {
+  return {
+    extensionRoot: hostOptions.extensionRoot ?? EXTENSION_ROOT,
+    attachWalkPoseGuide: hostOptions.attachWalkPoseGuide !== false,
+    ...extra,
+  };
 }
 
 /** Mirrors panel.ts's `_waitForThemeImageAcceptance` exactly (same
@@ -164,7 +188,7 @@ export async function handlePlanTheme(store, broadcast, payload) {
 // already `.catch()`s this the same way it does every other handler, and
 // every intermediate step streams over SSE via broadcast() rather than
 // blocking the POST /message response.
-export async function handleGenerateTheme(store, broadcast, payload) {
+export async function handleGenerateTheme(store, broadcast, payload, hostOptions = {}) {
   if (themeGenerationActive) {
     broadcast('message', {
       type: MSG_WIRE.THEME_GENERATION_ERROR,
@@ -189,7 +213,7 @@ export async function handleGenerateTheme(store, broadcast, payload) {
     // (wireThemeServiceGeneration) — mirrors panel.ts's MSG.GENERATE_THEME
     // branch exactly, including the resume_theme_id path and the
     // pause-for-review waitForReview gate below.
-    const imageOptions = buildImageOptions({ signal: abortController.signal });
+    const imageOptions = buildImageOptions({ signal: abortController.signal }, hostOptions);
     const onProgress = (msg) => broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: msg } });
     const onReviewReady = (themeId) => {
       generatedThemeId = themeId;
@@ -200,7 +224,7 @@ export async function handleGenerateTheme(store, broadcast, payload) {
         ? waitForThemeImageAcceptance(themeId, itemId, abortController.signal, reviewOptions)
         : undefined;
     const result = resumeThemeId
-      ? await genBridge.resumeThemeGeneration(
+      ? await bridge().resumeThemeGeneration(
           store,
           resumeThemeId,
           onProgress,
@@ -209,7 +233,7 @@ export async function handleGenerateTheme(store, broadcast, payload) {
           imageOptions,
           waitForReview,
         )
-      : await genBridge.generateTheme(
+      : await bridge().generateTheme(
           store,
           plan,
           onProgress,
@@ -248,7 +272,7 @@ export async function handleGenerateTheme(store, broadcast, payload) {
 // optional character_name rename and the retry-during-active-generation gate
 // interplay (replacement / generatedReplacementReady / auto-accept when
 // pause-for-review is off).
-export async function handleRetryThemeImage(store, broadcast, payload) {
+export async function handleRetryThemeImage(store, broadcast, payload, hostOptions = {}) {
   const themeId = payload?.theme_id ?? '';
   const itemId = payload?.item_id ?? '';
   if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) return;
@@ -272,7 +296,7 @@ export async function handleRetryThemeImage(store, broadcast, payload) {
   try {
     const imageOptions = buildImageOptions({
       signal: retryingDuringActiveGeneration ? themeGenerationAbortController?.signal : undefined,
-    });
+    }, hostOptions);
 
     const retryMode =
       payload?.mode === 'replace'
@@ -316,7 +340,7 @@ export async function handleRetryThemeImage(store, broadcast, payload) {
       }
     }
 
-    const result = await genBridge.retryThemeImage(
+    const result = await bridge().retryThemeImage(
       store,
       themeId,
       itemId,
@@ -744,4 +768,20 @@ export function resetThemeGenerationStateForTests() {
   themeGenerationGateRetryActive = false;
   themePauseForReview = true;
   themeGenerationReviewGate = undefined;
+}
+
+// p58-t2 review fix: a test-only seam to stub genBridge.generateTheme/
+// resumeThemeGeneration/retryThemeImage so a test can assert the
+// ThemeImageGenerationOptions object handleGenerateTheme/handleRetryThemeImage
+// build (via buildImageOptions, above — extensionRoot/attachWalkPoseGuide)
+// actually reaches the bridge call, without mocking the ESM module graph
+// (node:test's mock.module needs --experimental-test-module-mocks, which
+// this package's `npm test` script does not pass). Exported ONLY for test
+// use; server.mjs never calls this. Pass `null` to restore the real bridge.
+let genBridgeOverride = null;
+export function __setThemeGenerationBridgeForTests(stub) {
+  genBridgeOverride = stub;
+}
+function bridge() {
+  return genBridgeOverride || genBridge;
 }
