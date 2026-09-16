@@ -1,4 +1,4 @@
-# Corsair Theme Service — Client API Contract (v3)
+# Corsair Theme Service — Client API Contract (v3.4)
 
 Operator setup: see theme-service-setup-guide.md
 
@@ -28,6 +28,21 @@ best one "Best value".
 prompt/text length limits via `PROMPT_MAX_CHARS`/`IMAGE_MAX_BYTES`, no text
 in logs/URLs/headers, `nosniff` JSON responses) and adds the `bad_request`
 (400) error kind.
+
+**v3.4 changelog (2026-09-16):**
+- `POST /api/generate` moves from a free-text `prompt` field to a structured
+  request (`theme` + board-specific `slot` fields); the service now owns
+  prompt assembly from versioned templates. A body containing a `prompt`
+  field is rejected `400 bad_request` (`code: "legacy_prompt"`).
+- `PROMPT_MAX_CHARS` now caps the server-assembled prompt, not client input;
+  per-field character caps replace it for request validation.
+- Response adds `promptTemplateVersion` and `assembledPromptSha256`.
+- Client sends `X-Tycoon-Client: <extension version>` (informational only,
+  never trusted for authorization).
+- Adds Eligibility (18+), Likeness (Content screening), Platform governance,
+  and Data-handling detail sections below.
+- Adds a Migration subsection describing the template/guide handoff into
+  `corsair-theme-service` and the v3.3 client deprecation path.
 
 ## Conventions
 
@@ -195,23 +210,71 @@ created.
 ## Generation
 
 ### `POST /api/generate`
+
+The request is structured — the client sends theme/board data, never
+free-text prompt text; the service assembles the actual model prompt
+server-side from versioned templates it owns (see Migration below).
+
 ```json
 {
   "idempotencyKey": "uuid-v4",
   "boardType": "objects_01",
-  "prompt": "string",
-  "referenceImages": ["data:image/png;base64,..."],
+  "promptTemplateVersion": "string — the template version the client was built against",
+  "theme": {
+    "description": "string, max 2000 chars",
+    "creativeDirection": "string, max 1000 chars",
+    "palette": ["#000000", "..."]
+  },
+  "slot": { "...": "board-specific fields — see below" },
+  "userReferenceImages": ["data:image/png;base64,..."],
+  "options": { "seed": 12345, "retryOf": "uuid-v4" },
   "size": "1024x1024"
 }
 ```
-`referenceImages` optional. `idempotencyKey` is client-generated per attempt
-— an HTTP-level retry of the same attempt reuses it; a new user-initiated
-retry gets a new key.
+
+`theme.palette` is optional. `userReferenceImages` is optional, screened the
+same as before (see Content screening), and capped by `IMAGE_MAX_BYTES` per
+image. `options` is optional; `options.retryOf` names the `idempotencyKey`
+of the attempt being retried, for server-side telemetry only.
+
+`slot` shape is board-type-specific:
+- `roster_agent`: `{ "name": "string, max 80", "description": "string, max 600", "bodyPlan": "biped" | "quadruped" }`.
+  The service attaches its own pose-guide reference image for the given
+  `bodyPlan` (see Migration below) — the client never sends pose guides.
+- `rival_group`: an array of `{ "name": "string", "description": "string" }`.
+- `objects_01`/`objects_02`, `expressions`, `achievements`, `environment`:
+  their existing descriptive fields carry over unchanged from the v3.3
+  free-text request shape, moved under `slot` — this doc does not otherwise
+  name them; confirm against the current client-side request builder before
+  implementing.
+
+A request body containing a top-level `prompt` field (the removed v3.3
+free-text shape) is rejected `400 { "error": "bad_request", "code":
+"legacy_prompt" }` — see Migration below.
+
+`idempotencyKey` is client-generated per attempt — an HTTP-level retry of
+the same attempt reuses it; a new user-initiated retry gets a new key and
+sets `options.retryOf` to the prior key.
+
+The client sends `X-Tycoon-Client: <extension version>` on every request to
+this endpoint; the service logs it for diagnostics but never trusts it for
+authorization or entitlement decisions.
 
 Response `200`:
 ```json
-{ "image": "data:image/png;base64,...", "attemptCost": 1, "credits": 41, "refunded": false }
+{
+  "image": "data:image/png;base64,...",
+  "attemptCost": 1,
+  "credits": 41,
+  "refunded": false,
+  "promptTemplateVersion": "string — the template version actually used server-side",
+  "assembledPromptSha256": "hex sha256 of the server-assembled prompt"
+}
 ```
+`assembledPromptSha256` is informational: the client computes the same hash
+over its own local preview of the expected prompt and shows a mismatch
+notice to the user if the two differ (a signal the client's template is
+stale), without blocking the response.
 
 Response `502` (provider failure, auto-refunded atomically server-side):
 ```json
@@ -279,15 +342,23 @@ returns `422 { "error": "content_blocked" }` (content screening) and
 
 ## Content screening
 
-Before any ledger debit, `/api/generate` and `/api/plan` run the assembled
-prompt text — and, for `/api/generate`, any `referenceImages` entry the
-provider's moderation endpoint supports — through that provider's
-moderation/safety endpoint. On a moderation hit the service returns
-`422 { "error": "content_blocked" }` immediately: no `credit_ledger` row is
-written (no debit, so no refund either) and the underlying provider
-generation/plan call is never made. `idempotencyKey` semantics are
-unchanged — a retried key that was previously blocked is re-screened, not
-special-cased.
+Before any ledger debit, `/api/generate` and `/api/plan` run the
+user-supplied text — the concatenated `theme.description`,
+`theme.creativeDirection`, and `slot` fields for `/api/generate`, and the
+`input.prompt` for `/api/plan` — plus any `userReferenceImages` entry the
+provider's moderation endpoint supports, through that provider's
+moderation/safety endpoint. Screening runs on user input, never on the
+server-assembled prompt (which the service itself owns and controls). On a
+moderation hit the service returns `422 { "error": "content_blocked" }`
+immediately: no `credit_ledger` row is written (no debit, so no refund
+either) and the underlying provider generation/plan call is never made.
+`idempotencyKey` semantics are unchanged — a retried key that was
+previously blocked is re-screened, not special-cased.
+
+**Likeness rule:** user descriptions and `userReferenceImages` must not
+depict identifiable real people. A detected face in an uploaded reference
+image is a block reason — `422 { "error": "content_blocked", "category":
+"likeness" }` — under the same screening pass, before any ledger debit.
 
 ## Safety identifier
 
@@ -298,6 +369,28 @@ field. The identifier is `sha256(<supabase user id>)` as a hex string —
 never the user's email, and never the raw Supabase user id. This is the
 only per-user signal sent to the provider; the service does not otherwise
 attribute a generation call to an individual outside its own ledger/DB.
+
+**TO VERIFY:** confirm the OpenAI request parameter name (`safety_identifier`
+vs. the older `user` field) against the live OpenAI API reference when the
+backend is implemented — the API has changed this field name before and the
+correct one must be used at build time, not assumed from this doc.
+
+## Eligibility
+
+Use of the Theme Service requires the user to be 18 or older. Signing in
+constitutes the user's attestation of this (there is no separate age-gate
+prompt). This mirrors the Gemini API terms, which require users to be 18+
+and prohibit directing the service at minors; OpenAI's terms carry an
+equivalent restriction.
+
+## Platform governance
+
+The Theme Service and the extension/standalone app it ships in have their
+own terms, independent of any AI provider's terms or enforcement. Corsair
+maintains its own abuse-report channel (the app's existing Submit Feedback
+flow) and its own enforcement path (the strikes/account-lock mechanism
+above). A provider declining or allowing a given generation does not bind
+Corsair's own moderation decisions, and vice versa.
 
 ## Strikes and account lock
 
@@ -325,6 +418,17 @@ reports `locked` and the trailing-24h `strikes` count (see Account above)
 so the client can surface why the user is blocked. Unlocking is a manual
 operator action against the `accounts` table — there is no unlock
 endpoint.
+
+## Data handling
+
+Gemini's paid API tier does not use request prompts/images for model
+training and retains request data only briefly for abuse-detection
+purposes. OpenAI's default retention/training policy for this integration
+is **TO VERIFY** by the operator against OpenAI's current API data-usage
+policy before launch — do not assume parity with Gemini's terms. The
+service logs `X-Tycoon-Client` and a hash of the assembled prompt
+(`assembledPromptSha256`, see Generation above) for diagnostics; it never
+logs prompt/text content itself (see Backend input handling above).
 
 ## Rate limits and scaling
 
@@ -354,15 +458,23 @@ list returned by `GET /api/pricing` before any Stripe call is made. An
 unknown id returns `400 { "error": "bad_request" }` — no Stripe API call, no
 ledger row.
 
-`prompt` and every other text field on `POST /api/generate` and
-`POST /api/plan` are accepted only from the JSON body (never query string or
-headers), must be strings, and are length-limited (`PROMPT_MAX_CHARS` env
-var, default `4000`); reference image data is limited by `IMAGE_MAX_BYTES`
-env var, default `8` MiB. A field over its limit or of the wrong type
-returns `400 { "error": "bad_request" }` before any provider call or debit.
-This text is never interpolated into URLs, headers, shell commands, or file
-paths, and is never written to logs verbatim — log a hash or length only,
-never the prompt/text content itself.
+`theme`, `slot`, and every other user-supplied text field on
+`POST /api/generate`, and `input.prompt` on `POST /api/plan`, are accepted
+only from the JSON body (never query string or headers), must be strings,
+and are length-limited per field (`theme.description` 2000 chars,
+`theme.creativeDirection` 1000 chars, `roster_agent.name` 80,
+`roster_agent.description` 600; other `slot` fields per their board type).
+`PROMPT_MAX_CHARS` (env var, default `4000`) no longer bounds client input —
+it now caps the length of the prompt the service itself assembles from
+templates, as a sanity check against a malformed or runaway template.
+Reference image data is limited by `IMAGE_MAX_BYTES` env var, default `8`
+MiB. A field over its limit or of the wrong type returns
+`400 { "error": "bad_request" }` before any provider call or debit. A body
+containing a `prompt` field returns `400 { "error": "bad_request", "code":
+"legacy_prompt" }` (see Migration below). This text is never interpolated
+into URLs, headers, shell commands, or file paths, and is never written to
+logs verbatim — log a hash or length only, never the prompt/text content
+itself.
 
 `Idempotency-Key` and `boardType` are validated against a fixed charset (for
 the key) and the known board-type list respectively before use; a value
@@ -371,6 +483,21 @@ outside either returns `400 { "error": "bad_request" }`.
 Every response is served as `application/json` with
 `X-Content-Type-Options: nosniff`; user-supplied text is never reflected
 back into HTML.
+
+## Migration (v3.3 → v3.4)
+
+The prompt-assembly templates (`src/core/themePromptTemplates.ts`, produced
+by task p59-t2) and the pose-guide reference images
+(`media/pose-guides/*.png`) are copied into the backend repo
+`Corsair-Studios/corsair-theme-service`, which owns prompt assembly from
+that point on. `promptTemplateVersion` bumps on every template change so
+the client can detect drift via `assembledPromptSha256` (see Generation
+above).
+
+A v3.3 client — one still sending the free-text `prompt` field — gets
+`400 { "error": "bad_request", "code": "legacy_prompt" }` from
+`/api/generate` and must upgrade to the structured v3.4 request shape; the
+service does not fall back to free-text prompt handling.
 
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 

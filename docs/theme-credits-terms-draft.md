@@ -11,7 +11,11 @@ never need your own API key. Uploading your own images or
 hand-making a theme never uses this service, needs no account, and stays
 fully offline.
 
-## 2. Accounts and sign-in
+## 2. Eligibility
+
+You must be 18 or older to use the Theme Service. Signing in confirms this.
+
+## 3. Accounts and sign-in
 
 Sign-in uses either an emailed magic link/one-time code or "Continue with
 Google," both handled by Supabase Auth. We store your email address, your
@@ -19,7 +23,7 @@ Supabase account id, and a session token on your device (VS Code
 `SecretStorage` or the standalone app's local `secrets/` folder). We do not
 store a password.
 
-## 3. Credits
+## 4. Credits
 
 - Credits are purchased in packs through Stripe Checkout. Stripe handles
   your card and any tax; Corsair never sees or stores your card details.
@@ -39,7 +43,7 @@ store a password.
 - Bonus credits included with a pack are ordinary credits and follow the
   same rules.
 
-## 4. Refunds
+## 5. Refunds
 
 - **Credit refunds** happen automatically, only when the generation call
   itself fails outright (the service or the image model returns an error
@@ -51,7 +55,7 @@ store a password.
   provider. Request one through the app's feedback channel. Stripe's own
   terms apply to the payment itself: https://stripe.com/legal/ssa
 
-## 5. No guarantee of output quality
+## 6. No guarantee of output quality
 
 Generated images come from a third-party AI image model. Output quality
 depends heavily on the prompts and reference images you provide, and on
@@ -61,7 +65,7 @@ theme. Corsair does not guarantee that any attempt will produce a
 satisfactory or "correct" result. Image quality can also vary over time
 with the availability and updates of the underlying model.
 
-## 6. Data handling
+## 7. Data handling
 
 - When you **generate** a theme (not upload or hand-make one), your
   prompt text, any reference images you provide, the generated image, and
@@ -89,12 +93,16 @@ with the availability and updates of the underlying model.
   yours (OpenAI, Google, or otherwise) — Corsair holds its own provider
   keys server-side only.
 
-## 7. Acceptable use
+## 8. Acceptable use
 
 You may not use the Theme Service to generate unlawful content, content
 that infringes another party's rights, or abusive/harassing content.
 Corsair may apply rate limits to generation and purchase requests to
 prevent abuse, and may suspend accounts that violate this section.
+
+**Likeness.** Descriptions and reference images you submit must not depict
+an identifiable real person. A reference image found to contain a
+recognizable face is blocked at screening and spends no credits.
 
 Prompts and reference images are automatically screened before generation;
 a prompt blocked at screening spends no credits. If the AI model itself
@@ -105,7 +113,11 @@ access to the Theme Service, and any remaining credits are not refunded.
 To request an unlock, use the app's feedback channel; unlocks are granted
 at Corsair's discretion.
 
-## 8. Changes and contact
+Separately from any AI provider's own content decisions, Corsair maintains
+its own terms, abuse-report channel (the app's Submit Feedback flow), and
+enforcement (strikes and account lock, described above).
+
+## 9. Changes and contact
 
 Corsair may update these terms as the Theme Service evolves; material
 changes will be noted in-product. Questions about these terms, your
