@@ -187,10 +187,25 @@ Render is used the same way it is for Speciary.
 1. In the Render dashboard, create a new **Web Service** from the
    private `corsair-theme-service` repo.
 2. Environment: **Node**.
-3. Plan: **Starter or above** — do not use the Free tier. Free-tier
-   services sleep on inactivity, and a sleeping service will silently
-   drop or badly delay Stripe webhook deliveries, which breaks credit
-   grants.
+3. Plan: staged by rollout phase, not fixed up front. Render bills a
+   **workspace plan** (Hobby $0, Pro $25/mo, Scale $499/mo) separately
+   from the **instance type** each service runs on. Use the Hobby
+   workspace: its 2 custom domains, 500 build minutes, and 5 GB bandwidth
+   cover a solo operator; Pro is only for team seats, audit logs, or
+   bandwidth past 25 GB.
+   - **Stage 1 (setup and Stripe test mode):** Free instance, $0. It
+     spins down after ~15 minutes idle and cold-starts in 30-60 s. Stripe
+     retries webhooks for up to 3 days, so purchases still land, just
+     late. The extension's request timeout must exceed the cold-start
+     window — no timeout was found configured in
+     `src/core/themeServiceClient.ts`; this must be verified (and set if
+     absent) before relying on the Free instance even for testing.
+   - **Stage 2 (live payments on):** switch the one service to the
+     **Starter instance** (~$7/mo) so paying users never hit a cold
+     start.
+   - **Stage 3:** move to the **Pro workspace** only when a collaborator
+     needs dashboard access or bandwidth exceeds 25 GB (several hundred
+     themes a month).
 4. **Health check path:** `/api/health` (matches the contract's public,
    unauthenticated health endpoint).
 5. **Build command** / **start command**: use whatever the
@@ -332,3 +347,7 @@ during rollout:
    (triggering Google's verification review) or keep the consent screen
    text-only (no review required). Text-only is the faster path; a logo
    is a polish decision, not a functional requirement.
+5. **When to move Free -> Starter** — the trigger for switching the
+   Render instance from Free to Starter (~$7/mo): the first live (non-test)
+   Stripe payment, a fixed date, or first user complaint about a slow
+   first request. Not fixed by this guide.
