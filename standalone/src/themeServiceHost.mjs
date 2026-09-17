@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createStandaloneThemeServiceTokenStore } from './themeServiceToken.mjs';
+import { resolveAppDataDir, createAppData } from './appData.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +67,33 @@ function themeServiceClientModule() {
 }
 
 const GOOGLE_LOOPBACK_TIMEOUT_MS = 10 * 60_000;
+
+// p62-t2: not a secret (a single boolean) — kept via createAppData's plain
+// JSON file, never the secrets/ store used by themeServiceToken.mjs, and
+// never a project file.
+const DEVICE_STATE_FILE = 'theme-service-device-state.json';
+
+/**
+ * Standalone analog of createVsCodeThemeServiceDeviceState
+ * (src/host/vscode/themeServiceToken.ts) — same
+ * {@link import('../../src/host/vscode/themeServiceHost').ThemeServiceDeviceState}
+ * contract, backed by a JSON file under the standalone app-data dir instead
+ * of vscode.Memento.
+ * @param {string} [appDataDir]
+ */
+function createStandaloneThemeServiceDeviceState(appDataDir) {
+  const dir = appDataDir || resolveAppDataDir({ env: process.env });
+  const appData = createAppData({ dir });
+  return {
+    async hasEverSignedIn() {
+      const value = appData.readJson(DEVICE_STATE_FILE, { hasSignedIn: false });
+      return Boolean(value && value.hasSignedIn === true);
+    },
+    async markSignedIn() {
+      appData.writeJson(DEVICE_STATE_FILE, { hasSignedIn: true });
+    },
+  };
+}
 
 /** Opens `url` in the platform default browser. Mirrors the openAgentFile
  * opener pattern already used in server.mjs (spawn, detached, ignored
@@ -197,6 +225,8 @@ export function createThemeServiceHost(opts) {
 
   // The compiled VS Code host owns all status/pricing/checkout-poll/PKCE
   // logic unchanged; only openExternal/postStatus/client differ per host.
+  const deviceState = createStandaloneThemeServiceDeviceState(opts.appDataDir);
+
   const inner = createVsCodeHost({
     // `secrets` is never read when `client` is supplied (see
     // out/src/host/vscode/themeServiceHost.js: `opts.client ?? create...`)
@@ -204,6 +234,7 @@ export function createThemeServiceHost(opts) {
     client,
     openExternal,
     postStatus: opts.postStatus,
+    deviceState,
   });
 
   // Overrides the VS Code host's vscode:// deep-link completion: reimplemented
@@ -224,6 +255,10 @@ export function createThemeServiceHost(opts) {
       opts.postStatus({ signedIn: false, pendingCheckout: false, error: { kind: res.error.kind, message: res.error.message } });
       return;
     }
+    // p62-t2: this path bypasses inner.handleGoogleComplete entirely (see
+    // module doc above), so the first-sign-in/referral-apply bookkeeping
+    // inner would otherwise do internally has to be invoked explicitly here.
+    await inner.notifySignInSucceeded();
     opts.postStatus(await inner.getStatusSnapshot());
   }
 
@@ -269,6 +304,7 @@ export function createThemeServiceHost(opts) {
     handleGoogleComplete,
     handleSignOut: () => inner.handleSignOut(),
     handleBuyCredits: (pack) => inner.handleBuyCredits(pack),
+    handleSetReferralCode: (code) => inner.handleSetReferralCode(code),
     getClient: () => inner.getClient(),
     getLoopbackPort: () => loopback?.port,
     start: () => inner.start(),

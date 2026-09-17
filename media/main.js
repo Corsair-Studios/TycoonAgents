@@ -3349,6 +3349,12 @@ if (typeof module !== "undefined" && module.exports) {
   /** @type {"signin"|"google-wait"|"email-sent"} */
   let themeServiceView = "signin";
   let themeServicePendingEmail = "";
+  // p62-t2: local-only referral field text; only ever sent as
+  // THEME_SERVICE_SET_REFERRAL_CODE (never in a sign-in payload itself) and
+  // never persisted. Pre-filled once from ?ref=/deep-link query params if
+  // the host passes one along on THEME_BUILDER_OPENED/THEME_SERVICE_STATUS
+  // (see themeServiceReferralPrefill below).
+  let themeServicePendingReferral = "";
 
   function postThemeService(type, payload) {
     vscode.postMessage(Object.assign({ type: type }, payload || {}));
@@ -3479,6 +3485,14 @@ if (typeof module !== "undefined" && module.exports) {
       container.appendChild(tspNotice("warn", status.error.message));
     }
 
+    if (status && status.referralMessage) {
+      container.appendChild(tspNotice("warn", status.referralMessage));
+    }
+
+    if (status && typeof status.referralCodePrefill === "string" && !themeServicePendingReferral) {
+      themeServicePendingReferral = status.referralCodePrefill;
+    }
+
     container.appendChild(tspButton("tsp-google-btn", "Continue with Google", () => {
       themeServiceView = "google-wait";
       postThemeService("THEME_SERVICE_GOOGLE_START", {});
@@ -3509,6 +3523,29 @@ if (typeof module !== "undefined" && module.exports) {
       postThemeService("THEME_SERVICE_REQUEST_MAGIC_LINK", { email: email });
       renderThemeServicePanel(themeServiceStatus);
     }));
+
+    // p62-t2: optional referral code, shown only pre-sign-in and only on a
+    // device that has never signed in before (status.showReferralField).
+    // Nothing is sent until the FIRST sign-in on this device completes.
+    if (status && status.showReferralField) {
+      const refField = tspEl("div", "field tsp-field tsp-referral-field");
+      const refLabel = tspEl("label", null, "Referral code");
+      refLabel.setAttribute("for", "theme-service-referral-input");
+      const refInput = document.createElement("input");
+      refInput.type = "text";
+      refInput.id = "theme-service-referral-input";
+      refInput.placeholder = "PARTNER-CODE";
+      refInput.value = themeServicePendingReferral;
+      refInput.maxLength = 32;
+      refInput.addEventListener("input", () => {
+        themeServicePendingReferral = refInput.value.trim();
+        postThemeService("THEME_SERVICE_SET_REFERRAL_CODE", { code: themeServicePendingReferral });
+      });
+      refField.appendChild(refLabel);
+      refField.appendChild(refInput);
+      refField.appendChild(tspEl("small", "note", "Optional. From a partner link; only applies to new accounts."));
+      container.appendChild(refField);
+    }
 
     container.appendChild(tspEl("small", "note", "Signing in opens your browser. Your Corsair account is created on first sign-in."));
     container.appendChild(tspEl("small", "note", "Hand-made and imported themes never need an account."));
@@ -3596,6 +3633,10 @@ if (typeof module !== "undefined" && module.exports) {
 
   // E / F. Signed in — ready, or insufficient credits.
   function renderThemeServiceSignedIn(container, status) {
+    if (status.referralMessage) {
+      container.appendChild(tspNotice("warn", status.referralMessage));
+      themeServicePendingReferral = "";
+    }
     const pricing = status.pricing || {};
     const typical = pricing.typicalTheme || {};
     const insufficient = typeof status.credits === "number" && typeof typical.min === "number" && status.credits < typical.min;
@@ -3736,6 +3777,23 @@ if (typeof module !== "undefined" && module.exports) {
     }
     themeServiceView = "signin";
     renderThemeServiceSignedIn(themeServicePanelBody, s);
+  }
+
+  // p62-t2: standalone-only pre-fill — the standalone sign-in page is a
+  // real browser page and accepts ?ref=CODE on its URL; the VS Code webview
+  // URL has no meaningful query string, so this is a harmless no-op there.
+  // Pre-fill only: nothing is sent to the service until sign-in completes
+  // (see afterSignInSucceeded in themeServiceHost.ts).
+  try {
+    if (typeof window !== "undefined" && window.location && window.location.search) {
+      const ref = new URLSearchParams(window.location.search).get("ref");
+      if (ref) {
+        themeServicePendingReferral = ref.trim();
+        postThemeService("THEME_SERVICE_SET_REFERRAL_CODE", { code: themeServicePendingReferral });
+      }
+    }
+  } catch {
+    /* no-op: absence of window/location must never break panel init */
   }
 
   if (tabThemePicker && tabThemeBuilder) {

@@ -439,6 +439,11 @@ export const MSG = {
   // Webview -> host: { pack }. Opens a Stripe checkout URL and begins
   // polling getStatus while pendingCheckout is true.
   THEME_SERVICE_BUY_CREDITS: "THEME_SERVICE_BUY_CREDITS",
+  // Webview -> host: { code? } — p62-t2. Stashes (or clears, when omitted/
+  // empty) the optional referral code typed or deep-link-prefilled in the
+  // sign-in view. Never sent anywhere until the device's first successful
+  // sign-in; never persisted.
+  THEME_SERVICE_SET_REFERRAL_CODE: "THEME_SERVICE_SET_REFERRAL_CODE",
   // Host -> webview: current auth/balance/pricing snapshot. Never carries
   // any token — see themeServiceHost.ts.
   THEME_SERVICE_STATUS: "THEME_SERVICE_STATUS",
@@ -868,6 +873,9 @@ export const MSG_SCHEMAS = {
   THEME_SERVICE_GOOGLE_COMPLETE: z.object({ code: z.string().optional() }).passthrough(),
   THEME_SERVICE_SIGN_OUT: z.object({}).passthrough(),
   THEME_SERVICE_BUY_CREDITS: z.object({ pack: z.string().min(1) }).passthrough(),
+  // `code` is optional so an empty/cleared field can be sent the same way
+  // as the pasted-code fallback above; the host treats it as "clear".
+  THEME_SERVICE_SET_REFERRAL_CODE: z.object({ code: z.string().optional() }).passthrough(),
   // Outbound host -> webview. `error` is present only when the most recent
   // action failed; never includes token material.
   THEME_SERVICE_STATUS: z
@@ -879,6 +887,9 @@ export const MSG_SCHEMAS = {
       pricing: z.record(z.unknown()).optional(),
       pendingCheckout: z.boolean().optional(),
       error: z.object({ kind: z.string(), message: z.string() }).optional(),
+      showReferralField: z.boolean().optional(),
+      referralMessage: z.string().optional(),
+      referralCodePrefill: z.string().optional(),
     })
     .passthrough(),
 } as const;

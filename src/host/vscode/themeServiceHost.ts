@@ -42,6 +42,34 @@ export interface ThemeServiceHostStatus {
   pricing?: ThemeServicePricing;
   pendingCheckout?: boolean;
   error?: { kind: string; message: string };
+  /** p62-t2: whether the sign-in view should show the optional referral-code
+   * field — true only while signed out AND {@link ThemeServiceDeviceState.hasEverSignedIn}
+   * is false (never on a device that has signed in before). */
+  showReferralField?: boolean;
+  /** p62-t2: one-shot result line ("Referral applied." / "Referral not
+   * applied (<reason>).") surfaced exactly once, immediately after the
+   * first sign-in on this device applies a pending referral code. Cleared
+   * from the host's side after this single post. */
+  referralMessage?: string;
+  /** p62-t2: echoes a code set by the vscode://…/sign-in?ref=CODE deep link
+   * (or previously typed) back to the webview so its field can show it —
+   * pre-fill only, distinct from `referralMessage`. Present only while
+   * signed out and a code is pending. */
+  referralCodePrefill?: string;
+}
+
+/**
+ * p62-t2: per-device "has this device ever completed a sign-in" flag, kept
+ * OUTSIDE the token store (it must survive a sign-out, unlike the session
+ * token) and outside any project file. VS Code backs this with
+ * `context.globalState` (see createVsCodeThemeServiceDeviceState in
+ * themeServiceToken.ts); the standalone host backs it with its own
+ * app-data file. Never mirrors the referral code itself — only this one
+ * boolean.
+ */
+export interface ThemeServiceDeviceState {
+  hasEverSignedIn(): Promise<boolean>;
+  markSignedIn(): Promise<void>;
 }
 
 export interface ThemeServiceHostOptions {
@@ -54,6 +82,11 @@ export interface ThemeServiceHostOptions {
   client?: ThemeServiceClient;
   /** p59-t3: extension version sent as the X-Tycoon-Client header on every Theme Service request. */
   clientVersion?: string;
+  /** p62-t2: per-device first-sign-in tracker, gating the referral field and
+   * the one-time apply-on-first-sign-in call. Omitting it disables the
+   * referral prompt entirely (showReferralField stays false) rather than
+   * risking a false "first sign-in" on every call. */
+  deviceState?: ThemeServiceDeviceState;
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -76,8 +109,22 @@ export interface ThemeServiceHost {
   handleGoogleComplete(code: string | undefined): Promise<void>;
   handleSignOut(): Promise<void>;
   handleBuyCredits(pack: string): Promise<void>;
+  /** p62-t2: stashes (or clears, when `code` is empty/undefined) the
+   * referral code typed/pre-filled in the sign-in field. Never sent
+   * anywhere until {@link ThemeServiceHost}'s next successful first
+   * sign-in on this device; never persisted. */
+  handleSetReferralCode(code: string | undefined): void;
   /** Called by the registered vscode.window.registerUriHandler on a deep-link callback. */
   handleUriCallback(code: string): Promise<void>;
+  /**
+   * p62-t2: runs the same first-sign-in/referral-apply bookkeeping as
+   * handleVerify/handleUriCallback, WITHOUT posting a status. Exposed so a
+   * host that reimplements its own sign-in completion path (the standalone
+   * host's Google loopback listener, which bypasses handleGoogleComplete —
+   * see standalone/src/themeServiceHost.mjs) can still call it right after
+   * ITS OWN successful completeGoogleSignIn, before its own postStatus.
+   */
+  notifySignInSucceeded(): Promise<void>;
   /**
    * The shared {@link ThemeServiceClient} this host was built on (p43-t1) —
    * lets panel.ts wire `themeService.setThemeImageGenerator` to the same
@@ -110,6 +157,47 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   let pollHandle: unknown | undefined;
   let pollDeadline = 0;
   let lastCachedPricing: ThemeServicePricing | undefined;
+  const deviceState = opts.deviceState;
+  // p62-t2: never persisted — see ThemeServiceHostStatus.referralMessage /
+  // handleSetReferralCode docs above.
+  let pendingReferralCode: string | null = null;
+  let pendingReferralMessage: string | undefined;
+
+  /**
+   * Called right after ANY sign-in completes successfully (magic-link
+   * verify or Google complete, whichever host performs it — the standalone
+   * host also calls this via getClient()-adjacent wiring is NOT needed
+   * since it reuses this same function through the returned host object).
+   * Applies a pending referral code exactly once, only on this device's
+   * first-ever sign-in, then always clears the pending code (never sent on
+   * a later sign-in).
+   */
+  async function afterSignInSucceeded(): Promise<void> {
+    let wasFirstSignIn = false;
+    if (deviceState) {
+      try {
+        wasFirstSignIn = !(await deviceState.hasEverSignedIn());
+      } catch {
+        wasFirstSignIn = false;
+      }
+      try {
+        await deviceState.markSignedIn();
+      } catch {
+        /* best-effort; worst case the referral prompt reappears next time */
+      }
+    }
+    const code = pendingReferralCode;
+    pendingReferralCode = null;
+    if (!wasFirstSignIn || !code) return;
+    const res = await client.applyReferralCode(code);
+    if (res.ok) {
+      pendingReferralMessage = res.value.applied
+        ? "Referral applied."
+        : `Referral not applied (${res.value.reason ?? "unknown"}).`;
+    }
+    // On a network/server failure, drop it silently — sign-in itself already
+    // succeeded and must not appear to have failed over the referral call.
+  }
 
   function stopPoll(): void {
     if (pollHandle !== undefined) {
@@ -129,6 +217,16 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     // the cached copy is kept only as a fallback when the refetch fails.
     const pricingRes = await client.getPricing();
     if (pricingRes.ok) lastCachedPricing = pricingRes.value;
+    let showReferralField = false;
+    if (!status.signedIn && deviceState) {
+      try {
+        showReferralField = !(await deviceState.hasEverSignedIn());
+      } catch {
+        showReferralField = false;
+      }
+    }
+    const referralMessage = pendingReferralMessage;
+    pendingReferralMessage = undefined;
     return {
       signedIn: status.signedIn,
       email: status.email,
@@ -138,6 +236,9 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       strikes: status.strikes,
       pricing: lastCachedPricing,
       pendingCheckout,
+      showReferralField,
+      referralMessage,
+      referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
     };
   }
 
@@ -191,6 +292,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
       return;
     }
+    await afterSignInSucceeded();
     await postFreshStatus();
   }
 
@@ -218,6 +320,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
         return;
       }
+      await afterSignInSucceeded();
       await postFreshStatus();
     },
 
@@ -245,6 +348,15 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     getClient() {
       return client;
+    },
+
+    handleSetReferralCode(code) {
+      const trimmed = code?.trim();
+      pendingReferralCode = trimmed && trimmed.length > 0 ? trimmed : null;
+    },
+
+    async notifySignInSucceeded() {
+      await afterSignInSucceeded();
     },
 
     async handleSignOut() {
@@ -280,6 +392,8 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       disposed = true;
       stopPoll();
       pendingGoogleCodeVerifier = null;
+      pendingReferralCode = null;
+      pendingReferralMessage = undefined;
     },
   };
 }

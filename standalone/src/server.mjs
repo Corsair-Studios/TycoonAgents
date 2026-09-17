@@ -109,6 +109,7 @@ const THEME_SERVICE_GOOGLE_START_WIRE = 'THEME_SERVICE_GOOGLE_START';
 const THEME_SERVICE_GOOGLE_COMPLETE_WIRE = 'THEME_SERVICE_GOOGLE_COMPLETE';
 const THEME_SERVICE_SIGN_OUT_WIRE = 'THEME_SERVICE_SIGN_OUT';
 const THEME_SERVICE_BUY_CREDITS_WIRE = 'THEME_SERVICE_BUY_CREDITS';
+const THEME_SERVICE_SET_REFERRAL_CODE_WIRE = 'THEME_SERVICE_SET_REFERRAL_CODE';
 const THEME_SERVICE_STATUS_WIRE = 'THEME_SERVICE_STATUS';
 
 // Set inside startServer() (like themeStore/primaryProjectRoot below) so a
@@ -1272,6 +1273,9 @@ function handleBrowserMessage(msg) {
       break;
     case THEME_SERVICE_BUY_CREDITS_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleBuyCredits(String(payload.pack || ''));
+      break;
+    case THEME_SERVICE_SET_REFERRAL_CODE_WIRE:
+      if (themeServiceHostInstance) themeServiceHostInstance.handleSetReferralCode(payload.code ? String(payload.code) : undefined);
       break;
     case 'getSkills':
       // Standalone analog of panel.ts's _handleGetSkills (~line 3184-3211).

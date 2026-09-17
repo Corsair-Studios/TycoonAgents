@@ -180,6 +180,19 @@ export interface GoogleSignInStart {
   codeVerifier: string;
 }
 
+/**
+ * Client-side format for a referral code (docs/theme-service-api.md v3.5,
+ * "POST /api/account/referral"): `[A-Za-z0-9-]{1,32}`. Exported so the host
+ * layers can validate a typed/pre-filled code before even showing it as
+ * "pending" without duplicating the pattern.
+ */
+export const REFERRAL_CODE_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
+
+export interface ApplyReferralResult {
+  applied: boolean;
+  reason?: string;
+}
+
 export interface ThemeServiceClient {
   requestMagicLink(email: string): Promise<ThemeServiceResult<void>>;
   verifyMagicLink(email: string, code: string): Promise<ThemeServiceResult<void>>;
@@ -192,6 +205,17 @@ export interface ThemeServiceClient {
   createCheckoutSession(pack: string): Promise<ThemeServiceResult<CheckoutSession>>;
   generateAttempt(req: GenerateAttemptRequest): Promise<ThemeServiceResult<GenerateAttemptResponse>>;
   planRequest(req: PlanRequest): Promise<ThemeServiceResult<PlanRequestResponse>>;
+  /**
+   * POST /api/account/referral (v3.5) — see docs/theme-service-api.md
+   * "Referral". Called once, immediately after a device's first sign-in.
+   * Validates `code` against {@link REFERRAL_CODE_PATTERN} client-side and
+   * returns `{ applied: false, reason: "invalid_format" }` WITHOUT calling
+   * the service when it doesn't match — the service never sees a
+   * malformed code. On a network/server failure this returns the usual
+   * `ok: false` result; the caller decides how to surface that (never a
+   * blocker to the sign-in that just completed).
+   */
+  applyReferralCode(code: string): Promise<ThemeServiceResult<ApplyReferralResult>>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -784,6 +808,22 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
           promptTemplateVersion: typeof json.promptTemplateVersion === "string" ? json.promptTemplateVersion : undefined,
           assembledPromptSha256: typeof json.assembledPromptSha256 === "string" ? json.assembledPromptSha256 : undefined,
         },
+      };
+    },
+
+    async applyReferralCode(code) {
+      if (!REFERRAL_CODE_PATTERN.test(code)) {
+        return { ok: true, value: { applied: false, reason: "invalid_format" } };
+      }
+      const res = await serviceRequest("/api/account/referral", { method: "POST", body: { referralCode: code }, auth: true });
+      if (!res.ok) return res;
+      const json = res.value;
+      if (!isRecord(json) || typeof json.applied !== "boolean") {
+        return { ok: false, error: invalidResponse("malformed /api/account/referral response") };
+      }
+      return {
+        ok: true,
+        value: { applied: json.applied, reason: typeof json.reason === "string" ? json.reason : undefined },
       };
     },
 

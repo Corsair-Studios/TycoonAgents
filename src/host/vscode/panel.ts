@@ -66,6 +66,7 @@ import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine"
 import { detectUefnProject } from "./uefnDetect";
 import { describeFsError } from "./fsErrors";
 import { createThemeServiceHost, type ThemeServiceHost, type ThemeServiceHostStatus } from "./themeServiceHost";
+import { createVsCodeThemeServiceDeviceState } from "./themeServiceDeviceState";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -890,6 +891,15 @@ export class TycoonPanel {
     // publisher.name matches the URI's authority, so the OS/VS Code has
     // already confirmed this callback is addressed to us — authority is not
     // re-checked here.
+    // p62-t2: vscode://<publisher>.<name>/sign-in?ref=CODE — deep-link
+    // pre-fill only (never applied until sign-in completes). Registered
+    // beside /theme-service-auth in the same URI handler (extension.ts);
+    // no separate package.json contribution is needed for either path.
+    if (uri.path === "/sign-in") {
+      const ref = new URLSearchParams(uri.query).get("ref");
+      if (ref) TycoonPanel.currentPanel?._themeServiceHost.handleSetReferralCode(ref);
+      return;
+    }
     if (uri.path !== "/theme-service-auth") return;
     const code = new URLSearchParams(uri.query).get("code");
     if (!code) return;
@@ -902,6 +912,7 @@ export class TycoonPanel {
     globalStorageUri: vscode.Uri,
     secrets: vscode.SecretStorage,
     bundledThemesReady?: Promise<unknown>,
+    globalState?: vscode.Memento,
   ): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
     // Claude Code session in column One.
@@ -931,6 +942,7 @@ export class TycoonPanel {
       globalStorageUri,
       secrets,
       bundledThemesReady,
+      globalState,
     );
     return TycoonPanel.currentPanel;
   }
@@ -942,6 +954,7 @@ export class TycoonPanel {
     globalStorageUri: vscode.Uri,
     secrets: vscode.SecretStorage,
     bundledThemesReady?: Promise<unknown>,
+    globalState?: vscode.Memento,
   ) {
     this._panel = panel;
     this._bundledThemesReady = bundledThemesReady;
@@ -959,6 +972,10 @@ export class TycoonPanel {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
       clientVersion: this._currentExtensionVersion() ?? undefined,
+      // p62-t2: undefined (not a fake Memento) when the caller omits
+      // globalState — the host then simply never shows the referral field
+      // rather than risking a wrong per-device "first sign-in" guess.
+      deviceState: globalState ? createVsCodeThemeServiceDeviceState(globalState) : undefined,
     });
     this._themeServiceHost.start();
     // Route every board-image generation attempt through this panel's
@@ -1888,6 +1905,10 @@ export class TycoonPanel {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse((message as any).payload);
           if (!parsed.success) return;
           await this._themeServiceHost.handleBuyCredits(parsed.data.pack);
+        } else if (message.type === MSG.THEME_SERVICE_SET_REFERRAL_CODE) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_SET_REFERRAL_CODE.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          this._themeServiceHost.handleSetReferralCode(parsed.data.code);
         } else if (message.type === MSG.REVEAL_THEME_IMAGE) {
           // Right-click "Open file location" on a review board — reveal its
           // saved image file in the OS explorer. Fully guarded: a missing
