@@ -117,7 +117,19 @@ Separately from any AI provider's own content decisions, Corsair maintains
 its own terms, abuse-report channel (the app's Submit Feedback flow), and
 enforcement (strikes and account lock, described above).
 
-## 9. Changes and contact
+## 9. Affiliate / referral codes
+
+You may enter a referral code the first time you sign in on a device. A
+referral code affects nothing about your pricing or credits, except that it
+may grant you a one-time welcome bonus of extra credits on your first
+purchase, if the partner who owns that code offers one. Only new accounts
+can be referred — a code has no effect if you've signed in before.
+
+Referral partners operate under their own separate written agreement with
+Corsair Studios LLC; these Terms govern your use of the Theme Service only
+and do not create any relationship between you and a referral partner.
+
+## 10. Changes and contact
 
 Corsair may update these terms as the Theme Service evolves; material
 changes will be noted in-product. Questions about these terms, your

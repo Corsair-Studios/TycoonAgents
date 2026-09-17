@@ -1,4 +1,4 @@
-# Corsair Theme Service — Client API Contract (v3.4)
+# Corsair Theme Service — Client API Contract (v3.5)
 
 Operator setup: see theme-service-setup-guide.md
 
@@ -43,6 +43,19 @@ in logs/URLs/headers, `nosniff` JSON responses) and adds the `bad_request`
   and Data-handling detail sections below.
 - Adds a Migration subsection describing the template/guide handoff into
   `corsair-theme-service` and the v3.3 client deprecation path.
+
+**v3.5 changelog (2026-09-17):**
+- Adds `POST /api/account/referral`, called once by the client immediately
+  after a device's first sign-in, applying an optional referral code.
+- `accounts` gains `referral_code` (nullable, set once, immutable) and
+  `referral_applied_at`. `GET /api/account` adds `referralApplied: boolean`.
+- Adds the `referrers` table and referral-commission accrual
+  (`referral_commissions`) written by the Stripe webhook, plus a
+  `referral_statement` operator view. Adds `charge.refunded` and
+  `charge.dispute.created` to the webhook subscription list.
+- Adds a Referral section summarizing default partner terms.
+- Adds a Migration subsection: the service repo must re-copy the contract
+  file before implementing v3.5.
 
 ## Conventions
 
@@ -135,12 +148,51 @@ No Theme Service session store, device token, or JWT secret of its own.
 ### `GET /api/account`
 Response `200`:
 ```json
-{ "email": "user@example.com", "displayName": "optional", "role": "user", "credits": 42, "locked": false, "strikes": 0 }
+{ "email": "user@example.com", "displayName": "optional", "role": "user", "credits": 42, "locked": false, "strikes": 0, "referralApplied": false }
 ```
 401 if the bearer token is missing/invalid/expired (mirrors
 `server.ts`'s `GET /api/account` gate — verify-then-401 before any DB call).
 `locked` mirrors `accounts.locked` (see Strikes and account lock below);
 `strikes` is the trailing-24h `account_strikes` row count for this user.
+`referralApplied` mirrors whether `accounts.referral_applied_at` is set —
+never the referral code itself, and never the referring partner's identity
+(see Referral below).
+
+### `POST /api/account/referral`
+
+Called by the client exactly once, immediately after the **first** sign-in
+on a device (no prior local session found).
+
+```json
+{ "referralCode": "PARTNER-CODE" }
+```
+
+`referralCode` is a string, max 32 chars, charset `[A-Za-z0-9-]` — a value
+outside that returns `400 { "error": "bad_request" }` before any DB read.
+
+Server rule: the code is applied only when the authenticated account has
+**no prior sign-in recorded and no ledger rows** (a true first-touch
+account). Otherwise, or when the code doesn't validate, the endpoint still
+responds `200` — never an error for a bad or inapplicable code:
+
+```json
+{ "applied": false, "reason": "existing_account" | "unknown_code" | "self_referral" | "inactive_code" }
+```
+
+- `existing_account`: the account already has a prior sign-in or ledger rows.
+- `unknown_code`: no matching row in `referrers`.
+- `self_referral`: `referrers.contact_email_hash` equals `sha256` of the
+  signing-in account's email.
+- `inactive_code`: the matching `referrers` row has `active = false`.
+
+On success:
+```json
+{ "applied": true }
+```
+which sets `accounts.referral_code` (once, immutable) and
+`accounts.referral_applied_at = now()`. A second call against an account
+that already has `referral_applied_at` set returns
+`{ "applied": false, "reason": "existing_account" }`.
 
 ## Pricing (public — no auth)
 
@@ -442,6 +494,100 @@ so the client can surface why the user is blocked. Unlocking is a manual
 operator action against the `accounts` table — there is no unlock
 endpoint.
 
+## Referral
+
+A referral program lets partners share a code that new users enter at first
+sign-in (see `POST /api/account/referral` above). Default terms, summarized
+for reference — actual per-partner terms are a separate written agreement
+(see Human steps below):
+
+- **20% of net** (post-Stripe-fee) revenue on the referred account's
+  **first purchase only** — no commission on subsequent purchases.
+- **New accounts only** — an account with any prior sign-in or ledger
+  activity cannot be referred (`existing_account`).
+- **30-day window**: the code must be applied and the first purchase
+  completed within `referrers.window_days` (default 30) of
+  `accounts.referral_applied_at`.
+- **30-day refund hold**: commission rows start `pending` and become
+  `payable` only after `referral_commissions.hold_until` (30 days after
+  accrual), so a chargeback/refund inside that window voids the commission
+  instead of paying it out.
+- **Monthly payout, USD 25 minimum**, computed from the
+  `referral_statement` view (see below) — payout itself is a manual
+  operator action, not an automated transfer.
+- **Optional welcome bonus**: if `referrers.bonus_credits > 0`, the
+  referred user's first purchase also grants that many bonus credits
+  (see Stripe webhook below).
+
+### `referrers` table
+
+```sql
+referrers (
+  code                text primary key,
+  display_name        text not null,
+  contact_email_hash  text not null,  -- sha256 of the partner's account email
+  rate_bps            int  not null default 2000,  -- 20.00%
+  window_days         int  not null default 30,
+  bonus_credits       int  not null default 0,
+  active              bool not null default true,
+  created_at          timestamptz not null default now()
+)
+```
+
+Self-referral is refused (`self_referral`) when `contact_email_hash` equals
+`sha256` of the new account's email.
+
+### `referral_commissions` table
+
+```sql
+referral_commissions (
+  id             uuid primary key default gen_random_uuid(),
+  ledger_ref     text not null,        -- fk to the credit_ledger grant row's `ref`
+  referrer_code  text not null references referrers(code),
+  account_id     uuid not null,
+  gross_cents    int  not null,
+  net_cents      int  not null,        -- gross minus the Stripe fee reported by the checkout session
+  amount_cents   int  not null,        -- round(net_cents * rate_bps / 10000)
+  status         text not null default 'pending',  -- pending | payable | void
+  hold_until     timestamptz not null, -- created_at + 30 days
+  created_at     timestamptz not null default now()
+)
+```
+
+Written by the Stripe webhook on `checkout.session.completed` only when all
+three hold: `accounts.referral_code` is set, this grant is the account's
+**first** grant, and `now() <= referral_applied_at + window_days`.
+
+A `charge.refunded` or `charge.dispute.created` event sets `status = 'void'`
+on the `referral_commissions` row whose `ledger_ref` matches the refunded/
+disputed charge's grant. Both events are added to the webhook subscription
+list (see Stripe webhook below).
+
+**Welcome bonus:** when `referrers.bonus_credits > 0`, the same webhook call
+that processes the referred account's first purchase writes a second grant
+row with `ref = "bonus:<eventId>"` for that credit amount — once, on that
+first purchase only.
+
+### `referral_statement` view (operator source of truth)
+
+```sql
+create view referral_statement as
+select
+  referrer_code,
+  date_trunc('month', created_at) as month,
+  count(*)                                          as purchases,
+  sum(gross_cents)                                   as gross_cents,
+  sum(net_cents)                                     as net_cents,
+  sum(amount_cents) filter (where status <> 'void')  as commission_cents,
+  sum(amount_cents) filter (where status = 'void')   as voided_cents
+from referral_commissions
+group by referrer_code, date_trunc('month', created_at);
+```
+
+Payout is **manual, monthly, USD 25 minimum** per referrer per month; this
+view is the source of truth for what's owed — no other table or ad hoc
+query should be used to compute a payout.
+
 ## Data handling
 
 Gemini's paid API tier does not use request prompts/images for model
@@ -522,6 +668,14 @@ A v3.3 client — one still sending the free-text `prompt` field — gets
 `/api/generate` and must upgrade to the structured v3.4 request shape; the
 service does not fall back to free-text prompt handling.
 
+## Migration (v3.4 → v3.5)
+
+The `corsair-theme-service` repo must re-copy this contract
+(`contract/theme-service-api.md`) before implementing the referral
+endpoint, tables, and webhook changes above — the referral shapes are new
+in v3.5 and are not present in any contract copy taken before this
+changelog entry.
+
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 
 Append-only rows, keyed by `(user_id, created_at)`
@@ -554,6 +708,11 @@ without echoing Stripe's error detail) and `stripe-store.ts:165-176`
 (`constructEvent`, then `checkout.session.completed` grants credits). The
 webhook is the **only** writer of ledger "grant" rows and must be idempotent
 against Stripe's at-least-once delivery via the `ref` unique index above.
+
+The webhook subscription list adds `charge.refunded` and
+`charge.dispute.created` (v3.5) — both events void the matching
+`referral_commissions` row (see Referral above) but write no ledger rows of
+their own.
 
 ## Error shape
 
