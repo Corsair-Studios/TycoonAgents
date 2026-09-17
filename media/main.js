@@ -3787,7 +3787,7 @@ if (typeof module !== "undefined" && module.exports) {
   try {
     if (typeof window !== "undefined" && window.location && window.location.search) {
       const ref = new URLSearchParams(window.location.search).get("ref");
-      if (ref) {
+      if (ref && /^[A-Za-z0-9-]{1,32}$/.test(ref.trim())) {
         themeServicePendingReferral = ref.trim();
         postThemeService("THEME_SERVICE_SET_REFERRAL_CODE", { code: themeServicePendingReferral });
       }

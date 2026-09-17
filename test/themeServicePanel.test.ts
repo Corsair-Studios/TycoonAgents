@@ -823,3 +823,40 @@ test('locked status disables the Buy credits button', async () => {
   assert.equal(buyBtn.disabled, true);
   h.win.close();
 });
+
+// ── Referral code field (p62-t3, media/src/main/010-modals-badges-rebirth.js ~1723) ──
+
+test('referral code field is rendered when showReferralField is true, absent when false', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus({ showReferralField: true })));
+  assert.ok(h.doc.getElementById('theme-service-referral-input'), 'expected the referral input when showReferralField is true');
+
+  h.dispatch(themeServiceStatus(signedOutStatus({ showReferralField: false })));
+  assert.equal(h.doc.getElementById('theme-service-referral-input'), null, 'referral input must be absent when showReferralField is false');
+  h.win.close();
+});
+
+test('referralCodePrefill lands in the input value via property assignment, never innerHTML, and is not executed as markup', async () => {
+  const h = await bootThemePanelHarness();
+  const malicious = '<img src=x>';
+  h.dispatch(themeBuilderOpened(signedOutStatus({ showReferralField: true, referralCodePrefill: malicious })));
+  const input: any = h.doc.getElementById('theme-service-referral-input');
+  assert.ok(input, 'expected the referral input');
+  // Assigning to .value never parses markup; confirm the raw string round-trips
+  // as plain text and no <img> element was created anywhere in the panel body.
+  assert.equal(input.value, malicious);
+  assert.equal(h.panelBody().querySelector('img'), null, 'prefill must never be parsed as HTML');
+  h.win.close();
+});
+
+test('typing in the referral field posts THEME_SERVICE_SET_REFERRAL_CODE with the trimmed value', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus({ showReferralField: true })));
+  const input: any = h.doc.getElementById('theme-service-referral-input');
+  input.value = '  PARTNER-9  ';
+  input.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const posted = h.lastPosted('THEME_SERVICE_SET_REFERRAL_CODE');
+  assert.ok(posted, 'expected a THEME_SERVICE_SET_REFERRAL_CODE message');
+  assert.equal(posted.code, 'PARTNER-9');
+  h.win.close();
+});

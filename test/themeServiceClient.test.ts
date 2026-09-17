@@ -658,6 +658,74 @@ test("generateAttempt: 403 account_locked maps to kind account_locked", async ()
   if (!res.ok) assert.equal(res.error.kind, "account_locked");
 });
 
+// p62-t3: applyReferralCode (REFERRAL_CODE_PATTERN, src/core/themeServiceClient.ts:189/810-820).
+test("applyReferralCode rejects invalid formats client-side without hitting fetch", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  const account = fake.helpers.createAccount("ref-invalid@example.com");
+  fake.helpers.grant(account.id, 0);
+  await client.requestMagicLink("ref-invalid@example.com");
+  await client.verifyMagicLink("ref-invalid@example.com", "123456");
+
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const clientWithSpy = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+
+  for (const bad of ["bad code!", "A".repeat(33), ""]) {
+    const res = await clientWithSpy.applyReferralCode(bad);
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.equal(res.value.applied, false);
+      assert.equal(res.value.reason, "invalid_format");
+    }
+  }
+  assert.equal(calls.filter((c) => c.url.includes("/api/account/referral")).length, 0);
+});
+
+test("applyReferralCode POSTs once with bearer auth and JSON body, and parses applied/reason", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  const account = fake.helpers.createAccount("ref-valid@example.com");
+  fake.helpers.grant(account.id, 0);
+  await client.requestMagicLink("ref-valid@example.com");
+  await client.verifyMagicLink("ref-valid@example.com", "123456");
+
+  let seenAuth: string | null = null;
+  let seenBody: unknown;
+  let callCount = 0;
+  const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/account/referral")) {
+      callCount += 1;
+      seenAuth = (init?.headers as Record<string, string> | undefined)?.["Authorization"] ?? null;
+      seenBody = init?.body ? JSON.parse(init.body as string) : undefined;
+      return new Response(JSON.stringify({ applied: false, reason: "unknown_code" }), { status: 200 });
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  const spiedClient = createThemeServiceClient({
+    fetch: stubFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+
+  const res = await spiedClient.applyReferralCode("PARTNER-CODE");
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.applied, false);
+    assert.equal(res.value.reason, "unknown_code");
+  }
+  assert.equal(callCount, 1);
+  assert.ok(seenAuth !== null && (seenAuth as string).startsWith("Bearer "));
+  assert.deepEqual(seenBody, { referralCode: "PARTNER-CODE" });
+});
+
 test("getStatus surfaces locked and strikes from /api/account", async () => {
   const { fake, client } = setupClient();
   fake.helpers.createAccount("strikes@example.com");

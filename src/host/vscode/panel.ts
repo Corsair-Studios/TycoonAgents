@@ -60,6 +60,7 @@ import {
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
+import { REFERRAL_CODE_PATTERN } from "../../core/themeServiceClient";
 import { exportTeamSetup, applyTeamSetupHost, buildTeamReadinessHost, getTeamSetupDriftHost } from "./teamSetupHost";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
 import { detectForeignManagedBlocks, stripManagedBlock } from "./legacyDoctrine";
@@ -897,7 +898,9 @@ export class TycoonPanel {
     // no separate package.json contribution is needed for either path.
     if (uri.path === "/sign-in") {
       const ref = new URLSearchParams(uri.query).get("ref");
-      if (ref) TycoonPanel.currentPanel?._themeServiceHost.handleSetReferralCode(ref);
+      if (ref && REFERRAL_CODE_PATTERN.test(ref)) {
+        TycoonPanel.currentPanel?._themeServiceHost.handleSetReferralCode(ref);
+      }
       return;
     }
     if (uri.path !== "/theme-service-auth") return;

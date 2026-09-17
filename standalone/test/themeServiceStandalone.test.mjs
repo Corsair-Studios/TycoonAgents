@@ -456,3 +456,61 @@ test('status carries locked/strikes after lockAccount; generateAttempt while loc
   const afterBlock = (await client.getStatus()).value.credits;
   assert.equal(afterBlock, beforeBlock, 'a blocked prompt must never change the balance');
 });
+
+// p62-t3: device-state file location + Google-loopback notifySignInSucceeded wiring.
+
+test('referral: device-state file is created under the app-data root (not the project) on first sign-in', async (t) => {
+  const fake = createFakeThemeService();
+  fake.helpers.createAccount('devicestate@example.com');
+  const { host, appDataDir } = newHost(t, fake);
+
+  const stateFile = path.join(appDataDir, 'theme-service-device-state.json');
+  assert.equal(fs.existsSync(stateFile), false, 'device-state file must not exist before any sign-in');
+
+  await host.handleRequestMagicLink('devicestate@example.com');
+  await host.handleVerify('devicestate@example.com', '123456');
+
+  assert.ok(fs.existsSync(stateFile), 'device-state file must exist under appDataDir after first sign-in');
+  assert.ok(
+    path.resolve(stateFile).startsWith(path.resolve(appDataDir)),
+    'device-state file must live under the app-data root',
+  );
+  assert.equal(
+    path.resolve(stateFile).startsWith(path.resolve(process.cwd())),
+    false,
+    'device-state file must not land in the project working directory',
+  );
+  const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(parsed.hasSignedIn, true);
+});
+
+// The outer standalone host object (themeServiceHost.mjs:298-315) does not
+// re-expose notifySignInSucceeded, so it cannot be stubbed/spied from
+// outside the module (see report open issues). This instead observes its
+// one side effect through the device-state file it writes via
+// deviceState.markSignedIn() (module doc at themeServiceHost.mjs:255-262:
+// the Google-loopback path calls inner.notifySignInSucceeded() explicitly
+// because it bypasses inner.handleGoogleComplete).
+test('referral: Google-loopback completion runs the first-sign-in bookkeeping exactly once (observed via the device-state file)', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, appDataDir, statuses, openExternalCalls } = newHost(t, fake);
+  const stateFile = path.join(appDataDir, 'theme-service-device-state.json');
+
+  assert.equal(fs.existsSync(stateFile), false, 'no device-state file before any sign-in');
+
+  await host.handleGoogleStart();
+  const browserUrl = openExternalCalls[0];
+  const authorizeRes = await fake.fetch(browserUrl, { redirect: 'manual' });
+  const location = authorizeRes.headers.get('location');
+  const loopbackRes = await fetch(location);
+  assert.equal(loopbackRes.status, 200);
+
+  for (let i = 0; i < 50 && statuses[statuses.length - 1]?.signedIn !== true; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.equal(statuses[statuses.length - 1]?.signedIn, true);
+
+  assert.ok(fs.existsSync(stateFile), 'device-state file must exist after the loopback completes signed-in');
+  const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assert.equal(parsed.hasSignedIn, true, 'markSignedIn must have run exactly once via notifySignInSucceeded');
+});

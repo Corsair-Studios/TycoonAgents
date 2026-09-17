@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createThemeServiceClient, ThemeServiceTokenStore } from "../src/core/themeServiceClient";
+import { createThemeServiceClient, ThemeServiceTokenStore, REFERRAL_CODE_PATTERN } from "../src/core/themeServiceClient";
 import { createFakeThemeService } from "./helpers/fakeThemeService";
 import { createThemeServiceHost, type ThemeServiceHostStatus } from "../src/host/vscode/themeServiceHost";
 
@@ -246,6 +246,134 @@ test("BUY_CREDITS while locked posts account_locked with pendingCheckout false",
   assert.equal(last.pendingCheckout, false);
   assert.equal(timers.activeCount(), 0, "a locked checkout attempt must never start the pending-checkout poll");
   assertNoTokenLeak(posted);
+});
+
+// p62-t3: at-most-once referral apply (afterSignInSucceeded, src/host/vscode/themeServiceHost.ts:175-197).
+function makeMemoryDeviceState() {
+  let signedIn = false;
+  return {
+    async hasEverSignedIn() {
+      return signedIn;
+    },
+    async markSignedIn() {
+      signedIn = true;
+    },
+    _setSignedIn(v: boolean) {
+      signedIn = v;
+    },
+  };
+}
+
+function setupWithReferral(deviceState: ReturnType<typeof makeMemoryDeviceState>) {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const tokenStore = createMemoryTokenStore();
+  const realClient = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const referralCalls: string[] = [];
+  const client = {
+    ...realClient,
+    async applyReferralCode(code: string) {
+      referralCalls.push(code);
+      return { ok: true as const, value: { applied: true } };
+    },
+  };
+  const posted: ThemeServiceHostStatus[] = [];
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    deviceState,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+  });
+  host.start();
+  return { fake, host, posted, referralCalls };
+}
+
+test("referral: fresh device with pending code applies exactly once on first sign-in", async () => {
+  const deviceState = makeMemoryDeviceState();
+  const { fake, host, posted, referralCalls } = setupWithReferral(deviceState);
+  fake.helpers.createAccount("first@example.com");
+
+  host.handleSetReferralCode("PARTNER-1");
+  await host.handleRequestMagicLink("first@example.com");
+  await host.handleVerify("first@example.com", "123456");
+
+  assert.deepEqual(referralCalls, ["PARTNER-1"]);
+  assert.equal(await deviceState.hasEverSignedIn(), true);
+  const last = posted[posted.length - 1];
+  assert.equal(last.referralMessage, "Referral applied.");
+
+  // Pending code is cleared after apply — a subsequent status build shows no prefill.
+  const status = await host.getStatusSnapshot();
+  assert.equal(status.referralCodePrefill, undefined);
+});
+
+test("referral: second sign-in on a device that already signed in makes zero apply calls", async () => {
+  const deviceState = makeMemoryDeviceState();
+  deviceState._setSignedIn(true); // device already signed in once before
+  const { fake, host, referralCalls } = setupWithReferral(deviceState);
+  fake.helpers.createAccount("second@example.com");
+
+  host.handleSetReferralCode("PARTNER-2");
+  await host.handleRequestMagicLink("second@example.com");
+  await host.handleVerify("second@example.com", "123456");
+
+  assert.deepEqual(referralCalls, []);
+});
+
+test("referral: device that had signed in before any code entered shows no field and makes no calls", async () => {
+  const deviceState = makeMemoryDeviceState();
+  deviceState._setSignedIn(true);
+  const { host, referralCalls } = setupWithReferral(deviceState);
+
+  const status = await host.getStatusSnapshot();
+  assert.equal(status.showReferralField, false);
+  assert.deepEqual(referralCalls, []);
+});
+
+test("referral: deep link handleSetReferralCode surfaces referralCodePrefill while signed out", async () => {
+  const deviceState = makeMemoryDeviceState();
+  const { host } = setupWithReferral(deviceState);
+
+  host.handleSetReferralCode("ABC-123");
+  const status = await host.getStatusSnapshot();
+  assert.equal(status.referralCodePrefill, "ABC-123");
+});
+
+// p62-t3: static check of panel.ts's TycoonPanel.handleUriCallback /sign-in
+// branch (deep-link ref pre-fill; panel.ts imports `vscode` so it cannot be
+// loaded directly in a Node unit test — see open issues in the report).
+test("panel.ts /sign-in URI handler parses the ref query param, validates it against REFERRAL_CODE_PATTERN, and forwards a valid code (e.g. ABC-123) to handleSetReferralCode", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src: string = fs.readFileSync(path.join(process.cwd(), "src", "host", "vscode", "panel.ts"), "utf8");
+  assert.match(
+    src,
+    /import\s*\{\s*REFERRAL_CODE_PATTERN\s*\}\s*from\s*"\.\.\/\.\.\/core\/themeServiceClient"/,
+    "panel.ts should import REFERRAL_CODE_PATTERN from core/themeServiceClient",
+  );
+  const idx = src.indexOf('uri.path === "/sign-in"');
+  assert.ok(idx >= 0, "panel.ts should register a /sign-in URI branch");
+  const snippet = src.slice(idx, idx + 300);
+  assert.match(snippet, /URLSearchParams\(uri\.query\)\.get\("ref"\)/, "should read the ref query param");
+  assert.match(snippet, /REFERRAL_CODE_PATTERN\.test\(ref\)/, "should validate ref against REFERRAL_CODE_PATTERN before forwarding");
+  assert.match(snippet, /_themeServiceHost\.handleSetReferralCode\(ref\)/, "should forward a valid ref to handleSetReferralCode");
+  // ABC-123 matches the pattern, so the deep-link branch would forward it.
+  assert.ok(REFERRAL_CODE_PATTERN.test("ABC-123"), "ABC-123 should be accepted by REFERRAL_CODE_PATTERN");
+});
+
+// The deep-link /sign-in branch now guards handleSetReferralCode with
+// REFERRAL_CODE_PATTERN ([A-Za-z0-9-]{1,32}); a script-like value or an
+// oversized (40-char) value fails that check, so panel.ts silently ignores
+// them (no prefill, no message) rather than forwarding them to the host.
+test("referral: a script-like ref and a 40-char ref both fail REFERRAL_CODE_PATTERN, so the /sign-in deep link produces no prefill for either", () => {
+  assert.equal(REFERRAL_CODE_PATTERN.test("<script>alert(1)</script>"), false);
+  assert.equal(REFERRAL_CODE_PATTERN.test("A".repeat(40)), false);
 });
 
 test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGetStatus", () => {
