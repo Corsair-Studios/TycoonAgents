@@ -77,15 +77,11 @@ it does not cover writing the backend code itself.
    - One or more loopback entries for the standalone host, shaped like
      `http://127.0.0.1:<port>/callback`.
 
-   **Decision needed:** Supabase's redirect-URL allow-list supports
-   exact-match entries and a limited wildcard syntax (e.g. a trailing
-   `*` on the path, not on the port). If Supabase does not accept a
-   wildcard port for `127.0.0.1:*`, the standalone host must bind to a
-   **fixed, pre-registered port** (or a short fixed list of ports) so
-   each one can be listed explicitly — e.g. `http://127.0.0.1:43117/callback`.
-   This is flagged again in section 9 as an open decision; verify
-   Supabase's current wildcard behavior in the dashboard before deciding,
-   since Supabase's rules have changed release to release.
+   Verified 2026-09-17: the Supabase dashboard accepts
+   `http://127.0.0.1:*/callback`; keep the random loopback port in the
+   standalone host. Confirm at the first standalone sign-in; if the
+   redirect is rejected at runtime, fall back to a fixed port list and
+   add each port as its own entry.
 6. Under **Project Settings → API**, copy down (names only — do not
    paste the actual values into any file):
    - `SUPABASE_URL`
@@ -343,13 +339,12 @@ during rollout:
 1. **Image retention window** — how long generated images/reference
    images are retained server-side, if at all. Terms are still TBD; the
    contract does not specify a retention policy.
-2. **Supabase redirect-URL wildcard vs. fixed ports** — confirm whether
-   Supabase's current allow-list rules accept a wildcard port for the
-   standalone host's `http://127.0.0.1:*/callback` loopback pattern. If
-   not, the standalone host must bind to a small, fixed, pre-registered
-   port list, and both the Supabase allow-list and Render's
-   `SERVICE_ALLOWED_ORIGINS` must be updated together whenever that list
-   changes.
+2. **Resolved 2026-09-17** — Supabase's redirect-URL allow-list accepts a
+   wildcard port for `http://127.0.0.1:*/callback`; the standalone host
+   keeps its random loopback port. Confirmed at the first standalone
+   sign-in; if it's ever rejected at runtime, fall back to a fixed,
+   pre-registered port list, updating both the Supabase allow-list and
+   Render's `SERVICE_ALLOWED_ORIGINS` together.
 3. **Render region** — pick a specific region for the Supabase project
    and the Render service together, minimizing auth/API latency; not
    fixed by the contract.
