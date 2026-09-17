@@ -25,9 +25,10 @@ What gets created, and why this order avoids rework:
    Stripe's webhook target needs the service to already have a place to
    write grants.
 2. **Google Cloud OAuth client** — needed so Supabase's Google provider
-   has a client id/secret to hold. Created second because it depends on
-   the Supabase project existing (its redirect URI is Supabase's
-   callback, not the extension's).
+   has a client id/secret to hold. Created between reading the Supabase
+   project ref and enabling the provider, since Supabase refuses to save
+   the Google provider without a client id, and the OAuth client's
+   redirect URI is Supabase's own callback, not the extension's.
 3. **Stripe products/prices/webhook** — created third; independent of
    Supabase/Google, but the backend needs `STRIPE_PRICE_*` env vars set
    before it can serve `/api/pricing` and `/api/store/checkout`
@@ -59,9 +60,14 @@ it does not cover writing the backend code itself.
    flow the client contract uses (`docs/theme-service-api.md`, "Email
    magic-link / OTP"). You do not need magic-link click-through, only the
    6-digit code path, though leaving both on is fine.
-4. Enable the **Google** provider, but leave its Client ID / Client
-   Secret fields blank for now — you'll fill them in after step 3
-   (Google Cloud) below.
+4. Leave the **Google** provider disabled for now — Supabase refuses to
+   save the provider without a client id. The project ref you need for
+   section 3 is the subdomain of the project URL shown under **Project
+   Settings → API** (step 6 below); the Google provider panel shows the
+   exact callback URL to use even before you enable it. Open section 3
+   (Google Cloud) now, create the OAuth client with that callback, then
+   return here and enable Google with the client id and secret filled in
+   together in one save.
 5. Open **Authentication → URL Configuration** and add these to the
    **Redirect URLs** allow-list:
    - `vscode://tycoonagents.tycoonagents/theme-service-auth` — the exact
