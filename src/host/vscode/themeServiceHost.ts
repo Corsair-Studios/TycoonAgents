@@ -25,6 +25,7 @@
 import type * as vscode from "vscode";
 import {
   createThemeServiceClient,
+  resolveThemeServiceEndpoint,
   type ThemeServiceClient,
   type ThemeServiceStatus,
   type ThemeServicePricing,
@@ -56,6 +57,11 @@ export interface ThemeServiceHostStatus {
    * pre-fill only, distinct from `referralMessage`. Present only while
    * signed out and a code is pending. */
   referralCodePrefill?: string;
+  /** p64-t1: plain hostname of the Theme Service endpoint, present only when
+   * an override (VS Code setting / standalone env var) is in effect — never
+   * shown against the production endpoint. Rendered in the sign-in area as
+   * "Service: <host>". */
+  endpointHost?: string;
 }
 
 /**
@@ -80,6 +86,15 @@ export interface ThemeServiceHostOptions {
   postStatus: (status: ThemeServiceHostStatus) => void;
   /** Injectable client for tests; defaults to a real one on the VS Code token store. */
   client?: ThemeServiceClient;
+  /**
+   * p64-t1: raw, unvalidated Theme Service endpoint override — the VS Code
+   * `tycoonagents.themeService.endpoint` setting value, or the standalone
+   * `THEME_SERVICE_ENDPOINT` env var. Validated here via
+   * {@link resolveThemeServiceEndpoint}; an invalid value falls back to the
+   * production endpoint with one logged warning. Ignored when `client` is
+   * supplied directly (tests own their own endpoint then).
+   */
+  endpointOverride?: string;
   /** p59-t3: extension version sent as the X-Tycoon-Client header on every Theme Service request. */
   clientVersion?: string;
   /** p62-t2: per-device first-sign-in tracker, gating the referral field and
@@ -132,6 +147,12 @@ export interface ThemeServiceHost {
    * constructing a second one.
    */
   getClient(): ThemeServiceClient;
+  /**
+   * p64-t1: plain hostname of the effective Theme Service endpoint when
+   * overridden, else undefined — used by the diagnostic report and by
+   * getStatusSnapshot()'s `endpointHost` field.
+   */
+  getEffectiveEndpointHost(): string | undefined;
   start(): void;
   dispose(): void;
 }
@@ -141,10 +162,23 @@ export interface ThemeServiceHost {
  * on the VS Code SecretStorage-backed token store — inject a fake in tests.
  */
 export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServiceHost {
+  // p64-t1: resolved once at construction, regardless of whether `client`
+  // is injected — a test-supplied client already owns its own endpoint, so
+  // effectiveEndpointHost only reflects the override when this factory is
+  // the one building the client.
+  const endpointResolution = resolveThemeServiceEndpoint(opts.endpointOverride);
+  if (!opts.client && endpointResolution.warning) {
+    console.warn(`[tycoonagents] ${endpointResolution.warning}`);
+  }
+  const effectiveEndpointHost: string | undefined =
+    !opts.client && endpointResolution.overridden
+      ? new URL(endpointResolution.endpoint).host
+      : undefined;
   const client: ThemeServiceClient =
     opts.client ?? createThemeServiceClient({
       tokenStore: createVsCodeThemeServiceTokenStore(opts.secrets),
       clientVersion: opts.clientVersion,
+      endpoint: endpointResolution.overridden ? endpointResolution.endpoint : undefined,
     });
   const now = opts.now ?? (() => Date.now());
   const setIntervalImpl = opts.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
@@ -239,6 +273,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       showReferralField,
       referralMessage,
       referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
+      endpointHost: effectiveEndpointHost,
     };
   }
 
@@ -348,6 +383,10 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     getClient() {
       return client;
+    },
+
+    getEffectiveEndpointHost() {
+      return effectiveEndpointHost;
     },
 
     handleSetReferralCode(code) {

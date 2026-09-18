@@ -242,6 +242,10 @@ export interface DiagnosticReportInput {
   contextBudget?: ContextBudget | null;
   roster?: DiagnosticRoster | null;
   engines?: DiagnosticEngines | null;
+  /** p64-t1: plain hostname of the Theme Service endpoint, present only when
+   * overridden (VS Code setting / standalone env var) — never shown when the
+   * production endpoint is in effect. */
+  themeServiceEndpointHost?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +306,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     line("Platform", safeInput.platform || NA),
     line("Host application", safeInput.hostAppName || NA),
     ...(safeInput.hostAppHost ? [line("Host variant", safeInput.hostAppHost)] : []),
+    ...(safeInput.themeServiceEndpointHost ? [line("Theme Service endpoint", safeInput.themeServiceEndpointHost)] : []),
   ]);
 
   const hookHealth = safeSection("Hook Health", () => {

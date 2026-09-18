@@ -25,6 +25,62 @@ import type { StructuredGenerateRequest } from "./themePromptTemplates";
 // client update, never a throwaway subdomain. Do not change these to
 // test/staging values in a commit that ships.
 export const THEME_SERVICE_ENDPOINT = "https://theme.corsairstudios.com";
+
+/**
+ * Validates and normalizes a user/env-supplied Theme Service endpoint
+ * override (VS Code setting `tycoonagents.themeService.endpoint`, standalone
+ * env var `THEME_SERVICE_ENDPOINT`) — shared by both hosts (p64-t1) so the
+ * validation rule lives in exactly one place. Requires an `https:` URL with
+ * no query string or fragment; a path is allowed but a trailing slash is
+ * stripped. Any invalid or empty input falls back to
+ * {@link THEME_SERVICE_ENDPOINT} with `overridden: false` and a `warning`
+ * the caller should log once (never thrown — an invalid override must never
+ * crash startup).
+ */
+export function resolveThemeServiceEndpoint(raw: string | undefined): {
+  endpoint: string;
+  overridden: boolean;
+  warning?: string;
+} {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed) {
+    return { endpoint: THEME_SERVICE_ENDPOINT, overridden: false };
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return {
+      endpoint: THEME_SERVICE_ENDPOINT,
+      overridden: false,
+      warning: `invalid Theme Service endpoint override "${trimmed}" — falling back to the production service`,
+    };
+  }
+  if (url.protocol !== "https:") {
+    return {
+      endpoint: THEME_SERVICE_ENDPOINT,
+      overridden: false,
+      warning: `Theme Service endpoint override "${trimmed}" must use https — falling back to the production service`,
+    };
+  }
+  if (url.username || url.password) {
+    return {
+      endpoint: THEME_SERVICE_ENDPOINT,
+      overridden: false,
+      warning: `Theme Service endpoint override "${trimmed}" must not include userinfo — falling back to the production service`,
+    };
+  }
+  if (url.search || url.hash) {
+    return {
+      endpoint: THEME_SERVICE_ENDPOINT,
+      overridden: false,
+      warning: `Theme Service endpoint override "${trimmed}" must not include a query string or fragment — falling back to the production service`,
+    };
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  const endpoint = `${url.protocol}//${url.host}${path}`;
+  return { endpoint, overridden: true };
+}
 export const SUPABASE_URL = "https://REPLACE_WITH_PROJECT.supabase.co";
 // Supabase's anon key is public by design (it's meant to ship client-side,
 // same as SUPABASE_URL above) — this placeholder is set to the real

@@ -282,6 +282,20 @@ test('signed-out state: Send sign-in link posts REQUEST_MAGIC_LINK with the ente
   h.win.close();
 });
 
+test('signed-out state: "Service: <host>" line renders only when status.endpointHost is set (p64-t2)', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus({ endpointHost: 'override.example.com' })));
+  assert.match(h.panelText(), /Service: override\.example\.com/);
+  h.win.close();
+});
+
+test('signed-out state: "Service:" line absent when status.endpointHost is unset', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  assert.ok(!/Service:/.test(h.panelText()), 'no endpointHost means no Service line');
+  h.win.close();
+});
+
 // ── State: google-wait ───────────────────────────────────────────────────────
 
 test('google-wait state renders paste-code field and posts GOOGLE_COMPLETE', async () => {

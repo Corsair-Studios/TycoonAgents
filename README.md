@@ -133,6 +133,8 @@ Generation prompts are assembled by the Corsair Theme Service from your theme de
 
 None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. The extension makes network calls only for Theme service sign-in, generation, and credit checkout (all Corsair-hosted), feedback submission, and the opt-in team readiness reachability probe; the agent harnesses (Claude Code, OpenCode, Codex) make their own separate calls.
 
+The advanced setting `tycoonagents.themeService.endpoint` (VS Code) or the `THEME_SERVICE_ENDPOINT` environment variable (standalone) points the client at a different `https` Theme Service URL for testing, and is normally left empty.
+
 ### Acceptable use
 
 - Prompts and reference images are screened automatically before generation runs, and a blocked prompt spends no credits.

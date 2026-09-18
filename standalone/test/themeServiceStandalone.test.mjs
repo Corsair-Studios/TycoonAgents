@@ -514,3 +514,91 @@ test('referral: Google-loopback completion runs the first-sign-in bookkeeping ex
   const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   assert.equal(parsed.hasSignedIn, true, 'markSignedIn must have run exactly once via notifySignInSucceeded');
 });
+
+// p64-t2: THEME_SERVICE_ENDPOINT env var (read when opts.endpoint is not
+// explicitly supplied — themeServiceHost.mjs:205) plumbed through
+// resolveThemeServiceEndpoint() into getEffectiveEndpointHost() / the
+// endpointHost field on postStatus() payloads.
+
+function withEnv(name, value, fn) {
+  const had = Object.prototype.hasOwnProperty.call(process.env, name);
+  const prev = process.env[name];
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+  try {
+    return fn();
+  } finally {
+    if (had) process.env[name] = prev;
+    else delete process.env[name];
+  }
+}
+
+test('env: THEME_SERVICE_ENDPOINT is honored when opts.endpoint is not supplied', async (t) => {
+  await withEnv('THEME_SERVICE_ENDPOINT', 'https://override.example.com/', async () => {
+    const appDataDir = mkTempAppData();
+    const collector = makeStatusCollector();
+    const host = createThemeServiceHost({
+      appDataDir,
+      fetch: async () => {
+        throw new Error('no network expected in this test');
+      },
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+      postStatus: collector.postStatus,
+      openExternal: () => {},
+    });
+    t.after(() => {
+      host.dispose();
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    });
+    assert.equal(host.getEffectiveEndpointHost(), 'override.example.com');
+    const snapshot = await host.getStatusSnapshot();
+    assert.equal(snapshot.endpointHost, 'override.example.com');
+  });
+});
+
+test('env: invalid THEME_SERVICE_ENDPOINT falls back to production, endpointHost stays undefined', async (t) => {
+  await withEnv('THEME_SERVICE_ENDPOINT', 'not-a-url', async () => {
+    const appDataDir = mkTempAppData();
+    const collector = makeStatusCollector();
+    const host = createThemeServiceHost({
+      appDataDir,
+      fetch: async () => {
+        throw new Error('no network expected in this test');
+      },
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+      postStatus: collector.postStatus,
+      openExternal: () => {},
+    });
+    t.after(() => {
+      host.dispose();
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    });
+    assert.equal(host.getEffectiveEndpointHost(), undefined);
+    const snapshot = await host.getStatusSnapshot();
+    assert.equal(snapshot.endpointHost, undefined);
+  });
+});
+
+test('env: THEME_SERVICE_ENDPOINT unset falls back to production, endpointHost stays undefined', async (t) => {
+  await withEnv('THEME_SERVICE_ENDPOINT', undefined, async () => {
+    const appDataDir = mkTempAppData();
+    const collector = makeStatusCollector();
+    const host = createThemeServiceHost({
+      appDataDir,
+      fetch: async () => {
+        throw new Error('no network expected in this test');
+      },
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+      postStatus: collector.postStatus,
+      openExternal: () => {},
+    });
+    t.after(() => {
+      host.dispose();
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    });
+    assert.equal(host.getEffectiveEndpointHost(), undefined);
+  });
+});

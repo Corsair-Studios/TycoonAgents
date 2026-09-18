@@ -975,6 +975,10 @@ export class TycoonPanel {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
       clientVersion: this._currentExtensionVersion() ?? undefined,
+      // p64-t1: raw setting value; validated/normalized inside
+      // createThemeServiceHost via resolveThemeServiceEndpoint. Invalid
+      // values fall back to production with one logged warning.
+      endpointOverride: vscode.workspace.getConfiguration("tycoonagents").get<string>("themeService.endpoint"),
       // p62-t2: undefined (not a fake Memento) when the caller omits
       // globalState — the host then simply never shows the referral field
       // rather than risking a wrong per-device "first sign-in" guess.
@@ -8640,6 +8644,7 @@ export class TycoonPanel {
         platform: process.platform,
         hostAppName: vscode.env.appName,
         hostAppHost,
+        themeServiceEndpointHost: this._themeServiceHost.getEffectiveEndpointHost() ?? null,
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         hookHealth: { healthy: issueCount === 0, issueCount },
         delegation: { mode: execCfg.delegation_mode, reviewEnabled: execCfg.reviewEnabled ?? true },

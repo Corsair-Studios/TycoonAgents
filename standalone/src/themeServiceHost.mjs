@@ -192,14 +192,28 @@ function startGoogleLoopbackListener(onCode) {
 export function createThemeServiceHost(opts) {
   const { createThemeServiceHost: createVsCodeHost } = themeServiceHostModule();
 
+  // p64-t1: effective Theme Service endpoint host (hostname only), set only
+  // when an override is in effect and this factory built the client itself
+  // (a fully test-supplied opts.client owns its own endpoint — never
+  // reported here). Read from THEME_SERVICE_ENDPOINT env var when
+  // opts.endpoint isn't explicitly supplied (tests).
+  let effectiveEndpointHost;
   let client = opts.client;
   if (!client) {
-    const { createThemeServiceClient } = themeServiceClientModule();
+    const { createThemeServiceClient, resolveThemeServiceEndpoint } = themeServiceClientModule();
     const tokenStore = createStandaloneThemeServiceTokenStore({ appDataDir: opts.appDataDir });
+    const rawEndpoint = opts.endpoint ?? process.env.THEME_SERVICE_ENDPOINT;
+    const resolution = resolveThemeServiceEndpoint(rawEndpoint);
+    if (resolution.warning) {
+      console.warn(`[tycoonagents-standalone] ${resolution.warning}`);
+    }
+    if (resolution.overridden) {
+      effectiveEndpointHost = new URL(resolution.endpoint).host;
+    }
     client = createThemeServiceClient({
       tokenStore,
       fetch: opts.fetch,
-      endpoint: opts.endpoint,
+      endpoint: resolution.overridden ? resolution.endpoint : undefined,
       supabaseUrl: opts.supabaseUrl,
       supabaseAnonKey: opts.supabaseAnonKey,
       clientVersion: opts.clientVersion,
@@ -227,13 +241,22 @@ export function createThemeServiceHost(opts) {
   // logic unchanged; only openExternal/postStatus/client differ per host.
   const deviceState = createStandaloneThemeServiceDeviceState(opts.appDataDir);
 
+  // p64-t1: inner (the compiled VS Code host) computes its own
+  // effectiveEndpointHost from an endpointOverride never passed here (this
+  // factory built `client` itself, above) — so it is always undefined on
+  // inner's own statuses. Patch it in on every status this factory hands
+  // back out, whichever path produced it.
+  function withEndpointHost(status) {
+    return effectiveEndpointHost ? { ...status, endpointHost: effectiveEndpointHost } : status;
+  }
+
   const inner = createVsCodeHost({
     // `secrets` is never read when `client` is supplied (see
     // out/src/host/vscode/themeServiceHost.js: `opts.client ?? create...`)
     // — passed as undefined deliberately, not a fake vscode.SecretStorage.
     client,
     openExternal,
-    postStatus: opts.postStatus,
+    postStatus: (status) => opts.postStatus(withEndpointHost(status)),
     deviceState,
   });
 
@@ -259,7 +282,7 @@ export function createThemeServiceHost(opts) {
     // module doc above), so the first-sign-in/referral-apply bookkeeping
     // inner would otherwise do internally has to be invoked explicitly here.
     await inner.notifySignInSucceeded();
-    opts.postStatus(await inner.getStatusSnapshot());
+    opts.postStatus(withEndpointHost(await inner.getStatusSnapshot()));
   }
 
   // Overrides the VS Code host's vscode:// deep-link redirectTo: starts a
@@ -297,7 +320,7 @@ export function createThemeServiceHost(opts) {
 
   return {
     handleGetStatus: () => inner.handleGetStatus(),
-    getStatusSnapshot: () => inner.getStatusSnapshot(),
+    getStatusSnapshot: async () => withEndpointHost(await inner.getStatusSnapshot()),
     handleRequestMagicLink: (email) => inner.handleRequestMagicLink(email),
     handleVerify: (email, code) => inner.handleVerify(email, code),
     handleGoogleStart,
@@ -306,6 +329,7 @@ export function createThemeServiceHost(opts) {
     handleBuyCredits: (pack) => inner.handleBuyCredits(pack),
     handleSetReferralCode: (code) => inner.handleSetReferralCode(code),
     getClient: () => inner.getClient(),
+    getEffectiveEndpointHost: () => effectiveEndpointHost,
     getLoopbackPort: () => loopback?.port,
     start: () => inner.start(),
     dispose: () => {

@@ -1674,6 +1674,12 @@
     container.appendChild(tspEl("h3", null, "Generate a theme"));
     container.appendChild(tspEl("p", "muted tsp-lead", "Sign in to generate AI theme art with credits."));
 
+    // p64-t1: only shown when the host has an active Theme Service endpoint
+    // override (never against the production endpoint).
+    if (status && typeof status.endpointHost === "string" && status.endpointHost) {
+      container.appendChild(tspEl("p", "muted tsp-note-bottom", `Service: ${status.endpointHost}`));
+    }
+
     if (status && status.error && status.error.message) {
       container.appendChild(tspNotice("warn", status.error.message));
     }

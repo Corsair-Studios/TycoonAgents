@@ -167,7 +167,8 @@ it does not cover writing the backend code itself.
    purchases, not subscriptions.
 6. Create the webhook endpoint:
    - URL: `https://theme.corsairstudios.com/api/stripe-webhook`
-   - Events: **`checkout.session.completed`** only.
+   - Events: **`checkout.session.completed`**, **`charge.refunded`**, and
+     **`charge.dispute.created`**.
    - Copy the endpoint's **signing secret** into the env var name
      `STRIPE_WEBHOOK_SECRET` for Render (value goes only into Render's
      dashboard).
@@ -244,7 +245,6 @@ Render is used the same way it is for Speciary.
      explicitly if you want a different threshold.
    - `RATE_LIMIT_ATTEMPTS_PER_MIN`
    - `RATE_LIMIT_ATTEMPTS_PER_DAY`
-   - `PROMPT_MAX_CHARS` — default `4000` per the contract.
    - `IMAGE_MAX_BYTES` — default `8` MiB per the contract.
 
    **`SERVICE_ALLOWED_ORIGINS`:** the contract doesn't give this value
@@ -300,6 +300,15 @@ Render is used the same way it is for Speciary.
 
 Run these in order against the deployed Render service, using Stripe
 **test mode** first:
+
+Until DNS is live (section 6), you can run this checklist against the
+Render service's `onrender.com` hostname directly by setting the advanced
+endpoint override (`tycoonagents.themeService.endpoint` in VS Code, or
+`THEME_SERVICE_ENDPOINT` for the standalone host) instead of
+`https://theme.corsairstudios.com`. This only changes which URL the client
+calls — it doesn't touch the Supabase redirect allow-list or
+`SERVICE_ALLOWED_ORIGINS`, which stay set to the values from sections 2.5
+and 5.6 regardless.
 
 1. `GET https://theme.corsairstudios.com/api/health` — expect `200`.
 2. Sign in from the extension via email OTP, then again via Google —
