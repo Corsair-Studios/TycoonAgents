@@ -117,6 +117,13 @@ export interface ThemeServiceHostOptions {
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
+  /**
+   * p66-t1: optional diagnostic logger (the shared "TycoonAgents" output
+   * channel from src/host/vscode/log.ts). Logs step names and hostnames
+   * only — never the full authorize URL (it carries a code_challenge) or
+   * any key/token. Omitted in tests, where logging is a no-op.
+   */
+  log?: (msg: string) => void;
 }
 
 const CHECKOUT_POLL_INTERVAL_MS = 5_000;
@@ -124,6 +131,28 @@ const CHECKOUT_POLL_MAX_MS = 10 * 60_000;
 
 function toErrorPayload(error: ThemeServiceError): { kind: string; message: string } {
   return { kind: error.kind, message: error.message };
+}
+
+/**
+ * p66-t1: hostname only, for logging — never logs the full authorize URL
+ * (it carries a PKCE code_challenge) or any query string/key.
+ */
+function hostOnly(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * p66-t1 review fix: a thrown openExternal error's `.message` can echo the
+ * URL it was given (which carries a PKCE code_challenge) — never logged or
+ * posted verbatim. Only a fixed message plus the error's constructor name.
+ */
+function scrubOpenExternalError(err: unknown): string {
+  const ctor = err instanceof Error ? err.constructor.name : typeof err;
+  return `couldn't open the browser for sign-in (${ctor})`;
 }
 
 export interface ThemeServiceHost {
@@ -181,6 +210,8 @@ export interface ThemeServiceHost {
  * on the VS Code SecretStorage-backed token store — inject a fake in tests.
  */
 export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServiceHost {
+  // p66-t1: no-op when the caller (e.g. tests) omits a logger.
+  const log = opts.log ?? (() => {});
   // p64-t1: resolved once at construction, regardless of whether `client`
   // is injected — a test-supplied client already owns its own endpoint, so
   // effectiveEndpointHost only reflects the override when this factory is
@@ -385,63 +416,94 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     async handleGoogleStart() {
+      log("themeServiceHost.handleGoogleStart: start");
       // publisher.name for the vscode:// deep-link scheme, resolved by the
       // caller (panel.ts) via package.json — kept here only as documentation
       // of the redirect shape the caller must pass through startGoogleSignIn.
       const redirectTo = "vscode://tycoonagents.tycoonagents/theme-service-auth";
       const res = await client.startGoogleSignIn({ redirectTo });
       if (!res.ok) {
+        log(`themeServiceHost.handleGoogleStart: startGoogleSignIn failed kind=${res.error.kind}`);
         opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
         return;
       }
       pendingGoogleCodeVerifier = res.value.codeVerifier;
       const browserUrl = res.value.browserUrl;
       pendingGoogleBrowserUrl = browserUrl;
+      // browserUrl is the Supabase-hosted authorize endpoint, so its host is
+      // also the resolved auth-config Supabase host — one log line covers both.
+      log(`themeServiceHost.handleGoogleStart: auth-config resolved, authorize URL built host=${hostOnly(browserUrl)}`);
+      // Review fix: post the browserUrl status BEFORE awaiting openExternal
+      // so the fallback link is available immediately, and so a fast
+      // deep-link completion (which posts signedIn:true) can never be
+      // overwritten by this handler's own post landing after it.
+      opts.postStatus({ signedIn: false, pendingCheckout, browserUrl });
       let opened: boolean | void;
       try {
         opened = await opts.openExternal(browserUrl);
       } catch (err) {
-        opts.postStatus({
-          signedIn: false,
-          pendingCheckout,
-          error: { kind: "browser_open_failed", message: err instanceof Error ? err.message : String(err) },
-          browserUrl,
-        });
+        log(`themeServiceHost.handleGoogleStart: openExternal threw: ${scrubOpenExternalError(err)}`);
+        // Completion (handleGoogleComplete/handleUriCallback) clears
+        // pendingGoogleCodeVerifier on success — if it's already gone, sign-in
+        // finished while openExternal was pending, so skip this post entirely
+        // rather than clobbering the signedIn:true status just delivered.
+        if (pendingGoogleCodeVerifier !== null) {
+          opts.postStatus({
+            signedIn: false,
+            pendingCheckout,
+            error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) },
+            browserUrl,
+          });
+        }
         return;
       }
       if (opened === false) {
-        opts.postStatus({
-          signedIn: false,
-          pendingCheckout,
-          error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
-          browserUrl,
-        });
+        log("themeServiceHost.handleGoogleStart: openExternal returned false");
+        if (pendingGoogleCodeVerifier !== null) {
+          opts.postStatus({
+            signedIn: false,
+            pendingCheckout,
+            error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
+            browserUrl,
+          });
+        }
+        return;
       }
+      log("themeServiceHost.handleGoogleStart: openExternal succeeded");
+      // Nothing further to post on success — the pre-await post above already
+      // delivered browserUrl, and posting again here risks overwriting a
+      // signedIn:true the deep-link completion posted in the meantime.
     },
 
     async handleGoogleOpen() {
       const url = pendingGoogleBrowserUrl;
       if (!url) return;
+      log(`themeServiceHost.handleGoogleOpen: reopening host=${hostOnly(url)}`);
       let opened: boolean | void;
       try {
         opened = await opts.openExternal(url);
       } catch (err) {
+        log(`themeServiceHost.handleGoogleOpen: openExternal threw: ${scrubOpenExternalError(err)}`);
         opts.postStatus({
           signedIn: false,
           pendingCheckout,
-          error: { kind: "browser_open_failed", message: err instanceof Error ? err.message : String(err) },
+          error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) },
           browserUrl: url,
         });
         return;
       }
       if (opened === false) {
+        log("themeServiceHost.handleGoogleOpen: openExternal returned false");
         opts.postStatus({
           signedIn: false,
           pendingCheckout,
           error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
           browserUrl: url,
         });
+        return;
       }
+      log("themeServiceHost.handleGoogleOpen: openExternal succeeded");
+      opts.postStatus({ signedIn: false, pendingCheckout, browserUrl: url });
     },
 
     async handleGoogleComplete(code) {

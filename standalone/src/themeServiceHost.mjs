@@ -189,8 +189,32 @@ function startGoogleLoopbackListener(onCode) {
  *   fetch?: typeof fetch,
  * }} opts
  */
+/**
+ * p66-t1: hostname only, for logging — never logs the full authorize URL
+ * (it carries a PKCE code_challenge) or any query string/key.
+ */
+function hostOnly(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * p66-t1 review fix: a thrown openExternal error's `.message` can echo the
+ * URL it was given (which carries a PKCE code_challenge) — never logged or
+ * posted verbatim. Only a fixed message plus the error's constructor name.
+ */
+function scrubOpenExternalError(err) {
+  const ctor = err instanceof Error ? err.constructor.name : typeof err;
+  return `couldn't open the browser for sign-in (${ctor})`;
+}
+
 export function createThemeServiceHost(opts) {
   const { createThemeServiceHost: createVsCodeHost } = themeServiceHostModule();
+  // p66-t1: no logger injected in tests -> no-op.
+  const log = opts.log ?? (() => {});
 
   // p64-t1: effective Theme Service endpoint host (hostname only), set only
   // when an override is in effect and this factory built the client itself
@@ -293,6 +317,7 @@ export function createThemeServiceHost(opts) {
   // Overrides the VS Code host's vscode:// deep-link redirectTo: starts a
   // loopback listener first, then calls the SAME client.startGoogleSignIn.
   async function handleGoogleStart() {
+    log('themeServiceHost.handleGoogleStart: start');
     closeLoopback();
     try {
       const listener = await startGoogleLoopbackListener((code) => {
@@ -305,6 +330,7 @@ export function createThemeServiceHost(opts) {
       loopbackTimeoutHandle.unref?.();
       const res = await client.startGoogleSignIn({ redirectTo: listener.redirectTo });
       if (!res.ok) {
+        log(`themeServiceHost.handleGoogleStart: startGoogleSignIn failed kind=${res.error.kind}`);
         closeLoopback();
         opts.postStatus({ signedIn: false, pendingCheckout: false, error: { kind: res.error.kind, message: res.error.message } });
         return;
@@ -313,13 +339,38 @@ export function createThemeServiceHost(opts) {
       // Code host's internal pendingGoogleCodeVerifier posture one level up.
       pendingCodeVerifier = res.value.codeVerifier;
       pendingBrowserUrl = res.value.browserUrl;
-      openExternal(res.value.browserUrl);
+      // browserUrl is the Supabase-hosted authorize endpoint, so its host is
+      // also the resolved auth-config Supabase host — one log line covers both.
+      log(`themeServiceHost.handleGoogleStart: auth-config resolved, authorize URL built host=${hostOnly(res.value.browserUrl)}`);
+      // Review fix: post the browserUrl status BEFORE invoking openExternal
+      // so the fallback link is available immediately, and so a fast
+      // loopback completion (which posts signedIn:true) can never be
+      // overwritten by a post landing after openExternal.
+      opts.postStatus({ signedIn: false, pendingCheckout: false, browserUrl: pendingBrowserUrl });
+      try {
+        openExternal(res.value.browserUrl);
+        log('themeServiceHost.handleGoogleStart: openExternal invoked');
+      } catch (err) {
+        log(`themeServiceHost.handleGoogleStart: openExternal threw: ${scrubOpenExternalError(err)}`);
+        // The loopback listener clears pendingCodeVerifier on completion —
+        // if it's already gone, sign-in finished while openExternal was
+        // pending, so skip this post rather than clobbering signedIn:true.
+        if (pendingCodeVerifier !== null) {
+          opts.postStatus({
+            signedIn: false,
+            pendingCheckout: false,
+            error: { kind: 'browser_open_failed', message: scrubOpenExternalError(err) },
+            browserUrl: pendingBrowserUrl,
+          });
+        }
+      }
     } catch (err) {
+      log(`themeServiceHost.handleGoogleStart: threw: ${scrubOpenExternalError(err)}`);
       closeLoopback();
       opts.postStatus({
         signedIn: false,
         pendingCheckout: false,
-        error: { kind: 'unavailable', message: err instanceof Error ? err.message : String(err) },
+        error: { kind: 'unavailable', message: scrubOpenExternalError(err) },
       });
     }
   }
@@ -336,7 +387,19 @@ export function createThemeServiceHost(opts) {
     // reports success/failure, so this simply re-invokes it without
     // restarting the loopback listener or PKCE handshake.
     handleGoogleOpen: async () => {
-      if (pendingBrowserUrl) openExternal(pendingBrowserUrl);
+      if (!pendingBrowserUrl) return;
+      log(`themeServiceHost.handleGoogleOpen: reopening host=${hostOnly(pendingBrowserUrl)}`);
+      try {
+        openExternal(pendingBrowserUrl);
+      } catch (err) {
+        log(`themeServiceHost.handleGoogleOpen: openExternal threw: ${scrubOpenExternalError(err)}`);
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout: false,
+          error: { kind: 'browser_open_failed', message: scrubOpenExternalError(err) },
+          browserUrl: pendingBrowserUrl,
+        });
+      }
     },
     handleGoogleComplete,
     handleSignOut: () => inner.handleSignOut(),

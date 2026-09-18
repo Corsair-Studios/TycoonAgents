@@ -280,6 +280,87 @@ test('handleGoogleOpen: re-opens the exact URL stored from the matching handleGo
   assert.equal(openExternalCalls[1], storedUrl);
 });
 
+// p66-t2: review fix ordering — {signedIn:false, browserUrl} is posted
+// BEFORE openExternal is invoked, and success posts nothing further.
+test('handleGoogleStart: posts {signedIn:false, browserUrl} before openExternal, nothing further on success', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, statuses, openExternalCalls } = newHost(t, fake);
+  await host.handleGoogleStart();
+  assert.equal(openExternalCalls.length, 1);
+  assert.equal(statuses.length, 1, 'success path must post exactly once (the pre-await post)');
+  assert.equal(statuses[0].signedIn, false);
+  assert.equal(statuses[0].browserUrl, openExternalCalls[0]);
+  assert.equal(statuses[0].error, undefined);
+});
+
+test('handleGoogleStart: openExternal throwing posts browser_open_failed with the fixed scrubbed message', async (t) => {
+  const fake = createFakeThemeService();
+  const appDataDir = mkTempAppData();
+  const collector = makeStatusCollector();
+  const host = createThemeServiceHost({
+    appDataDir,
+    fetch: fake.fetch,
+    endpoint: 'https://theme-service.example',
+    supabaseUrl: 'https://fake-project.supabase.co',
+    supabaseAnonKey: 'anon-key',
+    postStatus: collector.postStatus,
+    openExternal: () => {
+      throw new Error('no browser available');
+    },
+  });
+  host.start();
+  t.after(() => {
+    host.dispose();
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  });
+  await host.handleGoogleStart();
+  const last = collector.statuses[collector.statuses.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.kind, 'browser_open_failed');
+  assert.match(last.error?.message, /^couldn't open the browser for sign-in \(Error\)$/);
+});
+
+test('handleGoogleStart/handleGoogleOpen: log lines carry the Supabase host, never code_challenge/query/tokens, and console output has no leak', async (t) => {
+  const fake = createFakeThemeService();
+  const appDataDir = mkTempAppData();
+  const consoleCapture = makeConsoleCapture();
+  const collector = makeStatusCollector();
+  const logLines = [];
+  const openExternalCalls = [];
+  const host = createThemeServiceHost({
+    appDataDir,
+    fetch: fake.fetch,
+    endpoint: 'https://theme-service.example',
+    supabaseUrl: 'https://fake-project.supabase.co',
+    supabaseAnonKey: 'anon-key',
+    postStatus: collector.postStatus,
+    openExternal: (url) => openExternalCalls.push(url),
+    log: (msg) => logLines.push(msg),
+  });
+  host.start();
+  t.after(() => {
+    consoleCapture.restore();
+    host.dispose();
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  });
+  try {
+    await host.handleGoogleStart();
+    await host.handleGoogleOpen();
+  } finally {
+    consoleCapture.restore();
+  }
+  assert.ok(logLines.length > 0, 'expected log lines to be captured');
+  const joined = logLines.join('\n');
+  assert.ok(joined.includes('fake-project.supabase.co'), 'log lines should mention the Supabase host');
+  for (const line of logLines) {
+    assert.ok(!line.includes('code_challenge'), `log line must not contain code_challenge: ${line}`);
+    assert.ok(!line.includes('?'), `log line must not contain a query string: ${line}`);
+  }
+  for (const line of consoleCapture.lines) {
+    assert.ok(!line.includes('code_challenge'), `console output must not contain code_challenge: ${line}`);
+  }
+});
+
 test('balance and buy: BUY_CREDITS opens checkout, status shows pendingCheckout true, completeCheckout raises the balance', async (t) => {
   const fake = createFakeThemeService();
   fake.helpers.createAccount('buyer@example.com');

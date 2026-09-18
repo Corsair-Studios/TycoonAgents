@@ -1793,18 +1793,20 @@
 
     if (status && status.error && status.error.message) {
       container.appendChild(tspNotice("error", status.error.message));
-      if (browserUrl) {
-        const row = tspEl("div", "tsp-btn-row");
-        row.appendChild(tspButton(null, "Open the sign-in link", () => {
-          postThemeService("THEME_SERVICE_GOOGLE_OPEN", { url: browserUrl });
-        }));
-        row.appendChild(tspButton(null, "Copy link", () => {
-          if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(browserUrl).catch(() => {});
-          }
-        }));
-        container.appendChild(row);
-      }
+    }
+
+    if (browserUrl) {
+      container.appendChild(tspEl("p", "muted tsp-lead", "If no browser opened, use the link below."));
+      const row = tspEl("div", "tsp-btn-row");
+      row.appendChild(tspButton(null, "Open the sign-in link", () => {
+        postThemeService("THEME_SERVICE_GOOGLE_OPEN", { url: browserUrl });
+      }));
+      row.appendChild(tspButton(null, "Copy link", () => {
+        if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(browserUrl).catch(() => {});
+        }
+      }));
+      container.appendChild(row);
     }
 
     const waitRow = tspEl("div", "tsp-wait-row");

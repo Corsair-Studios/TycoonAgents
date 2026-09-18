@@ -191,6 +191,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * p66-t1 review fix: a thrown openExternal/handler error's `.message` can
+ * echo the Google sign-in URL it was given (which carries a PKCE
+ * code_challenge) — never logged or posted verbatim on the openExternal
+ * paths. Only a fixed message plus the error's constructor name.
+ */
+function scrubOpenExternalError(error: unknown): string {
+  const ctor = error instanceof Error ? error.constructor.name : typeof error;
+  return `couldn't open the browser for sign-in (${ctor})`;
+}
+
 import {
   mergeTycoonHooks,
   mergeManagedSubagentDepthEnv,
@@ -968,10 +979,20 @@ export class TycoonPanel {
 
     this._themeServiceHost = createThemeServiceHost({
       secrets,
-      openExternal: (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
+      openExternal: async (url) => {
+        // p66-t1: `true` requires a well-formed URI (throws instead of
+        // silently no-op'ing on a malformed one) — the result is logged as a
+        // boolean only, never the URL itself (it carries a PKCE
+        // code_challenge, never logged in full). A thrown error is scrubbed
+        // by the caller (themeServiceHost.ts) before it's logged or posted.
+        const opened = await vscode.env.openExternal(vscode.Uri.parse(url, true));
+        log(`panel: openExternal result=${opened}`);
+        return opened;
+      },
       postStatus: (status: ThemeServiceHostStatus) => {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
+      log,
       clientVersion: this._currentExtensionVersion() ?? undefined,
       // p64-t1: raw setting value; validated/normalized inside
       // createThemeServiceHost via resolveThemeServiceEndpoint. Invalid
@@ -1897,7 +1918,15 @@ export class TycoonPanel {
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_START) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_START.safeParse((message as any).payload);
           if (!parsed.success) return;
-          await this._themeServiceHost.handleGoogleStart();
+          try {
+            await this._themeServiceHost.handleGoogleStart();
+          } catch (err) {
+            log(`panel: THEME_SERVICE_GOOGLE_START handler threw: ${scrubOpenExternalError(err)}`);
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_SERVICE_STATUS,
+              payload: { signedIn: false, error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) } },
+            });
+          }
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_COMPLETE) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse((message as any).payload);
           if (!parsed.success) return;
@@ -1907,7 +1936,15 @@ export class TycoonPanel {
           if (!parsed.success) return;
           // The payload's `url` (if any) is advisory only — the host always
           // re-opens the URL it stored from the matching handleGoogleStart.
-          await this._themeServiceHost.handleGoogleOpen();
+          try {
+            await this._themeServiceHost.handleGoogleOpen();
+          } catch (err) {
+            log(`panel: THEME_SERVICE_GOOGLE_OPEN handler threw: ${scrubOpenExternalError(err)}`);
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_SERVICE_STATUS,
+              payload: { signedIn: false, error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) } },
+            });
+          }
         } else if (message.type === MSG.THEME_SERVICE_SIGN_OUT) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse((message as any).payload);
           if (!parsed.success) return;

@@ -1264,7 +1264,15 @@ function handleBrowserMessage(msg) {
       if (themeServiceHostInstance) void themeServiceHostInstance.handleVerify(String(payload.email || ''), String(payload.code || ''));
       break;
     case THEME_SERVICE_GOOGLE_START_WIRE:
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleStart();
+      if (themeServiceHostInstance) {
+        void themeServiceHostInstance.handleGoogleStart().catch((err) => {
+          console.log(`[tycoonagents-standalone] THEME_SERVICE_GOOGLE_START handler threw: ${scrubOpenExternalError(err)}`);
+          broadcast('message', {
+            type: THEME_SERVICE_STATUS_WIRE,
+            payload: { signedIn: false, error: { kind: 'browser_open_failed', message: scrubOpenExternalError(err) } },
+          });
+        });
+      }
       break;
     case THEME_SERVICE_GOOGLE_COMPLETE_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleComplete(payload.code ? String(payload.code) : undefined);
@@ -1272,7 +1280,15 @@ function handleBrowserMessage(msg) {
     case THEME_SERVICE_GOOGLE_OPEN_WIRE:
       // payload.url (if any) is advisory only — handleGoogleOpen re-opens
       // only the URL it stored from the matching THEME_SERVICE_GOOGLE_START.
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleOpen();
+      if (themeServiceHostInstance) {
+        void themeServiceHostInstance.handleGoogleOpen().catch((err) => {
+          console.log(`[tycoonagents-standalone] THEME_SERVICE_GOOGLE_OPEN handler threw: ${scrubOpenExternalError(err)}`);
+          broadcast('message', {
+            type: THEME_SERVICE_STATUS_WIRE,
+            payload: { signedIn: false, error: { kind: 'browser_open_failed', message: scrubOpenExternalError(err) } },
+          });
+        });
+      }
       break;
     case THEME_SERVICE_SIGN_OUT_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleSignOut();
@@ -1548,6 +1564,17 @@ async function handleConfirmFeedbackSend(broadcastFn, ticketId) {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+/**
+ * p66-t1 review fix: a thrown Google sign-in handler error's `.message` can
+ * echo the authorize URL (which carries a PKCE code_challenge) — never
+ * logged or broadcast verbatim on the openExternal paths. Only a fixed
+ * message plus the error's constructor name.
+ */
+function scrubOpenExternalError(err) {
+  const ctor = err instanceof Error ? err.constructor.name : typeof err;
+  return `couldn't open the browser for sign-in (${ctor})`;
 }
 
 /** Reads `<repo>/package.json`'s `version` field; `'unknown'` if unreadable — matches buildFeedbackPayload()'s own `ctx.extensionVersion ?? 'unknown'` fallback. */
@@ -4155,6 +4182,7 @@ export async function startServer({
     appDataDir: appData.dir,
     postStatus: (status) => broadcast('message', { type: THEME_SERVICE_STATUS_WIRE, payload: status }),
     clientVersion: readRepoVersion(),
+    log: (msg) => console.log(`[tycoonagents-standalone] ${msg}`),
     ...themeServiceHostOptions,
   });
   themeServiceHostInstance.start();

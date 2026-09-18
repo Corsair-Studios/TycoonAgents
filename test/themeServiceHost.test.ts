@@ -391,6 +391,31 @@ test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGet
   assert.match(snippet, /_themeServiceHost\.handleGetStatus\(\)/, "visible branch should call themeServiceHost.handleGetStatus()");
 });
 
+test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting browser_open_failed, and parses url with vscode.Uri.parse(url, true)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src: string = fs.readFileSync(
+    path.join(process.cwd(), "src", "host", "vscode", "panel.ts"),
+    "utf8",
+  );
+
+  const startIdx = src.indexOf("THEME_SERVICE_GOOGLE_START");
+  assert.ok(startIdx >= 0, "panel.ts should handle THEME_SERVICE_GOOGLE_START");
+  const startSnippet = src.slice(startIdx, startIdx + 1000);
+  assert.match(startSnippet, /try\s*\{/, "GOOGLE_START handler should be wrapped in try/catch");
+  assert.match(startSnippet, /catch\s*\(err\)/, "GOOGLE_START handler should catch errors");
+  assert.match(startSnippet, /browser_open_failed/, "GOOGLE_START catch should post browser_open_failed");
+
+  const openIdx = src.indexOf("THEME_SERVICE_GOOGLE_OPEN");
+  assert.ok(openIdx >= 0, "panel.ts should handle THEME_SERVICE_GOOGLE_OPEN");
+  const openSnippet = src.slice(openIdx, openIdx + 1000);
+  assert.match(openSnippet, /try\s*\{/, "GOOGLE_OPEN handler should be wrapped in try/catch");
+  assert.match(openSnippet, /catch\s*\(err\)/, "GOOGLE_OPEN handler should catch errors");
+  assert.match(openSnippet, /browser_open_failed/, "GOOGLE_OPEN catch should post browser_open_failed");
+
+  assert.match(src, /vscode\.Uri\.parse\(url,\s*true\)/, "panel.ts should call vscode.Uri.parse(url, true)");
+});
+
 test("handleGoogleStart: openExternal throwing posts browser_open_failed with browserUrl set", async () => {
   const { host, posted, opened } = setup(undefined, () => {
     throw new Error("no browser available");
@@ -400,6 +425,7 @@ test("handleGoogleStart: openExternal throwing posts browser_open_failed with br
   const last = posted[posted.length - 1];
   assert.equal(last.signedIn, false);
   assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.error?.message, "couldn't open the browser for sign-in (Error)");
   assert.equal(last.browserUrl, opened[0]);
 });
 
@@ -409,7 +435,19 @@ test("handleGoogleStart: openExternal returning false posts browser_open_failed 
   const last = posted[posted.length - 1];
   assert.equal(last.signedIn, false);
   assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.error?.message, "couldn't open the browser for sign-in");
   assert.equal(last.browserUrl, opened[0]);
+});
+
+test("handleGoogleStart: posts {signedIn:false, browserUrl} BEFORE awaiting openExternal, and nothing further on success", async () => {
+  const { host, posted, opened } = setup();
+  await host.handleGoogleStart();
+  assert.equal(opened.length, 1);
+  // Only the pre-await post — success posts nothing further.
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, false);
+  assert.equal(posted[0].browserUrl, opened[0]);
+  assert.equal(posted[0].error, undefined);
 });
 
 test("handleGoogleOpen: no-ops (posts nothing, opens nothing) when there is no pending Google browser URL", async () => {
@@ -425,12 +463,19 @@ test("handleGoogleOpen: re-opens the stored URL from the matching handleGoogleSt
   assert.equal(opened.length, 1);
   const storedUrl = opened[0];
   opened.length = 0;
+  posted.length = 0; // handleGoogleStart already posted once (pre-await); isolate handleGoogleOpen's own post.
   await host.handleGoogleOpen();
   assert.equal(opened.length, 1);
   assert.equal(opened[0], storedUrl);
   // A failing re-open still reports the ORIGINAL stored url, never a
   // caller-supplied one — handleGoogleOpen takes no url argument at all.
-  assert.equal(posted.length, 0);
+  // A successful re-open now also posts status, carrying the browserUrl
+  // so the webview can keep rendering the fallback link/buttons.
+  assert.equal(posted.length, 1);
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.browserUrl, storedUrl);
+  assert.equal(last.error, undefined);
 });
 
 test("handleGoogleOpen: a failing re-open posts browser_open_failed with the stored browserUrl", async () => {
@@ -445,5 +490,57 @@ test("handleGoogleOpen: a failing re-open posts browser_open_failed with the sto
   const last = posted[posted.length - 1];
   assert.equal(last.signedIn, false);
   assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.error?.message, "couldn't open the browser for sign-in");
   assert.equal(last.browserUrl, storedUrl);
+});
+
+test("handleGoogleStart/handleGoogleOpen: opts.log lines carry the Supabase host, never code_challenge/query/verifier", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    createCodeVerifier: () => "fixed-test-verifier",
+  });
+  const posted: ThemeServiceHostStatus[] = [];
+  const opened: string[] = [];
+  const logLines: string[] = [];
+  const timers = fakeTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: (url) => {
+      opened.push(url);
+    },
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    log: (msg) => logLines.push(msg),
+  });
+  host.start();
+  await host.handleGoogleStart();
+  await host.handleGoogleOpen();
+
+  assert.ok(logLines.length > 0, "expected log lines to be captured");
+  const supabaseHost = new URL(SUPABASE_URL).host;
+  const joined = logLines.join("\n");
+  assert.ok(joined.includes(supabaseHost), "log lines should mention the Supabase host");
+  for (const line of logLines) {
+    assert.ok(!line.includes("code_challenge"), `log line must not contain code_challenge: ${line}`);
+    assert.ok(!line.includes("?"), `log line must not contain a query string: ${line}`);
+    assert.ok(!line.includes("fixed-test-verifier"), `log line must not contain the code verifier: ${line}`);
+  }
+});
+
+test("handleGoogleOpen: successful re-open posts status with browserUrl and no error (buttons stay renderable)", async () => {
+  const { host, posted, opened } = setup();
+  await host.handleGoogleStart();
+  const storedUrl = opened[0];
+  posted.length = 0;
+  await host.handleGoogleOpen();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].error, undefined);
+  assert.equal(posted[0].browserUrl, storedUrl);
 });
