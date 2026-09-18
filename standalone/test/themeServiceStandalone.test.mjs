@@ -258,6 +258,28 @@ test('Google pasted-code fallback: THEME_SERVICE_GOOGLE_COMPLETE-equivalent (han
   assert.equal(last.signedIn, true, 'pasted-code completion must sign in identically to the loopback path');
 });
 
+// p65-t4: standalone equivalents of the VS Code host's handleGoogleOpen
+// no-op/pending coverage (src/host/vscode/themeServiceHost.ts ~422).
+test('handleGoogleOpen: no-ops (opens nothing) when there is no pending Google browser URL', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, openExternalCalls } = newHost(t, fake);
+  await host.handleGoogleOpen();
+  assert.equal(openExternalCalls.length, 0);
+});
+
+test('handleGoogleOpen: re-opens the exact URL stored from the matching handleGoogleStart, ignoring any caller-supplied argument', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, openExternalCalls } = newHost(t, fake);
+  await host.handleGoogleStart();
+  assert.equal(openExternalCalls.length, 1);
+  const storedUrl = openExternalCalls[0];
+  // handleGoogleOpen takes no url argument at all — passing one here proves
+  // it is ignored (a webview-supplied payload is advisory only per p65-t2).
+  await host.handleGoogleOpen('https://attacker.example/not-the-real-url');
+  assert.equal(openExternalCalls.length, 2);
+  assert.equal(openExternalCalls[1], storedUrl);
+});
+
 test('balance and buy: BUY_CREDITS opens checkout, status shows pendingCheckout true, completeCheckout raises the balance', async (t) => {
   const fake = createFakeThemeService();
   fake.helpers.createAccount('buyer@example.com');

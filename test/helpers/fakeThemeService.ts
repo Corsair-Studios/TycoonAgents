@@ -171,6 +171,12 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
     completeCheckout(sessionId: string): LedgerRow | undefined;
     setOtpCode(email: string, code: string): void;
     expireAccessToken(): void;
+    /** Next GET /api/auth-config returns 500 instead of the normal config. */
+    failNextAuthConfig(): void;
+    /** Next GET /api/auth-config returns 200 with a malformed body (missing supabasePublishableKey). */
+    malformNextAuthConfig(): void;
+    /** Next GET /api/auth-config never resolves within the test's fake timers (simulates a hang, for timeout tests). */
+    hangNextAuthConfig(): void;
   };
 } {
   const endpoint = options.endpoint ?? "https://theme-service.example";
@@ -212,6 +218,9 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
   // completeGoogleInBrowser (no args) can find the most recent one.
   let lastGoogleAuthCode: string | null = null;
   let lastGoogleRedirectTo: string | null = null;
+  let failNextAuthConfigOnce = false;
+  let malformNextAuthConfigOnce = false;
+  let hangNextAuthConfigOnce = false;
 
   function getOrCreateAccountByEmail(email: string): Account {
     const existingId = state.accountsByEmail.get(email);
@@ -374,6 +383,28 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
 
       if (path === "/api/health" && method === "GET") {
         return jsonResponse(200, { ok: true });
+      }
+
+      if (path === "/api/auth-config" && method === "GET") {
+        if (hangNextAuthConfigOnce) {
+          // Never resolves; caller's own timeout (or an aborted signal) must
+          // be what ends the request. No setTimeout here per fake-timer rule.
+          return new Promise<Response>(() => {});
+        }
+        if (failNextAuthConfigOnce) {
+          failNextAuthConfigOnce = false;
+          return jsonResponse(500, { error: "server_error" });
+        }
+        if (malformNextAuthConfigOnce) {
+          malformNextAuthConfigOnce = false;
+          return jsonResponse(200, { supabaseUrl: supabaseUrl });
+        }
+        return jsonResponse(200, {
+          supabaseUrl,
+          supabasePublishableKey: "fake-publishable-key",
+          promptTemplateVersion: "v1",
+          contractVersion: "v2",
+        });
       }
 
       if (path === "/api/pricing" && method === "GET") {
@@ -600,6 +631,15 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         for (const token of state.accessTokens.keys()) {
           state.revokedAccessTokens.add(token);
         }
+      },
+      failNextAuthConfig() {
+        failNextAuthConfigOnce = true;
+      },
+      malformNextAuthConfig() {
+        malformNextAuthConfigOnce = true;
+      },
+      hangNextAuthConfig() {
+        hangNextAuthConfigOnce = true;
       },
     },
   };

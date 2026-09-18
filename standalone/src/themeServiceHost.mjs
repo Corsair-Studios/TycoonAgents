@@ -225,6 +225,10 @@ export function createThemeServiceHost(opts) {
   let loopback; // { redirectTo, port, close } | undefined
   let loopbackTimeoutHandle;
   let pendingCodeVerifier = null;
+  // p65-t2 (review fix): the webview's THEME_SERVICE_GOOGLE_OPEN payload is
+  // advisory only — handleGoogleOpen always re-opens THIS stored URL from
+  // the matching handleGoogleStart, never a caller-supplied one.
+  let pendingBrowserUrl = null;
 
   function closeLoopback() {
     if (loopbackTimeoutHandle !== undefined) {
@@ -273,6 +277,7 @@ export function createThemeServiceHost(opts) {
       return;
     }
     pendingCodeVerifier = null;
+    pendingBrowserUrl = null;
     const res = await client.completeGoogleSignIn({ authCode: code, codeVerifier });
     if (!res.ok) {
       opts.postStatus({ signedIn: false, pendingCheckout: false, error: { kind: res.error.kind, message: res.error.message } });
@@ -307,6 +312,7 @@ export function createThemeServiceHost(opts) {
       // Held in this factory's own closure (not inner's) — mirrors the VS
       // Code host's internal pendingGoogleCodeVerifier posture one level up.
       pendingCodeVerifier = res.value.codeVerifier;
+      pendingBrowserUrl = res.value.browserUrl;
       openExternal(res.value.browserUrl);
     } catch (err) {
       closeLoopback();
@@ -324,6 +330,14 @@ export function createThemeServiceHost(opts) {
     handleRequestMagicLink: (email) => inner.handleRequestMagicLink(email),
     handleVerify: (email, code) => inner.handleVerify(email, code),
     handleGoogleStart,
+    // p65-t2 (review fix): ignores any caller-supplied url — re-opens only
+    // the URL stored from the matching handleGoogleStart. standalone's
+    // browser opener (openExternalUrl) is a detached spawn that never
+    // reports success/failure, so this simply re-invokes it without
+    // restarting the loopback listener or PKCE handshake.
+    handleGoogleOpen: async () => {
+      if (pendingBrowserUrl) openExternal(pendingBrowserUrl);
+    },
     handleGoogleComplete,
     handleSignOut: () => inner.handleSignOut(),
     handleBuyCredits: (pack) => inner.handleBuyCredits(pack),

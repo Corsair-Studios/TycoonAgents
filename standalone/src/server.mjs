@@ -107,6 +107,7 @@ const THEME_SERVICE_REQUEST_MAGIC_LINK_WIRE = 'THEME_SERVICE_REQUEST_MAGIC_LINK'
 const THEME_SERVICE_VERIFY_WIRE = 'THEME_SERVICE_VERIFY';
 const THEME_SERVICE_GOOGLE_START_WIRE = 'THEME_SERVICE_GOOGLE_START';
 const THEME_SERVICE_GOOGLE_COMPLETE_WIRE = 'THEME_SERVICE_GOOGLE_COMPLETE';
+const THEME_SERVICE_GOOGLE_OPEN_WIRE = 'THEME_SERVICE_GOOGLE_OPEN';
 const THEME_SERVICE_SIGN_OUT_WIRE = 'THEME_SERVICE_SIGN_OUT';
 const THEME_SERVICE_BUY_CREDITS_WIRE = 'THEME_SERVICE_BUY_CREDITS';
 const THEME_SERVICE_SET_REFERRAL_CODE_WIRE = 'THEME_SERVICE_SET_REFERRAL_CODE';
@@ -1267,6 +1268,11 @@ function handleBrowserMessage(msg) {
       break;
     case THEME_SERVICE_GOOGLE_COMPLETE_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleComplete(payload.code ? String(payload.code) : undefined);
+      break;
+    case THEME_SERVICE_GOOGLE_OPEN_WIRE:
+      // payload.url (if any) is advisory only — handleGoogleOpen re-opens
+      // only the URL it stored from the matching THEME_SERVICE_GOOGLE_START.
+      if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleOpen();
       break;
     case THEME_SERVICE_SIGN_OUT_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleSignOut();

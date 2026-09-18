@@ -740,3 +740,188 @@ test("getStatus surfaces locked and strikes from /api/account", async () => {
     assert.equal(typeof status.value.strikes, "number");
   }
 });
+
+// ---- fetchAuthConfig / getAuthConfig (p65-t4) ----
+// setupClientNoOverride builds a client WITHOUT opts.supabaseUrl/supabaseAnonKey
+// so getAuthConfig must go through fetchAuthConfig against the fake's
+// GET /api/auth-config route.
+function setupClientNoOverride(fetchFn?: typeof fetch) {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: fetchFn ?? fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+  });
+  return { fake, tokenStore, client };
+}
+
+test("fetchAuthConfig: concurrent callers share one in-flight GET /api/auth-config", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const { client } = setupClientNoOverride(wrapped);
+  // Two calls that each internally need auth config, fired concurrently.
+  const [a, b] = await Promise.all([
+    client.requestMagicLink("concurrentcfg@example.com"),
+    client.requestMagicLink("concurrentcfg2@example.com"),
+  ]);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  const configCalls = calls.filter((c) => c.url.includes("/api/auth-config"));
+  assert.equal(configCalls.length, 1);
+});
+
+test("fetchAuthConfig: a failed fetch is not cached, next call retries", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  fake.helpers.failNextAuthConfig();
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const { client } = setupClientNoOverride(wrapped);
+
+  const first = await client.requestMagicLink("retrycfg@example.com");
+  assert.equal(first.ok, false);
+  if (!first.ok) assert.equal(first.error.kind, "server_error");
+
+  const second = await client.requestMagicLink("retrycfg@example.com");
+  assert.equal(second.ok, true);
+
+  const configCalls = calls.filter((c) => c.url.includes("/api/auth-config"));
+  assert.equal(configCalls.length, 2);
+});
+
+test("fetchAuthConfig: malformed body (missing supabasePublishableKey) is rejected as server_error", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  fake.helpers.malformNextAuthConfig();
+  const { client } = setupClientNoOverride(fake.fetch);
+
+  const res = await client.requestMagicLink("malformed@example.com");
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "server_error");
+});
+
+test("fetchAuthConfig: non-https supabaseUrl in the response is rejected", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const insecureFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/auth-config")) {
+      return new Response(
+        JSON.stringify({
+          supabaseUrl: "http://not-secure.example",
+          supabasePublishableKey: "key",
+          promptTemplateVersion: "v1",
+          contractVersion: "v2",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const { client } = setupClientNoOverride(insecureFetch);
+
+  const res = await client.requestMagicLink("insecure@example.com");
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "server_error");
+});
+
+test("fetchAuthConfig: a URL with query/fragment is rejected", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const dirtyFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/auth-config")) {
+      return new Response(
+        JSON.stringify({
+          supabaseUrl: `${SUPABASE_URL}/?x=1`,
+          supabasePublishableKey: "key",
+          promptTemplateVersion: "v1",
+          contractVersion: "v2",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const { client } = setupClientNoOverride(dirtyFetch);
+
+  const res = await client.requestMagicLink("dirtyurl@example.com");
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "server_error");
+});
+
+test("fetchAuthConfig: timeout maps to kind timeout", async (t) => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const hangingFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/auth-config")) {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }
+      });
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: hangingFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+  });
+  // AUTH_CONFIG_TIMEOUT_MS is a fixed 30_000ms internal to the client (not
+  // configurable via opts.requestTimeoutMs); fast-forward it with fake timers
+  // rather than waiting 30s of wall-clock time.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let res: Awaited<ReturnType<typeof client.requestMagicLink>>;
+  try {
+    const p = client.requestMagicLink("timeoutcfg@example.com");
+    await t.mock.timers.tick(30_000);
+    res = await p;
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "timeout");
+});
+
+test("fetchAuthConfig: opts.supabaseUrl + supabaseAnonKey bypass the fetch entirely", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const res = await client.requestMagicLink("bypass@example.com");
+  assert.equal(res.ok, true);
+  const configCalls = calls.filter((c) => c.url.includes("/api/auth-config"));
+  assert.equal(configCalls.length, 0);
+});
+
+test("authRequest: a 401 triggers exactly one refetch of auth config and one retry", async () => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const { fetch: wrapped, calls } = countingFetch(fake.fetch);
+  const { client, tokenStore } = setupClientNoOverride(wrapped);
+
+  await client.requestMagicLink("retrytoken@example.com");
+  await client.verifyMagicLink("retrytoken@example.com", "123456");
+  fake.helpers.expireAccessToken();
+  const parsed = JSON.parse(tokenStore.value!) as { accessToken: string; refreshToken: string; expiresAt: number };
+  parsed.refreshToken = "not-a-real-refresh-token";
+  await tokenStore.set(JSON.stringify(parsed));
+
+  calls.length = 0; // only count calls from here
+  const status = await client.getStatus();
+  assert.equal(status.ok, true);
+  if (status.ok) assert.equal(status.value.signedIn, false);
+
+  const configCalls = calls.filter((c) => c.url.includes("/api/auth-config"));
+  // First getAuthConfig (cached from earlier verify) was cleared by the
+  // caller's own 401 handling once — exactly one additional fetch here.
+  assert.equal(configCalls.length, 1);
+});

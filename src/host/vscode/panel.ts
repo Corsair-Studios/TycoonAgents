@@ -138,7 +138,7 @@ import { validateThemeIntegrity } from "../../extension/themeHealth";
 // their TEXT calls through the Theme Service's POST /api/plan via
 // translator.ts's ThemePlanRequester seam, same as image generation — see
 // docs/theme-service-api.md's "Plan / description generation" section).
-import { createServicePlanRequester, setThemePlanRequester } from "../../extension/translator";
+import { createServicePlanRequester, setThemePlanRequester, isThemePlanServiceError } from "../../extension/translator";
 import { MSG, MSG_SCHEMAS } from "./messages";
 import {
   readPlanSafe,
@@ -968,9 +968,7 @@ export class TycoonPanel {
 
     this._themeServiceHost = createThemeServiceHost({
       secrets,
-      openExternal: (url) => {
-        void vscode.env.openExternal(vscode.Uri.parse(url));
-      },
+      openExternal: (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
       postStatus: (status: ThemeServiceHostStatus) => {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
@@ -1904,6 +1902,12 @@ export class TycoonPanel {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse((message as any).payload);
           if (!parsed.success) return;
           await this._themeServiceHost.handleGoogleComplete(parsed.data.code);
+        } else if (message.type === MSG.THEME_SERVICE_GOOGLE_OPEN) {
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_OPEN.safeParse((message as any).payload);
+          if (!parsed.success) return;
+          // The payload's `url` (if any) is advisory only — the host always
+          // re-opens the URL it stored from the matching handleGoogleStart.
+          await this._themeServiceHost.handleGoogleOpen();
         } else if (message.type === MSG.THEME_SERVICE_SIGN_OUT) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse((message as any).payload);
           if (!parsed.success) return;
@@ -2518,7 +2522,14 @@ export class TycoonPanel {
             const plan = await planTheme(prompt, {});
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
-            void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_ERROR, payload: { message: String(err) } });
+            // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
+            // through so the webview can render a Sign in affordance instead
+            // of raw error text — see ThemePlanServiceError in translator.ts.
+            const kind = isThemePlanServiceError(err) ? err.kind : undefined;
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_PLAN_ERROR,
+              payload: { message: String(err), ...(kind ? { kind } : {}) },
+            });
           }
         } else if (message.type === MSG.SET_THEME_PAUSE_FOR_REVIEW) {
           const payload = (message as any).payload as { pause_for_review?: boolean } | undefined;

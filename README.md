@@ -121,7 +121,7 @@ Prefer to author outside VS Code? There's a **standalone theme host** in [`stand
 
 ### Sign-in and credits
 
-Opening the Theme Builder for the first time asks you to sign in — by an emailed magic link, or with Google. In the standalone host, Google completes through a local browser callback; if that callback can't reach your browser session, a paste-the-code fallback finishes sign-in instead.
+Opening the Theme Builder for the first time asks you to sign in — by an emailed magic link, or with Google. In the standalone host, Google completes through a local browser callback; if that callback can't reach your browser session, a paste-the-code fallback finishes sign-in instead. Sign-in settings (the Supabase project and public key) are fetched from the Theme Service at runtime, so pointing the advanced endpoint override at a different Theme Service also selects the matching sign-in project.
 
 Credits are what generation costs: every generation attempt spends credits, including retries, and the panel shows the cost before each attempt so you're never guessing. Attempts cost 2 credits for object, expression, and achievement boards and 3 credits for character, rival, and environment boards; a typical 23-board theme runs about 95 credits, a careful run about 55, and heavy retries up to about 170 — output quality tracks prompt quality, so a clear, specific prompt (see "Prompt tips" above) usually costs less than a vague one you keep retrying.
 

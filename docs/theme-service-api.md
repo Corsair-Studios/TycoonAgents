@@ -1,4 +1,4 @@
-# Corsair Theme Service — Client API Contract (v3.5)
+# Corsair Theme Service — Client API Contract (v3.6)
 
 Operator setup: see theme-service-setup-guide.md
 
@@ -57,18 +57,58 @@ in logs/URLs/headers, `nosniff` JSON responses) and adds the `bad_request`
 - Adds a Migration subsection: the service repo must re-copy the contract
   file before implementing v3.5.
 
+**v3.6 changelog (2026-09-18):**
+- Adds `GET /api/auth-config` — public, unauthenticated, returns
+  `{ supabaseUrl, supabasePublishableKey, promptTemplateVersion,
+  contractVersion: "3.6" }` with `Cache-Control: public, max-age=3600`.
+  Clients fetch it once per endpoint per session, cache the result
+  in-memory, and refetch only after a Supabase `401`.
+- `supabasePublishableKey` accepts both the new-format `sb_publishable_`
+  key and the legacy Supabase anon key; either is sent to Supabase Auth
+  as the `apikey` header exactly as documented under Auth above.
+- Adds a Migration subsection: client-baked `SUPABASE_URL`/
+  `SUPABASE_ANON_KEY` constants are removed; see Client constants below.
+
 ## Conventions
 
 - All requests/responses are JSON (`Content-Type: application/json`) unless noted.
-- Client-side secrets: `SUPABASE_URL`, `SUPABASE_ANON_KEY` (public by design —
-  Supabase's anon key is meant to ship client-side), and
-  `THEME_SERVICE_ENDPOINT`. Stored per-host: VS Code `SecretStorage`,
+- Client-side secrets: `THEME_SERVICE_ENDPOINT` only. `SUPABASE_URL` and
+  the Supabase publishable/anon key are no longer baked-in client
+  constants — the client fetches them from `GET /api/auth-config` (see
+  below) and holds them in memory for the session.
+  `THEME_SERVICE_ENDPOINT` is stored per-host: VS Code `SecretStorage`,
   standalone app-data `secrets/` (owner-only permissions) — same pattern as
   `FEEDBACK_ENDPOINT` in `src/host/vscode/feedbackSubmit.ts:36`.
 - Never client-side: `SUPABASE_SERVICE_ROLE_KEY`, any `STRIPE_*` key, or any
   model provider key (`OPENAI_API_KEY`, `GEMINI_API_KEY`).
-- Every service request (except the public `/api/pricing` and `/api/health`)
-  carries `Authorization: Bearer <access_token>`, a Supabase-issued JWT.
+- Every service request (except the public `/api/auth-config`,
+  `/api/pricing`, and `/api/health`) carries
+  `Authorization: Bearer <access_token>`, a Supabase-issued JWT.
+
+## Auth config (public — no auth)
+
+### `GET /api/auth-config`
+
+No `Authorization` header required. Response `200`,
+`Cache-Control: public, max-age=3600`:
+```json
+{
+  "supabaseUrl": "https://xxxx.supabase.co",
+  "supabasePublishableKey": "sb_publishable_... (or legacy anon key)",
+  "promptTemplateVersion": "2026-09-18.1",
+  "contractVersion": "3.6"
+}
+```
+`supabasePublishableKey` is public by design — it is either Supabase's
+new-format `sb_publishable_` key or the legacy anon key; both are valid and
+both are sent to Supabase Auth as the `apikey` header (see Auth below).
+Nothing in this response is a secret.
+
+Clients call this once per endpoint per session, cache
+`{ supabaseUrl, supabasePublishableKey, promptTemplateVersion }` in memory
+for the lifetime of that cached client instance, and refetch only when a
+Supabase Auth call returns `401` (the cached values are treated as stale
+and re-fetched before retrying).
 
 ## Auth — Supabase GoTrue REST, direct from the client
 
@@ -82,7 +122,9 @@ the extension/standalone hosts are not a browser SPA:
 ### Email magic-link / OTP
 
 `POST {SUPABASE_URL}/auth/v1/otp`
-Headers: `apikey: <SUPABASE_ANON_KEY>`
+Headers: `apikey: <supabasePublishableKey>` (from `GET /api/auth-config`;
+the `apikey` header name is the same for both the new-format
+`sb_publishable_` key and the legacy anon key)
 ```json
 { "email": "user@example.com", "create_user": true }
 ```
@@ -676,6 +718,14 @@ endpoint, tables, and webhook changes above — the referral shapes are new
 in v3.5 and are not present in any contract copy taken before this
 changelog entry.
 
+## Migration (v3.5 → v3.6)
+
+Client-baked `SUPABASE_URL`/`SUPABASE_ANON_KEY` constants are removed.
+Clients must call `GET /api/auth-config` before any Supabase Auth request
+and use its `supabaseUrl`/`supabasePublishableKey` values instead; there is
+no fallback to baked-in constants. `corsair-theme-service` must implement
+`GET /api/auth-config` before any v3.6 client is deployed.
+
 ## Ledger semantics (mirrors Speciary's `credit_ledger`)
 
 Append-only rows, keyed by `(user_id, created_at)`
@@ -736,9 +786,11 @@ Every non-2xx response is:
 
 ## Client constants
 
-`SUPABASE_URL`, `SUPABASE_ANON_KEY` (public by design; baked into the
-shipped client like `FEEDBACK_ENDPOINT`), `THEME_SERVICE_ENDPOINT`. Never
-client-side: `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
+`THEME_SERVICE_ENDPOINT` (baked into the shipped client like
+`FEEDBACK_ENDPOINT`). `supabaseUrl` and `supabasePublishableKey` are no
+longer client constants — they are fetched at runtime from
+`GET /api/auth-config` and cached in memory for the session (see Auth
+config above). Never client-side: `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_SECRET_KEY`,
 `STRIPE_WEBHOOK_SECRET`, any `STRIPE_PRICE_*`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`.
 

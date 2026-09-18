@@ -46,6 +46,11 @@ const RUNTIME_CREATED_IDS = new Set([
   'menu-edit-stage',
   'settings-modal-close',
   'stage-edit-panel',
+  // Created at boot only when absent (010-modals-badges-rebirth.js
+  // themeBuilderShellContinue relabel); pre-creating an empty stand-in via
+  // scanElementIds would make the script think it already exists and skip
+  // filling in its text.
+  'theme-builder-shell-continue-help',
 ]);
 
 function makeCtxStub(canvasEl: unknown): unknown {
@@ -872,5 +877,114 @@ test('typing in the referral field posts THEME_SERVICE_SET_REFERRAL_CODE with th
   const posted = h.lastPosted('THEME_SERVICE_SET_REFERRAL_CODE');
   assert.ok(posted, 'expected a THEME_SERVICE_SET_REFERRAL_CODE message');
   assert.equal(posted.code, 'PARTNER-9');
+  h.win.close();
+});
+
+// ── google-wait: error notice + buttons + 90s nudge (p65-t4) ───────────────
+
+test('google-wait state with a browser_open_failed error renders the error notice, "Open the sign-in link" and "Copy link" buttons, and Open posts GOOGLE_OPEN', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  h.dispatch(
+    themeServiceStatus(
+      signedOutStatus({ error: { kind: 'browser_open_failed', message: "couldn't open the browser for sign-in" }, browserUrl: 'https://auth.example/authorize?code_challenge=abc' }),
+    ),
+  );
+  assert.match(h.panelText(), /couldn't open the browser for sign-in/);
+  assert.match(h.panelText(), /Open the sign-in link/);
+  assert.match(h.panelText(), /Copy link/);
+  h.clickButtonByText('Open the sign-in link');
+  const opened = h.lastPosted('THEME_SERVICE_GOOGLE_OPEN');
+  assert.ok(opened, 'clicking "Open the sign-in link" should post THEME_SERVICE_GOOGLE_OPEN');
+  h.win.close();
+});
+
+test('google-wait state without an error renders no error notice and no Open/Copy buttons, but always renders Cancel', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  assert.match(h.panelText(), /Waiting…/);
+  assert.ok(!/Open the sign-in link/.test(h.panelText()));
+  assert.ok(!/Copy link/.test(h.panelText()));
+  const cancel: any = Array.from(h.panelBody().querySelectorAll('a')).find((a: any) => (a.textContent || '').trim() === 'Cancel');
+  assert.ok(cancel, 'expected a Cancel link in google-wait state');
+  h.win.close();
+});
+
+test('google-wait state: the 90s nudge notice appears after the wait timer fires, using the page\'s own fake-timer-driven re-render', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+
+  // Intercept window.setTimeout right before the click so we capture the
+  // exact 90000ms callback renderThemeServiceSignedOut's Google handler
+  // schedules, and can fire it deterministically instead of waiting 90s of
+  // real time.
+  const originalSetTimeout = h.win.setTimeout.bind(h.win);
+  const originalDateNow = h.win.Date.now.bind(h.win.Date);
+  let capturedCb: (() => void) | null = null;
+  let capturedMs: number | null = null;
+  h.win.setTimeout = (cb: () => void, ms: number) => {
+    capturedCb = cb;
+    capturedMs = ms;
+    return 1;
+  };
+  try {
+    h.clickButtonByText('Continue with Google');
+  } finally {
+    h.win.setTimeout = originalSetTimeout;
+  }
+  assert.equal(capturedMs, 90000, 'expected the google-wait nudge timer to be scheduled for 90000ms');
+  assert.ok(!/Still waiting/.test(h.panelText()), 'nudge notice must not appear before the timer fires');
+
+  assert.ok(capturedCb, 'expected a captured setTimeout callback');
+  // The nudge notice is gated on `Date.now() - startedAt >= 90000`, not a
+  // timer-tick count, so advance the clock the module reads from too.
+  h.win.Date.now = () => originalDateNow() + 90000;
+  try {
+    (capturedCb as unknown as () => void)();
+    assert.match(h.panelText(), /Still waiting\. Open the link again or paste the code\./);
+  } finally {
+    h.win.Date.now = originalDateNow;
+  }
+  h.win.close();
+});
+
+// ── "Continue without signing in" relabel + help line (p65-t3) ─────────────
+
+test('theme-builder-shell-continue is relabeled "Continue without signing in" with a help line naming what upload-only vs AI needs', async () => {
+  const h = await bootThemePanelHarness();
+  const continueBtn = h.doc.getElementById('theme-builder-shell-continue');
+  assert.ok(continueBtn, 'expected the theme-builder-shell-continue element');
+  assert.equal(continueBtn.textContent, 'Continue without signing in');
+  const help = h.doc.getElementById('theme-builder-shell-continue-help');
+  assert.ok(help, 'expected a help paragraph next to the relabeled button');
+  assert.match(help.textContent, /upload your own images/i);
+  assert.match(help.textContent, /AI planning and generation need an account/i);
+  h.win.close();
+});
+
+// ── THEME_PLAN_ERROR kind not_signed_in (p65-t3, 060-theme-image-review.js) ──
+
+test('THEME_PLAN_ERROR with kind not_signed_in renders a Sign in button in theme-build-status instead of raw error text', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch({ type: 'THEME_PLAN_ERROR', payload: { kind: 'not_signed_in', message: 'not signed in' } });
+  const status = h.doc.getElementById('theme-build-status');
+  assert.ok(status, 'expected the theme-build-status element');
+  assert.match(status.textContent, /Sign in to plan a theme with AI\./);
+  const signInBtn: any = Array.from(status.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Sign in');
+  assert.ok(signInBtn, 'expected a Sign in button inside theme-build-status');
+  assert.ok(!/not signed in/.test(status.textContent), 'raw error message must not be shown for kind not_signed_in');
+  h.win.close();
+});
+
+test('THEME_PLAN_ERROR with a different kind falls back to raw "Error: <message>" text, no Sign in button', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch({ type: 'THEME_PLAN_ERROR', payload: { kind: 'server_error', message: 'boom' } });
+  const status = h.doc.getElementById('theme-build-status');
+  assert.ok(status);
+  assert.match(status.textContent, /Error: boom/);
+  const signInBtn = Array.from(status.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Sign in');
+  assert.equal(signInBtn, undefined, 'no Sign in button for a non-not_signed_in error kind');
   h.win.close();
 });

@@ -434,6 +434,11 @@ export const MSG = {
   // when the deep link doesn't reach VS Code. Same completion path as the
   // URI handler.
   THEME_SERVICE_GOOGLE_COMPLETE: "THEME_SERVICE_GOOGLE_COMPLETE",
+  // Webview -> host: { url }. p65-t2: re-opens the browser for a Google
+  // sign-in URL the webview already has, after a browser_open_failed
+  // status — does NOT restart the PKCE handshake (the pending verifier
+  // from the original THEME_SERVICE_GOOGLE_START is reused).
+  THEME_SERVICE_GOOGLE_OPEN: "THEME_SERVICE_GOOGLE_OPEN",
   // Webview -> host, no payload.
   THEME_SERVICE_SIGN_OUT: "THEME_SERVICE_SIGN_OUT",
   // Webview -> host: { pack }. Opens a Stripe checkout URL and begins
@@ -474,6 +479,12 @@ export const MSG_SCHEMAS = {
   // p59-t3: host -> webview only, kept for documentation/type purposes — see
   // the THEME_PROMPT_MISMATCH comment above for why it is never safeParse'd.
   THEME_PROMPT_MISMATCH: z.object({ message: z.string(), templateVersion: z.string().optional() }).passthrough(),
+
+  // p65-t3: host -> webview only, kept for documentation/type purposes.
+  // `kind` mirrors ThemeServiceErrorKind (see ThemePlanServiceError) when the
+  // PLAN_THEME failure came from the Theme Service, so the webview can show
+  // a Sign in affordance for kind "not_signed_in" instead of raw error text.
+  THEME_PLAN_ERROR: z.object({ message: z.string(), kind: z.string().optional() }).passthrough(),
 
   // ---- install / remove: skill, agent, pack -------------------------------
   // (dispatcher reads `message.id` directly, not a nested `.payload`)
@@ -871,6 +882,9 @@ export const MSG_SCHEMAS = {
   // empty-submit guard client-side; the host treats an empty/missing code as
   // a no-op rather than a completion attempt.
   THEME_SERVICE_GOOGLE_COMPLETE: z.object({ code: z.string().optional() }).passthrough(),
+  // p65-t2 (review fix): `url` is advisory only — the host never opens a
+  // webview-supplied URL, only the one it stored from handleGoogleStart.
+  THEME_SERVICE_GOOGLE_OPEN: z.object({ url: z.string().optional() }).passthrough(),
   THEME_SERVICE_SIGN_OUT: z.object({}).passthrough(),
   THEME_SERVICE_BUY_CREDITS: z.object({ pack: z.string().min(1) }).passthrough(),
   // `code` is optional so an empty/cleared field can be sent the same way

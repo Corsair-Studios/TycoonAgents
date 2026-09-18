@@ -43,7 +43,7 @@ function fakeTimers() {
   };
 }
 
-function setup(nowFn?: () => number) {
+function setup(nowFn?: () => number, openExternalOverride?: (url: string) => void | boolean | Promise<void | boolean>) {
   const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: nowFn });
   const tokenStore = createMemoryTokenStore();
   const client = createThemeServiceClient({
@@ -63,6 +63,7 @@ function setup(nowFn?: () => number) {
     client,
     openExternal: (url) => {
       opened.push(url);
+      if (openExternalOverride) return openExternalOverride(url);
     },
     postStatus: (status) => {
       posted.push(status);
@@ -388,4 +389,61 @@ test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGet
   const snippet = src.slice(idx, idx + 300);
   assert.match(snippet, /webviewPanel\.visible/, "listener should check webviewPanel.visible");
   assert.match(snippet, /_themeServiceHost\.handleGetStatus\(\)/, "visible branch should call themeServiceHost.handleGetStatus()");
+});
+
+test("handleGoogleStart: openExternal throwing posts browser_open_failed with browserUrl set", async () => {
+  const { host, posted, opened } = setup(undefined, () => {
+    throw new Error("no browser available");
+  });
+  await host.handleGoogleStart();
+  assert.equal(opened.length, 1);
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.browserUrl, opened[0]);
+});
+
+test("handleGoogleStart: openExternal returning false posts browser_open_failed with browserUrl set", async () => {
+  const { host, posted, opened } = setup(undefined, () => false);
+  await host.handleGoogleStart();
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.browserUrl, opened[0]);
+});
+
+test("handleGoogleOpen: no-ops (posts nothing, opens nothing) when there is no pending Google browser URL", async () => {
+  const { host, posted, opened } = setup();
+  await host.handleGoogleOpen();
+  assert.equal(opened.length, 0);
+  assert.equal(posted.length, 0);
+});
+
+test("handleGoogleOpen: re-opens the stored URL from the matching handleGoogleStart, ignoring any webview-supplied payload", async () => {
+  const { host, posted, opened } = setup();
+  await host.handleGoogleStart();
+  assert.equal(opened.length, 1);
+  const storedUrl = opened[0];
+  opened.length = 0;
+  await host.handleGoogleOpen();
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0], storedUrl);
+  // A failing re-open still reports the ORIGINAL stored url, never a
+  // caller-supplied one — handleGoogleOpen takes no url argument at all.
+  assert.equal(posted.length, 0);
+});
+
+test("handleGoogleOpen: a failing re-open posts browser_open_failed with the stored browserUrl", async () => {
+  let openCount = 0;
+  const { host, posted, opened } = setup(undefined, () => {
+    openCount += 1;
+    return openCount === 1 ? true : false;
+  });
+  await host.handleGoogleStart();
+  const storedUrl = opened[0];
+  await host.handleGoogleOpen();
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.kind, "browser_open_failed");
+  assert.equal(last.browserUrl, storedUrl);
 });

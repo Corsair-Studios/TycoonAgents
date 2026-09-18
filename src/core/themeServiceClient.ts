@@ -81,11 +81,20 @@ export function resolveThemeServiceEndpoint(raw: string | undefined): {
   const endpoint = `${url.protocol}//${url.host}${path}`;
   return { endpoint, overridden: true };
 }
-export const SUPABASE_URL = "https://REPLACE_WITH_PROJECT.supabase.co";
-// Supabase's anon key is public by design (it's meant to ship client-side,
-// same as SUPABASE_URL above) — this placeholder is set to the real
-// project anon key at release time, not a secret to protect at build time.
-export const SUPABASE_ANON_KEY = "REPLACE_WITH_PROJECT_ANON_KEY";
+/**
+ * GET `${endpoint}/api/auth-config` response shape (p65) — the Supabase
+ * project URL and publishable (anon) key are no longer baked into the
+ * client at build time; they're fetched once per client instance from the
+ * Theme Service itself. Supabase's anon key is public by design (meant to
+ * ship client-side), so caching it in memory for the process lifetime is
+ * fine — it is never written to disk or logged.
+ */
+export interface ThemeServiceAuthConfig {
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  promptTemplateVersion: string;
+  contractVersion: string;
+}
 
 export type ThemeServiceErrorKind =
   | "not_signed_in"
@@ -128,9 +137,17 @@ export interface ThemeServiceClientOptions {
   tokenStore: ThemeServiceTokenStore;
   /** Overrides {@link THEME_SERVICE_ENDPOINT}; for tests only. */
   endpoint?: string;
-  /** Overrides {@link SUPABASE_URL}; for tests only. */
+  /**
+   * Test-only override for the Supabase project URL that otherwise comes
+   * from GET `${endpoint}/api/auth-config` (p65). Supplying both this and
+   * {@link supabaseAnonKey} bypasses that fetch entirely.
+   */
   supabaseUrl?: string;
-  /** Overrides {@link SUPABASE_ANON_KEY}; for tests only. */
+  /**
+   * Test-only override for the Supabase publishable/anon key that
+   * otherwise comes from GET `${endpoint}/api/auth-config` (p65). Supplying
+   * both this and {@link supabaseUrl} bypasses that fetch entirely.
+   */
   supabaseAnonKey?: string;
   /** Injectable clock (ms epoch); defaults to `Date.now`. */
   now?: () => number;
@@ -416,13 +433,130 @@ async function codeChallengeFor(verifier: string): Promise<string> {
 export function createThemeServiceClient(opts: ThemeServiceClientOptions): ThemeServiceClient {
   const fetchImpl = opts.fetch ?? fetch;
   const endpoint = opts.endpoint ?? THEME_SERVICE_ENDPOINT;
-  const supabaseUrl = opts.supabaseUrl ?? SUPABASE_URL;
-  const supabaseAnonKey = opts.supabaseAnonKey ?? SUPABASE_ANON_KEY;
   const tokenStore = opts.tokenStore;
   const now = opts.now ?? (() => Date.now());
   const createCodeVerifier: () => string | null = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
   const clientVersion = opts.clientVersion;
   const requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
+  // Shorter than requestTimeoutMs on purpose — this is a small, cacheable
+  // config GET the Theme Service should answer fast; it must not stall
+  // sign-in as long as the 180s generation-request budget.
+  const AUTH_CONFIG_TIMEOUT_MS = 30_000;
+
+  // Lazy, in-memory, per-client-instance auth config. Test overrides
+  // (opts.supabaseUrl + opts.supabaseAnonKey) bypass the fetch entirely.
+  // A single in-flight promise coalesces concurrent callers (authRequest,
+  // startGoogleSignIn, signOut) so the service only ever sees one GET.
+  let authConfigPromise: Promise<ThemeServiceResult<ThemeServiceAuthConfig>> | null = null;
+
+  async function fetchAuthConfig(): Promise<ThemeServiceResult<ThemeServiceAuthConfig>> {
+    const timeoutController = typeof AbortController !== "undefined" ? new AbortController() : undefined;
+    const timeoutHandle = timeoutController
+      ? setTimeout(() => timeoutController.abort(), AUTH_CONFIG_TIMEOUT_MS)
+      : undefined;
+    let res: Response;
+    try {
+      res = await fetchImpl(`${endpoint}/api/auth-config`, { method: "GET", signal: timeoutController?.signal });
+    } catch {
+      const timedOut = timeoutController?.signal.aborted === true;
+      return {
+        ok: false,
+        error: timedOut
+          ? { kind: "timeout", message: "sign-in configuration unavailable" }
+          : { kind: "server_error", message: "sign-in configuration unavailable" },
+      };
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
+    let json: unknown;
+    try {
+      const text = await res.text();
+      json = text.length > 0 ? JSON.parse(text) : undefined;
+    } catch {
+      return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
+    }
+    if (
+      !res.ok ||
+      !isRecord(json) ||
+      typeof json.supabaseUrl !== "string" ||
+      typeof json.supabasePublishableKey !== "string" ||
+      json.supabasePublishableKey.length === 0 ||
+      typeof json.promptTemplateVersion !== "string" ||
+      typeof json.contractVersion !== "string"
+    ) {
+      return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
+    }
+    // Review fix (p65-t2): supabaseUrl must be a well-formed https URL with
+    // no query/fragment — a server-controlled value that's about to be used
+    // to build request URLs and the OAuth authorize redirect, so it gets
+    // the same scrutiny as resolveThemeServiceEndpoint's override validation.
+    let parsedSupabaseUrl: URL;
+    try {
+      parsedSupabaseUrl = new URL(json.supabaseUrl);
+    } catch {
+      return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
+    }
+    if (parsedSupabaseUrl.protocol !== "https:" || parsedSupabaseUrl.search || parsedSupabaseUrl.hash) {
+      return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
+    }
+    const supabaseUrl = `${parsedSupabaseUrl.protocol}//${parsedSupabaseUrl.host}${parsedSupabaseUrl.pathname.replace(/\/+$/, "")}`;
+    return {
+      ok: true,
+      value: {
+        supabaseUrl,
+        supabaseAnonKey: json.supabasePublishableKey,
+        promptTemplateVersion: json.promptTemplateVersion,
+        contractVersion: json.contractVersion,
+      },
+    };
+  }
+
+  async function getAuthConfig(): Promise<ThemeServiceResult<ThemeServiceAuthConfig>> {
+    if (opts.supabaseUrl && opts.supabaseAnonKey) {
+      return {
+        ok: true,
+        value: {
+          supabaseUrl: opts.supabaseUrl,
+          supabaseAnonKey: opts.supabaseAnonKey,
+          promptTemplateVersion: "",
+          contractVersion: "",
+        },
+      };
+    }
+    if (!authConfigPromise) {
+      authConfigPromise = fetchAuthConfig().then((res) => {
+        // Only cache a success; a failed fetch must be retried on the next call.
+        if (!res.ok) authConfigPromise = null;
+        return res;
+      });
+    }
+    return authConfigPromise;
+  }
+
+  // Review fix: concurrent 401 callers (authRequest) must share ONE
+  // refetch, not each independently null-out authConfigPromise and issue
+  // their own GET — that would multiply /api/auth-config calls under
+  // concurrency the same way doRefreshSession's refreshInFlight guard
+  // (below) coalesces concurrent session refreshes.
+  let authConfigRefreshInFlight: Promise<ThemeServiceResult<ThemeServiceAuthConfig>> | null = null;
+
+  async function refreshAuthConfig(): Promise<ThemeServiceResult<ThemeServiceAuthConfig>> {
+    if (opts.supabaseUrl && opts.supabaseAnonKey) {
+      return getAuthConfig();
+    }
+    if (authConfigRefreshInFlight) return authConfigRefreshInFlight;
+    authConfigPromise = null;
+    const attempt = fetchAuthConfig().then((res) => {
+      authConfigPromise = res.ok ? Promise.resolve(res) : null;
+      return res;
+    });
+    authConfigRefreshInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (authConfigRefreshInFlight === attempt) authConfigRefreshInFlight = null;
+    }
+  }
 
   async function loadSession(): Promise<StoredSession | null> {
     let raw: string | null;
@@ -476,17 +610,25 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     };
   }
 
-  async function authRequest(path: string, body: unknown, bearer?: string): Promise<ThemeServiceResult<unknown>> {
+  async function authRequestOnce(
+    path: string,
+    body: unknown,
+    bearer: string | undefined,
+    config: ThemeServiceAuthConfig
+  ): Promise<{ status: number; result: ThemeServiceResult<unknown> }> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      apikey: supabaseAnonKey,
+      apikey: config.supabaseAnonKey,
     };
     if (bearer) headers.Authorization = `Bearer ${bearer}`;
     let res: Response;
     try {
-      res = await fetchImpl(`${supabaseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+      res = await fetchImpl(`${config.supabaseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
     } catch (err) {
-      return { ok: false, error: { kind: "unreachable", message: err instanceof Error ? err.message : String(err) } };
+      return {
+        status: 0,
+        result: { ok: false, error: { kind: "unreachable", message: err instanceof Error ? err.message : String(err) } },
+      };
     }
     let json: unknown = undefined;
     if (res.status !== 204) {
@@ -495,12 +637,15 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
         json = text.length > 0 ? JSON.parse(text) : undefined;
       } catch (err) {
         return {
-          ok: false,
-          error: invalidResponse(`failed to parse auth response JSON: ${err instanceof Error ? err.message : String(err)}`),
+          status: res.status,
+          result: {
+            ok: false,
+            error: invalidResponse(`failed to parse auth response JSON: ${err instanceof Error ? err.message : String(err)}`),
+          },
         };
       }
     }
-    if (res.ok) return { ok: true, value: json };
+    if (res.ok) return { status: res.status, result: { ok: true, value: json } };
     const errBody = isRecord(json) ? json : {};
     const errorField =
       typeof errBody.error === "string"
@@ -511,15 +656,52 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
             ? errBody.msg
             : undefined;
     if (res.status === 401 || res.status === 400) {
-      return { ok: false, error: { kind: "not_signed_in", status: res.status, message: errorField ?? "auth failed" } };
+      return {
+        status: res.status,
+        result: { ok: false, error: { kind: "not_signed_in", status: res.status, message: errorField ?? "auth failed" } },
+      };
     }
     if (res.status === 429) {
-      return { ok: false, error: { kind: "rate_limited", status: 429, message: errorField ?? "rate limited" } };
+      return {
+        status: res.status,
+        result: { ok: false, error: { kind: "rate_limited", status: 429, message: errorField ?? "rate limited" } },
+      };
     }
     return {
-      ok: false,
-      error: { kind: "server_error", status: res.status, message: errorField ?? `unexpected status ${res.status}` },
+      status: res.status,
+      result: {
+        ok: false,
+        error: { kind: "server_error", status: res.status, message: errorField ?? `unexpected status ${res.status}` },
+      },
     };
+  }
+
+  /**
+   * Review fix (p65-t2): a 401 from a Supabase auth call can mean the
+   * fetched auth config is stale (rotated project/anon key) as much as it
+   * can mean bad credentials. On a 401, the cached config is dropped and
+   * the SAME request is retried exactly once against a freshly fetched
+   * config; if it still 401s, the original (first) error is returned
+   * unchanged — never an infinite loop, never masking a real "wrong
+   * password"-style failure behind a config refetch loop.
+   */
+  // Fix: when the caller supplies a static supabaseUrl+supabaseAnonKey
+  // (test-only override, see ThemeServiceClientOptions), there is no
+  // fetched config that can be stale — retrying against it is a no-op that
+  // only doubles the network call (and, for a refresh_token grant, POSTs
+  // the same possibly-single-use token twice). Only real fetched config
+  // (from GET /api/auth-config) is ever worth refetching-and-retrying.
+  const usesStaticAuthConfig = Boolean(opts.supabaseUrl && opts.supabaseAnonKey);
+
+  async function authRequest(path: string, body: unknown, bearer?: string): Promise<ThemeServiceResult<unknown>> {
+    const configRes = await getAuthConfig();
+    if (!configRes.ok) return configRes;
+    const first = await authRequestOnce(path, body, bearer, configRes.value);
+    if (first.status !== 401 || usesStaticAuthConfig) return first.result;
+    const retryConfigRes = await refreshAuthConfig();
+    if (!retryConfigRes.ok) return first.result;
+    const second = await authRequestOnce(path, body, bearer, retryConfigRes.value);
+    return second.status === 401 ? first.result : second.result;
   }
 
   async function doRefreshSessionUncoordinated(): Promise<ThemeServiceResult<void>> {
@@ -683,7 +865,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     }
     if (r.status === "ok") return { ok: true, value: r.value };
     if (r.status === "unauthorized") {
-      await clearSession();
+      if (!proactiveRefreshFailed) await clearSession();
       return { ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } };
     }
     return { ok: false, error: r.error };
@@ -706,6 +888,9 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     },
 
     async startGoogleSignIn({ redirectTo }) {
+      const configRes = await getAuthConfig();
+      if (!configRes.ok) return configRes;
+      const { supabaseUrl } = configRes.value;
       const codeVerifier = createCodeVerifier();
       if (codeVerifier === null) {
         return { ok: false, error: { kind: "server_error", message: "secure random unavailable" } };
@@ -737,13 +922,27 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     async signOut() {
       const session = await loadSession();
       if (session) {
-        try {
-          await fetchImpl(`${supabaseUrl}/auth/v1/logout`, {
-            method: "POST",
-            headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${session.accessToken}` },
-          });
-        } catch {
-          /* best-effort */
+        const doLogout = async (config: ThemeServiceAuthConfig): Promise<number | undefined> => {
+          try {
+            const res = await fetchImpl(`${config.supabaseUrl}/auth/v1/logout`, {
+              method: "POST",
+              headers: { apikey: config.supabaseAnonKey, Authorization: `Bearer ${session.accessToken}` },
+            });
+            return res.status;
+          } catch {
+            /* best-effort */
+            return undefined;
+          }
+        };
+        const configRes = await getAuthConfig();
+        if (configRes.ok) {
+          const status = await doLogout(configRes.value);
+          // Review fix (p65-t2): a stale cached config can 401 even for a
+          // best-effort logout — retry once against a freshly fetched one.
+          if (status === 401 && !usesStaticAuthConfig) {
+            const retryConfigRes = await refreshAuthConfig();
+            if (retryConfigRes.ok) await doLogout(retryConfigRes.value);
+          }
         }
       }
       await clearSession();

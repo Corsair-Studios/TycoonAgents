@@ -62,6 +62,13 @@ export interface ThemeServiceHostStatus {
    * shown against the production endpoint. Rendered in the sign-in area as
    * "Service: <host>". */
   endpointHost?: string;
+  /**
+   * p65-t2: set alongside `error.kind === "browser_open_failed"` — the
+   * Google sign-in URL the browser couldn't be opened for, so the webview
+   * can offer "Open the sign-in link" (re-posts THEME_SERVICE_GOOGLE_OPEN)
+   * and "Copy link" buttons instead of only the paste-code fallback.
+   */
+  browserUrl?: string;
 }
 
 /**
@@ -80,8 +87,13 @@ export interface ThemeServiceDeviceState {
 
 export interface ThemeServiceHostOptions {
   secrets: vscode.SecretStorage;
-  /** Opens a URL in the user's default browser (vscode.env.openExternal). */
-  openExternal: (url: string) => void | Thenable<void>;
+  /**
+   * Opens a URL in the user's default browser (vscode.env.openExternal).
+   * Returns/resolves `false` on a known failure (matches
+   * `vscode.env.openExternal`'s `Thenable<boolean>`); a thrown/rejected
+   * error is also treated as failure by handleGoogleStart.
+   */
+  openExternal: (url: string) => boolean | void | Thenable<boolean | void>;
   /** Posts the current status to the webview. */
   postStatus: (status: ThemeServiceHostStatus) => void;
   /** Injectable client for tests; defaults to a real one on the VS Code token store. */
@@ -121,6 +133,13 @@ export interface ThemeServiceHost {
   handleRequestMagicLink(email: string): Promise<void>;
   handleVerify(email: string, code: string): Promise<void>;
   handleGoogleStart(): Promise<void>;
+  /**
+   * p65-t2: re-opens a Google sign-in URL the webview already has (from a
+   * prior browser_open_failed status) WITHOUT starting a new PKCE handshake
+   * — the pending code verifier from the original handleGoogleStart is
+   * still valid and must not be discarded.
+   */
+  handleGoogleOpen(): Promise<void>;
   handleGoogleComplete(code: string | undefined): Promise<void>;
   handleSignOut(): Promise<void>;
   handleBuyCredits(pack: string): Promise<void>;
@@ -186,6 +205,11 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
   let disposed = false;
   let pendingGoogleCodeVerifier: string | null = null;
+  // p65-t2 (review fix): the webview's THEME_SERVICE_GOOGLE_OPEN payload is
+  // advisory only — never trusted. handleGoogleOpen always re-opens THIS
+  // stored URL from the matching handleGoogleStart, never a caller-supplied
+  // one, so a compromised/buggy webview can't redirect the browser open.
+  let pendingGoogleBrowserUrl: string | null = null;
   let lastKnownCredits: number | undefined;
   let pendingCheckout = false;
   let pollHandle: unknown | undefined;
@@ -322,6 +346,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       return;
     }
     pendingGoogleCodeVerifier = null;
+    pendingGoogleBrowserUrl = null;
     const res = await client.completeGoogleSignIn({ authCode, codeVerifier });
     if (!res.ok) {
       opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
@@ -370,7 +395,53 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         return;
       }
       pendingGoogleCodeVerifier = res.value.codeVerifier;
-      await opts.openExternal(res.value.browserUrl);
+      const browserUrl = res.value.browserUrl;
+      pendingGoogleBrowserUrl = browserUrl;
+      let opened: boolean | void;
+      try {
+        opened = await opts.openExternal(browserUrl);
+      } catch (err) {
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "browser_open_failed", message: err instanceof Error ? err.message : String(err) },
+          browserUrl,
+        });
+        return;
+      }
+      if (opened === false) {
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
+          browserUrl,
+        });
+      }
+    },
+
+    async handleGoogleOpen() {
+      const url = pendingGoogleBrowserUrl;
+      if (!url) return;
+      let opened: boolean | void;
+      try {
+        opened = await opts.openExternal(url);
+      } catch (err) {
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "browser_open_failed", message: err instanceof Error ? err.message : String(err) },
+          browserUrl: url,
+        });
+        return;
+      }
+      if (opened === false) {
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
+          browserUrl: url,
+        });
+      }
     },
 
     async handleGoogleComplete(code) {
@@ -431,6 +502,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       disposed = true;
       stopPoll();
       pendingGoogleCodeVerifier = null;
+      pendingGoogleBrowserUrl = null;
       pendingReferralCode = null;
       pendingReferralMessage = undefined;
     },

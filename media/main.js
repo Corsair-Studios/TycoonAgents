@@ -3301,6 +3301,22 @@ if (typeof module !== "undefined" && module.exports) {
   const themeBuilderShellClose    = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-close"));
   const themeBuilderShellContinue = /** @type {HTMLElement} */ (document.getElementById("theme-builder-shell-continue"));
 
+  // p65-t3: relabel the shell's escape hatch so it reads as what it does —
+  // uploading your own images needs no account, but AI planning/generation
+  // do — instead of implying "Continue to builder" requires signing in
+  // first. Set here (not in panel.ts/server.mjs markup) so both hosts pick
+  // it up from the same shared JS without touching the HTML shell twice.
+  if (themeBuilderShellContinue) {
+    themeBuilderShellContinue.textContent = "Continue without signing in";
+    if (!document.getElementById("theme-builder-shell-continue-help")) {
+      const help = document.createElement("p");
+      help.id = "theme-builder-shell-continue-help";
+      help.className = "muted theme-builder-shell-help";
+      help.textContent = "You can upload your own images. AI planning and generation need an account.";
+      themeBuilderShellContinue.insertAdjacentElement("beforebegin", help);
+    }
+  }
+
   function openThemeBuilderPlanEditorTab() {
     themeBuilderPanel.removeAttribute("hidden");
     themePickerList.setAttribute("hidden", "");
@@ -3502,6 +3518,11 @@ if (typeof module !== "undefined" && module.exports) {
 
     container.appendChild(tspButton("tsp-google-btn", "Continue with Google", () => {
       themeServiceView = "google-wait";
+      clearThemeServiceGoogleWaitTimer();
+      themeServiceGoogleWaitStartedAt = Date.now();
+      themeServiceGoogleWaitTimeoutTimer = setTimeout(() => {
+        if (themeServiceView === "google-wait") renderThemeServicePanel(themeServiceStatus);
+      }, 90000);
       postThemeService("THEME_SERVICE_GOOGLE_START", {});
       renderThemeServicePanel(themeServiceStatus);
     }));
@@ -3559,21 +3580,52 @@ if (typeof module !== "undefined" && module.exports) {
     container.appendChild(tspEl("small", "note", "Your theme prompts and the images we generate are sent to the Corsair Theme Service only when you generate a theme — never when you upload or hand-make one. The extension itself holds no image-provider API key of yours."));
   }
 
+  // p65-t2: local-only — cleared whenever a fresh GOOGLE_START is issued
+  // (renderThemeServiceSignedOut's Google button) or the wait view is left.
+  let themeServiceGoogleWaitStartedAt = 0;
+  let themeServiceGoogleWaitTimeoutTimer = null;
+
+  function clearThemeServiceGoogleWaitTimer() {
+    if (themeServiceGoogleWaitTimeoutTimer !== null) {
+      clearTimeout(themeServiceGoogleWaitTimeoutTimer);
+      themeServiceGoogleWaitTimeoutTimer = null;
+    }
+  }
+
   // C2. Waiting for browser sign-in (after GOOGLE_START).
   function renderThemeServiceGoogleWait(container, status) {
     container.appendChild(tspEl("h3", null, "Finish signing in with Google"));
     container.appendChild(tspEl("p", "muted tsp-lead", "Finish signing in with Google in your browser. This panel updates when you're done."));
 
+    const browserUrl = status && status.browserUrl;
+
     if (status && status.error && status.error.message) {
       container.appendChild(tspNotice("error", status.error.message));
+      if (browserUrl) {
+        const row = tspEl("div", "tsp-btn-row");
+        row.appendChild(tspButton(null, "Open the sign-in link", () => {
+          postThemeService("THEME_SERVICE_GOOGLE_OPEN", { url: browserUrl });
+        }));
+        row.appendChild(tspButton(null, "Copy link", () => {
+          if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(browserUrl).catch(() => {});
+          }
+        }));
+        container.appendChild(row);
+      }
     }
 
     const waitRow = tspEl("div", "tsp-wait-row");
     waitRow.appendChild(tspEl("span", "muted", "Waiting…"));
     container.appendChild(waitRow);
 
+    if (themeServiceGoogleWaitStartedAt && Date.now() - themeServiceGoogleWaitStartedAt >= 90000) {
+      container.appendChild(tspNotice("warn", "Still waiting. Open the link again or paste the code."));
+    }
+
     const cancelP = tspEl("p", "tsp-cancel-row");
     cancelP.appendChild(tspLink("Cancel", () => {
+      clearThemeServiceGoogleWaitTimer();
       themeServiceView = "signin";
       renderThemeServicePanel(themeServiceStatus);
     }));
@@ -3782,6 +3834,7 @@ if (typeof module !== "undefined" && module.exports) {
       }
       return;
     }
+    clearThemeServiceGoogleWaitTimer();
     themeServiceView = "signin";
     renderThemeServiceSignedIn(themeServicePanelBody, s);
   }
@@ -12755,7 +12808,23 @@ if (typeof module !== "undefined" && module.exports) {
         themeGenerateBtn.textContent = "Plan theme";
       }
       if (themeBuildStatus) {
-        themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+        themeBuildStatus.innerHTML = "";
+        if (msg.payload?.kind === "not_signed_in") {
+          // p65-t3: a PLAN_THEME attempt with no session shows the same Sign
+          // in affordance as the per-item generation errors
+          // (openThemeBuilderFromReview, 020-theme-plan-editor.js) instead of
+          // raw error text — clicking it opens the Theme Builder shell's
+          // sign-in view and returns here once signed in.
+          themeBuildStatus.appendChild(document.createTextNode("Sign in to plan a theme with AI. "));
+          const signInBtn = document.createElement("button");
+          signInBtn.className = "skill-btn theme-attempt-action";
+          signInBtn.type = "button";
+          signInBtn.textContent = "Sign in";
+          signInBtn.addEventListener("click", () => openThemeBuilderFromReview());
+          themeBuildStatus.appendChild(signInBtn);
+        } else {
+          themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+        }
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }
     } else if (msg && msg.type === "THEME_GENERATION_PROGRESS") {

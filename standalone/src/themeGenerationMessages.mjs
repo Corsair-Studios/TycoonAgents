@@ -157,7 +157,13 @@ export async function handlePlanTheme(store, broadcast, payload) {
     const plan = await genBridge.planTheme(prompt, {});
     broadcast('message', { type: MSG_WIRE.THEME_PLAN_READY, payload: { plan } });
   } catch (err) {
-    broadcast('message', { type: MSG_WIRE.THEME_PLAN_ERROR, payload: { message: String(err) } });
+    // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
+    // through, same as panel.ts's MSG.PLAN_THEME catch.
+    const kind = err && typeof err === 'object' && typeof err.kind === 'string' ? err.kind : undefined;
+    broadcast('message', {
+      type: MSG_WIRE.THEME_PLAN_ERROR,
+      payload: { message: String(err), ...(kind ? { kind } : {}) },
+    });
   }
 }
 

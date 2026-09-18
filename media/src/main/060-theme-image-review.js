@@ -1502,7 +1502,23 @@
         themeGenerateBtn.textContent = "Plan theme";
       }
       if (themeBuildStatus) {
-        themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+        themeBuildStatus.innerHTML = "";
+        if (msg.payload?.kind === "not_signed_in") {
+          // p65-t3: a PLAN_THEME attempt with no session shows the same Sign
+          // in affordance as the per-item generation errors
+          // (openThemeBuilderFromReview, 020-theme-plan-editor.js) instead of
+          // raw error text — clicking it opens the Theme Builder shell's
+          // sign-in view and returns here once signed in.
+          themeBuildStatus.appendChild(document.createTextNode("Sign in to plan a theme with AI. "));
+          const signInBtn = document.createElement("button");
+          signInBtn.className = "skill-btn theme-attempt-action";
+          signInBtn.type = "button";
+          signInBtn.textContent = "Sign in";
+          signInBtn.addEventListener("click", () => openThemeBuilderFromReview());
+          themeBuildStatus.appendChild(signInBtn);
+        } else {
+          themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+        }
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }
     } else if (msg && msg.type === "THEME_GENERATION_PROGRESS") {
