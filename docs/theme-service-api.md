@@ -95,10 +95,14 @@ No `Authorization` header required. Response `200`,
 {
   "supabaseUrl": "https://xxxx.supabase.co",
   "supabasePublishableKey": "sb_publishable_... (or legacy anon key)",
-  "promptTemplateVersion": "2026-09-18.1",
+  "promptTemplateVersion": "2026-09-16.1",
   "contractVersion": "3.6"
 }
 ```
+`promptTemplateVersion` above reflects whatever the service's synced templates
+currently report — it changes whenever the templates change, so treat the
+value shown here as an example, not a pin.
+
 `supabasePublishableKey` is public by design — it is either Supabase's
 new-format `sb_publishable_` key or the legacy anon key; both are valid and
 both are sent to Supabase Auth as the `apikey` header (see Auth below).
