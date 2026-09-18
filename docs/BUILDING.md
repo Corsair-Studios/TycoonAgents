@@ -17,3 +17,17 @@ Instructions for building TycoonAgents from source, used when registering the Op
 6. **What the panel shows** — the same live agent visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
 
 See [`OPENCODE-PROVIDER.md`](OPENCODE-PROVIDER.md) for the full IPC contract and mapping details.
+
+## Release checklist
+
+Every GitHub Release must attach both artifacts, next to each other:
+
+1. **VSIX** — `npm run package` writes `dist/tycoonagents-<version>.vsix`.
+2. **Standalone zip** — `npm run package:standalone` writes
+   `dist/tycoonagents-standalone-<version>.zip` (version read from the root
+   `package.json`). It builds `out/` first, then bundles `out/`,
+   `standalone/src`, `media/`, `hooks/`, a trimmed root `package.json`, and
+   a generated `README-STANDALONE.md` — no `node_modules`, no dev tooling.
+   See `scripts/package-standalone.mjs` for the exact file list.
+3. Upload both files to the release (`gh release upload <tag> <file>...`)
+   and include each file's sha256 and size in the release notes.

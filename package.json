@@ -158,6 +158,7 @@
     "bundle:themebuilder": "esbuild src/webview/themeBuilder.ts --bundle --outfile=media/theme-builder.js",
     "bundle:host": "esbuild src/host/vscode/extension.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --outfile=out/extension.js",
     "package": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && npx --yes @vscode/vsce package --no-dependencies -o dist/ && npm run verify:vsix-contents",
+    "package:standalone": "npm run build && node scripts/package-standalone.mjs",
     "verify:vsix-contents": "tsc -p . && node --test \"out/test/packagingManifest.check.js\" \"out/test/packagingPoseGuides.check.js\"",
     "release": "node scripts/release.mjs",
     "release:patch": "node scripts/release-local.mjs patch",
