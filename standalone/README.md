@@ -9,6 +9,15 @@ This is an independent build target from the VS Code extension: it does not
 ship in the extension's `.vsix` (excluded via the repo's `.vscodeignore`) and
 running it never builds, packages, or otherwise touches the extension.
 
+## Using the release zip
+
+If you got here via the release zip (`tycoonagents-standalone-<version>.zip`),
+skip the build step below — `out/` ships pre-compiled inside the zip. Instead,
+run `npm install --omit=dev` once at the zip's root (the theme pipeline needs
+`jimp` and `fflate` at server startup). The rest of this file's `npm run
+build` and "npm install is a no-op" instructions apply to repo checkouts
+only.
+
 ## Prerequisites
 
 - Node.js `>=18` (see `engines.node` in `standalone/package.json`).
@@ -38,7 +47,7 @@ running it never builds, packages, or otherwise touches the extension.
 From `standalone/`:
 
 ```sh
-npm install      # no-op today; standalone ships zero dependencies
+npm install      # no-op inside a repo checkout only; standalone ships zero dependencies
 npm test         # optional: run the standalone's own test suite
 
 # Register the Claude Code hook in a project (idempotent — safe to re-run)

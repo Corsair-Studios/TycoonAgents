@@ -103,6 +103,14 @@ const readme = `# TycoonAgents Standalone — ${version}
 
 Run the TycoonAgents live agent visualization without VS Code.
 
+## Where to install
+
+Unzip this into its own permanent folder outside any project (for example a
+tools folder) — one install then serves every project on the machine.
+\`install-hook\` registers an absolute path to this folder's
+\`hooks/tycoon-claude-hook.cjs\` in each project, so if you move or rename
+the folder afterwards, run \`install-hook\` again in each project.
+
 ## Run it
 
 \`\`\`sh
@@ -114,7 +122,8 @@ node src/cli.mjs watch <path-to-your-project>
 
 This opens a browser tab serving the same panel as the VS Code extension.
 Pass \`--no-open\` (or set \`TYCOON_STANDALONE_NO_OPEN=1\`) on a headless
-machine. See \`standalone/README.md\` in this zip for environment variables,
+machine. \`watch\` accepts several project paths at once. See
+\`standalone/README.md\` in this zip for environment variables,
 multi-directory watching, and the OpenCode provider flag.
 
 ## Requirements
