@@ -396,9 +396,10 @@
     if (metricsColTokensEl) {
       metricsColTokensEl.textContent = "Tokens";
       metricsColTokensEl.title =
-        metricsScope === "session"
-          ? "Tokens used this session. Total tokens this agent has used in the current Claude Code session only."
-          : "Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).";
+        "Billed context tokens summed over every turn (input, output, cache writes). Cache reads are shown separately and cost about a tenth of input. " +
+        (metricsScope === "session"
+          ? "Scope: this session only."
+          : "Scope: all time, since the last metrics reset.");
       metricsColTokensEl.setAttribute(
         "aria-label",
         metricsScope === "session" ? "Tokens used this session" : "Tokens used all time"
@@ -15689,18 +15690,30 @@ if (typeof module !== "undefined" && module.exports) {
     const classMap = new Map(); // costModelClass -> { tokens }
     let fallbackCount = 0;
     const localTimeRows = [];
-    let totalTokens = 0;
-    let totalAgents = 0;
+    let totalTokens = 0; // billed tokens only (input+output+cache-write) — cache reads NEVER add in here (spec p63-t3)
+    let totalCacheReadTokens = 0;
+    let totalAgents = 0; // every agent record seen, including ones with no tokens field
+    let reportedAgents = 0; // agents whose record actually has a `tokens` field
 
     for (const item of items) {
       if (!item) continue;
 
+      totalAgents += 1;
       fallbackCount += item.fallbackCount > 0 ? item.fallbackCount : 0;
+
+      // A harness that doesn't report token usage yet (e.g. Codex today) sends
+      // an agent record with NO `tokens` field at all. That agent is real and
+      // counts toward totalAgents above, but has nothing to contribute to the
+      // token totals/breakdowns below — including it as 0 would silently
+      // understate "N agents" as if they were all metered.
+      if (typeof item.tokens !== "number") continue;
+      reportedAgents += 1;
 
       const vendor = item.vendor || inferVendorFromModel(item.model);
       const model = item.model || "";
       const cls = costModelClass(model, item.costModelClass);
-      const tokens = (item.tokens ?? 0) + (item.cacheReadTokens ?? 0);
+      const tokens = item.tokens ?? 0;
+      const cacheRead = item.cacheReadTokens ?? 0;
 
       let vEntry = vendorMap.get(vendor);
       if (!vEntry) {
@@ -15711,7 +15724,7 @@ if (typeof module !== "undefined" && module.exports) {
       vEntry.agents += 1;
 
       totalTokens += tokens;
-      totalAgents += 1;
+      totalCacheReadTokens += cacheRead;
 
       let cEntry = classMap.get(cls);
       if (!cEntry) {
@@ -15747,7 +15760,9 @@ if (typeof module !== "undefined" && module.exports) {
       fallbackCount,
       localTimeRows,
       totalTokens,
+      totalCacheReadTokens,
       totalAgents,
+      reportedAgents,
     };
   }
 
@@ -16103,8 +16118,26 @@ if (typeof module !== "undefined" && module.exports) {
 
     const tokensTd = document.createElement("td");
     tokensTd.className = "col-tokens";
-    tokensTd.title = "Total tokens this agent has consumed, including cache reads.";
-    tokensTd.textContent = fmtTokens((agent.tokens ?? 0) + (agent.cacheReadTokens ?? 0));
+    if (typeof agent.tokens !== "number") {
+      // Harness doesn't report token usage yet (e.g. Codex today) — no
+      // record at all, not a real zero. Never counted into the Total line
+      // (see buildMetricsRollup).
+      tokensTd.textContent = "n/a";
+      tokensTd.title = "This harness does not report token usage yet";
+    } else {
+      const mainTokens = agent.tokens ?? 0;
+      const cacheRead = agent.cacheReadTokens ?? 0;
+      tokensTd.title = "Billed context tokens (input, output, cache writes) this agent has consumed. Cache reads are shown separately and cost about a tenth of input.";
+      const mainSpan = document.createElement("span");
+      mainSpan.textContent = fmtTokens(mainTokens);
+      tokensTd.appendChild(mainSpan);
+      if (cacheRead > 0) {
+        const cacheSpan = document.createElement("span");
+        cacheSpan.className = "col-tokens-cached";
+        cacheSpan.textContent = ` + ${fmtTokens(cacheRead)} cached`;
+        tokensTd.appendChild(cacheSpan);
+      }
+    }
     row.appendChild(tokensTd);
 
     return row;
@@ -16275,7 +16308,13 @@ if (typeof module !== "undefined" && module.exports) {
     // rows now lives behind a collapsed disclosure (see
     // buildMetricsFooterBreakdownRows), toggled by
     // #metrics-footer-disclosure-btn and persisted in localStorage.
-    let summaryText = `${fmtTokens(rollup.totalTokens)} tokens · ${rollup.totalAgents} agent${rollup.totalAgents === 1 ? "" : "s"}`;
+    const excludedAgents = rollup.totalAgents - rollup.reportedAgents;
+    let summaryText = excludedAgents > 0
+      ? `${fmtTokens(rollup.totalTokens)} tokens (${rollup.reportedAgents} agent${rollup.reportedAgents === 1 ? "" : "s"} reported)`
+      : `${fmtTokens(rollup.totalTokens)} tokens · ${rollup.totalAgents} agent${rollup.totalAgents === 1 ? "" : "s"}`;
+    if (rollup.totalCacheReadTokens > 0) {
+      summaryText += ` (+ ${fmtTokens(rollup.totalCacheReadTokens)} cached)`;
+    }
     if (rollup.fallbackCount > 0) {
       summaryText += ` · ${rollup.fallbackCount} fallback${rollup.fallbackCount === 1 ? "" : "s"}`;
     }

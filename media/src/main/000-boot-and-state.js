@@ -395,9 +395,10 @@
     if (metricsColTokensEl) {
       metricsColTokensEl.textContent = "Tokens";
       metricsColTokensEl.title =
-        metricsScope === "session"
-          ? "Tokens used this session. Total tokens this agent has used in the current Claude Code session only."
-          : "Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).";
+        "Billed context tokens summed over every turn (input, output, cache writes). Cache reads are shown separately and cost about a tenth of input. " +
+        (metricsScope === "session"
+          ? "Scope: this session only."
+          : "Scope: all time, since the last metrics reset.");
       metricsColTokensEl.setAttribute(
         "aria-label",
         metricsScope === "session" ? "Tokens used this session" : "Tokens used all time"

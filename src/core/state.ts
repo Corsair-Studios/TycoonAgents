@@ -262,6 +262,16 @@ export interface MetricsWorldState {
   workers: Record<WorkerId, Worker>;
   /** Count of completed tasks - drives build progression. */
   completedTasks: number;
+  /**
+   * Count of SubagentStop events that could not be attributed to a
+   * non-orchestrator worker (empty active stack, or workerId resolving to
+   * "orchestrator") — see TaskCompleted handling below. These are excluded
+   * from `completedTasks` and the orchestrator's own agentMetrics taskCount
+   * so a burst of unattributed SubagentStop events (e.g. Claude Code's
+   * built-in Explore/Plan sub-agents, which do not carry our workerId) never
+   * inflates the orchestrator's visible task count (p63-t2).
+   */
+  unattributedTasks: number;
   /** Per-agent metrics list, ordered by first-seen time. */
   agentMetrics: AgentMetric[];
   /** Internal: extended metric records that include workStartAt for activeMs computation. */
@@ -294,6 +304,7 @@ export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?
     sessionActive: false,
     workers: {},
     completedTasks: 0,
+    unattributedTasks: 0,
     agentMetrics: [],
     _agentMetricsInternal: [],
     idleFreezeMs: limits?.idleFreezeMs ?? 180000,
@@ -726,6 +737,17 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
     }
 
     case "TaskCompleted": {
+      // A SubagentStop that mapHookRecord could not attribute to a real
+      // worker (empty active stack, or a workerId that fell back to the
+      // literal "orchestrator") must not inflate the orchestrator's visible
+      // task count — see mapHookRecord.ts's `const workerId = record.workerId
+      // ?? "orchestrator"` fallback (p63-t2). Count it separately instead.
+      if (event.workerId === "orchestrator") {
+        return {
+          ...state,
+          unattributedTasks: state.unattributedTasks + 1,
+        };
+      }
       // Canvas worker is optional; the metric always updates.
       // Same provider guard as WorkerActivity (p22-t8 gap fix).
       const completeProvider = resolveProvider(event.provider);

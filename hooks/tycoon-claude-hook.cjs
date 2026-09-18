@@ -938,30 +938,39 @@ function extractSubagentTokens(payload) {
     if (transcriptPath && typeof transcriptPath === "string") {
       try {
         const lines = fs.readFileSync(transcriptPath, "utf8").split("\n");
-        // Walk backward; only the LAST usage line reflects the agent's cumulative
-        // total (summing every line overcounts massively).
-        for (let i = lines.length - 1; i >= 0; i--) {
+        // Sum over EVERY assistant usage line in the subagent's transcript —
+        // each usage object is PER MESSAGE, not cumulative, so reading only
+        // the last line undercounts a multi-turn worker. Do NOT filter on
+        // isSidechain here: this transcript_path is the subagent's OWN
+        // transcript file, and every entry in it is marked isSidechain true
+        // (it's a sidechain relative to the orchestrator's transcript) — a
+        // sidechain filter here would drop all of the worker's own usage.
+        let sum = 0;
+        let cacheReadTokens = 0;
+        let any = false;
+        for (let i = 0; i < lines.length; i++) {
           if (!lines[i].trim()) continue;
           try {
             const msg = JSON.parse(lines[i]);
+            if (msg.type && msg.type !== "assistant") continue;
             const u = msg.usage || (msg.message && msg.message.usage);
             if (u && typeof u === "object") {
-              const sum =
+              sum +=
                 Number(u.input_tokens || 0) +
                 Number(u.output_tokens || 0) +
                 Number(u.cache_creation_input_tokens || 0);
-              const cacheReadTokens = Number(u.cache_read_input_tokens || 0);
-              // Do NOT return early here when both are <= 0 — fall through so
-              // the pre-summed scalar fallbacks below still get a chance to run.
-              if (sum > 0 || cacheReadTokens > 0) {
-                return {
-                  tokens: sum > 0 ? sum : undefined,
-                  cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
-                };
-              }
-              break;
+              cacheReadTokens += Number(u.cache_read_input_tokens || 0);
+              any = true;
             }
           } catch { /* skip malformed line */ }
+        }
+        // Do NOT return early here when both are <= 0 — fall through so
+        // the pre-summed scalar fallbacks below still get a chance to run.
+        if (any && (sum > 0 || cacheReadTokens > 0)) {
+          return {
+            tokens: sum > 0 ? sum : undefined,
+            cacheReadTokens: cacheReadTokens > 0 ? cacheReadTokens : undefined,
+          };
         }
       } catch { /* transcript not accessible */ }
     }
@@ -1313,34 +1322,125 @@ function computeComplianceNudge(toolName, tycoonDir) {
 // Orchestrator per-turn token delta (main session has no SubagentStop, so we
 // read the transcript on Stop and diff against the previous turn's cumulative).
 // ---------------------------------------------------------------------------
+// A minimal, best-effort logger for warnings this hook wants visible but
+// that must never affect the reported token record. Appends one JSON line to
+// hook-warnings.log under tycoonDir; failures here are swallowed — logging
+// must never be why a hook call crashes.
+function logHookWarning(tycoonDir, message, extra) {
+  try {
+    fs.mkdirSync(tycoonDir, { recursive: true });
+    const logFile = path.join(tycoonDir, "hook-warnings.log");
+    const entry = { at: new Date().toISOString(), message, ...(extra || {}) };
+    fs.appendFileSync(logFile, JSON.stringify(entry) + "\n", "utf8");
+  } catch { /* logging must never crash the hook */ }
+}
+
+// A single assistant transcript entry's billable/cache-read token split, or
+// undefined if the entry carries no usage. Skips sidechain entries (nested
+// tool-use sub-conversations, not the top-level turn) and any entry whose
+// `type` is present and not "assistant" (usage only ever lives on assistant
+// turns).
+function usageFromTranscriptEntry(msg) {
+  if (!msg || typeof msg !== "object") return undefined;
+  if (msg.isSidechain) return undefined;
+  if (msg.type && msg.type !== "assistant") return undefined;
+  const u = msg.usage || (msg.message && msg.message.usage);
+  if (!u || typeof u !== "object") return undefined;
+  return {
+    tokens:
+      Number(u.input_tokens || 0) +
+      Number(u.output_tokens || 0) +
+      Number(u.cache_creation_input_tokens || 0),
+    cacheReadTokens: Number(u.cache_read_input_tokens || 0),
+  };
+}
+
+// True when `msg` is a genuine human-typed prompt: type "user", not a
+// sidechain, and content that is plain text rather than a synthetic
+// tool_result message (Claude Code represents tool results as "user" role
+// entries too).
+function isHumanUserEntry(msg) {
+  if (!msg || typeof msg !== "object") return false;
+  if (msg.isSidechain) return false;
+  if (msg.type !== "user") return false;
+  const msgObj = msg.message || msg;
+  const content = msgObj.content;
+  if (typeof content === "string") return true;
+  if (Array.isArray(content)) {
+    return !content.some((c) => c && typeof c === "object" && c.type === "tool_result");
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator per-turn token delta (main session has no SubagentStop, so we
+// read the transcript on Stop and diff against the previous turn's cumulative).
+//
+// Cursor design (p63-t1): the naive "sum the whole transcript, diff against
+// last total" approach reports the ENTIRE session history as one delta the
+// first time it runs on a transcript (no state file yet, or the state names
+// a different transcriptPath — e.g. a fresh install, or state-file writes
+// silently failing because .claude/tycoon/ didn't exist yet). On a fresh
+// install this can report hundreds of millions of tokens from a 54-second
+// session. Instead we persist a CURSOR (count of transcript lines already
+// processed) alongside lastTotal. On first sight of a transcript we seed the
+// cursor at the last human user entry, so only entries AFTER that (the final
+// turn) are ever summed and reported — never prior history. Each subsequent
+// call sums only entries past the previous cursor, so cost is O(new lines),
+// not O(whole transcript), and a stale/failed state write can never cause a
+// quadratic re-report of the same history.
+// ---------------------------------------------------------------------------
 function captureOrchestratorTokens(payload, tycoonDir) {
   try {
     const transcriptPath = payload.transcript_path;
     if (!transcriptPath || typeof transcriptPath !== "string") return {};
-    const lines = fs.readFileSync(transcriptPath, "utf8").split("\n");
+    const rawLines = fs.readFileSync(transcriptPath, "utf8").split("\n");
+    // A file ending in a newline (the normal case) produces a trailing empty
+    // element from split("\n") that is not a real line. Strip it so
+    // lines.length reflects the true line count — otherwise the persisted
+    // cursor points one past the real end and the first line appended before
+    // the next Stop gets skipped.
+    const lines = rawLines.length > 0 && rawLines[rawLines.length - 1] === "" ? rawLines.slice(0, -1) : rawLines;
 
-    let total = 0;
-    let cacheReadTotal = 0;
-    for (const line of lines) {
-      if (!line.trim()) continue;
+    const stateFile = path.join(tycoonDir, "orchestrator-token-state.json");
+    const prev = readJsonSafe(stateFile);
+    const isFreshTranscript = !prev || prev.transcriptPath !== transcriptPath;
+
+    let startIdx = 0; // index of first line NOT yet processed
+    if (!isFreshTranscript && typeof prev.cursorLine === "number" && prev.cursorLine >= 0) {
+      startIdx = prev.cursorLine;
+    } else {
+      // Seed: only the final turn (entries after the last human user entry)
+      // should ever be reported the first time we see this transcript.
+      let seedIdx = 0;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].trim()) continue;
+        try {
+          const msg = JSON.parse(lines[i]);
+          if (isHumanUserEntry(msg)) { seedIdx = i + 1; break; }
+        } catch { /* skip malformed line */ }
+      }
+      startIdx = seedIdx;
+    }
+
+    let delta = 0;
+    let cacheReadDelta = 0;
+    let lastUuid;
+    let model;
+    for (let i = startIdx; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
       try {
-        const msg = JSON.parse(line);
-        const u = msg.usage || (msg.message && msg.message.usage);
-        if (u && typeof u === "object") {
-          total +=
-            Number(u.input_tokens || 0) +
-            Number(u.output_tokens || 0) +
-            Number(u.cache_creation_input_tokens || 0);
-          // Cache reads are tracked separately (not folded into the billable
-          // total above) — they dominate long sessions and would otherwise
-          // need their own accounting to reconcile against the Console.
-          cacheReadTotal += Number(u.cache_read_input_tokens || 0);
+        const msg = JSON.parse(lines[i]);
+        if (msg.uuid) lastUuid = msg.uuid;
+        const usage = usageFromTranscriptEntry(msg);
+        if (usage) {
+          delta += usage.tokens;
+          cacheReadDelta += usage.cacheReadTokens;
         }
       } catch { /* skip malformed line */ }
     }
 
-    // Most recent assistant entry carries the live model id.
-    let model;
+    // Most recent assistant entry (whole transcript) carries the live model id.
     for (let i = lines.length - 1; i >= 0; i--) {
       if (!lines[i].trim()) continue;
       try {
@@ -1350,30 +1450,56 @@ function captureOrchestratorTokens(payload, tycoonDir) {
       } catch { /* skip */ }
     }
 
-    const stateFile = path.join(tycoonDir, "orchestrator-token-state.json");
-    const prev = readJsonSafe(stateFile);
-    let delta = total;
-    if (
-      prev &&
-      prev.transcriptPath === transcriptPath &&
-      typeof prev.lastTotal === "number" &&
-      total >= prev.lastTotal
-    ) {
-      delta = total - prev.lastTotal;
+    // Sanity ceiling: a single delta this large is almost certainly an
+    // accounting bug (e.g. a full-history re-report), not real usage. Drop
+    // it rather than report a number that would blow up the panel's totals.
+    // The cursor below still advances past these lines regardless of
+    // `dropped` — by design, so the same oversized lines are never re-summed
+    // and re-dropped on every subsequent Stop.
+    const CEILING = 20_000_000;
+    let dropped = false;
+    if (delta > CEILING) {
+      logHookWarning(tycoonDir, "captureOrchestratorTokens: delta exceeded sanity ceiling, dropped", {
+        delta,
+        ceiling: CEILING,
+        transcript: path.basename(transcriptPath),
+      });
+      dropped = true;
     }
-    let cacheReadDelta = cacheReadTotal;
-    if (
-      prev &&
-      prev.transcriptPath === transcriptPath &&
-      typeof prev.lastCacheReadTotal === "number" &&
-      cacheReadTotal >= prev.lastCacheReadTotal
-    ) {
-      cacheReadDelta = cacheReadTotal - prev.lastCacheReadTotal;
+
+    const newCursor = lines.length;
+    let wrote = false;
+    try {
+      fs.mkdirSync(tycoonDir, { recursive: true });
+      atomicWriteSync(
+        stateFile,
+        JSON.stringify({
+          transcriptPath,
+          cursorLine: newCursor,
+          lastUuid,
+          lastTotal: (isFreshTranscript || !prev || typeof prev.lastTotal !== "number" ? 0 : prev.lastTotal) + (dropped ? 0 : delta),
+          lastCacheReadTotal: (isFreshTranscript || !prev || typeof prev.lastCacheReadTotal !== "number" ? 0 : prev.lastCacheReadTotal) + cacheReadDelta,
+        })
+      );
+      wrote = true;
+    } catch {
+      wrote = false;
     }
-    atomicWriteSync(
-      stateFile,
-      JSON.stringify({ transcriptPath, lastTotal: total, lastCacheReadTotal: cacheReadTotal })
-    );
+
+    // If we could not persist the new cursor, we must NOT report this delta:
+    // the next call would start from the same stale cursor and re-sum these
+    // same lines again, but reporting now would already have counted them
+    // once — silently double-accounting every call until the write starts
+    // succeeding. Skipping the report (not the state write) is the safe
+    // failure mode.
+    if (!wrote) {
+      logHookWarning(tycoonDir, "captureOrchestratorTokens: state write failed, skipping report to avoid re-report", {
+        transcript: path.basename(transcriptPath),
+      });
+      return { model };
+    }
+
+    if (dropped) return { model };
 
     return {
       tokens: delta > 0 ? delta : undefined,

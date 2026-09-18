@@ -3878,7 +3878,7 @@ test('Metrics tab scope toggle: default scope is "all" on first render, before a
     assert.equal(tokensHeader.textContent, 'Tokens', 'header text is now the short "Tokens" form in both scopes');
     assert.equal(
       tokensHeader.title,
-      'Tokens used all time. Total tokens this agent has used since the last metrics reset (all time).',
+      'Billed context tokens summed over every turn (input, output, cache writes). Cache reads are shown separately and cost about a tenth of input. Scope: all time, since the last metrics reset.',
       'default title must explain the "all time" scope'
     );
     assert.equal(
@@ -4243,6 +4243,191 @@ test('accent: metrics table colors a fallback agent amber with "(fb)" suffix on 
     assert.match(nameSpan.textContent, /\(fb\)$/, 'fallback agent name cell ends with the " (fb)" suffix');
     const fill = row.querySelector('.status-bar-fill');
     assert.ok(fill.classList.contains('agent-accent-fallback'), 'fallback active agent bar fill gets agent-accent-fallback');
+  } finally {
+    h.win.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// p63-t5: buildMetricsRollup / buildMetricsRow — records with no `tokens`
+// field render "n/a" and are excluded from totals ("N tokens (M agents
+// reported)"); `tokens: 0` is a real reported zero, not "n/a"; cacheReadTokens
+// renders only as a separate "+ X cached" span, never folded into totals; no
+// "$" anywhere in the rendered metrics output (media/src/main/080-packs-events.js
+// buildMetricsRollup ~803-880, buildMetricsRow ~1236-1258).
+// ---------------------------------------------------------------------------
+
+test('p63-t5: an agentMetrics record with no `tokens` field renders "n/a" in its tokens cell and is excluded from the rollup total', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 2,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, activeMs: 30000 },
+          // No `tokens` field at all -- a harness that doesn't report usage yet.
+          { id: 'codex-reviewer', name: 'Codex Reviewer', status: 'idle', model: 'gpt-6-astra', vendor: 'openai', activeMs: 40000, taskCount: 1 },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const rows = [...tbody.querySelectorAll('tr')].filter((r: any) => !r.classList.contains('metrics-footer-row'));
+    const naRow = rows.find((r: any) => (r.querySelector('td.col-name span') || {}).textContent === 'Codex Reviewer');
+    assert.ok(naRow, 'codex-reviewer row should exist');
+    const naCell = naRow.querySelector('td.col-tokens');
+    assert.equal(naCell.textContent, 'n/a', 'a record with no tokens field must render "n/a"');
+
+    const footerText = [...tbody.querySelectorAll('tr.metrics-footer-row')].map((r: any) => r.textContent).join(' ');
+    assert.match(footerText, /500\s*tokens.*\(1\s*agents?\s*reported\)/i, `expected total to exclude the n/a agent: ${footerText}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p63-t5: agentMetrics with tokens:0 renders "0", not "n/a", and counts as a reported agent', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 0, activeMs: 1000, taskCount: 0 },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const row = [...tbody.querySelectorAll('tr')].find((r: any) => !r.classList.contains('metrics-footer-row'));
+    const cell = row.querySelector('td.col-tokens');
+    assert.notEqual(cell.textContent, 'n/a', 'tokens: 0 is a real reported zero, not the missing-field n/a state');
+    assert.match(cell.textContent, /^0/, `expected the cell to render a literal 0, got: ${cell.textContent}`);
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p63-t5: cacheReadTokens renders only as a separate "+ X cached" span, never folded into the main tokens figure or the rollup total', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 100000, cacheReadTokens: 400000, activeMs: 1000, taskCount: 1 },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const row = [...tbody.querySelectorAll('tr')].find((r: any) => !r.classList.contains('metrics-footer-row'));
+    const cell = row.querySelector('td.col-tokens');
+    const mainSpan = cell.querySelector('span:not(.col-tokens-cached)');
+    const cacheSpan = cell.querySelector('span.col-tokens-cached');
+    assert.ok(mainSpan, 'main tokens span should exist');
+    assert.ok(cacheSpan, 'cache-read span should exist');
+    assert.match(mainSpan.textContent, /^100k$/i, 'main span must show only the billable 100k, not a combined 500k total');
+    assert.match(cacheSpan.textContent, /400k cached/i);
+
+    const footerText = [...tbody.querySelectorAll('tr.metrics-footer-row')].map((r: any) => r.textContent).join(' ');
+    assert.match(footerText, /100k?\s*tokens|100000\s*tokens/i, `rollup total must count only billable tokens, cache reads never added in: ${footerText}`);
+    assert.doesNotMatch(footerText, /500k/i, 'rollup total must never fold cache reads into the displayed total');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p63-t5: no "$" character anywhere in the rendered Metrics tab output', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 2,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, cacheReadTokens: 200, activeMs: 30000 },
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 100000, cacheReadTokens: 400000, activeMs: 20000, taskCount: 1 },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const metricsBody = h.doc.getElementById('metrics-body');
+    assert.doesNotMatch(String(metricsBody.textContent), /\$/, 'no dollar figure anywhere in the rendered Metrics tab');
   } finally {
     h.win.close();
   }

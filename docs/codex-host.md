@@ -28,3 +28,17 @@ accepts; `gpt-6-astra` is available as a higher tier for deeper reviews. As note
 discovery ladder entirely and spawns that binary directly. On first use, Claude Code asks once
 per project to approve the project-level Codex MCP server before it will run; use
 `claude mcp list` to see its current approval state or approve it manually.
+
+## Token usage
+
+Per-turn token usage from the Codex host is not available today, so the Metrics panel shows
+"n/a" for Codex agents and excludes them from the token total. The notify entry point
+(`hooks/tycoon-codex-hook.cjs`, `agent-turn-complete` payload) carries thread id, turn id, cwd,
+input messages, and last assistant message, but no usage fields. The MCP `codex` and
+`codex-reply` tool responses carry `structuredContent` with `threadId` and `content` only. Token
+counts exist inside Codex (`TokenCountEvent` in `codex-rs` protocol) but are routed only to the
+app-server JSON-RPC surface, which emits a per-turn `thread/tokenUsage/updated` notification. A
+future task could capture that from the app-server adapter (`hooks/codex-app-server-mcp.cjs`)
+and map it to the `HookRecord` `tokens` and `cacheReadTokens` fields; that would be the single
+event to read. See `docs/codex-harness-findings.md` and `docs/codex-mcp-probe-findings.md` for
+the underlying investigation.

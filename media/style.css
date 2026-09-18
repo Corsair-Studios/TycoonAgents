@@ -3567,6 +3567,14 @@ td.col-tokens {
   font-variant-numeric: tabular-nums;
 }
 
+/* Secondary "+ X cached" suffix in the Tokens cell (p63-t3): cache reads
+   never add into the main tokens number, shown small/muted beside it. */
+.col-tokens-cached {
+  color: var(--muted);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Tighten the small numeric columns (values never reach triple digits) */
 #metrics-table thead th.col-tasks,
 #metrics-table thead th.col-mcp,

@@ -9459,7 +9459,7 @@ export class TycoonPanel {
               <th class="col-tasks" title="Tasks completed BY this agent — work it actually finished, not tasks merely routed to it. The orchestrator's cell (marked *) shows the tasks it completed itself; hover it to see how many it dispatched to other agents.">Tasks</th>
               <th class="col-mcp" title="How many MCP tool calls this agent has made.">MCP</th>
               <th class="col-time" title="Active time this agent has spent working.">Time</th>
-              <th class="col-tokens" id="metrics-col-tokens" title="Total tokens this agent has used, since the last metrics reset.">Tokens (all time)</th>
+              <th class="col-tokens" id="metrics-col-tokens" title="Billed context tokens summed over every turn (input, output, cache writes). Cache reads are shown separately and cost about a tenth of input.">Tokens (all time)</th>
             </tr>
           </thead>
           <tbody id="metrics-tbody"></tbody>

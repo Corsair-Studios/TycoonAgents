@@ -713,3 +713,177 @@ test("Compliance nudge: a corrupt orchestrator-turn-reads.json degrades to no wa
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// p63-t5: captureOrchestratorTokens cursor behavior (hooks/tycoon-claude-hook.cjs
+// ~1382-1500). Not exported (no module.exports) so, per this file's pattern,
+// exercised end-to-end: write a fixture .jsonl transcript, spawn the hook
+// with a "Stop" event and transcript_path, and inspect the resulting
+// activity.jsonl "Stop" record's tokens/cacheReadTokens fields.
+// ---------------------------------------------------------------------------
+
+function jsonlLine(obj: Record<string, unknown>): string {
+  return JSON.stringify(obj) + "\n";
+}
+
+function humanUserLine(uuid: string, text = "hi"): string {
+  return jsonlLine({ type: "user", uuid, message: { role: "user", content: text } });
+}
+
+function assistantUsageLine(
+  uuid: string,
+  usage: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number },
+  opts?: { model?: string; isSidechain?: boolean },
+): string {
+  return jsonlLine({
+    type: "assistant",
+    uuid,
+    isSidechain: opts?.isSidechain ?? false,
+    message: { role: "assistant", model: opts?.model ?? "claude-sonnet-4-6", usage },
+  });
+}
+
+function writeTranscript(root: string, name: string, lines: string[]): string {
+  const p = join(root, name);
+  writeFileSync(p, lines.join(""), "utf8");
+  return p;
+}
+
+function fsAppend(filePath: string, content: string): void {
+  writeFileSync(filePath, readFileSync(filePath, "utf8") + content, "utf8");
+}
+
+function runStop(root: string, transcriptPath: string, sessionId = "stop-sess-1"): void {
+  runHook(root, {
+    hook_event_name: "Stop",
+    transcript_path: transcriptPath,
+    session_id: sessionId,
+  });
+}
+
+test("captureOrchestratorTokens: fresh state + transcript with many prior usage lines reports only the final turn", () => {
+  const root = setupProject();
+  try {
+    const transcript = writeTranscript(root, "transcript.jsonl", [
+      humanUserLine("u1", "first prompt"),
+      assistantUsageLine("a1", { input_tokens: 1000, output_tokens: 500 }),
+      assistantUsageLine("a2", { input_tokens: 2000, output_tokens: 800 }),
+      humanUserLine("u2", "final prompt"),
+      assistantUsageLine("a3", { input_tokens: 30, output_tokens: 20, cache_read_input_tokens: 5 }),
+    ]);
+    runStop(root, transcript);
+    const records = readActivity(root);
+    const stop = records.find((r) => r.event === "Stop" && r.workerId === "orchestrator");
+    assert.ok(stop, "expected a Stop record");
+    assert.equal(stop!.tokens, 50, "only the final turn's usage (30+20) must be reported, not the prior 4300");
+    assert.equal(stop!.cacheReadTokens, 5);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("captureOrchestratorTokens: second Stop after appending lines reports only the appended lines", () => {
+  const root = setupProject();
+  try {
+    const transcriptPath = join(root, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      [humanUserLine("u1", "first prompt"), assistantUsageLine("a1", { input_tokens: 100, output_tokens: 50 })].join(""),
+      "utf8",
+    );
+    runStop(root, transcriptPath);
+    const first = readActivity(root).filter((r) => r.event === "Stop");
+    assert.equal(first.length, 1);
+    assert.equal(first[0].tokens, 150);
+
+    fsAppend(transcriptPath, assistantUsageLine("a2", { input_tokens: 10, output_tokens: 5 }));
+    runStop(root, transcriptPath);
+    const all = readActivity(root).filter((r) => r.event === "Stop");
+    assert.equal(all.length, 2);
+    assert.equal(all[1].tokens, 15, "the second Stop must report only the newly-appended lines, not the whole transcript again");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("captureOrchestratorTokens: sidechain lines are ignored for the orchestrator turn", () => {
+  const root = setupProject();
+  try {
+    const transcript = writeTranscript(root, "transcript.jsonl", [
+      humanUserLine("u1", "final prompt"),
+      assistantUsageLine("a1", { input_tokens: 100, output_tokens: 0 }),
+      assistantUsageLine("a2", { input_tokens: 999, output_tokens: 999 }, { isSidechain: true }),
+    ]);
+    runStop(root, transcript);
+    const stop = readActivity(root).find((r) => r.event === "Stop" && r.workerId === "orchestrator");
+    assert.ok(stop);
+    assert.equal(stop!.tokens, 100, "sidechain usage must not be summed into the orchestrator's own turn");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("captureOrchestratorTokens: a delta over the 20,000,000 sanity ceiling is dropped, no tokens reported, warning logged without the full path", () => {
+  const root = setupProject();
+  try {
+    const transcript = writeTranscript(root, "transcript.jsonl", [
+      humanUserLine("u1", "final prompt"),
+      assistantUsageLine("a1", { input_tokens: 25000000, output_tokens: 0 }),
+    ]);
+    runStop(root, transcript);
+    const stop = readActivity(root).find((r) => r.event === "Stop" && r.workerId === "orchestrator");
+    assert.ok(stop);
+    assert.equal(Object.prototype.hasOwnProperty.call(stop, "tokens"), false, "dropped delta must not be reported");
+
+    const warnLog = join(root, ".claude", "tycoon", "hook-warnings.log");
+    assert.ok(existsSync(warnLog), "expected a hook-warnings.log to be written");
+    const warnText = readFileSync(warnLog, "utf8");
+    assert.match(warnText, /sanity ceiling/);
+    assert.ok(!warnText.includes(root), "the logged transcript reference must be a basename, not the full path");
+    assert.ok(warnText.includes("transcript.jsonl"), "must still log the transcript's basename");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("captureOrchestratorTokens: an unwritable state dir yields no tokens (skip report, avoid re-report on the next call)", () => {
+  const root = setupProject();
+  try {
+    const tycoonDir = join(root, ".claude", "tycoon");
+    mkdirSync(tycoonDir, { recursive: true });
+    mkdirSync(join(tycoonDir, "orchestrator-token-state.json"), { recursive: true });
+
+    const transcript = writeTranscript(root, "transcript.jsonl", [
+      humanUserLine("u1", "final prompt"),
+      assistantUsageLine("a1", { input_tokens: 100, output_tokens: 50 }),
+    ]);
+    runStop(root, transcript);
+    const stop = readActivity(root).find((r) => r.event === "Stop" && r.workerId === "orchestrator");
+    assert.ok(stop, "expected a Stop record even when the state write fails");
+    assert.equal(Object.prototype.hasOwnProperty.call(stop, "tokens"), false, "must not report when the cursor could not be persisted");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("extractSubagentTokens: sums ALL assistant lines in the subagent's own transcript, including sidechain-marked ones", () => {
+  const root = setupProject();
+  try {
+    const subTranscript = writeTranscript(root, "sub-transcript.jsonl", [
+      assistantUsageLine("s1", { input_tokens: 100, output_tokens: 50 }, { isSidechain: true }),
+      assistantUsageLine("s2", { input_tokens: 20, output_tokens: 10, cache_read_input_tokens: 7 }, { isSidechain: true }),
+    ]);
+    runHook(root, {
+      hook_event_name: "SubagentStop",
+      tool_input: { subagent_type: "coding-specialist" },
+      session_id: "sub-sess-1",
+      agent_transcript_path: subTranscript,
+    });
+    const stop = readActivity(root).find((r) => r.event === "SubagentStop");
+    assert.ok(stop, "expected a SubagentStop record");
+    assert.equal(stop!.tokens, 180, "must sum both lines (100+50) + (20+10) = 180, not just the last line");
+    assert.equal(stop!.cacheReadTokens, 7);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

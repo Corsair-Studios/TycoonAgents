@@ -234,10 +234,13 @@ function openDelegationTab(doc: any) {
 }
 
 // ---------------------------------------------------------------------------
-// (a) Metrics table TOKENS column: displays billable + cache-read combined.
+// (a) Metrics table TOKENS column: billable and cache-read tokens are shown
+// SEPARATELY (spec p63-t3/p63-t5) -- the main figure is billable-only
+// (input + output + cache-creation), never combined with cache-read tokens,
+// which render only in a distinct " + Xk cached" span alongside it.
 // ---------------------------------------------------------------------------
 
-test("metrics table TOKENS column: includes cache-read tokens in the displayed total", () => {
+test("metrics table TOKENS column: shows billable tokens only in the main figure, cache-read tokens only in a separate cached span", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 1000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -256,16 +259,22 @@ test("metrics table TOKENS column: includes cache-read tokens in the displayed t
 
   const tokenCells = [...doc.querySelectorAll("#metrics-tbody .col-tokens")];
   const texts = tokenCells.map((c: any) => c.textContent || "");
-  // 100000 billable + 400000 cache-read = 500000 total -> fmtTokens (~L13389)
-  // renders values <1e6 as "Nk", so this should render "500k"; assert the
-  // combined magnitude appears, not the billable-only 100000 ("100k") figure.
+  // Cache reads are never folded into the displayed total: the combined
+  // magnitude (500k) must never appear anywhere in the column.
   assert.ok(
-    texts.some((t: string) => /500k/i.test(t)),
-    `expected a TOKENS cell showing the combined 500k total, got: ${JSON.stringify(texts)}`,
+    !texts.some((t: string) => /500k/i.test(t)),
+    `TOKENS column must never show a combined 500k figure (cache reads are not folded into totals), got: ${JSON.stringify(texts)}`,
   );
+  // The billable-only figure (100k) must appear, in its own main span.
   assert.ok(
-    !texts.some((t: string) => /^100k$/i.test(t.trim())),
-    `TOKENS column must not show billable-only 100k when cache reads exist, got: ${JSON.stringify(texts)}`,
+    texts.some((t: string) => /^100k/i.test(t.trim())),
+    `expected a TOKENS cell showing the billable-only 100k figure, got: ${JSON.stringify(texts)}`,
+  );
+  // The cache-read amount is still visible, but only via the separate
+  // " + 400k cached" span, never merged into the main figure.
+  assert.ok(
+    texts.some((t: string) => /\+\s*400k\s*cached/i.test(t)),
+    `expected a TOKENS cell showing "+ 400k cached" separately, got: ${JSON.stringify(texts)}`,
   );
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

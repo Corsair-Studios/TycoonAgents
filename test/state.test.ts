@@ -515,3 +515,41 @@ test("applyEvent: WorkerSpawned with event.name 'Fallback Agent' for primary-age
   });
   assert.equal(metric(state.agentMetrics, "primary-agent")?.name, "Wildcard Agent");
 });
+
+// ---------------------------------------------------------------------------
+// p63-t5: TaskCompleted{workerId:"orchestrator"} (unattributable SubagentStop)
+// increments unattributedTasks only -- completedTasks and the orchestrator's
+// own agentMetrics taskCount must stay untouched (p63-t2).
+// ---------------------------------------------------------------------------
+
+test("applyEvent: TaskCompleted with workerId 'orchestrator' increments unattributedTasks only, leaves completedTasks and orchestrator taskCount unchanged", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerSpawned", at: T, workerId: "orchestrator" });
+  assert.equal(state.unattributedTasks, 0);
+  const beforeCompleted = state.completedTasks;
+  const beforeOrchMetric = metric(state.agentMetrics, "orchestrator");
+  const beforeOrchTaskCount = beforeOrchMetric?.taskCount ?? 0;
+
+  state = applyEvent(state, { type: "TaskCompleted", at: T + 1, workerId: "orchestrator" });
+
+  assert.equal(state.unattributedTasks, 1, "unattributedTasks must increment by 1");
+  assert.equal(state.completedTasks, beforeCompleted, "completedTasks must not change");
+  const afterOrchMetric = metric(state.agentMetrics, "orchestrator");
+  assert.equal(
+    afterOrchMetric?.taskCount ?? 0,
+    beforeOrchTaskCount,
+    "orchestrator's own agentMetrics taskCount must not change"
+  );
+
+  // A second unattributed completion accumulates.
+  state = applyEvent(state, { type: "TaskCompleted", at: T + 2, workerId: "orchestrator" });
+  assert.equal(state.unattributedTasks, 2);
+});
+
+test("applyEvent: TaskCompleted for a real worker still increments completedTasks and leaves unattributedTasks at 0", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerSpawned", at: T, workerId: "coding-specialist" });
+  state = applyEvent(state, { type: "TaskCompleted", at: T + 1, workerId: "coding-specialist" });
+  assert.equal(state.unattributedTasks, 0, "a real worker's completion must not touch unattributedTasks");
+  assert.equal(state.completedTasks, 1);
+});
