@@ -29,13 +29,12 @@
 // Usage: node scripts/package-standalone.mjs (run from repo root; requires
 // `npm run build` to have produced out/ first — see docs/BUILDING.md).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, relative, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
+import { zipSync } from 'fflate';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const require = createRequire(import.meta.url);
 
 const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const version = rootPkg.version;
@@ -125,32 +124,38 @@ multi-directory watching, and the OpenCode provider flag.
 `;
 writeFileSync(join(stageDir, 'README-STANDALONE.md'), readme);
 
-// Zip it.
-rmSync(zipPath, { force: true });
-try {
-  const archiver = require('archiver');
-  await new Promise((resolve, reject) => {
-    const { createWriteStream } = require('node:fs');
-    const output = createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    output.on('close', resolve);
-    archive.on('error', reject);
-    archive.pipe(output);
-    archive.directory(stageDir, false);
-    archive.finalize();
-  });
-} catch {
-  // archiver not installed — fall back to PowerShell Compress-Archive (Windows) or `zip` (posix).
-  const { spawnSync } = await import('node:child_process');
-  if (process.platform === 'win32') {
-    const psCmd = `Compress-Archive -Path '${stageDir}\\*' -DestinationPath '${zipPath}' -Force`;
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { stdio: 'inherit' });
-    if (result.status !== 0) throw new Error('Compress-Archive failed');
-  } else {
-    const result = spawnSync('zip', ['-r', '-q', zipPath, '.'], { cwd: stageDir, stdio: 'inherit' });
-    if (result.status !== 0) throw new Error('zip failed');
+// Zip it — pure Node via fflate, keyed by forward-slash relative paths so the
+// archive is portable across Windows/macOS/Linux unzip tools (PowerShell's
+// Compress-Archive writes backslash-separated entry names, which macOS
+// Archive Utility and some Linux tools then extract as literal files named
+// "a\b\c" instead of nested directories).
+const STORE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.zip']);
+
+function walk(dir, files = []) {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      walk(full, files);
+    } else if (stat.isFile()) {
+      files.push(full);
+    }
   }
+  return files;
 }
+
+rmSync(zipPath, { force: true });
+
+const zipEntries = {};
+for (const filePath of walk(stageDir)) {
+  const relPath = relative(stageDir, filePath).split('\\').join('/');
+  const data = readFileSync(filePath);
+  const ext = extname(filePath).toLowerCase();
+  zipEntries[relPath] = STORE_EXTS.has(ext) ? [data, { level: 0 }] : data;
+}
+
+const zipped = zipSync(zipEntries, { level: 6 });
+writeFileSync(zipPath, zipped);
 
 rmSync(stageDir, { recursive: true, force: true });
 console.log(`Wrote ${zipPath}`);
