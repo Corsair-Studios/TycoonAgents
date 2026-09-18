@@ -391,7 +391,7 @@ test("panel.ts wires onDidChangeViewState(visible) to themeServiceHost.handleGet
   assert.match(snippet, /_themeServiceHost\.handleGetStatus\(\)/, "visible branch should call themeServiceHost.handleGetStatus()");
 });
 
-test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting browser_open_failed, and parses url with vscode.Uri.parse(url, true)", () => {
+test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting browser_open_failed, and delegates url opening to openExternalUrl", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const src: string = fs.readFileSync(
@@ -413,7 +413,24 @@ test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting 
   assert.match(openSnippet, /catch\s*\(err\)/, "GOOGLE_OPEN handler should catch errors");
   assert.match(openSnippet, /browser_open_failed/, "GOOGLE_OPEN catch should post browser_open_failed");
 
-  assert.match(src, /vscode\.Uri\.parse\(url,\s*true\)/, "panel.ts should call vscode.Uri.parse(url, true)");
+  const hostIdx = src.indexOf("this._themeServiceHost = createThemeServiceHost(");
+  assert.ok(hostIdx >= 0, "panel.ts should construct the theme service host");
+  const hostSnippet = src.slice(hostIdx, hostIdx + 1000);
+  assert.match(
+    hostSnippet,
+    /openExternal:\s*async\s*\(url\)\s*=>\s*\{[\s\S]*?openExternalUrl\(/,
+    "panel.ts's openExternal option should delegate to openExternalUrl(",
+  );
+
+  const openExternalUrlSrc: string = fs.readFileSync(
+    path.join(process.cwd(), "src", "host", "vscode", "openExternalUrl.ts"),
+    "utf8",
+  );
+  assert.match(
+    openExternalUrlSrc,
+    /Uri\.parse\(url,\s*true\)/,
+    "openExternalUrl.ts should strict-parse with Uri.parse(url, true)",
+  );
 });
 
 test("handleGoogleStart: openExternal throwing posts browser_open_failed with browserUrl set", async () => {

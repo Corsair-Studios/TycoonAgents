@@ -661,6 +661,10 @@ function handleBrowserMessage(msg) {
     return;
   }
   const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+  // p67-t1: the webview's postThemeService() posts THEME_SERVICE_* messages
+  // flat ({ type, ...fields }), not { type, payload }, so `payload` above is
+  // always {} for them. Read those fields off msg itself instead.
+  const themeServicePayload = msg && typeof msg === 'object' ? msg : {};
   switch (msg.type) {
     case THEME_MSG_WIRE.LIST_THEMES:
       handleListThemes(themeStore, broadcast).catch((err) => {
@@ -1257,12 +1261,19 @@ function handleBrowserMessage(msg) {
     case THEME_SERVICE_GET_STATUS_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleGetStatus();
       break;
-    case THEME_SERVICE_REQUEST_MAGIC_LINK_WIRE:
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleRequestMagicLink(String(payload.email || ''));
+    case THEME_SERVICE_REQUEST_MAGIC_LINK_WIRE: {
+      const email = String(themeServicePayload.email || '');
+      if (!email) { console.log(`[tycoonagents-standalone] panel: ${THEME_SERVICE_REQUEST_MAGIC_LINK_WIRE} rejected: email:too_small`); break; }
+      if (themeServiceHostInstance) void themeServiceHostInstance.handleRequestMagicLink(email);
       break;
-    case THEME_SERVICE_VERIFY_WIRE:
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleVerify(String(payload.email || ''), String(payload.code || ''));
+    }
+    case THEME_SERVICE_VERIFY_WIRE: {
+      const email = String(themeServicePayload.email || '');
+      const code = String(themeServicePayload.code || '');
+      if (!email || !code) { console.log(`[tycoonagents-standalone] panel: ${THEME_SERVICE_VERIFY_WIRE} rejected: ${!email ? 'email' : 'code'}:too_small`); break; }
+      if (themeServiceHostInstance) void themeServiceHostInstance.handleVerify(email, code);
       break;
+    }
     case THEME_SERVICE_GOOGLE_START_WIRE:
       if (themeServiceHostInstance) {
         void themeServiceHostInstance.handleGoogleStart().catch((err) => {
@@ -1275,11 +1286,11 @@ function handleBrowserMessage(msg) {
       }
       break;
     case THEME_SERVICE_GOOGLE_COMPLETE_WIRE:
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleComplete(payload.code ? String(payload.code) : undefined);
+      if (themeServiceHostInstance) void themeServiceHostInstance.handleGoogleComplete(themeServicePayload.code ? String(themeServicePayload.code) : undefined);
       break;
     case THEME_SERVICE_GOOGLE_OPEN_WIRE:
-      // payload.url (if any) is advisory only — handleGoogleOpen re-opens
-      // only the URL it stored from the matching THEME_SERVICE_GOOGLE_START.
+      // themeServicePayload.url (if any) is advisory only — handleGoogleOpen
+      // re-opens only the URL it stored from THEME_SERVICE_GOOGLE_START.
       if (themeServiceHostInstance) {
         void themeServiceHostInstance.handleGoogleOpen().catch((err) => {
           console.log(`[tycoonagents-standalone] THEME_SERVICE_GOOGLE_OPEN handler threw: ${scrubOpenExternalError(err)}`);
@@ -1293,11 +1304,14 @@ function handleBrowserMessage(msg) {
     case THEME_SERVICE_SIGN_OUT_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleSignOut();
       break;
-    case THEME_SERVICE_BUY_CREDITS_WIRE:
-      if (themeServiceHostInstance) void themeServiceHostInstance.handleBuyCredits(String(payload.pack || ''));
+    case THEME_SERVICE_BUY_CREDITS_WIRE: {
+      const pack = String(themeServicePayload.pack || '');
+      if (!pack) { console.log(`[tycoonagents-standalone] panel: ${THEME_SERVICE_BUY_CREDITS_WIRE} rejected: pack:too_small`); break; }
+      if (themeServiceHostInstance) void themeServiceHostInstance.handleBuyCredits(pack);
       break;
+    }
     case THEME_SERVICE_SET_REFERRAL_CODE_WIRE:
-      if (themeServiceHostInstance) themeServiceHostInstance.handleSetReferralCode(payload.code ? String(payload.code) : undefined);
+      if (themeServiceHostInstance) themeServiceHostInstance.handleSetReferralCode(themeServicePayload.code ? String(themeServicePayload.code) : undefined);
       break;
     case 'getSkills':
       // Standalone analog of panel.ts's _handleGetSkills (~line 3184-3211).

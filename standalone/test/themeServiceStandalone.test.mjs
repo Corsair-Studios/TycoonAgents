@@ -159,7 +159,9 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
       headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', payload: { email: 'panel@example.com' } }),
+      // p67-t1: postThemeService() posts flat { type, ...fields }, not
+      // { type, payload }; server.mjs's dispatch reads msg.email directly.
+      body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', email: 'panel@example.com' }),
     });
     // handleRequestMagicLink's own postFreshStatus() lands first (signedIn
     // false — not verified yet); wait for it before sending VERIFY so the
@@ -170,7 +172,7 @@ test('sign-in round trip through startServer: OPEN_THEME_BUILDER replies THEME_B
     await fetch(`${runtime.url}/message`, {
       method: 'POST',
       headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', payload: { email: 'panel@example.com', code: '123456' } }),
+      body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', email: 'panel@example.com', code: '123456' }),
     });
     const signedInStatus = await nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === true);
     assert.equal(signedInStatus.payload.signedIn, true);
@@ -682,6 +684,125 @@ test('env: invalid THEME_SERVICE_ENDPOINT falls back to production, endpointHost
     const snapshot = await host.getStatusSnapshot();
     assert.equal(snapshot.endpointHost, undefined);
   });
+});
+
+// p67-t2: proves handleBrowserMessage's THEME_SERVICE_* cases read email/
+// code/pack off the flat message (server.mjs:663-667 themeServicePayload =
+// msg), not a nested `payload` — and that a nested-payload message is
+// rejected as missing the field, which is what would have caught the p67-t1
+// bug before it was fixed.
+async function newServerWithFakeAccount(email) {
+  const fake = createFakeThemeService();
+  fake.helpers.createAccount(email);
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-themesvc-flatbuy-'));
+  const appDataDir = mkTempAppData();
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: appDataDir },
+    cwd: projectRoot,
+    themeServiceHostOptions: {
+      fetch: fake.fetch,
+      endpoint: 'https://theme-service.example',
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+    },
+  });
+  return {
+    fake,
+    runtime,
+    cleanup: async () => {
+      await runtime.close();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(appDataDir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function readSse(runtime) {
+  const controller = new AbortController();
+  const res = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
+  const reader = res.body.getReader();
+  let buffer = '';
+  async function nextOfType(matchType, predicate = () => true, maxChunks = 100) {
+    for (let i = 0; i < maxChunks; i++) {
+      let sepIndex;
+      while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        const dataLine = rawEvent.split('\n').find((line) => line.startsWith('data: '));
+        if (dataLine) {
+          const data = JSON.parse(dataLine.slice('data: '.length));
+          if (data.type === matchType && predicate(data)) return data;
+        }
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += Buffer.from(value).toString('utf8');
+    }
+    return undefined;
+  }
+  await reader.read(); // boot handshake
+  return { nextOfType, abort: () => controller.abort() };
+}
+
+test('dispatch: THEME_SERVICE_BUY_CREDITS reads pack from the flat message and starts checkout', async () => {
+  const { fake, runtime, cleanup } = await newServerWithFakeAccount('flatbuy@example.com');
+  try {
+    const sse = await readSse(runtime);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', email: 'flatbuy@example.com' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === false);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', email: 'flatbuy@example.com', code: '123456' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === true);
+
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_BUY_CREDITS', pack: 'starter45' }),
+    });
+    const pending = await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.pendingCheckout === true);
+    assert.ok(pending, 'flat `pack` field must reach handleBuyCredits and start a real checkout (pendingCheckout true)');
+    sse.abort();
+  } finally {
+    await cleanup();
+  }
+});
+
+test('dispatch: a nested { payload: { pack } } message (the old, broken shape) is dropped as missing pack, never starting checkout', async () => {
+  const { runtime, cleanup } = await newServerWithFakeAccount('nestedbuy@example.com');
+  try {
+    const sse = await readSse(runtime);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', email: 'nestedbuy@example.com' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === false);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', email: 'nestedbuy@example.com', code: '123456' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === true);
+
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_BUY_CREDITS', payload: { pack: 'starter45' } }),
+    });
+    const pending = await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.pendingCheckout === true, 15);
+    assert.equal(pending, undefined, 'a nested payload.pack must NOT reach handleBuyCredits — proves the flat-read is load-bearing');
+    sse.abort();
+  } finally {
+    await cleanup();
+  }
 });
 
 test('env: THEME_SERVICE_ENDPOINT unset falls back to production, endpointHost stays undefined', async (t) => {

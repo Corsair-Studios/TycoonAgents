@@ -11,6 +11,7 @@ import * as path from "path";
 import type { Runtime } from "./runtime";
 import { waitForBundledThemes } from "./themeReady";
 import { log } from "./log";
+import { openExternalUrl } from "./openExternalUrl";
 import { computeDelegationModeStats, applyEvent, initialWorldState } from "../../core/state";
 import type { MetricsWorldState, AgentMetric } from "../../core/state";
 import type { HookRecord } from "../../providers/claude-code/hookRecord";
@@ -200,6 +201,21 @@ function errorMessage(error: unknown): string {
 function scrubOpenExternalError(error: unknown): string {
   const ctor = error instanceof Error ? error.constructor.name : typeof error;
   return `couldn't open the browser for sign-in (${ctor})`;
+}
+
+// p67-t1: the webview's postThemeService() posts a flat message
+// ({ type, ...fields }), not { type, payload }. Extract everything but
+// `type` so THEME_SERVICE_* schema parses see the fields the webview
+// actually sent instead of always seeing `undefined`.
+function themeServiceMessagePayload(message: unknown): unknown {
+  if (!message || typeof message !== "object") return message;
+  const { type: _type, ...rest } = message as Record<string, unknown>;
+  return rest;
+}
+
+function logThemeServiceRejection(type: string, error: { issues: Array<{ path: (string | number)[]; code: string }> }): void {
+  const summary = error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
+  log(`panel: ${type} rejected: ${summary}`);
 }
 
 import {
@@ -980,14 +996,17 @@ export class TycoonPanel {
     this._themeServiceHost = createThemeServiceHost({
       secrets,
       openExternal: async (url) => {
-        // p66-t1: `true` requires a well-formed URI (throws instead of
-        // silently no-op'ing on a malformed one) — the result is logged as a
-        // boolean only, never the URL itself (it carries a PKCE
-        // code_challenge, never logged in full). A thrown error is scrubbed
-        // by the caller (themeServiceHost.ts) before it's logged or posted.
-        const opened = await vscode.env.openExternal(vscode.Uri.parse(url, true));
-        log(`panel: openExternal result=${opened}`);
-        return opened;
+        // p66-t1: a well-formed URI is required (throws instead of silently
+        // no-op'ing on a malformed one) — the result is logged as a boolean
+        // only, never the URL itself (it can carry a PKCE code_challenge or
+        // a Stripe checkout fragment, never logged in full). A thrown error
+        // is scrubbed by the caller (themeServiceHost.ts) before it's
+        // logged or posted.
+        // p67-t3: vscode.Uri.parse's re-encoding can mangle a Stripe
+        // Checkout URL's `#fidk...` fragment or the Supabase authorize
+        // URL's query, so openExternalUrl compares the round-trip and falls
+        // back to a detached platform-opener spawn when it changed.
+        return openExternalUrl(url, (msg) => log(`panel: ${msg}`));
       },
       postStatus: (status: ThemeServiceHostStatus) => {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
@@ -1904,20 +1923,20 @@ export class TycoonPanel {
           const openStatus = await this._themeServiceHost.getStatusSnapshot();
           void this._panel.webview.postMessage({ type: MSG.THEME_BUILDER_OPENED, payload: openStatus });
         } else if (message.type === MSG.THEME_SERVICE_GET_STATUS) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_GET_STATUS.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GET_STATUS.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleGetStatus();
         } else if (message.type === MSG.THEME_SERVICE_REQUEST_MAGIC_LINK) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleRequestMagicLink(parsed.data.email);
         } else if (message.type === MSG.THEME_SERVICE_VERIFY) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleVerify(parsed.data.email, parsed.data.code);
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_START) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_START.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_START.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           try {
             await this._themeServiceHost.handleGoogleStart();
           } catch (err) {
@@ -1928,12 +1947,12 @@ export class TycoonPanel {
             });
           }
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_COMPLETE) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleGoogleComplete(parsed.data.code);
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_OPEN) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_OPEN.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_OPEN.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           // The payload's `url` (if any) is advisory only — the host always
           // re-opens the URL it stored from the matching handleGoogleStart.
           try {
@@ -1946,16 +1965,16 @@ export class TycoonPanel {
             });
           }
         } else if (message.type === MSG.THEME_SERVICE_SIGN_OUT) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleSignOut();
         } else if (message.type === MSG.THEME_SERVICE_BUY_CREDITS) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_BUY_CREDITS.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           await this._themeServiceHost.handleBuyCredits(parsed.data.pack);
         } else if (message.type === MSG.THEME_SERVICE_SET_REFERRAL_CODE) {
-          const parsed = MSG_SCHEMAS.THEME_SERVICE_SET_REFERRAL_CODE.safeParse((message as any).payload);
-          if (!parsed.success) return;
+          const parsed = MSG_SCHEMAS.THEME_SERVICE_SET_REFERRAL_CODE.safeParse(themeServiceMessagePayload(message));
+          if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
           this._themeServiceHost.handleSetReferralCode(parsed.data.code);
         } else if (message.type === MSG.REVEAL_THEME_IMAGE) {
           // Right-click "Open file location" on a review board — reveal its
