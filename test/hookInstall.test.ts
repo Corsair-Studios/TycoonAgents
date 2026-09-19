@@ -22,6 +22,7 @@ import {
   syncRuntimeFile,
   RUNTIME_HOOK_FILES,
   enableMcpJsonServerInSettings,
+  MCP_BRIDGE_HOOK_FILES,
 } from "../src/host/vscode/hookInstall";
 import { mergeEnabledMcpJsonServer } from "../src/host/vscode/mcpCatalog";
 
@@ -897,6 +898,27 @@ test("mergeEnabledMcpJsonServer: blank id leaves settings unchanged", () => {
   assert.deepEqual(resultBlank, existing, "blank id must leave the settings object unchanged");
   const resultWhitespace = mergeEnabledMcpJsonServer(existing, "   ");
   assert.deepEqual(resultWhitespace, existing, "whitespace-only id must leave the settings object unchanged");
+});
+
+// ---------------------------------------------------------------------------
+// MCP_BRIDGE_HOOK_FILES — the list panel.ts's best-effort copy loop
+// (_ensureMcpBridgeHooksInstalled ~6345/teamSetupHost.ts ~400) iterates to
+// place the Codex app-server bridge scripts into .claude/hooks/. Both
+// consuming call sites are private/unexported, so this pins the exact
+// exported list they both read from, and independently verifies each named
+// file actually exists in hooks/ (the real source the copy loop reads from)
+// so the list can never silently point at a renamed/missing script.
+// ---------------------------------------------------------------------------
+
+test("MCP_BRIDGE_HOOK_FILES is exactly codex-mcp-launcher.cjs and codex-app-server-mcp.cjs, in that order", () => {
+  assert.deepEqual(MCP_BRIDGE_HOOK_FILES, ["codex-mcp-launcher.cjs", "codex-app-server-mcp.cjs"]);
+});
+
+test("every MCP_BRIDGE_HOOK_FILES entry exists as a real file under hooks/ (the copy loop's source)", () => {
+  for (const name of MCP_BRIDGE_HOOK_FILES) {
+    const p = path.join(process.cwd(), "hooks", name);
+    assert.ok(fs.existsSync(p), `${name} must exist at ${p} for the best-effort copy to have anything to copy`);
+  }
 });
 
 test('mergeEnabledMcpJsonServer: non-array enabledMcpjsonServers field becomes ["codex"]', () => {

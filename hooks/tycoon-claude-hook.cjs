@@ -316,6 +316,21 @@ function getFallbackChainModule() {
   return _fallbackChainModule;
 }
 
+// p69-t2 (docs/codex-reviewer-onboarding-friction-2026-09-18.md #5, #8):
+// Codex's own model-slug rejection ("The 'codex-astra' model is not
+// supported when using Codex with a ChatGPT account.") is a distinct
+// provider-failure shape the shared fallbackChain.isProviderFailure()
+// patterns don't cover (it isn't a quota/auth/connection failure — the
+// binary and account are fine, the caller just guessed a display name
+// instead of the real slug). Recognised here, in this hook only, so a
+// misconfigured Codex agent's model gets a specific, actionable hint
+// instead of silently falling back with a generic reason string.
+const CODEX_MODEL_SLUG_ERROR_PATTERN = /model is not supported when using codex with a chatgpt account/i;
+const CODEX_MODEL_SLUG_ERROR_HINT = "Hint: run `codex debug models` to list the real model slugs available on this Codex account.";
+function isCodexModelSlugError(text) {
+  return typeof text === "string" && CODEX_MODEL_SLUG_ERROR_PATTERN.test(text);
+}
+
 // Per-process FallbackState. tycoon-claude-hook.cjs is a short-lived CLI
 // process invoked fresh per hook event (unlike the long-lived OpenCode
 // plugin process), so failure counts cannot be held in memory across calls;
@@ -334,6 +349,29 @@ function loadFallbackStateFile(tycoonDir) {
     return {};
   }
 }
+// p69-t3: when routing.resolved.json (written by scripts/apply-routing-profile.mjs)
+// has no entry for an agent — either the script was never run in this
+// consumer project, or the agent was hand-added to routing.json after the
+// last apply — fall back to reading .claude/tycoon/routing.json's FLAT
+// per-agent entry directly instead of silently getting no fallback chain.
+// routing.json's shape (RoutingSlot, src/core/routingProfile.ts) uses the
+// SAME field names consumed here (model/vendor/costModelClass/fallback/
+// useDefaultFallback) as routing.resolved.json's nested
+// `agents[id].backend`/`fallback` shape, so no conversion is needed — see
+// docs/adding-a-non-anthropic-agent.md's "Routing files" section for a
+// side-by-side of both shapes. Fail-open: any missing/malformed file
+// returns undefined and callers keep today's "no fallback" behavior.
+function readFlatRoutingAgentEntry(tycoonDir, agentId) {
+  const flat = readJsonSafe(path.join(tycoonDir, "routing.json"));
+  const entry = flat && flat.agents && flat.agents[agentId];
+  if (!entry || typeof entry !== "object") return undefined;
+  return {
+    chain: Array.isArray(entry.fallback) ? entry.fallback : [],
+    defaultFallback: flat.defaultFallback,
+    useDefaultFallback: entry.useDefaultFallback === false ? false : true,
+  };
+}
+
 function saveFallbackStateFile(tycoonDir, data) {
   const file = path.join(tycoonDir, "fallback-state.json");
   try {
@@ -1849,14 +1887,23 @@ function main(raw) {
           if (attemptsSoFar > 0) {
             const resolvedRouting = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
             const resolvedAgentEntry = resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[agentId];
-            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || [];
+            // p69-t3: routing.resolved.json has no entry for this agent (the
+            // apply-routing-profile.mjs regen script was never run against a
+            // hand edit) — fall back to routing.json's flat entry so a hand
+            // edit still takes effect instead of being silently inert.
+            const flatEntry = !resolvedAgentEntry ? readFlatRoutingAgentEntry(tycoonDir, agentId) : undefined;
+            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || (flatEntry && flatEntry.chain) || [];
             const chain = Array.isArray(chainRaw) ? chainRaw : [];
             const result = fallbackChain.resolveNextFallback({
               slotId: agentId,
               chain,
               attemptsSoFar: attemptsSoFar - 1,
-              defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
-              useDefaultFallback: resolvedAgentEntry && resolvedAgentEntry.useDefaultFallback === false ? false : true,
+              defaultFallback: (resolvedRouting && resolvedRouting.defaultFallback) || (flatEntry && flatEntry.defaultFallback),
+              useDefaultFallback: resolvedAgentEntry
+                ? resolvedAgentEntry.useDefaultFallback !== false
+                : flatEntry
+                  ? flatEntry.useDefaultFallback
+                  : true,
               failingSlot: { model },
             });
             if (!result.exhausted && result.slot) {
@@ -2136,14 +2183,18 @@ function main(raw) {
             typeof payload.tool_response === "string"
               ? payload.tool_response
               : (payload.tool_response && JSON.stringify(payload.tool_response)) || "";
-          if (fallbackChain.isProviderFailure(toolResponseText)) {
+          const codexModelSlugError = isCodexModelSlugError(toolResponseText);
+          if (fallbackChain.isProviderFailure(toolResponseText) || codexModelSlugError) {
             const slotId = mcpBackend.agentId;
             const sessionId = typeof payload.session_id === "string" ? payload.session_id : "unknown-session";
             const resolvedRouting = readJsonSafe(
               path.join(tycoonDir, "routing.resolved.json")
             );
             const resolvedAgentEntry = resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[slotId];
-            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || [];
+            // p69-t3: same routing.json flat-entry fallback as the PreToolUse
+            // site above — see readFlatRoutingAgentEntry.
+            const flatEntry = !resolvedAgentEntry ? readFlatRoutingAgentEntry(tycoonDir, slotId) : undefined;
+            const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || (flatEntry && flatEntry.chain) || [];
             const chain = Array.isArray(chainRaw) ? chainRaw : [];
 
             const stateData = loadFallbackStateFile(tycoonDir);
@@ -2158,15 +2209,22 @@ function main(raw) {
               slotId,
               chain,
               attemptsSoFar: newAttempts - 1,
-              defaultFallback: resolvedRouting && resolvedRouting.defaultFallback,
-              useDefaultFallback: resolvedAgentEntry && resolvedAgentEntry.useDefaultFallback === false ? false : true,
+              defaultFallback: (resolvedRouting && resolvedRouting.defaultFallback) || (flatEntry && flatEntry.defaultFallback),
+              useDefaultFallback: resolvedAgentEntry
+                ? resolvedAgentEntry.useDefaultFallback !== false
+                : flatEntry
+                  ? flatEntry.useDefaultFallback
+                  : true,
               failingSlot: { vendor: mcpBackend.vendor, model: mcpBackend.model },
             });
+            const reasonText = codexModelSlugError
+              ? `${toolResponseText.slice(0, 300)} ${CODEX_MODEL_SLUG_ERROR_HINT}`
+              : toolResponseText.slice(0, 300);
             const instruction = fallbackChain.buildFallbackInstruction({
               workerId: slotId,
               failedProvider: mcpBackend.vendor,
               failedModel: mcpBackend.model,
-              reason: toolResponseText.slice(0, 300),
+              reason: reasonText,
               result,
               chainLength: chain.length,
             });
@@ -2179,7 +2237,7 @@ function main(raw) {
               failedModel: mcpBackend.model,
               nextModel: result.slot && result.slot.model,
               fallbackIsDefault: result.isDefault === true,
-              reason: toolResponseText.slice(0, 300),
+              reason: reasonText,
               at,
             };
             if (payload.session_id) fallbackRecord.sessionId = payload.session_id;

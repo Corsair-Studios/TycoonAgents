@@ -57,7 +57,7 @@
 
 const readline = require("readline");
 const { spawn } = require("child_process");
-const { discoverCodexBinary } = require("./codex-mcp-launcher.cjs");
+const { discoverCodexBinary, needsShell } = require("./codex-mcp-launcher.cjs");
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
@@ -198,18 +198,38 @@ class AppServerClient {
   ensureSpawned() {
     if (this.child) return;
     const args = ["app-server", "--stdio", ...this.extraArgs];
-    // A Windows .cmd/.bat shim (e.g. an npm-global install, or a test
-    // fixture wrapper) is not a native executable CreateProcess can launch
-    // directly — same shell-detection rule codex-mcp-launcher.cjs's
-    // needsShell() applies for the same reason.
-    const shell = process.platform === "win32" && /\.(cmd|bat)$/i.test(this.binaryPath);
+    // Reuses codex-mcp-launcher.cjs's own needsShell() (a bare command name,
+    // or a Windows .cmd/.bat shim such as an npm-global install or a test
+    // fixture wrapper, is not a native executable CreateProcess can launch
+    // directly with shell:false) instead of re-implementing a narrower
+    // .cmd/.bat-only check here — discoverCodexBinary can return a bare
+    // "codex" (PATH-resolved) or an unresolved shim path, both of which
+    // previously fell through this file's own check and spawned with
+    // shell:false, throwing ENOENT (p69-t2,
+    // docs/codex-reviewer-onboarding-friction-2026-09-18.md #6).
+    const shell = needsShell(this.binaryPath);
     this.child = spawn(this.binaryPath, args, {
       shell,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.on("error", (err) => {
-      process.stderr.write(`[codex-app-server-mcp] failed to spawn app-server child: ${err && err.message}\n`);
+      const message = `[codex-app-server-mcp] failed to spawn app-server child "${this.binaryPath}": ${err && err.message}`;
+      process.stderr.write(`${message}\n`);
+      // Reject every pending request/turn immediately instead of leaving
+      // them to hang until the (default 600s) timeout — a spawn failure
+      // (e.g. ENOENT) is permanent for this child, so waiting for it to
+      // "complete" is never useful (p69-t2, friction-doc #6).
+      const spawnErr = new Error(message);
+      for (const { reject } of this.pending.values()) reject(spawnErr);
+      this.pending.clear();
+      for (const listener of this.turnListeners.values()) {
+        clearTimeout(listener.timer);
+        listener.reject(spawnErr);
+      }
+      this.turnListeners.clear();
+      this.pendingTurnState.clear();
+      this.child = null;
     });
     this.child.on("exit", (code, signal) => {
       process.stderr.write(`[codex-app-server-mcp] app-server child exited (code=${code}, signal=${signal})\n`);

@@ -582,6 +582,36 @@ test("resyncAgentFrontmatterFields never touches a nested backend.model line", (
   assert.match(repaired!, /^\s{2}model: openai\/gpt-5$/m, "nested backend.model left untouched");
 });
 
+test("resyncAgentFrontmatterFields: top-level model:openai/gpt-6-astra with backend.vendor:openai and no backend.model is forced to a Claude alias, stranded slug moved to backend.model", () => {
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+  const legacy =
+    `---\nname: codex-reviewer\ndescription: "x"\nmodel: openai/gpt-6-astra\nbackend:\n  vendor: openai\n  transport: mcp\n  mcpServer: codex\n---\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
+  const repaired = resyncAgentFrontmatterFields(legacy, agent);
+  assert.notEqual(repaired, null);
+  assert.match(repaired!, /^model: sonnet$/m, "top-level model must become the Claude alias");
+  assert.match(repaired!, /^\s{2}model: openai\/gpt-6-astra$/m, "stranded vendor slug must be preserved under backend.model");
+  assert.ok(repaired!.endsWith(`## Keywords (for task routing)\n${agent.keywords}\n`), "body must be preserved byte-for-byte");
+  assert.ok(workerAgentFingerprintMatches(repaired!, agent), "repaired file must be recognized as ours so activation does not loop");
+});
+
+test("resyncAgentFrontmatterFields: an existing explicit backend.model is preserved untouched, not overwritten by the stranded top-level slug", () => {
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+  const legacy =
+    "---\nname: codex-reviewer\ndescription: \"x\"\nmodel: openai/gpt-5-old\nbackend:\n  vendor: openai\n  transport: mcp\n  mcpServer: codex\n  model: openai/gpt-6-astra\n---\n\nBody.\n";
+  const repaired = resyncAgentFrontmatterFields(legacy, agent);
+  assert.notEqual(repaired, null);
+  assert.match(repaired!, /^model: sonnet$/m);
+  assert.match(repaired!, /^\s{2}model: openai\/gpt-6-astra$/m, "the pre-existing backend.model must survive unchanged");
+  assert.equal((repaired!.match(/^\s{2}model:/gm) || []).length, 1, "no duplicate backend.model line must be inserted");
+});
+
+test("resyncAgentFrontmatterFields: a top-level model that is already a valid Claude alias is left untouched (no-op) for a foreign backend, and fingerprint still matches", () => {
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+  const current = buildAgentMarkdown(agent);
+  assert.equal(resyncAgentFrontmatterFields(current, agent), null, "already-current file (valid alias, backend.model set) must be a no-op");
+  assert.ok(workerAgentFingerprintMatches(current, agent), "an already-current file must still be recognized as ours");
+});
+
 test("resyncAgentFrontmatterFields is a no-op (returns null) when frontmatter is already current", () => {
   const agent = REGULAR_AGENTS.find((a) => a.id === "search-retrieval")!;
   const current = buildAgentMarkdown(agent);

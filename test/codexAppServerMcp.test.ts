@@ -237,6 +237,41 @@ test("(concurrency) two concurrent codex-reply calls on one thread resolve indep
 });
 
 // ---------------------------------------------------------------------------
+// 4c. Spawn "error" event: a binary path that cannot be spawned (ENOENT)
+//     rejects the in-flight request PROMPTLY (not after the ~600s default
+//     timeout) — hooks/codex-app-server-mcp.cjs:216-233's child.on("error")
+//     handler. Uses needsShell(binaryPath) === false (an absolute non-.cmd
+//     path) so Node spawns it directly with shell:false and a genuinely
+//     missing path fires "error" (ENOENT) rather than a shell-reported
+//     "not recognized" exit.
+// ---------------------------------------------------------------------------
+
+test("(spawn error) a binary that cannot be spawned rejects the pending codex tool call promptly, not after the full timeout", async () => {
+  const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-codex-missing-"));
+  const missingBinaryPath = path.join(missingDir, "definitely-does-not-exist-codex-binary");
+  const client = new shim.AppServerClient(missingBinaryPath, []);
+  try {
+    const start = Date.now();
+    // ensureInitialized() itself rejects (not caught inside handleCodexTool
+    // before that point), so the promptness/error-handler proof is that the
+    // rejection surfaces fast and names the unspawnable binary, not that
+    // handleCodexTool converts it to an {isError:true} result.
+    await assert.rejects(
+      () => shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client),
+      (err: Error) => {
+        assert.ok(/failed to spawn app-server child/.test(err.message), `expected the spawn-error message, got: ${err.message}`);
+        return true;
+      },
+    );
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 5000, `expected a prompt rejection well under the timeout, took ${elapsed}ms`);
+  } finally {
+    client.dispose();
+    fs.rmSync(missingDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 5. Timeout: a turn that never sends turn/completed rejects cleanly within
 //    the configured timeout instead of hanging.
 // ---------------------------------------------------------------------------

@@ -28,6 +28,14 @@ export interface Backend {
   costModelClass: CostModelClass;
   endpointEnv?: string;
   apiKeyEnv?: string;
+  /** p69-t3: launch-time reasoning-effort hint (e.g. "low"/"medium"/"high"
+   *  for Codex). Whitelisted through from frontmatter's `backend.reasoningEffort`
+   *  so parseAgentBackend no longer silently drops it. Consumers that launch
+   *  an MCP server via a TycoonAgents launcher (hooks/codex-mcp-launcher.cjs)
+   *  may pass it through as `model_reasoning_effort`; a static .mcp.json
+   *  entry's `-c` flags are NOT rewritten by this field — see
+   *  docs/adding-a-non-anthropic-agent.md's "Routing files" section. */
+  reasoningEffort?: string;
 }
 
 const VALID_TRANSPORTS: Transport[] = ["claude-native", "mcp", "openai-compatible"];
@@ -184,6 +192,12 @@ export function parseAgentBackend(frontmatter: Record<string, unknown>): Backend
 
   const tools = Array.isArray(b["tools"]) ? (b["tools"] as unknown[]).filter((t) => typeof t === "string") as string[] : undefined;
   const apiKeyEnv = typeof b["apiKeyEnv"] === "string" ? (b["apiKeyEnv"] as string) : undefined;
+  // p69-t3: previously dropped — frontmatter authors had no way to set this
+  // and it silently vanished. Passed through verbatim (string only); the
+  // caller decides how/whether to act on it (see Backend.reasoningEffort doc).
+  const REASONING_EFFORT_ALLOWLIST = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+  const rawReasoningEffort = typeof b["reasoningEffort"] === "string" ? (b["reasoningEffort"] as string).trim().toLowerCase() : undefined;
+  const reasoningEffort = rawReasoningEffort && REASONING_EFFORT_ALLOWLIST.has(rawReasoningEffort) ? rawReasoningEffort : undefined;
 
   const result: Backend = {
     vendor,
@@ -195,5 +209,6 @@ export function parseAgentBackend(frontmatter: Record<string, unknown>): Backend
   if (tools) result.tools = tools;
   if (endpointEnv) result.endpointEnv = endpointEnv;
   if (apiKeyEnv) result.apiKeyEnv = apiKeyEnv;
+  if (reasoningEffort) result.reasoningEffort = reasoningEffort;
   return result;
 }

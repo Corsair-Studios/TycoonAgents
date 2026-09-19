@@ -68,6 +68,7 @@ import {
   syncRuntimeFile,
   cleanupForeignHookArtifacts,
   RUNTIME_HOOK_FILES,
+  MCP_BRIDGE_HOOK_FILES,
 } from "./hookInstall";
 
 export interface ExportTeamSetupOptions {
@@ -390,6 +391,17 @@ function installPortableHooks(root: string, hookSourceDir: string, delegationMod
       const src = path.join(hookSourceDir, fileName);
       if (fs.existsSync(src)) {
         syncRuntimeFile(src, path.join(tycoonDir, fileName));
+      }
+    }
+
+    // MCP bridge scripts (.claude/hooks/, not .claude/tycoon/) — see
+    // MCP_BRIDGE_HOOK_FILES in hookInstall.ts.
+    const hooksDestDir = path.join(claudeDir, "hooks");
+    for (const fileName of MCP_BRIDGE_HOOK_FILES) {
+      const src = path.join(hookSourceDir, fileName);
+      if (fs.existsSync(src)) {
+        fs.mkdirSync(hooksDestDir, { recursive: true });
+        syncRuntimeFile(src, path.join(hooksDestDir, fileName));
       }
     }
 

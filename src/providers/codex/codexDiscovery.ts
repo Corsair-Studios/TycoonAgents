@@ -152,13 +152,54 @@ function collectPathSignal(list: CodexCandidate[], seen: Set<string>): void {
 }
 
 /**
+ * Target-triple / platform-package map mirroring
+ * hooks/codex-mcp-launcher.cjs's NODE_MODULES_TARGET_TRIPLES — kept in sync
+ * manually since that file is CJS and this module is TS. Used only to
+ * resolve the REAL vendor .exe/binary an npm-global `@openai/codex` install
+ * ships, so discovery can offer it as a candidate instead of only the
+ * npm-global codex.cmd/codex shim.
+ */
+const NODE_MODULES_TARGET_TRIPLES: { platform: NodeJS.Platform; arch: string; triple: string; pkg: string }[] = [
+  { platform: "linux", arch: "x64", triple: "x86_64-unknown-linux-musl", pkg: "@openai/codex-linux-x64" },
+  { platform: "linux", arch: "arm64", triple: "aarch64-unknown-linux-musl", pkg: "@openai/codex-linux-arm64" },
+  { platform: "darwin", arch: "x64", triple: "x86_64-apple-darwin", pkg: "@openai/codex-darwin-x64" },
+  { platform: "darwin", arch: "arm64", triple: "aarch64-apple-darwin", pkg: "@openai/codex-darwin-arm64" },
+  { platform: "win32", arch: "x64", triple: "x86_64-pc-windows-msvc", pkg: "@openai/codex-win32-x64" },
+  { platform: "win32", arch: "arm64", triple: "aarch64-pc-windows-msvc", pkg: "@openai/codex-win32-arm64" },
+];
+
+/**
+ * Resolves an npm-global node_modules root's installed `@openai/codex`
+ * package PAST its own bin/codex.js and codex.cmd shims to the real
+ * platform-specific vendor .exe/binary (p69-t2,
+ * docs/codex-reviewer-onboarding-friction-2026-09-18.md #6). Fail-open:
+ * returns null when the base package or matching platform package aren't
+ * present.
+ */
+function resolveVendorExeUnderNodeModules(nodeModulesDir: string): string | null {
+  const entry = NODE_MODULES_TARGET_TRIPLES.find((t) => t.platform === process.platform && t.arch === process.arch);
+  if (!entry) return null;
+  try {
+    const basePackageJson = path.join(nodeModulesDir, "@openai", "codex", "package.json");
+    if (!fs.existsSync(basePackageJson)) return null;
+    const binName = process.platform === "win32" ? "codex.exe" : "codex";
+    return path.join(nodeModulesDir, "@openai", entry.pkg.replace("@openai/", ""), "vendor", entry.triple, "bin", binName);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Signal: the npm global install location. Phase 1 observed this on one
  * machine at C:\Users\<user>\AppData\Roaming\npm\codex — but per
  * docs/PATH-DISCOVERY.md we must derive the prefix, never hardcode a
  * username or drive. Prefers asking npm itself (`npm prefix -g`, the
  * authoritative source), and falls back to the standard per-platform
  * default npm-global layout if npm isn't invocable — both wrapped so a
- * failure here is a silent no-op, never a crash.
+ * failure here is a silent no-op, never a crash. Also resolves PAST the
+ * npm-global codex.cmd/codex shim to the real vendor .exe when the
+ * platform package is present alongside it, offering that real executable
+ * as a candidate before the shim (p69-t2).
  */
 function collectNpmGlobalSignal(list: CodexCandidate[], seen: Set<string>): void {
   const basename = process.platform === "win32" ? "codex.cmd" : "codex";
@@ -172,6 +213,9 @@ function collectNpmGlobalSignal(list: CodexCandidate[], seen: Set<string>): void
     }).trim();
     if (prefix) {
       const npmBin = process.platform === "win32" ? prefix : path.join(prefix, "bin");
+      const npmNodeModules = process.platform === "win32" ? path.join(prefix, "node_modules") : path.join(prefix, "lib", "node_modules");
+      const vendorExe = resolveVendorExeUnderNodeModules(npmNodeModules);
+      if (vendorExe) addCandidate(list, seen, `npm global prefix vendor exe (${npmNodeModules})`, vendorExe);
       addCandidate(list, seen, "npm global prefix (npm prefix -g)", path.join(npmBin, basename));
     }
   } catch {

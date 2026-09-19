@@ -23,7 +23,13 @@ this reason. The fallback shim is Experimental.
 ## Reviewer model and MCP approval (Experimental)
 
 The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login
-accepts; `gpt-6-astra` is available as a higher tier for deeper reviews. As noted above, the
+accepts; `gpt-6-astra` is available as a higher tier for deeper reviews, with reasoning efforts
+`low`, `medium`, `high`, `xhigh`, `max`, and `ultra` (default `low`). Accepted model slugs and
+their supported efforts are account- and time-dependent — ChatGPT-account Codex auth has rejected
+several plausible-looking slugs historically (see
+`docs/codex-reviewer-onboarding-friction-2026-09-18.md`). Run `codex debug models` (or inspect
+`~/.codex/models_cache.json`) to list the slugs your account actually accepts before changing a
+`model=` launch arg or an agent's `backend.model`. As noted above, the
 `CODEX_BINARY_PATH` (`CODEX_CLI_PATH` in `hooks/codex-mcp-launcher.cjs`) override skips the
 discovery ladder entirely and spawns that binary directly. On first use, Claude Code asks once
 per project to approve the project-level Codex MCP server before it will run; use

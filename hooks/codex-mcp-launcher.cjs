@@ -54,15 +54,26 @@
  * shell:false vs shell:true: a real executable (.exe on Windows, a binary
  * on unix) is spawned with shell:false so Node passes argv as a real array
  * to CreateProcess/execve — required for quoted -c values like
- * `-c model="gpt-5"` to arrive at the child with the quotes intact.
- * shell:true is required instead for anything that resolves through a
- * shell shim: a bare `codex` PATH lookup, or a path that ends in .cmd/.bat
- * (Windows batch shims, e.g. the npm-global install's codex.cmd) — spawning
- * those with shell:false throws EINVAL on Windows (a .cmd/.bat is not a
- * native executable CreateProcess can launch directly). Because a .cmd
- * shim under shell:true still mangles quoted args, this module prefers
- * resolving PAST a known .cmd shim to the real underlying .exe wherever it
- * can (see collectNodeModulesSignal) rather than spawning the shim.
+ * `-c model="gpt-5"` to arrive at the child with the literal quote
+ * characters intact. shell:true is required instead for anything that
+ * resolves through a shell shim: a bare `codex` PATH lookup, or a path
+ * that ends in .cmd/.bat (Windows batch shims, e.g. the npm-global
+ * install's codex.cmd) — spawning those with shell:false throws EINVAL on
+ * Windows (a .cmd/.bat is not a native executable CreateProcess can launch
+ * directly). Verified empirically (scratch .cmd-shim-plus-argv-echo probe,
+ * see docs/codex-reviewer-onboarding-friction-2026-09-18.md #6): under
+ * shell:true, cmd.exe's own command-line parsing DOES strip the literal
+ * `"` characters from a value like `model="gpt-6-astra"` (the child sees
+ * `model=gpt-6-astra`, no quotes) — but it does NOT mis-split or corrupt
+ * argument boundaries; each `-c` array element still arrives as exactly
+ * one argv entry, spaces and all. So a .cmd shim loses literal quote
+ * characters, not argument structure — harmless for values Codex accepts
+ * unquoted (its own onboarding session proved the quoted -c flags worked
+ * end-to-end through a .cmd shim). This module still prefers resolving
+ * PAST a known .cmd shim to the real underlying .exe wherever it can (see
+ * collectNodeModulesSignal / collectNpmGlobalSignal) so quote characters
+ * are never dropped at all, but a .cmd shim is not the correctness hazard
+ * this comment previously implied.
  */
 
 "use strict";
@@ -226,7 +237,30 @@ function collectNodeModulesSignal(list, seen) {
   }
 }
 
-/** Signal: the npm global install location. Prefers asking npm itself (npm prefix -g), falls back to the standard per-platform default npm-global layout if npm isn't invocable — wrapped so a failure here is a silent no-op, never a crash. Mirrors collectNpmGlobalSignal in codexDiscovery.ts. */
+/**
+ * Resolves an npm-global (or any) node_modules root's installed
+ * `@openai/codex` package PAST its own bin/codex.js and codex.cmd shims to
+ * the real platform-specific vendor .exe/binary, the same way
+ * collectNodeModulesSignal does for a project-local devDependency — added
+ * for p69-t2 (docs/codex-reviewer-onboarding-friction-2026-09-18.md #6),
+ * since the npm-global install is the common case and was previously only
+ * ever offered as the .cmd shim itself. Fail-open: returns null when the
+ * base package or matching platform package aren't present.
+ */
+function resolveVendorExeUnderNodeModules(nodeModulesDir) {
+  const entry = NODE_MODULES_TARGET_TRIPLES.find((t) => t.platform === process.platform && t.arch === process.arch);
+  if (!entry) return null;
+  try {
+    const basePackageJson = path.join(nodeModulesDir, "@openai", "codex", "package.json");
+    if (!fs.existsSync(basePackageJson)) return null;
+    const binName = process.platform === "win32" ? "codex.exe" : "codex";
+    return path.join(nodeModulesDir, "@openai", entry.pkg.replace("@openai/", ""), "vendor", entry.triple, "bin", binName);
+  } catch {
+    return null;
+  }
+}
+
+/** Signal: the npm global install location. Prefers asking npm itself (npm prefix -g), falls back to the standard per-platform default npm-global layout if npm isn't invocable — wrapped so a failure here is a silent no-op, never a crash. Mirrors collectNpmGlobalSignal in codexDiscovery.ts. Also resolves PAST the npm-global codex.cmd/codex shim to the real vendor .exe when the platform package is present alongside it (see resolveVendorExeUnderNodeModules), so this signal offers the real executable candidate FIRST and the shim as a fallback candidate. */
 function collectNpmGlobalSignal(list, seen) {
   const basename = process.platform === "win32" ? "codex.cmd" : "codex";
 
@@ -240,6 +274,9 @@ function collectNpmGlobalSignal(list, seen) {
     const prefix = (result.stdout || "").trim();
     if (!result.error && prefix) {
       const npmBin = process.platform === "win32" ? prefix : path.join(prefix, "bin");
+      const npmNodeModules = process.platform === "win32" ? path.join(prefix, "node_modules") : path.join(prefix, "lib", "node_modules");
+      const vendorExe = resolveVendorExeUnderNodeModules(npmNodeModules);
+      if (vendorExe) addCandidate(list, seen, `npm global prefix vendor exe (${npmNodeModules})`, vendorExe);
       addCandidate(list, seen, "npm global prefix (npm prefix -g)", path.join(npmBin, basename));
     }
   } catch {
@@ -590,11 +627,50 @@ function translateMcpServerSubcommand(command, args, spawnSyncFn, helpCache) {
  * signal. Uses shell:false for the resolved absolute path so quoted -c
  * values are not mangled (see needsShell doc comment above).
  */
+// p69-t3: honors a per-launch reasoning-effort override when set, since the
+// static `-c model_reasoning_effort="..."` args baked into .mcp.json are
+// shared by every agent using this "codex" MCP server entry and cannot
+// reflect a single agent's `backend.reasoningEffort` frontmatter. When
+// CODEX_REASONING_EFFORT is set (e.g. exported by whatever spawned this
+// launcher for a specific agent), any existing `-c model_reasoning_effort=`
+// pair in the requested args is replaced; otherwise the pair is appended.
+// Unset (the common case): args pass through unchanged, so the static -c
+// flags baked into .mcp.json / catalog.json remain the only path — see
+// docs/adding-a-non-anthropic-agent.md's "Routing files" section.
+const REASONING_EFFORT_ALLOWLIST = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+
+function applyReasoningEffortOverride(args, env) {
+  const override = env && env["CODEX_REASONING_EFFORT"];
+  if (!override) return args;
+  const normalized = String(override).trim().toLowerCase();
+  if (!REASONING_EFFORT_ALLOWLIST.has(normalized)) {
+    // Never echo the raw value: this may reach cmd.exe via shell:true, so an
+    // unvalidated value is a potential argument/shell-metacharacter injection
+    // vector, not just a bad config value.
+    process.stderr.write("CODEX_REASONING_EFFORT ignored: not an allowed value\n");
+    return args;
+  }
+  const flagValue = `model_reasoning_effort="${normalized}"`;
+  const out = [];
+  let replaced = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-c" && typeof args[i + 1] === "string" && /^model_reasoning_effort=/.test(args[i + 1])) {
+      out.push("-c", flagValue);
+      replaced = true;
+      i++;
+      continue;
+    }
+    out.push(args[i]);
+  }
+  if (!replaced) out.push("-c", flagValue);
+  return out;
+}
+
 function main(opts) {
   const spawnSyncFn = (opts && opts.spawnSync) || spawnSync;
   const spawnFn = (opts && opts.spawn) || spawn;
   const helpCache = (opts && opts.helpTextCache) || helpTextCache;
-  const requestedArgs = process.argv.slice(2);
+  const requestedArgs = applyReasoningEffortOverride(process.argv.slice(2), process.env);
   const wantsMcpServer = requestedArgs.includes("mcp-server");
   const discovered = discoverCodexBinary(requestedArgs, {
     allowIncapableFallback: wantsMcpServer,
@@ -658,7 +734,7 @@ function main(opts) {
   });
 }
 
-module.exports = { discoverCodexBinary, main, needsShell };
+module.exports = { discoverCodexBinary, main, needsShell, applyReasoningEffortOverride };
 
 if (require.main === module) {
   main();

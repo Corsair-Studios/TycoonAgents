@@ -45,7 +45,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-const { needsShell, discoverCodexBinary } = require("../../hooks/codex-mcp-launcher.cjs");
+const { needsShell, discoverCodexBinary, applyReasoningEffortOverride } = require("../../hooks/codex-mcp-launcher.cjs");
 
 const IS_WIN = process.platform === "win32";
 const LAUNCHER_PATH = join(__dirname, "..", "..", "hooks", "codex-mcp-launcher.cjs");
@@ -159,6 +159,42 @@ function writeFixtureStub(dir: string, name: string): string {
   }
   return dest;
 }
+
+// ---------------------------------------------------------------------------
+// applyReasoningEffortOverride(): pure function, no fixture or spawn needed.
+// ---------------------------------------------------------------------------
+
+test("applyReasoningEffortOverride: no CODEX_REASONING_EFFORT env -> args pass through unchanged (same values, no -c appended)", () => {
+  const args = ["-c", 'model="foo"', "mcp-server"];
+  assert.deepEqual(applyReasoningEffortOverride(args, {}), args);
+});
+
+test("applyReasoningEffortOverride: an allowlisted value with no existing model_reasoning_effort pair appends one", () => {
+  const args = ["mcp-server"];
+  const result = applyReasoningEffortOverride(args, { CODEX_REASONING_EFFORT: "high" });
+  assert.deepEqual(result, ["mcp-server", "-c", 'model_reasoning_effort="high"']);
+});
+
+test("applyReasoningEffortOverride: an allowlisted value replaces an existing -c model_reasoning_effort= pair in place", () => {
+  const args = ["-c", 'model_reasoning_effort="low"', "mcp-server"];
+  const result = applyReasoningEffortOverride(args, { CODEX_REASONING_EFFORT: "MAX" });
+  assert.deepEqual(result, ["-c", 'model_reasoning_effort="max"', "mcp-server"]);
+});
+
+test("applyReasoningEffortOverride: an invalid value is dropped, args unchanged, warning goes to stderr without echoing the raw value", () => {
+  const args = ["mcp-server"];
+  const { result, stderr } = captureStderr(() => applyReasoningEffortOverride(args, { CODEX_REASONING_EFFORT: "$(rm -rf /)" }));
+  assert.deepEqual(result, args, "args must be returned unchanged for an invalid override");
+  assert.ok(stderr.includes("CODEX_REASONING_EFFORT ignored"), `expected an ignore warning, got: ${stderr}`);
+  assert.ok(!stderr.includes("$(rm -rf /)"), "the raw invalid value must never be echoed to stderr");
+});
+
+test("applyReasoningEffortOverride: every allowlisted value is accepted verbatim (lowercased)", () => {
+  for (const v of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
+    const result = applyReasoningEffortOverride([], { CODEX_REASONING_EFFORT: v.toUpperCase() });
+    assert.deepEqual(result, ["-c", `model_reasoning_effort="${v}"`]);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // needsShell(): pure function, no fixture or spawn needed.

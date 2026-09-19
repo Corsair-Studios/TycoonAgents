@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const CATALOG_PATH = path.join(process.cwd(), "media", "mcp", "catalog.json");
+const MCP_JSON_EXAMPLE_PATH = path.join(process.cwd(), ".mcp.json.example");
 
 interface CatalogEntry {
   id: string;
@@ -60,5 +61,27 @@ test("codex entry's config.args include an explicit model/config override mechan
   assert.ok(
     hasModelOverrideValue,
     "config.args must include a model=... override value alongside a \"-c\" flag",
+  );
+});
+
+test("codex entry's config.command/args launch node .claude/hooks/codex-mcp-launcher.cjs (the bridge, not the removed `codex mcp-server` subcommand)", () => {
+  const catalog = loadCatalog();
+  const entry = catalog.find((e) => e.id === "codex");
+  assert.ok(entry, "catalog must contain an entry with id \"codex\"");
+  assert.equal(entry!.config?.command, "node", "must launch via node, not a bare `codex` invocation");
+  const args = entry!.config?.args ?? [];
+  assert.equal(args[0], ".claude/hooks/codex-mcp-launcher.cjs", "first arg must be the project-relative launcher script path");
+});
+
+test(".mcp.json.example's codex server entry also launches .claude/hooks/codex-mcp-launcher.cjs", () => {
+  const raw = fs.readFileSync(MCP_JSON_EXAMPLE_PATH, "utf8");
+  const parsed = JSON.parse(raw) as { mcpServers?: Record<string, { command?: string; args?: string[] }> };
+  const servers = parsed.mcpServers ?? {};
+  const codexServer = servers["codex"];
+  assert.ok(codexServer, ".mcp.json.example must define a \"codex\" mcpServers entry");
+  assert.equal(codexServer!.command, "node");
+  assert.ok(
+    (codexServer!.args ?? []).some((a) => a.includes("codex-mcp-launcher.cjs")),
+    ".mcp.json.example's codex entry must launch codex-mcp-launcher.cjs",
   );
 });

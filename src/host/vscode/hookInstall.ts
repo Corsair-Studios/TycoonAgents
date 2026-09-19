@@ -304,6 +304,26 @@ export const RUNTIME_HOOK_FILES: ReadonlyArray<string> = [
   "fallbackChain.js",
 ];
 
+/**
+ * MCP bridge scripts copied into the consumer project's `.claude/hooks/`
+ * (NOT `.claude/tycoon/`, where {@link RUNTIME_HOOK_FILES} lands) so that
+ * `.mcp.json` entries can reference them with a project-relative path
+ * (`.claude/hooks/codex-app-server-mcp.cjs`) instead of an
+ * extension-install-dependent `${EXTENSION_DIR}` token — these files also
+ * need to work from a bare `codex`/OpenCode/other-editor checkout with no
+ * TycoonAgents extension installed at all. See
+ * docs/codex-reviewer-onboarding-friction-2026-09-18.md: the catalog and
+ * `.mcp.json.example` previously launched the removed `codex mcp-server`
+ * subcommand, and the working replacement bridge
+ * (`codex-app-server-mcp.cjs`, which itself launches `codex app-server` via
+ * `codex-mcp-launcher.cjs`'s discovery/shell logic) was never installed
+ * anywhere a consumer project could reach it.
+ */
+export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
+  "codex-mcp-launcher.cjs",
+  "codex-app-server-mcp.cjs",
+];
+
 /** Outcome of syncing one runtime file — see {@link syncRuntimeFile}. */
 export type RuntimeFileSyncStatus = "created" | "refreshed" | "unchanged";
 
