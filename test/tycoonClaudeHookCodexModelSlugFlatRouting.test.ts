@@ -42,15 +42,6 @@ function runHookWithBackendModule(projectRoot: string, payload: Record<string, u
   }
 }
 
-function runHook(projectRoot: string, payload: Record<string, unknown>): void {
-  const result = spawnSync(process.execPath, [HOOK_PATH], {
-    input: JSON.stringify(payload),
-    encoding: "utf8",
-    env: { ...process.env, CLAUDE_PROJECT_DIR: projectRoot },
-  });
-  assert.equal(result.status, 0, `hook exited non-zero: ${result.stderr}`);
-}
-
 function activityPath(root: string): string {
   return join(root, ".claude", "tycoon", "activity.jsonl");
 }
@@ -287,7 +278,7 @@ test("PostToolUse: no routing.resolved.json AND no routing.json at all -> fail-o
   writeCodexReviewerAgent(agentsDir);
   // Neither routing.resolved.json nor routing.json written at all.
 
-  runHook(root, {
+  runHookWithBackendModule(root, {
     hook_event_name: "PostToolUse",
     tool_name: "mcp__codex__codex",
     tool_input: {},
