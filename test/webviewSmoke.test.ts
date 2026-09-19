@@ -885,24 +885,27 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         'rows preserve agentMetrics order with no grouping by lead'
       );
 
-      // Positive assertion on the footer: buildTeamStatePayload's 4 agents
-      // all carry no `vendor` field, so buildMetricsRollup infers one from
-      // `model` (inferVendorFromModel, media/main.js) — build-lead/coding-
-      // specialist/ux-ui-designer are "opus"/"sonnet" -> "anthropic", while
-      // the orchestrator has no model at all -> "unknown". That's 2 distinct
-      // vendor buckets, so 2 per-vendor rows. Vendor rows now render inside
-      // the collapsed "By vendor and billing" disclosure rather than as
-      // direct footer rows, but stay tagged "metrics-footer-row" and
-      // distinguished from per-cost-class rows by the same `title` tooltip
-      // text set in appendFooterRow's per-vendor call.
-      const vendorFooterRows = footerRows.filter((r: any) => {
-        const cell = r.querySelector('td');
-        return cell && (cell.title || '').includes('belongs to this vendor');
-      });
-      assert.equal(
-        vendorFooterRows.length,
-        2,
-        'one per-vendor footer row per distinct inferred vendor ("anthropic" and "unknown") in the fixture'
+      // p73-t1 removed the "By vendor and billing" disclosure: the per-vendor
+      // and per-cost-class footer rows no longer render at all (only the
+      // single "Total" summary row remains). buildMetricsRollup still
+      // computes byVendor/byCostClass (see test/metricsRollup.test.ts), but
+      // renderMetricsTable no longer paints them.
+      const tabText = String(tbody.textContent);
+      assert.doesNotMatch(tabText, /By vendor and billing/, 'the vendor/billing disclosure must not render');
+      assert.doesNotMatch(tabText, /metered \(API\) total/, 'no per-cost-class "metered (API) total" row');
+      assert.doesNotMatch(tabText, /subscription total/, 'no per-cost-class "subscription total" row');
+      assert.doesNotMatch(tabText, /unknown total/, 'no per-cost-class "unknown total" row');
+      assert.ok(footerRows.length >= 1, 'the Total footer row should still render');
+      assert.match(String(footerRows[0].textContent), /Total/, 'the Total summary row should still be present');
+
+      // The pricing-disclaimer footnote (appended after #metrics-tbody, see
+      // renderMetricsTable's pricingCaption) must still render.
+      const metricsBodyEl = doc.getElementById('metrics-body');
+      assert.ok(metricsBodyEl, 'metrics-body container should exist');
+      assert.match(
+        String(metricsBodyEl.textContent),
+        /Relative cost badges compare published list rates and are informational only\./,
+        'the pricing disclaimer footnote should still render'
       );
 
       // The lead's own row shows only ITS OWN tokens (800), never a rollup

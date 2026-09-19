@@ -16420,96 +16420,16 @@ if (typeof module !== "undefined" && module.exports) {
       FOOTER_COLSPAN,
       "Total — ",
       summaryText,
-      "Sum of tokens across every agent. Open \"By vendor and billing\" below for the per-vendor and per-billing-class breakdown."
+      "Sum of tokens across every agent."
     );
 
-    const disclosureTr = document.createElement("tr");
-    disclosureTr.className = "metrics-footer-row metrics-footer-disclosure-row";
-    const disclosureTd = document.createElement("td");
-    disclosureTd.colSpan = FOOTER_COLSPAN;
-    disclosureTd.style.whiteSpace = "normal";
-    disclosureTd.style.padding = "0";
-
-    let disclosureOpen = false;
-    try {
-      disclosureOpen = localStorage.getItem("metricsFooterBreakdownOpen") === "1";
-    } catch {
-      disclosureOpen = false;
-    }
-
-    const disclosureBtn = document.createElement("button");
-    disclosureBtn.id = "metrics-footer-disclosure-btn";
-    disclosureBtn.type = "button";
-    disclosureBtn.className = "metrics-footer-disclosure-btn";
-    disclosureBtn.style.background = "none";
-    disclosureBtn.style.border = "none";
-    disclosureBtn.style.color = "var(--muted)";
-    disclosureBtn.style.fontSize = "11px";
-    disclosureBtn.style.cursor = "pointer";
-    disclosureBtn.style.padding = "2px 0";
-    disclosureBtn.setAttribute("aria-expanded", disclosureOpen ? "true" : "false");
-    disclosureBtn.textContent = `By vendor and billing ${disclosureOpen ? "▾" : "▸"}`;
-
-    const breakdownWrap = document.createElement("div");
-    breakdownWrap.className = "metrics-footer-breakdown";
-    breakdownWrap.hidden = !disclosureOpen;
-
-    const breakdownTable = document.createElement("table");
-    breakdownTable.style.width = "100%";
-    const breakdownTbody = document.createElement("tbody");
-    breakdownTable.appendChild(breakdownTbody);
-    breakdownWrap.appendChild(breakdownTable);
-
-    function renderBreakdownRows() {
-      breakdownTbody.innerHTML = "";
-      for (const v of rollup.byVendor) {
-        appendFooterRow(
-          breakdownTbody,
-          FOOTER_COLSPAN,
-          `${vendorLabelFor(v.vendor)} total — `,
-          `${fmtTokens(v.tokens)} tokens (${v.agents} agent${v.agents === 1 ? "" : "s"})`,
-          "Sum of tokens for every agent whose actually-executed model belongs to this vendor (a fallback-tagged agent counts under the vendor that ran it, not the one originally assigned)."
-        );
-      }
-
-      for (const c of rollup.byCostClass) {
-        appendFooterRow(
-          breakdownTbody,
-          FOOTER_COLSPAN,
-          `${costClassLabel(c.costModelClass)} total — `,
-          `${fmtTokens(c.tokens)} tokens`,
-          "Sum of tokens for every agent in this billing class."
-        );
-      }
-
-      for (const row of rollup.localTimeRows) {
-        appendFooterRow(
-          breakdownTbody,
-          FOOTER_COLSPAN,
-          `${row.agent} (local · time-based) — `,
-          `active ${fmtMs(row.activeMs)}`,
-          "This local model reported no token count, so cost/tokens can't be estimated — active time is shown instead of a fabricated token-equivalent."
-        );
-      }
-    }
-    renderBreakdownRows();
-
-    disclosureBtn.addEventListener("click", () => {
-      const nowOpen = breakdownWrap.hidden;
-      breakdownWrap.hidden = !nowOpen;
-      disclosureBtn.setAttribute("aria-expanded", nowOpen ? "true" : "false");
-      disclosureBtn.textContent = `By vendor and billing ${nowOpen ? "▾" : "▸"}`;
-      try {
-        localStorage.setItem("metricsFooterBreakdownOpen", nowOpen ? "1" : "0");
-      } catch {
-        // localStorage unavailable — open state just won't persist.
-      }
-    });
-
-    disclosureTd.appendChild(disclosureBtn);
-    disclosureTd.appendChild(breakdownWrap);
-    disclosureTr.appendChild(disclosureTd);
-    tbodyEl.appendChild(disclosureTr);
+    // The "By vendor and billing" disclosure (per-vendor / per-billing-class
+    // breakdown) was removed per p73-t1: the two breakdowns double-counted
+    // the same tokens and the billing-class split relied on costModelClass,
+    // which most agents never set. buildMetricsRollup above still computes
+    // rollup.byVendor / byCostClass / localTimeRows so tests and any future
+    // use of this data keep working — only the rendering of this section
+    // was removed.
 
     // Append the pricing disclaimer once, after the table. renderMetrics()
     // only rebuilds #metrics-tbody (not the whole #metrics-body container),
