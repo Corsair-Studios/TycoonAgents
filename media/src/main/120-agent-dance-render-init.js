@@ -3005,15 +3005,13 @@
             ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
             : (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
 
-          // Cross-vendor active ring (p24-t2): a working (isActive) foreign
-          // or fallback agent gets a colored outline ring around its sprite —
-          // native agents keep today's look (no ring). Drawn in un-flipped
-          // canvas coords, centered on the sprite's own box, so it never
-          // interacts with the flip transform below.
-          if (charEntry.isActive && (charEntry.accentKind === "foreign" || charEntry.accentKind === "fallback")) {
-            var accentRingColor = charEntry.accentKind === "fallback"
-              ? "rgba(255, 176, 32, 0.9)" // --accent amber
-              : "rgba(79, 195, 247, 0.9)"; // --accent-info light blue
+          // Fallback-only active ring (p70-t1, 2026-09-18): the foreign-vendor
+          // light-blue ring is removed from the stage — vendor is indicated
+          // only in the metrics panel now. The amber fallback ring/pulse is
+          // kept unchanged, since the user asked only for the foreign-vendor
+          // indication to go.
+          if (charEntry.isActive && charEntry.accentKind === "fallback") {
+            var accentRingColor = "rgba(255, 176, 32, 0.9)"; // --accent amber
             ctx.save();
             ctx.strokeStyle = accentRingColor;
             ctx.lineWidth = Math.max(1.5, 2 * depthScale);

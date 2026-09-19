@@ -1081,7 +1081,11 @@
 
     const nameText = document.createElement("span");
     nameText.textContent = displayNameWithSuffix;
-    if (rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
+    // Light-blue foreign-vendor accent applies only while the agent is
+    // active (p70-t1); idle/done rows use the default text color. The
+    // amber fallback accent is unchanged — it marks the (fb)/(dfb) row
+    // regardless of status.
+    if (showActive && rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
     else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
     nameTd.appendChild(nameText);
 
