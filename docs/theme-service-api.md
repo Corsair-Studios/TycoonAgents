@@ -148,10 +148,27 @@ typed code.) Response `200`:
 
 `GET {SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=<redirect>&code_challenge=<challenge>&code_challenge_method=s256`
 Opens in the system browser. `redirect_to` is:
-- VS Code: deep link `vscode://<publisher>.<extension>/theme-service-auth`.
-- Standalone: loopback `http://127.0.0.1:<port>/callback`.
+- VS Code (and forks): deep link `<scheme>://<publisher>.<extension>/theme-service-auth`,
+  where `<scheme>` is the running host's own `vscode.env.uriScheme` (p72-t1,
+  `src/host/vscode/themeServiceHost.ts` `handleGoogleStart`) — never
+  hardcoded to `vscode://` — so the OS reopens whichever editor started
+  sign-in. Allow-list one entry per scheme in the Supabase dashboard:
+  `vscode`, `vscode-insiders`, `vscodium`, `cursor`, `windsurf`,
+  `antigravity`. Any other fork needs its own scheme added before sign-in
+  completes on it; the extension's diagnostic report (Environment section)
+  shows the exact scheme that fork reports.
+- Standalone: loopback `http://127.0.0.1:*/callback` (no scheme entry
+  needed — see setup guide section 2.5).
 
-Both targets must be allow-listed in the Supabase dashboard (**human step**).
+Both target shapes must be allow-listed in the Supabase dashboard
+(**human step**; see `docs/theme-service-setup-guide.md` section 2.5).
+
+If a callback lands in an editor/window with no sign-in pending (the
+browser reopened a different window than the one that started sign-in),
+the extension shows the auth code in an information message with a
+**Copy code** action instead of a bare error — paste it into the Theme
+Builder of the window where sign-in was started to finish it via the
+existing paste-code field.
 
 On callback, exchange the returned `auth_code` + the PKCE `code_verifier` the
 client generated:

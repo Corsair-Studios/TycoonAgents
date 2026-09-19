@@ -950,7 +950,28 @@ export class TycoonPanel {
     if (uri.path !== "/theme-service-auth") return;
     const code = new URLSearchParams(uri.query).get("code");
     if (!code) return;
-    void TycoonPanel.currentPanel?._themeServiceHost.handleUriCallback(code);
+    // p72-t1: a callback can land in a window/editor other than the one
+    // that started sign-in (e.g. the browser reopened stable VS Code while
+    // sign-in began in Antigravity/Insiders/a fork) — or in this same
+    // window after the pending verifier was already consumed/cleared. In
+    // either case there's nothing here to complete, so offer the code for
+    // the user to paste into the Theme Builder where sign-in actually
+    // started, instead of a bare "not signed in" error. Never logged.
+    const host = TycoonPanel.currentPanel?._themeServiceHost;
+    if (host && host.hasPendingGoogleSignIn()) {
+      void host.handleUriCallback(code);
+      return;
+    }
+    void vscode.window
+      .showInformationMessage(
+        "Sign-in code received. Paste it into the Theme Builder of the IDE where you started sign-in to finish signing in.",
+        "Copy code",
+      )
+      .then((selection) => {
+        if (selection === "Copy code") {
+          void vscode.env.clipboard.writeText(code);
+        }
+      });
   }
 
   public static createOrShow(
@@ -1012,6 +1033,10 @@ export class TycoonPanel {
 
     this._themeServiceHost = createThemeServiceHost({
       secrets,
+      // p72-t1: the running host's own scheme (vscode.env.uriScheme), so the
+      // Google deep-link redirect reopens THIS editor/fork instead of
+      // always vscode://. Falls back to "vscode" inside the host when empty.
+      uriScheme: vscode.env.uriScheme,
       openExternal: async (url) => {
         // p66-t1: a well-formed URI is required (throws instead of silently
         // no-op'ing on a malformed one) — the result is logged as a boolean
@@ -8969,6 +8994,7 @@ export class TycoonPanel {
         platform: process.platform,
         hostAppName: vscode.env.appName,
         hostAppHost,
+        uriScheme: vscode.env.uriScheme,
         themeServiceEndpointHost: this._themeServiceHost.getEffectiveEndpointHost() ?? null,
         hook: { installed: this._hookInstalled(root), lastActivityAt },
         hookHealth: { healthy: issueCount === 0, issueCount },

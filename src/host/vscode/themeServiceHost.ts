@@ -124,6 +124,15 @@ export interface ThemeServiceHostOptions {
    * any key/token. Omitted in tests, where logging is a no-op.
    */
   log?: (msg: string) => void;
+  /**
+   * p72-t1: the running host's own URI scheme (`vscode.env.uriScheme`) —
+   * "vscode" on stable, "vscode-insiders" on Insiders, and whatever a fork
+   * (VSCodium, Cursor, Windsurf, Antigravity, ...) reports for itself. Used
+   * to build the deep-link redirect so the OS reopens the SAME editor that
+   * started sign-in instead of always the stable build. Falls back to
+   * "vscode" when omitted or empty.
+   */
+  uriScheme?: string;
 }
 
 const CHECKOUT_POLL_INTERVAL_MS = 5_000;
@@ -179,6 +188,15 @@ export interface ThemeServiceHost {
   handleSetReferralCode(code: string | undefined): void;
   /** Called by the registered vscode.window.registerUriHandler on a deep-link callback. */
   handleUriCallback(code: string): Promise<void>;
+  /**
+   * p72-t1: true iff a Google sign-in is currently awaiting its deep-link
+   * completion (handleGoogleStart succeeded and nothing has consumed the
+   * code verifier yet). The caller (panel.ts's static handleUriCallback)
+   * checks this BEFORE calling handleUriCallback, so a stray callback — no
+   * sign-in pending on this device/window — can show the code instead of a
+   * bare "not signed in" error.
+   */
+  hasPendingGoogleSignIn(): boolean;
   /**
    * p62-t2: runs the same first-sign-in/referral-apply bookkeeping as
    * handleVerify/handleUriCallback, WITHOUT posting a status. Exposed so a
@@ -417,10 +435,14 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     async handleGoogleStart() {
       log("themeServiceHost.handleGoogleStart: start");
-      // publisher.name for the vscode:// deep-link scheme, resolved by the
-      // caller (panel.ts) via package.json — kept here only as documentation
-      // of the redirect shape the caller must pass through startGoogleSignIn.
-      const redirectTo = "vscode://tycoonagents.tycoonagents/theme-service-auth";
+      // publisher.name for the deep-link authority, resolved by the caller
+      // (panel.ts) via package.json. The SCHEME is the running host's own
+      // (opts.uriScheme, i.e. vscode.env.uriScheme) so the OS reopens
+      // whichever editor — stable, Insiders, or a fork — started this
+      // sign-in, instead of always vscode://. Falls back to "vscode" when
+      // the host didn't supply one (e.g. an older test double).
+      const scheme = opts.uriScheme && opts.uriScheme.length > 0 ? opts.uriScheme : "vscode";
+      const redirectTo = `${scheme}://tycoonagents.tycoonagents/theme-service-auth`;
       const res = await client.startGoogleSignIn({ redirectTo });
       if (!res.ok) {
         log(`themeServiceHost.handleGoogleStart: startGoogleSignIn failed kind=${res.error.kind}`);
@@ -512,6 +534,10 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     async handleUriCallback(code) {
       await completeGoogle(code);
+    },
+
+    hasPendingGoogleSignIn() {
+      return pendingGoogleCodeVerifier !== null;
     },
 
     getClient() {

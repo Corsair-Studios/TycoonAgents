@@ -415,7 +415,9 @@ test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting 
 
   const hostIdx = src.indexOf("this._themeServiceHost = createThemeServiceHost(");
   assert.ok(hostIdx >= 0, "panel.ts should construct the theme service host");
-  const hostSnippet = src.slice(hostIdx, hostIdx + 1000);
+  const openExternalKeyIdx = src.indexOf("openExternal:", hostIdx);
+  assert.ok(openExternalKeyIdx >= 0, "createThemeServiceHost({...}) should include an openExternal option");
+  const hostSnippet = src.slice(openExternalKeyIdx, openExternalKeyIdx + 1500);
   assert.match(
     hostSnippet,
     /openExternal:\s*async\s*\(url\)\s*=>\s*\{[\s\S]*?openExternalUrl\(/,
@@ -560,4 +562,118 @@ test("handleGoogleOpen: successful re-open posts status with browserUrl and no e
   assert.equal(posted.length, 1);
   assert.equal(posted[0].error, undefined);
   assert.equal(posted[0].browserUrl, storedUrl);
+});
+
+test("handleGoogleStart: redirect_to uses injected uriScheme (antigravity, cursor, and default when undefined)", async () => {
+  async function redirectSchemeFor(uriScheme: string | undefined): Promise<string> {
+    const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+    const tokenStore = createMemoryTokenStore();
+    const client = createThemeServiceClient({
+      fetch: fake.fetch,
+      tokenStore,
+      endpoint: ENDPOINT,
+      supabaseUrl: SUPABASE_URL,
+      createCodeVerifier: () => "fixed-test-verifier",
+    });
+    const opened: string[] = [];
+    const timers = fakeTimers();
+    const host = createThemeServiceHost({
+      secrets: {} as any,
+      client,
+      uriScheme,
+      openExternal: (url) => {
+        opened.push(url);
+      },
+      postStatus: () => {},
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    host.start();
+    await host.handleGoogleStart();
+    const browserUrl = new URL(opened[0]);
+    return browserUrl.searchParams.get("redirect_to") ?? "";
+  }
+
+  assert.equal(
+    await redirectSchemeFor("antigravity"),
+    "antigravity://tycoonagents.tycoonagents/theme-service-auth",
+  );
+  assert.equal(
+    await redirectSchemeFor("cursor"),
+    "cursor://tycoonagents.tycoonagents/theme-service-auth",
+  );
+  assert.equal(
+    await redirectSchemeFor(undefined),
+    "vscode://tycoonagents.tycoonagents/theme-service-auth",
+  );
+});
+
+test("hasPendingGoogleSignIn: true after handleGoogleStart, false after handleGoogleComplete and after handleCancelGoogleSignIn", async () => {
+  const { host, fake, opened } = setup();
+  assert.equal(host.hasPendingGoogleSignIn(), false);
+  await host.handleGoogleStart();
+  assert.equal(host.hasPendingGoogleSignIn(), true);
+  await fake.fetch(opened[opened.length - 1]);
+  const code = await fake.helpers.completeGoogleInBrowser();
+  await host.handleGoogleComplete(code);
+  assert.equal(host.hasPendingGoogleSignIn(), false);
+
+  await host.handleGoogleStart();
+  assert.equal(host.hasPendingGoogleSignIn(), true);
+  const anyHost = host as any;
+  if (typeof anyHost.handleCancelGoogleSignIn === "function") {
+    await anyHost.handleCancelGoogleSignIn();
+    assert.equal(host.hasPendingGoogleSignIn(), false);
+  }
+});
+
+test("panel.ts: stray theme-service-auth callback shows the code via showInformationMessage and copies via clipboard, never logs it", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src: string = fs.readFileSync(
+    path.join(process.cwd(), "src", "host", "vscode", "panel.ts"),
+    "utf8",
+  );
+
+  const startIdx = src.indexOf("public static handleUriCallback(uri: vscode.Uri): void {");
+  assert.ok(startIdx >= 0, "panel.ts should define handleUriCallback");
+  const braceStart = src.indexOf("{", startIdx);
+  // Find the matching closing brace for the method body.
+  let depth = 0;
+  let endIdx = -1;
+  for (let i = braceStart; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        endIdx = i;
+        break;
+      }
+    }
+  }
+  assert.ok(endIdx > braceStart, "should find the end of handleUriCallback's body");
+  const body = src.slice(braceStart, endIdx);
+
+  assert.match(body, /hasPendingGoogleSignIn\(\)/, "should check hasPendingGoogleSignIn before completing");
+  assert.match(
+    body,
+    /showInformationMessage\(\s*[\s\S]*?"Copy code"/,
+    "stray-callback branch should offer a 'Copy code' action",
+  );
+  assert.match(
+    body,
+    /vscode\.env\.clipboard\.writeText\(code\)/,
+    "'Copy code' action should write the code to the clipboard",
+  );
+  assert.ok(!/\blog\(/.test(body), "handleUriCallback body must never pass the code to log(...)");
+});
+
+test("diagnosticReport: includes 'URI scheme' line with the injected scheme", () => {
+  const { buildDiagnosticReport } = require("../src/host/vscode/diagnosticReport");
+  const report = buildDiagnosticReport({
+    timestamp: "2026-09-19T00:00:00.000Z",
+    roots: {},
+    uriScheme: "antigravity",
+  });
+  assert.match(report, /URI scheme.*antigravity/);
 });

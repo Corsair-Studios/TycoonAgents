@@ -69,11 +69,29 @@ it does not cover writing the backend code itself.
    return here and enable Google with the client id and secret filled in
    together in one save.
 5. Open **Authentication → URL Configuration** and add these to the
-   **Redirect URLs** allow-list:
-   - `vscode://tycoonagents.tycoonagents/theme-service-auth` — the exact
-     deep link value, derived from `package.json`'s `publisher` +
-     `name` (`tycoonagents.tycoonagents`), matching the VS Code deep-link
-     pattern in `docs/theme-service-api.md` under "Google OAuth (PKCE)".
+   **Redirect URLs** allow-list — one entry per URI scheme, since the
+   redirect (`src/host/vscode/themeServiceHost.ts` `handleGoogleStart`)
+   is built from the running editor's own `vscode.env.uriScheme` (p72-t1)
+   rather than a hardcoded `vscode://`, so the browser reopens whichever
+   editor actually started sign-in:
+   - `vscode://tycoonagents.tycoonagents/theme-service-auth` — VS Code
+     stable.
+   - `vscode-insiders://tycoonagents.tycoonagents/theme-service-auth` —
+     VS Code Insiders.
+   - `vscodium://tycoonagents.tycoonagents/theme-service-auth` — VSCodium.
+   - `cursor://tycoonagents.tycoonagents/theme-service-auth` — Cursor.
+   - `windsurf://tycoonagents.tycoonagents/theme-service-auth` — Windsurf.
+   - `antigravity://tycoonagents.tycoonagents/theme-service-auth` —
+     Antigravity.
+
+     Each authority segment is derived from `package.json`'s `publisher` +
+     `name` (`tycoonagents.tycoonagents`), matching the deep-link pattern
+     in `docs/theme-service-api.md` under "Google OAuth (PKCE)". Any other
+     VS Code fork needs its own scheme added here before sign-in will
+     complete on it — the extension's diagnostic report (Environment
+     section, `src/host/vscode/diagnosticReport.ts`) shows the exact
+     scheme (`vscode.env.uriScheme`) the fork reports, so ask the user to
+     paste it in rather than guessing.
    - One or more loopback entries for the standalone host, shaped like
      `http://127.0.0.1:<port>/callback`.
 

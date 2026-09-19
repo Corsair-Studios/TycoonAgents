@@ -235,6 +235,14 @@ export interface DiagnosticReportInput {
   platform?: string | null;
   hostAppName?: string | null;
   hostAppHost?: string | null;
+  /**
+   * p72-t1: `vscode.env.uriScheme` — the running host's own deep-link
+   * scheme ("vscode", "vscode-insiders", or a fork's own scheme). The
+   * Google sign-in redirect uses this, so a fork whose scheme isn't yet
+   * allow-listed on the Theme Service backend needs it added; shown here so
+   * the user can report the exact value.
+   */
+  uriScheme?: string | null;
   hook?: DiagnosticHookInfo | null;
   hookHealth?: DiagnosticHookHealth | null;
   delegation?: DiagnosticDelegation | null;
@@ -306,6 +314,7 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     line("Platform", safeInput.platform || NA),
     line("Host application", safeInput.hostAppName || NA),
     ...(safeInput.hostAppHost ? [line("Host variant", safeInput.hostAppHost)] : []),
+    ...(safeInput.uriScheme ? [line("URI scheme", safeInput.uriScheme)] : []),
     ...(safeInput.themeServiceEndpointHost ? [line("Theme Service endpoint", safeInput.themeServiceEndpointHost)] : []),
   ]);
 
