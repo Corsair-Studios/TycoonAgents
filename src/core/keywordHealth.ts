@@ -34,12 +34,20 @@ export type KeywordFindingKind =
 
 /** A fix descriptor: what `normalizeAgentKeywords` would do about a finding. */
 export interface KeywordFindingFix {
-  kind: "reconcile" | "split_segment" | "drop_segment" | "dedupe" | "reorder";
+  kind: "reconcile" | "split_segment" | "drop_segment" | "dedupe" | "reorder" | "remove_from_wildcard";
 }
+
+/**
+ * warning: counts toward the card header/count and gets an amber signal.
+ * info: harmless overlap (e.g. two specialists sharing a token) — collapsed
+ * under "Shared keywords" in the UI, never counted, never amber.
+ */
+export type KeywordFindingSeverity = "warning" | "info";
 
 export interface KeywordFinding {
   agentId: string;
   kind: KeywordFindingKind;
+  severity: KeywordFindingSeverity;
   detail: string;
   fix?: KeywordFindingFix;
 }
@@ -50,6 +58,14 @@ const PROSE_WORD_LIMIT = 3;
 const PROSE_CHAR_LIMIT = 200;
 
 const WILDCARD_ID = "primary-agent";
+/**
+ * Placeholder token normalizeAgentKeywords writes into primary-agent's
+ * pattern when stripping specialist-owned tokens would leave it empty (the
+ * wildcard is the catch-all; its pattern only ever matters for ties, so an
+ * empty pattern is avoided purely to keep the config file shape valid).
+ * Never treated as a real routing token by the duplicate scan below.
+ */
+const WILDCARD_PLACEHOLDER_TOKEN = "fallback";
 
 function splitPattern(pattern: string): string[] {
   return pattern
@@ -81,6 +97,7 @@ export function computeKeywordHealth(
     findings.push({
       agentId: id,
       kind: "dangling_ref",
+      severity: "warning",
       detail: `agent-keywords.json has an entry for "${id}" but no matching .claude/agents/${id}.md file exists.`,
       fix: { kind: "reconcile" },
     });
@@ -89,6 +106,7 @@ export function computeKeywordHealth(
     findings.push({
       agentId: id,
       kind: "pending_reconcile",
+      severity: "warning",
       detail: `"${id}" has no agent-keywords.json entry yet; the next reconcile will seed one.`,
       fix: { kind: "reconcile" },
     });
@@ -103,6 +121,7 @@ export function computeKeywordHealth(
     findings.push({
       agentId: agent.id,
       kind: "no_keywords",
+      severity: "warning",
       detail: `"${agent.id}" has no routing keywords and no default/body fallback — inert routing.`,
     });
   }
@@ -120,6 +139,7 @@ export function computeKeywordHealth(
       findings.push({
         agentId: id,
         kind: "prose_pattern",
+        severity: "warning",
         detail: `"${id}"'s pattern is ${pattern.length} chars (over ${PROSE_CHAR_LIMIT}) — looks like prose, not tokens.`,
         fix: { kind: "drop_segment" },
       });
@@ -132,6 +152,7 @@ export function computeKeywordHealth(
           findings.push({
             agentId: id,
             kind: "prose_pattern",
+            severity: "warning",
             detail: `"${id}" segment "${segment}" is ${words.length} words — reads as prose, dropped by the fixer.`,
             fix: { kind: "drop_segment" },
           });
@@ -139,6 +160,7 @@ export function computeKeywordHealth(
           findings.push({
             agentId: id,
             kind: "multi_word_segment",
+            severity: "warning",
             detail: `"${id}" segment "${segment}" contains whitespace and can never match a single-word token.`,
             fix: { kind: "split_segment" },
           });
@@ -146,6 +168,11 @@ export function computeKeywordHealth(
         continue;
       }
       const token = segment.toLowerCase();
+      // Skip the wildcard's own empty-pattern placeholder (see
+      // normalizeAgentKeywords step 3b) from duplicate-scan bookkeeping —
+      // it isn't a real routing token, so a specialist legitimately owning
+      // the word "fallback" must never trip a duplicate_keyword finding.
+      if (id === WILDCARD_ID && token === WILDCARD_PLACEHOLDER_TOKEN) continue;
       const owners = tokenOwners.get(token) ?? [];
       owners.push(id);
       tokenOwners.set(token, owners);
@@ -159,6 +186,7 @@ export function computeKeywordHealth(
         findings.push({
           agentId: id,
           kind: "wildcard_first",
+          severity: "warning",
           detail: `"${WILDCARD_ID}" is listed before specialist agents — on a tied score it would steal the match.`,
           fix: { kind: "reorder" },
         });
@@ -170,11 +198,18 @@ export function computeKeywordHealth(
     if (owners.length <= 1) continue;
     const uniqueOwners = Array.from(new Set(owners));
     if (uniqueOwners.length <= 1) continue;
+    // Overlap involving the wildcard is a real routing bug (the wildcard is
+    // a catch-all and should never own a token a specialist owns) — warning
+    // with a fix. Overlap between two specialists is harmless/expected
+    // (both legitimately answer to the word) — informational, uncounted,
+    // no fix.
+    const involvesWildcard = uniqueOwners.includes(WILDCARD_ID);
     findings.push({
       agentId: uniqueOwners[0],
       kind: "duplicate_keyword",
+      severity: involvesWildcard ? "warning" : "info",
       detail: `token "${token}" appears in ${uniqueOwners.join(", ")} — "${uniqueOwners[0]}" wins ties (config order).`,
-      fix: { kind: "dedupe" },
+      fix: involvesWildcard ? { kind: "remove_from_wildcard" } : undefined,
     });
   }
 
@@ -247,6 +282,31 @@ export function normalizeAgentKeywords(
     }
 
     normalizedAgents[id] = { ...entry, pattern: tokens.join("|") };
+  }
+
+  // 3b) The wildcard is only ever a catch-all: strip any token it shares
+  // with a specialist so it never steals a match that already has an owner
+  // (mirrors the "warning" duplicate_keyword finding's fix descriptor,
+  // remove_from_wildcard).
+  if (Object.prototype.hasOwnProperty.call(normalizedAgents, WILDCARD_ID)) {
+    const specialistTokens = new Set<string>();
+    for (const id of Object.keys(normalizedAgents)) {
+      if (id === WILDCARD_ID) continue;
+      const pattern = typeof normalizedAgents[id]?.pattern === "string" ? normalizedAgents[id].pattern : "";
+      for (const seg of splitPattern(pattern)) specialistTokens.add(seg.toLowerCase());
+    }
+    const wildcardEntry = normalizedAgents[WILDCARD_ID];
+    const wildcardPattern = typeof wildcardEntry?.pattern === "string" ? wildcardEntry.pattern : "";
+    if (wildcardPattern !== "") {
+      const keptTokens = splitPattern(wildcardPattern).filter((t) => !specialistTokens.has(t.toLowerCase()));
+      // Stripping every specialist-owned token can leave the wildcard with
+      // no pattern at all — fall back to the documented placeholder token
+      // rather than an empty string, to keep the config file shape valid.
+      // It never matches for real (see computeKeywordHealth's skip above);
+      // it only exists so the wildcard still has *some* pattern on record.
+      const finalTokens = keptTokens.length > 0 ? keptTokens : [WILDCARD_PLACEHOLDER_TOKEN];
+      normalizedAgents[WILDCARD_ID] = { ...wildcardEntry, pattern: finalTokens.join("|") };
+    }
   }
 
   // 4) Move primary-agent last (never steals a tie against a specialist).

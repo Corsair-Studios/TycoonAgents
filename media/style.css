@@ -7661,6 +7661,34 @@ button.theme-review-preview:focus-visible::after {
   font-weight: 700;
 }
 
+/* p71-t1: one-line "Fixed N. M shared keywords are informational." result. */
+.keyword-health-fix-result {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* p71-t1: collapsed, no-amber "Shared keywords (M)" section for
+   specialist-to-specialist duplicate_keyword info findings. */
+.keyword-health-shared {
+  margin-top: 8px;
+}
+
+.keyword-health-shared > summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.keyword-health-findings-info {
+  margin-top: 6px;
+}
+
+.keyword-health-finding-info {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .keyword-health-wildcard-line {
   margin: 8px 0 0;
   font-size: 11px;

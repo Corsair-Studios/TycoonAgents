@@ -70,7 +70,7 @@ test("computeKeywordHealth: prose_pattern for a long/malformed legacy segment (m
   assert.equal(f!.fix?.kind, "drop_segment");
 });
 
-test("computeKeywordHealth: duplicate_keyword — first agent in object order wins", () => {
+test("computeKeywordHealth: duplicate_keyword between two specialists — first agent in object order wins, severity info, no fix", () => {
   const config = {
     agents: {
       "coding-specialist": { pattern: "implement|fix" },
@@ -82,6 +82,22 @@ test("computeKeywordHealth: duplicate_keyword — first agent in object order wi
   assert.ok(f, "expected a duplicate_keyword finding");
   assert.equal(f!.agentId, "coding-specialist", "first entry in config object order should win ties");
   assert.match(f!.detail, /"fix"/);
+  assert.equal(f!.severity, "info", "specialist-to-specialist overlap is harmless, not a routing bug");
+  assert.equal(f!.fix, undefined, "no fix offered for informational overlap");
+});
+
+test("computeKeywordHealth: duplicate_keyword involving primary-agent — severity warning with remove_from_wildcard fix", () => {
+  const config = {
+    agents: {
+      "primary-agent": { pattern: "task|deploy" },
+      "coding-specialist": { pattern: "implement|deploy" },
+    },
+  };
+  const findings = computeKeywordHealth(agents("primary-agent", "coding-specialist"), config, noDefaults);
+  const f = findings.find((x) => x.kind === "duplicate_keyword");
+  assert.ok(f, "expected a duplicate_keyword finding");
+  assert.equal(f!.severity, "warning", "wildcard owning a specialist's token is a real routing bug");
+  assert.equal(f!.fix?.kind, "remove_from_wildcard");
 });
 
 test("computeKeywordHealth: wildcard_first when primary-agent is listed before a later specialist", () => {
@@ -147,6 +163,60 @@ test("normalizeAgentKeywords: idempotent — a second run on its own output make
   const second = normalizeAgentKeywords(first.config, roster, noDefaults);
   assert.equal(second.changed, false, "second run should report no change");
   assert.deepEqual(second.config, first.config, "second run's output should be byte-identical to the first");
+});
+
+test("normalizeAgentKeywords: step 3b strips from primary-agent any token a specialist owns, leaves specialist patterns untouched", () => {
+  const config = {
+    agents: {
+      "primary-agent": { pattern: "task|deploy|catchall" },
+      "coding-specialist": { pattern: "implement|deploy" },
+    },
+  };
+  const roster = agents("primary-agent", "coding-specialist");
+  const { config: fixed, changed } = normalizeAgentKeywords(config, roster, noDefaults);
+  assert.equal(changed, true);
+  const wildcardTokens: string[] = fixed.agents["primary-agent"].pattern.split("|").filter(Boolean);
+  assert.ok(!wildcardTokens.includes("deploy"), "deploy is owned by coding-specialist and must be stripped from primary-agent");
+  assert.ok(wildcardTokens.includes("task"), "unshared tokens stay on primary-agent");
+  assert.ok(wildcardTokens.includes("catchall"), "unshared tokens stay on primary-agent");
+  assert.equal(fixed.agents["coding-specialist"].pattern, "implement|deploy", "specialist pattern untouched");
+});
+
+test("normalizeAgentKeywords: wildcard-stripping fix is idempotent", () => {
+  const config = {
+    agents: {
+      "primary-agent": { pattern: "task|deploy" },
+      "coding-specialist": { pattern: "implement|deploy" },
+    },
+  };
+  const roster = agents("primary-agent", "coding-specialist");
+  const first = normalizeAgentKeywords(config, roster, noDefaults);
+  const second = normalizeAgentKeywords(first.config, roster, noDefaults);
+  assert.equal(second.changed, false, "second run should report no further change");
+  assert.deepEqual(second.config, first.config);
+});
+
+test("normalizeAgentKeywords: primary-agent never ends empty — falls back to the 'fallback' placeholder token when stripping would empty it", () => {
+  const config = {
+    agents: {
+      "primary-agent": { pattern: "deploy" },
+      "coding-specialist": { pattern: "deploy" },
+    },
+  };
+  const roster = agents("primary-agent", "coding-specialist");
+  const { config: fixed } = normalizeAgentKeywords(config, roster, noDefaults);
+  assert.equal(fixed.agents["primary-agent"].pattern, "fallback", "primary-agent keeps the placeholder token instead of ending empty");
+});
+
+test("computeKeywordHealth: the wildcard placeholder token 'fallback' never trips duplicate_keyword even if a specialist owns the word 'fallback'", () => {
+  const config = {
+    agents: {
+      "primary-agent": { pattern: "fallback" },
+      "coding-specialist": { pattern: "fallback" },
+    },
+  };
+  const findings = computeKeywordHealth(agents("primary-agent", "coding-specialist"), config, noDefaults);
+  assert.ok(!findings.some((f) => f.kind === "duplicate_keyword"), "placeholder token must be excluded from the duplicate scan");
 });
 
 test("normalizeAgentKeywords: seeds a missing entry from defaults", () => {

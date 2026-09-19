@@ -1339,6 +1339,9 @@
     // every live "routing" repush while the modal stays open, see
     // handleRoutingPayload).
     routingExpandedAgents = {};
+    // p71-t1 review fix: a fresh open must never show a stale "Fixed N"
+    // line left over from a previous open's "Fix all" click.
+    keywordHealthFixResultText = null;
     // p35-t1: a fresh open starts with no clipboard/undo/paste-note state
     // from a prior session — same reasoning as routingExpandedAgents above.
     routingSettingsClipboard = null;

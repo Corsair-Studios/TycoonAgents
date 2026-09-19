@@ -4628,6 +4628,48 @@ test('p68-t3: Keyword health card — all-clear state, warn state with Fix all, 
     assert.ok(fixAllMsg, 'clicking Fix all should post a KEYWORD_HEALTH_FIX message');
     assert.equal(fixAllMsg.action, 'fix_all');
 
+    // p71-t2: second KEYWORD_HEALTH payload after fix_all -> "Fixed N. M shared keywords are informational." line.
+    h.dispatch({
+      type: 'KEYWORD_HEALTH',
+      findings: [
+        {
+          agentId: 'coding-specialist',
+          kind: 'duplicate_keyword',
+          severity: 'info',
+          detail: '"coding-specialist" segment "test" is shared with testing-specialist.',
+        },
+      ],
+      wildcardTasksThisSession: 0,
+      unmatchedWords: [],
+    });
+    h.tick(2);
+    await h.flush();
+    card = h.doc.querySelector('.keyword-health-card');
+    const fixResultLine = card.querySelector('.keyword-health-fix-result');
+    assert.ok(fixResultLine, 'a fix result line should render after the fix_all round trip');
+    assert.match(fixResultLine.textContent, /^Fixed 1\. 1 shared keyword are informational\.$/);
+
+    // p71-t2: only warnings count in the header — zero warnings here -> all-clear state,
+    // and the info finding is collapsed under "Shared keywords (1)" rather than counted.
+    assert.ok(card.classList.contains('keyword-health-card-ok'), 'an info-only payload is the all-clear state');
+    assert.match(card.textContent, /All agents routable/);
+    const sharedDetails = card.querySelector('.keyword-health-shared');
+    assert.ok(sharedDetails, 'shared keywords section should render for info findings');
+    assert.equal(sharedDetails.tagName.toLowerCase(), 'details', 'shared keywords section is collapsible');
+    assert.equal(sharedDetails.hasAttribute('open'), false, 'shared keywords section is collapsed by default');
+    assert.match(sharedDetails.querySelector('summary').textContent, /Shared keywords \(1\)/);
+
+    // p71-t2: the duplicate legend paragraph is gone; the harness accent legend renders exactly once.
+    const legendNodes = [...h.doc.querySelectorAll('.agent-accent-legend')];
+    assert.equal(legendNodes.length, 1, 'the accent legend should render exactly once, no separate duplicate-keyword legend');
+
+    // p71-t2: a third, plain (non-fix) KEYWORD_HEALTH payload must clear the "Fixed N" line.
+    h.dispatch({ type: 'KEYWORD_HEALTH', findings: [], wildcardTasksThisSession: 0, unmatchedWords: [] });
+    h.tick(2);
+    await h.flush();
+    card = h.doc.querySelector('.keyword-health-card');
+    assert.equal(card.querySelector('.keyword-health-fix-result'), null, 'a later unrelated KEYWORD_HEALTH push should clear the stale fix-all result line');
+
     // Wildcard chip: unmatchedWords -> chip renders; choosing an agent posts action:"add".
     h.dispatch({
       type: 'KEYWORD_HEALTH',

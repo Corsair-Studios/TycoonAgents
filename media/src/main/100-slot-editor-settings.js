@@ -2265,15 +2265,13 @@
       // Cross-vendor accent legend (p24-t2): one short line explaining the
       // two accent colors used on roster/canvas nameplates so users learn
       // the association before ever hitting it live.
+      // p71-t1: this single line also covers the fallback picker/warnings
+      // below — a second "Amber (fb)/(dfb)" line used to render right after
+      // it, duplicating the same legend.
       var accentLegend = document.createElement("p");
       accentLegend.className = "agent-accent-legend";
       accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback · (dfb): default fallback";
       routingContentEl.appendChild(accentLegend);
-      // p25-t4: explicit legend note for the fallback picker/warnings below.
-      var fallbackLegend = document.createElement("p");
-      fallbackLegend.className = "agent-accent-legend";
-      fallbackLegend.textContent = "Amber (fb): fallback · (dfb): default fallback";
-      routingContentEl.appendChild(fallbackLegend);
     }
 
     var rawPresets = payload.presets || { vendors: [], models: [] };
@@ -2740,14 +2738,38 @@
     vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: profile });
   }
 
-  /** All keyword-health findings for one agent id, or [] if none/unknown. */
+  /**
+   * Warning-severity keyword-health findings for one agent id, or [] if
+   * none/unknown. p71-t1: info-severity findings (specialist-to-specialist
+   * shared keywords) are harmless and never drive the per-agent amber badge.
+   */
   function keywordHealthFindingsFor(agentId) {
     if (!lastKeywordHealth || !Array.isArray(lastKeywordHealth.findings)) return [];
-    return lastKeywordHealth.findings.filter(function (f) { return f && f.agentId === agentId; });
+    return lastKeywordHealth.findings.filter(function (f) {
+      return f && f.agentId === agentId && f.severity !== "info";
+    });
   }
 
   /** p68-t2: KEYWORD_HEALTH push handler — re-renders the Agents screen if open. */
   function handleKeywordHealthPayload(payload) {
+    // p71-t1: if this push follows a "Fix all" we just sent, diff the
+    // before/after warning + info counts into a one-line result — computed
+    // client-side from the two payloads, no dedicated host message.
+    if (keywordHealthFixAllPending) {
+      var afterFindings = (payload && Array.isArray(payload.findings)) ? payload.findings : [];
+      var afterWarnings = afterFindings.filter(function (f) { return f && f.severity !== "info"; }).length;
+      var afterInfo = afterFindings.filter(function (f) { return f && f.severity === "info"; }).length;
+      var fixedCount = Math.max(0, keywordHealthFixAllBeforeWarnings - afterWarnings);
+      keywordHealthFixResultText = "Fixed " + fixedCount + ". " + afterInfo
+        + " shared keyword" + (afterInfo === 1 ? "" : "s") + " are informational.";
+      keywordHealthFixAllPending = false;
+    } else {
+      // p71-t1 review fix: not a fix_all round-trip (e.g. a later
+      // unrelated push, or the periodic GET_KEYWORD_HEALTH refresh) — clear
+      // any stale result line so it never lingers past the round-trip it
+      // was for.
+      keywordHealthFixResultText = null;
+    }
     lastKeywordHealth = payload || null;
     if (routingModalEl && !routingModalEl.hasAttribute("hidden") && lastRoutingPayload) {
       renderRoutingModal();
@@ -2770,7 +2792,13 @@
     var card = document.createElement("div");
     card.className = "keyword-health-card";
 
-    var findings = (health && Array.isArray(health.findings)) ? health.findings : [];
+    var allFindings = (health && Array.isArray(health.findings)) ? health.findings : [];
+    // p71-t1: only warning-severity findings drive the header count/amber
+    // state and the fixable list. info-severity findings (a token two
+    // specialists both legitimately own) are harmless overlap, not a
+    // routing bug — collapsed under "Shared keywords" below, never counted.
+    var findings = allFindings.filter(function (f) { return f && f.severity !== "info"; });
+    var infoFindings = allFindings.filter(function (f) { return f && f.severity === "info"; });
     var wildcardCount = (health && typeof health.wildcardTasksThisSession === "number") ? health.wildcardTasksThisSession : 0;
     var unmatchedWords = (health && Array.isArray(health.unmatchedWords)) ? health.unmatchedWords : [];
 
@@ -2797,6 +2825,9 @@
       fixAllBtn.textContent = "Fix all";
       fixAllBtn.addEventListener("click", function () {
         fixAllBtn.disabled = true;
+        keywordHealthFixAllPending = true;
+        keywordHealthFixAllBeforeWarnings = findings.length;
+        keywordHealthFixResultText = null;
         vscode.postMessage({ type: KEYWORD_HEALTH_MSG.FIX, action: "fix_all" });
       });
       actions.appendChild(fixAllBtn);
@@ -2837,6 +2868,37 @@
         });
       });
       card.appendChild(list);
+    }
+
+    // p71-t1: one-line "Fix all" result, computed client-side from the
+    // before/after payloads (see handleKeywordHealthPayload). Cleared once
+    // the health state changes again outside a fix_all round-trip via the
+    // click handler above resetting it to null before the next request.
+    if (keywordHealthFixResultText) {
+      var fixResultLine = document.createElement("p");
+      fixResultLine.className = "keyword-health-fix-result";
+      fixResultLine.textContent = keywordHealthFixResultText;
+      card.appendChild(fixResultLine);
+    }
+
+    // p71-t1: specialist-to-specialist duplicate_keyword findings are
+    // informational only — collapsed by default, no amber, not counted.
+    if (infoFindings.length) {
+      var sharedDetails = document.createElement("details");
+      sharedDetails.className = "keyword-health-shared";
+      var sharedSummary = document.createElement("summary");
+      sharedSummary.textContent = "Shared keywords (" + infoFindings.length + ")";
+      sharedDetails.appendChild(sharedSummary);
+      var sharedList = document.createElement("ul");
+      sharedList.className = "keyword-health-findings keyword-health-findings-info";
+      infoFindings.forEach(function (f) {
+        var item = document.createElement("li");
+        item.className = "keyword-health-finding keyword-health-finding-info";
+        item.textContent = f.detail || "";
+        sharedList.appendChild(item);
+      });
+      sharedDetails.appendChild(sharedList);
+      card.appendChild(sharedDetails);
     }
 
     // Wildcard fall-through line — shown whenever there is something to

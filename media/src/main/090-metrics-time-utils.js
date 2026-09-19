@@ -1119,6 +1119,12 @@
   // currently open for (chip token -> true), so re-renders keep the picker
   // expanded across unrelated state changes.
   var keywordHealthOpenPickerToken = null;
+  // p71-t1: "Fix all" before/after tracking so the card can show
+  // "Fixed N. M shared keywords are informational." after the host's
+  // re-posted KEYWORD_HEALTH lands, without a dedicated host message.
+  var keywordHealthFixAllPending = false;
+  var keywordHealthFixAllBeforeWarnings = 0;
+  var keywordHealthFixResultText = null;
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
   var routingEnvProbe = {};      // merged env-var name -> {env: boolean, stored: boolean} cache, seeded from payload.envProbe + envProbe replies
   var routingSaving = false;
