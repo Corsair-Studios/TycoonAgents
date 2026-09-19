@@ -7596,3 +7596,124 @@ button.theme-review-preview:focus-visible::after {
     transition: opacity 0.01ms linear;
   }
 }
+
+/* p68-t2: Keyword health card atop the Agents screen (both densities) —
+   green all-clear line, or amber findings grouped by agent plus the
+   wildcard fall-through line with "add to <agent>" chips. */
+.keyword-health-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0 10px;
+  background: var(--surface);
+}
+
+.keyword-health-card-ok {
+  border-color: var(--status-ok, #2e7d32);
+}
+
+.keyword-health-card-ok .keyword-health-summary {
+  color: var(--status-ok, #2e7d32);
+}
+
+.keyword-health-card-warn {
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.keyword-health-card-warn .keyword-health-summary {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.keyword-health-summary {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.keyword-health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keyword-health-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.keyword-health-findings {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keyword-health-finding {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.keyword-health-finding-agent {
+  font-weight: 700;
+}
+
+.keyword-health-wildcard-line {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.keyword-health-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.keyword-health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.04));
+  font-size: 11px;
+}
+
+.keyword-health-chip-text {
+  color: var(--text);
+}
+
+.keyword-health-chip-add {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+}
+
+.keyword-health-chip-add:hover {
+  text-decoration: underline;
+}
+
+.keyword-health-chip-picker {
+  font-size: 11px;
+}
+
+/* Per-agent amber dot badge (p68-t2) when that agent has keyword-health
+   findings — shown next to the name in both simple and full density. */
+.agent-keyword-health-badge {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--vscode-editorWarning-foreground, #cca700);
+  margin-left: 4px;
+  vertical-align: middle;
+}

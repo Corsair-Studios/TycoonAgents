@@ -2455,6 +2455,15 @@
       }
     } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
       handleRoutingPayload(msg.payload || null);
+    } else if (msg && msg.type === KEYWORD_HEALTH_MSG.HEALTH) {
+      // Flat envelope (findings/wildcardTasksThisSession/unmatchedWords are
+      // top-level on the message, not nested under `payload` — see
+      // panel.ts's _postKeywordHealth).
+      handleKeywordHealthPayload({
+        findings: msg.findings || [],
+        wildcardTasksThisSession: msg.wildcardTasksThisSession || 0,
+        unmatchedWords: msg.unmatchedWords || [],
+      });
     } else if (msg && msg.type === ROUTING_MSG.SAVED) {
       handleRoutingSaved(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {

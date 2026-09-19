@@ -90,6 +90,8 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 - **Build & defend** — agents build objects across your site and defend the base from incoming attacks.
 - **Achievements, badges & rebirths** — earn badges for milestones; rebirth for compounding bonuses (and the whole fleet dances for three seconds when you do).
 
+The Agents screen's **Keyword health** card flags routing problems in `agent-keywords.json` (dangling refs, multi-word segments that can never match, an agent listed after the Wildcard Agent) and offers a **Fix all** to normalize them. See [`docs/keyword-routing.md`](docs/keyword-routing.md) for how Task routing scores keywords.
+
 ## Custom themes
 
 The scene is **user-authored data** — you can generate your own theme (characters, objects, enemies, expressions, badges, decor, and an environment) from text prompts.
@@ -169,6 +171,8 @@ TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/c
 Codex CLI 0.154 removed the `mcp-server` command TycoonAgents previously launched directly; a runtime shim now discovers the Codex binary and falls back to an `app-server`-based adapter when needed. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
 The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login accepts; `gpt-6-astra` is available as a higher tier. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
+
+The **Multi-LLM agents** pack installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
 
 ### Routing walkthrough
 

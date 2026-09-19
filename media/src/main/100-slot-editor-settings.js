@@ -1727,6 +1727,17 @@
     nameEl.textContent = (a.name || a.id) + (cardAccentKind === "fallback" ? (cardNameIsDefaultFallback ? " (dfb)" : " (fb)") : "");
     head.appendChild(nameEl);
 
+    // p68-t2: amber dot badge when this agent has one or more keyword-health
+    // findings (lastKeywordHealth, refreshed by handleKeywordHealthPayload).
+    var agentFindings = keywordHealthFindingsFor(a.id);
+    if (agentFindings.length) {
+      var kwBadge = document.createElement("span");
+      kwBadge.className = "agent-keyword-health-badge";
+      kwBadge.title = agentFindings.map(function (f) { return f.detail; }).join(" ");
+      kwBadge.setAttribute("aria-label", agentFindings.length + " keyword routing issue" + (agentFindings.length === 1 ? "" : "s") + " for " + (a.name || a.id));
+      head.appendChild(kwBadge);
+    }
+
     if (density === "full" && routingAgent && routingAgent.description) {
       const desc = document.createElement("span");
       desc.className = "routing-agent-desc";
@@ -2244,6 +2255,10 @@
     // Agents screen (2026-09-05 decision): the harness question is asked
     // ONLY in Settings now — no dropdown here, just a link back to it.
     // buildHarnessControl is still used by Settings itself, further below.
+    // p68-t2: Keyword health card — above the harness line, both densities.
+    var keywordHealthCardEl = buildKeywordHealthCard();
+    if (keywordHealthCardEl) routingContentEl.appendChild(keywordHealthCardEl);
+
     var agentsHarnessLine = buildAgentsHarnessLine(harnessEffective);
     if (agentsHarnessLine) {
       routingContentEl.appendChild(agentsHarnessLine);
@@ -2723,6 +2738,176 @@
     routingLastResult = null;
     renderRoutingModal();
     vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: profile });
+  }
+
+  /** All keyword-health findings for one agent id, or [] if none/unknown. */
+  function keywordHealthFindingsFor(agentId) {
+    if (!lastKeywordHealth || !Array.isArray(lastKeywordHealth.findings)) return [];
+    return lastKeywordHealth.findings.filter(function (f) { return f && f.agentId === agentId; });
+  }
+
+  /** p68-t2: KEYWORD_HEALTH push handler — re-renders the Agents screen if open. */
+  function handleKeywordHealthPayload(payload) {
+    lastKeywordHealth = payload || null;
+    if (routingModalEl && !routingModalEl.hasAttribute("hidden") && lastRoutingPayload) {
+      renderRoutingModal();
+    }
+  }
+
+  /**
+   * p68-t2: "Keyword health" card at the top of the Agents screen — a
+   * single all-clear line, or the findings grouped by agent plus the
+   * wildcard-fallthrough line with per-word "add to <agent>" chips. All
+   * text nodes use textContent (findings/tokens are config-derived, but
+   * never trusted as markup).
+   */
+  function buildKeywordHealthCard() {
+    var health = lastKeywordHealth;
+    // No payload yet (first paint before the host replies) — render nothing
+    // rather than a misleading "all routable" claim.
+    if (!health) return null;
+
+    var card = document.createElement("div");
+    card.className = "keyword-health-card";
+
+    var findings = (health && Array.isArray(health.findings)) ? health.findings : [];
+    var wildcardCount = (health && typeof health.wildcardTasksThisSession === "number") ? health.wildcardTasksThisSession : 0;
+    var unmatchedWords = (health && Array.isArray(health.unmatchedWords)) ? health.unmatchedWords : [];
+
+    if (findings.length === 0) {
+      card.classList.add("keyword-health-card-ok");
+      var okLine = document.createElement("p");
+      okLine.className = "keyword-health-summary";
+      okLine.textContent = "All agents routable";
+      card.appendChild(okLine);
+    } else {
+      card.classList.add("keyword-health-card-warn");
+      var head = document.createElement("div");
+      head.className = "keyword-health-head";
+      var warnLine = document.createElement("p");
+      warnLine.className = "keyword-health-summary";
+      warnLine.textContent = findings.length + " keyword routing issue" + (findings.length === 1 ? "" : "s");
+      head.appendChild(warnLine);
+
+      var actions = document.createElement("div");
+      actions.className = "keyword-health-actions";
+      var fixAllBtn = document.createElement("button");
+      fixAllBtn.type = "button";
+      fixAllBtn.className = "skill-btn settings-btn keyword-health-fix-all";
+      fixAllBtn.textContent = "Fix all";
+      fixAllBtn.addEventListener("click", function () {
+        fixAllBtn.disabled = true;
+        vscode.postMessage({ type: KEYWORD_HEALTH_MSG.FIX, action: "fix_all" });
+      });
+      actions.appendChild(fixAllBtn);
+
+      var openConfigBtn = document.createElement("button");
+      openConfigBtn.type = "button";
+      openConfigBtn.className = "skill-btn settings-btn keyword-health-open-config";
+      openConfigBtn.textContent = "Open agent-keywords.json";
+      openConfigBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: "OPEN_AGENT_KEYWORDS_FILE" });
+      });
+      actions.appendChild(openConfigBtn);
+      head.appendChild(actions);
+      card.appendChild(head);
+
+      var list = document.createElement("ul");
+      list.className = "keyword-health-findings";
+      // Group by agentId, preserving first-seen order.
+      var order = [];
+      var byAgent = {};
+      findings.forEach(function (f) {
+        if (!f || !f.agentId) return;
+        if (!byAgent[f.agentId]) { byAgent[f.agentId] = []; order.push(f.agentId); }
+        byAgent[f.agentId].push(f);
+      });
+      order.forEach(function (agentId) {
+        byAgent[agentId].forEach(function (f) {
+          var item = document.createElement("li");
+          item.className = "keyword-health-finding";
+          var label = document.createElement("span");
+          label.className = "keyword-health-finding-agent";
+          label.textContent = agentId + ": ";
+          item.appendChild(label);
+          var detail = document.createElement("span");
+          detail.textContent = f.detail || "";
+          item.appendChild(detail);
+          list.appendChild(item);
+        });
+      });
+      card.appendChild(list);
+    }
+
+    // Wildcard fall-through line — shown whenever there is something to
+    // report, in both the ok and warn states.
+    if (wildcardCount > 0 || unmatchedWords.length > 0) {
+      var wcLine = document.createElement("p");
+      wcLine.className = "keyword-health-wildcard-line";
+      wcLine.textContent = wildcardCount + " task" + (wildcardCount === 1 ? "" : "s") + " fell through to Wildcard Agent this session";
+      card.appendChild(wcLine);
+
+      if (unmatchedWords.length) {
+        var chipRow = document.createElement("div");
+        chipRow.className = "keyword-health-chip-row";
+        var rosterAgents = (lastSettings && Array.isArray(lastSettings.agents)) ? lastSettings.agents : [];
+        unmatchedWords.forEach(function (word) {
+          chipRow.appendChild(buildKeywordHealthChip(word, rosterAgents));
+        });
+        card.appendChild(chipRow);
+      }
+    }
+
+    return card;
+  }
+
+  /** One unmatched-word chip with an inline "add to <agent>" picker (p68-t2). */
+  function buildKeywordHealthChip(word, rosterAgents) {
+    var chip = document.createElement("span");
+    chip.className = "keyword-health-chip";
+
+    var text = document.createElement("span");
+    text.className = "keyword-health-chip-text";
+    text.textContent = word;
+    chip.appendChild(text);
+
+    var isOpen = keywordHealthOpenPickerToken === word;
+    var addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "keyword-health-chip-add";
+    addBtn.textContent = "add to…";
+    addBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    addBtn.addEventListener("click", function () {
+      keywordHealthOpenPickerToken = isOpen ? null : word;
+      renderRoutingModal();
+    });
+    chip.appendChild(addBtn);
+
+    if (isOpen) {
+      var picker = document.createElement("select");
+      picker.className = "keyword-health-chip-picker";
+      var placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose agent…";
+      picker.appendChild(placeholder);
+      rosterAgents
+        .filter(function (ag) { return !ag.isOrchestrator; })
+        .forEach(function (ag) {
+          var opt = document.createElement("option");
+          opt.value = ag.id;
+          opt.textContent = ag.name || ag.id;
+          picker.appendChild(opt);
+        });
+      picker.addEventListener("change", function () {
+        var agentId = picker.value;
+        if (!agentId) return;
+        vscode.postMessage({ type: KEYWORD_HEALTH_MSG.FIX, action: "add", agentId: agentId, token: word });
+        keywordHealthOpenPickerToken = null;
+      });
+      chip.appendChild(picker);
+    }
+
+    return chip;
   }
 
   function handleRoutingPayload(payload) {

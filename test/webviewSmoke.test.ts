@@ -4485,6 +4485,184 @@ test('p32-t1: metrics table suffixes "(dfb)" instead of "(fb)" when the metric h
   }
 });
 
+test('accent: metrics-row agent-accent-foreign applies only while the agent is active, agent-accent-fallback applies regardless (p70-t2)', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 2,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          {
+            id: 'codex-reviewer', name: 'Codex Reviewer', status: 'active', model: 'gpt',
+            vendor: 'openai', tokens: 500, activeMs: 10000, taskCount: 1, lastActivityAt: Date.now(),
+          },
+          {
+            id: 'gemini-reviewer', name: 'Gemini Reviewer', status: 'idle', model: 'gemini',
+            vendor: 'google', tokens: 200, activeMs: 0, taskCount: 0,
+          },
+          {
+            id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet',
+            vendor: 'anthropic', fallbackOf: 'ux-ui-designer', tokens: 100, activeMs: 0, taskCount: 0,
+          },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const rows = [...tbody.querySelectorAll('tr')].filter((r: any) => !r.classList.contains('metrics-footer-row'));
+    const activeForeignRow = rows.find((r: any) => (r.querySelector('td.col-name span') || {}).textContent === 'Codex Reviewer');
+    const idleForeignRow = rows.find((r: any) => (r.querySelector('td.col-name span') || {}).textContent === 'Gemini Reviewer');
+    const idleFallbackRow = rows.find((r: any) => /Coding Specialist/.test((r.querySelector('td.col-name span') || {}).textContent || ''));
+
+    assert.ok(
+      activeForeignRow.querySelector('td.col-name span').classList.contains('agent-accent-foreign'),
+      'active foreign-vendor agent gets agent-accent-foreign'
+    );
+    assert.ok(
+      !idleForeignRow.querySelector('td.col-name span').classList.contains('agent-accent-foreign'),
+      'idle foreign-vendor agent does NOT get agent-accent-foreign'
+    );
+    assert.ok(
+      idleFallbackRow.querySelector('td.col-name span').classList.contains('agent-accent-fallback'),
+      'idle fallback agent still gets agent-accent-fallback regardless of active state'
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
+test('p68-t3: Keyword health card — all-clear state, warn state with Fix all, and the wildcard-chip Add flow', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', isOrchestrator: false },
+        ],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    const menuRoutingBtn = h.doc.getElementById('menu-routing');
+    assert.ok(menuRoutingBtn, 'menu-routing button should exist so the Agents modal can be opened');
+    menuRoutingBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    h.dispatch({
+      type: 'routing',
+      payload: {
+        orchestrator: { id: 'orchestrator', backend: {}, source: 'default' },
+        agents: [
+          { id: 'coding-specialist', name: 'Coding Specialist', backend: {}, source: 'file' },
+        ],
+        presets: { vendors: ['anthropic'], models: [] },
+        errors: [],
+      },
+    });
+    h.tick(3);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+
+    // Zero findings -> all-clear, no per-agent badge/warn styling.
+    h.dispatch({ type: 'KEYWORD_HEALTH', findings: [], wildcardTasksThisSession: 0, unmatchedWords: [] });
+    h.tick(2);
+    await h.flush();
+    let card = h.doc.querySelector('.keyword-health-card');
+    assert.ok(card, 'keyword health card should render once a KEYWORD_HEALTH payload has arrived');
+    assert.ok(card.classList.contains('keyword-health-card-ok'), 'zero findings -> ok state');
+    assert.match(card.textContent, /All agents routable/);
+    assert.equal(card.querySelectorAll('.keyword-health-finding').length, 0, 'no per-agent finding badges');
+
+    // One multi_word_segment finding -> warn card lists it; Fix all posts fix_all.
+    h.dispatch({
+      type: 'KEYWORD_HEALTH',
+      findings: [
+        {
+          agentId: 'coding-specialist',
+          kind: 'multi_word_segment',
+          detail: '"coding-specialist" segment "bug fix" contains whitespace and can never match a single-word token.',
+          fix: { kind: 'split_segment' },
+        },
+      ],
+      wildcardTasksThisSession: 0,
+      unmatchedWords: [],
+    });
+    h.tick(2);
+    await h.flush();
+    card = h.doc.querySelector('.keyword-health-card');
+    assert.ok(card.classList.contains('keyword-health-card-warn'), 'a finding -> warn state');
+    const findingItems = [...card.querySelectorAll('.keyword-health-finding')];
+    assert.equal(findingItems.length, 1, 'one finding badge for coding-specialist');
+    assert.match(findingItems[0].textContent, /coding-specialist/);
+    assert.match(findingItems[0].textContent, /bug fix/);
+
+    const fixAllBtn = card.querySelector('.keyword-health-fix-all');
+    assert.ok(fixAllBtn, 'Fix all button should render in the warn state');
+    fixAllBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    const fixAllMsg = [...h.posted].reverse().find((m: any) => m.type === 'KEYWORD_HEALTH_FIX');
+    assert.ok(fixAllMsg, 'clicking Fix all should post a KEYWORD_HEALTH_FIX message');
+    assert.equal(fixAllMsg.action, 'fix_all');
+
+    // Wildcard chip: unmatchedWords -> chip renders; choosing an agent posts action:"add".
+    h.dispatch({
+      type: 'KEYWORD_HEALTH',
+      findings: [],
+      wildcardTasksThisSession: 2,
+      unmatchedWords: ['render'],
+    });
+    h.tick(2);
+    await h.flush();
+    card = h.doc.querySelector('.keyword-health-card');
+    assert.match(card.textContent, /2 tasks fell through to Wildcard Agent/);
+    const chip = card.querySelector('.keyword-health-chip');
+    assert.ok(chip, 'an unmatched word should render a chip');
+    assert.match(chip.textContent, /render/);
+    const addBtn = chip.querySelector('.keyword-health-chip-add');
+    addBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    h.tick(2);
+    await h.flush();
+    card = h.doc.querySelector('.keyword-health-card');
+    const picker = card.querySelector('.keyword-health-chip-picker');
+    assert.ok(picker, 'add-to picker should open after clicking "add to…"');
+    const option = [...picker.querySelectorAll('option')].find((o: any) => o.value === 'coding-specialist');
+    assert.ok(option, 'coding-specialist should be a selectable option');
+    picker.value = 'coding-specialist';
+    picker.dispatchEvent(new h.win.Event('change', { bubbles: true }));
+    await h.flush();
+    const addMsg = [...h.posted].reverse().find((m: any) => m.type === 'KEYWORD_HEALTH_FIX' && m.action === 'add');
+    assert.ok(addMsg, 'choosing an agent should post a KEYWORD_HEALTH_FIX add message');
+    assert.equal(addMsg.agentId, 'coding-specialist');
+    assert.equal(addMsg.token, 'render');
+  } finally {
+    h.win.close();
+  }
+});
+
 test('accent: Agents/routing roster colors a foreign-vendor slot even with no run in progress, and flips when the harness changes', async () => {
   const h = await bootObjScaleHarness();
   try {
@@ -4552,15 +4730,24 @@ test('accent: Agents/routing roster colors a foreign-vendor slot even with no ru
   }
 });
 
-test('accent: canvas source applies the ring/pulse accent for active foreign/fallback agents and the " (fb)" nameplate suffix, gated on charEntry.accentKind', () => {
+test('accent: canvas source applies the ring/pulse accent only for active fallback agents (p70-t1: foreign-vendor stage ring removed) and the " (fb)" nameplate suffix, gated on charEntry.accentKind', () => {
   const src = readFileSync(MAIN_JS_PATH, 'utf8');
   assert.match(
     src,
-    /charEntry\.accentKind === "foreign" \|\| charEntry\.accentKind === "fallback"/,
-    'the active-state ring is gated on the computed accentKind for foreign/fallback agents'
+    /charEntry\.isActive && charEntry\.accentKind === "fallback"/,
+    'the active-state ring is gated on isActive + accentKind === "fallback" only, never "foreign"'
   );
   assert.match(src, /rgba\(255, 176, 32, 0\.9\)/, 'ring uses the amber accent color for fallback');
-  assert.match(src, /rgba\(79, 195, 247, 0\.9\)/, 'ring uses the light-blue accent color for foreign');
+  assert.doesNotMatch(
+    src,
+    /rgba\(79, 195, 247, 0\.9\)/,
+    'the foreign-vendor light-blue stage ring color is removed; vendor is indicated only in the metrics panel'
+  );
+  assert.doesNotMatch(
+    src,
+    /charEntry\.accentKind === "foreign" \|\| charEntry\.accentKind === "fallback"/,
+    'the stage ring condition no longer includes "foreign"'
+  );
   assert.match(
     src,
     /charEntry\.accentKind === "fallback" \? \(charEntry\.accentIsDefault \? " \(dfb\)" : " \(fb\)"\) : ""/,

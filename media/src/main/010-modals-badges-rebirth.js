@@ -1347,6 +1347,10 @@
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // p68-t2: refresh the keyword-health card on every open (the host also
+    // posts it proactively, but an on-demand ask keeps a reopened panel from
+    // showing a stale card after Fix all/adds happened elsewhere).
+    vscode.postMessage({ type: KEYWORD_HEALTH_MSG.GET });
     // Bug fix: the Agents screen's per-agent keywords come from
     // lastSettings (settingsAgentsById in renderRoutingModal), which is
     // only populated once a "settings" reply has landed. The VS Code host

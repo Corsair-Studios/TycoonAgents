@@ -3155,6 +3155,10 @@ if (typeof module !== "undefined" && module.exports) {
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // p68-t2: refresh the keyword-health card on every open (the host also
+    // posts it proactively, but an on-demand ask keeps a reopened panel from
+    // showing a stale card after Fix all/adds happened elsewhere).
+    vscode.postMessage({ type: KEYWORD_HEALTH_MSG.GET });
     // Bug fix: the Agents screen's per-agent keywords come from
     // lastSettings (settingsAgentsById in renderRoutingModal), which is
     // only populated once a "settings" reply has landed. The VS Code host
@@ -13763,6 +13767,15 @@ if (typeof module !== "undefined" && module.exports) {
       }
     } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
       handleRoutingPayload(msg.payload || null);
+    } else if (msg && msg.type === KEYWORD_HEALTH_MSG.HEALTH) {
+      // Flat envelope (findings/wildcardTasksThisSession/unmatchedWords are
+      // top-level on the message, not nested under `payload` — see
+      // panel.ts's _postKeywordHealth).
+      handleKeywordHealthPayload({
+        findings: msg.findings || [],
+        wildcardTasksThisSession: msg.wildcardTasksThisSession || 0,
+        unmatchedWords: msg.unmatchedWords || [],
+      });
     } else if (msg && msg.type === ROUTING_MSG.SAVED) {
       handleRoutingSaved(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
@@ -16041,7 +16054,11 @@ if (typeof module !== "undefined" && module.exports) {
 
     const nameText = document.createElement("span");
     nameText.textContent = displayNameWithSuffix;
-    if (rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
+    // Light-blue foreign-vendor accent applies only while the agent is
+    // active (p70-t1); idle/done rows use the default text color. The
+    // amber fallback accent is unchanged — it marks the (fb)/(dfb) row
+    // regardless of status.
+    if (showActive && rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
     else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
     nameTd.appendChild(nameText);
 
@@ -18335,10 +18352,25 @@ if (typeof module !== "undefined" && module.exports) {
     CLEAR_LOCAL: "clearLocalEnvValue",
   };
 
+  // p68-t2: mirrors MSG.GET_KEYWORD_HEALTH / KEYWORD_HEALTH / KEYWORD_HEALTH_FIX
+  // in src/host/vscode/messages.ts.
+  var KEYWORD_HEALTH_MSG = {
+    GET: "GET_KEYWORD_HEALTH",
+    HEALTH: "KEYWORD_HEALTH",
+    FIX: "KEYWORD_HEALTH_FIX",
+  };
+
   var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
   var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv", "useDefaultFallback"];
 
   var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
+
+  // p68-t2: last "KEYWORD_HEALTH" push from host: { findings, wildcardTasksThisSession, unmatchedWords }
+  var lastKeywordHealth = null;
+  // Which agent a given unmatched-word chip's "add to <agent>" picker is
+  // currently open for (chip token -> true), so re-renders keep the picker
+  // expanded across unrelated state changes.
+  var keywordHealthOpenPickerToken = null;
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
   var routingEnvProbe = {};      // merged env-var name -> {env: boolean, stored: boolean} cache, seeded from payload.envProbe + envProbe replies
   var routingSaving = false;
@@ -20427,6 +20459,17 @@ if (typeof module !== "undefined" && module.exports) {
     nameEl.textContent = (a.name || a.id) + (cardAccentKind === "fallback" ? (cardNameIsDefaultFallback ? " (dfb)" : " (fb)") : "");
     head.appendChild(nameEl);
 
+    // p68-t2: amber dot badge when this agent has one or more keyword-health
+    // findings (lastKeywordHealth, refreshed by handleKeywordHealthPayload).
+    var agentFindings = keywordHealthFindingsFor(a.id);
+    if (agentFindings.length) {
+      var kwBadge = document.createElement("span");
+      kwBadge.className = "agent-keyword-health-badge";
+      kwBadge.title = agentFindings.map(function (f) { return f.detail; }).join(" ");
+      kwBadge.setAttribute("aria-label", agentFindings.length + " keyword routing issue" + (agentFindings.length === 1 ? "" : "s") + " for " + (a.name || a.id));
+      head.appendChild(kwBadge);
+    }
+
     if (density === "full" && routingAgent && routingAgent.description) {
       const desc = document.createElement("span");
       desc.className = "routing-agent-desc";
@@ -20944,6 +20987,10 @@ if (typeof module !== "undefined" && module.exports) {
     // Agents screen (2026-09-05 decision): the harness question is asked
     // ONLY in Settings now — no dropdown here, just a link back to it.
     // buildHarnessControl is still used by Settings itself, further below.
+    // p68-t2: Keyword health card — above the harness line, both densities.
+    var keywordHealthCardEl = buildKeywordHealthCard();
+    if (keywordHealthCardEl) routingContentEl.appendChild(keywordHealthCardEl);
+
     var agentsHarnessLine = buildAgentsHarnessLine(harnessEffective);
     if (agentsHarnessLine) {
       routingContentEl.appendChild(agentsHarnessLine);
@@ -21423,6 +21470,176 @@ if (typeof module !== "undefined" && module.exports) {
     routingLastResult = null;
     renderRoutingModal();
     vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: profile });
+  }
+
+  /** All keyword-health findings for one agent id, or [] if none/unknown. */
+  function keywordHealthFindingsFor(agentId) {
+    if (!lastKeywordHealth || !Array.isArray(lastKeywordHealth.findings)) return [];
+    return lastKeywordHealth.findings.filter(function (f) { return f && f.agentId === agentId; });
+  }
+
+  /** p68-t2: KEYWORD_HEALTH push handler — re-renders the Agents screen if open. */
+  function handleKeywordHealthPayload(payload) {
+    lastKeywordHealth = payload || null;
+    if (routingModalEl && !routingModalEl.hasAttribute("hidden") && lastRoutingPayload) {
+      renderRoutingModal();
+    }
+  }
+
+  /**
+   * p68-t2: "Keyword health" card at the top of the Agents screen — a
+   * single all-clear line, or the findings grouped by agent plus the
+   * wildcard-fallthrough line with per-word "add to <agent>" chips. All
+   * text nodes use textContent (findings/tokens are config-derived, but
+   * never trusted as markup).
+   */
+  function buildKeywordHealthCard() {
+    var health = lastKeywordHealth;
+    // No payload yet (first paint before the host replies) — render nothing
+    // rather than a misleading "all routable" claim.
+    if (!health) return null;
+
+    var card = document.createElement("div");
+    card.className = "keyword-health-card";
+
+    var findings = (health && Array.isArray(health.findings)) ? health.findings : [];
+    var wildcardCount = (health && typeof health.wildcardTasksThisSession === "number") ? health.wildcardTasksThisSession : 0;
+    var unmatchedWords = (health && Array.isArray(health.unmatchedWords)) ? health.unmatchedWords : [];
+
+    if (findings.length === 0) {
+      card.classList.add("keyword-health-card-ok");
+      var okLine = document.createElement("p");
+      okLine.className = "keyword-health-summary";
+      okLine.textContent = "All agents routable";
+      card.appendChild(okLine);
+    } else {
+      card.classList.add("keyword-health-card-warn");
+      var head = document.createElement("div");
+      head.className = "keyword-health-head";
+      var warnLine = document.createElement("p");
+      warnLine.className = "keyword-health-summary";
+      warnLine.textContent = findings.length + " keyword routing issue" + (findings.length === 1 ? "" : "s");
+      head.appendChild(warnLine);
+
+      var actions = document.createElement("div");
+      actions.className = "keyword-health-actions";
+      var fixAllBtn = document.createElement("button");
+      fixAllBtn.type = "button";
+      fixAllBtn.className = "skill-btn settings-btn keyword-health-fix-all";
+      fixAllBtn.textContent = "Fix all";
+      fixAllBtn.addEventListener("click", function () {
+        fixAllBtn.disabled = true;
+        vscode.postMessage({ type: KEYWORD_HEALTH_MSG.FIX, action: "fix_all" });
+      });
+      actions.appendChild(fixAllBtn);
+
+      var openConfigBtn = document.createElement("button");
+      openConfigBtn.type = "button";
+      openConfigBtn.className = "skill-btn settings-btn keyword-health-open-config";
+      openConfigBtn.textContent = "Open agent-keywords.json";
+      openConfigBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: "OPEN_AGENT_KEYWORDS_FILE" });
+      });
+      actions.appendChild(openConfigBtn);
+      head.appendChild(actions);
+      card.appendChild(head);
+
+      var list = document.createElement("ul");
+      list.className = "keyword-health-findings";
+      // Group by agentId, preserving first-seen order.
+      var order = [];
+      var byAgent = {};
+      findings.forEach(function (f) {
+        if (!f || !f.agentId) return;
+        if (!byAgent[f.agentId]) { byAgent[f.agentId] = []; order.push(f.agentId); }
+        byAgent[f.agentId].push(f);
+      });
+      order.forEach(function (agentId) {
+        byAgent[agentId].forEach(function (f) {
+          var item = document.createElement("li");
+          item.className = "keyword-health-finding";
+          var label = document.createElement("span");
+          label.className = "keyword-health-finding-agent";
+          label.textContent = agentId + ": ";
+          item.appendChild(label);
+          var detail = document.createElement("span");
+          detail.textContent = f.detail || "";
+          item.appendChild(detail);
+          list.appendChild(item);
+        });
+      });
+      card.appendChild(list);
+    }
+
+    // Wildcard fall-through line — shown whenever there is something to
+    // report, in both the ok and warn states.
+    if (wildcardCount > 0 || unmatchedWords.length > 0) {
+      var wcLine = document.createElement("p");
+      wcLine.className = "keyword-health-wildcard-line";
+      wcLine.textContent = wildcardCount + " task" + (wildcardCount === 1 ? "" : "s") + " fell through to Wildcard Agent this session";
+      card.appendChild(wcLine);
+
+      if (unmatchedWords.length) {
+        var chipRow = document.createElement("div");
+        chipRow.className = "keyword-health-chip-row";
+        var rosterAgents = (lastSettings && Array.isArray(lastSettings.agents)) ? lastSettings.agents : [];
+        unmatchedWords.forEach(function (word) {
+          chipRow.appendChild(buildKeywordHealthChip(word, rosterAgents));
+        });
+        card.appendChild(chipRow);
+      }
+    }
+
+    return card;
+  }
+
+  /** One unmatched-word chip with an inline "add to <agent>" picker (p68-t2). */
+  function buildKeywordHealthChip(word, rosterAgents) {
+    var chip = document.createElement("span");
+    chip.className = "keyword-health-chip";
+
+    var text = document.createElement("span");
+    text.className = "keyword-health-chip-text";
+    text.textContent = word;
+    chip.appendChild(text);
+
+    var isOpen = keywordHealthOpenPickerToken === word;
+    var addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "keyword-health-chip-add";
+    addBtn.textContent = "add to…";
+    addBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    addBtn.addEventListener("click", function () {
+      keywordHealthOpenPickerToken = isOpen ? null : word;
+      renderRoutingModal();
+    });
+    chip.appendChild(addBtn);
+
+    if (isOpen) {
+      var picker = document.createElement("select");
+      picker.className = "keyword-health-chip-picker";
+      var placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose agent…";
+      picker.appendChild(placeholder);
+      rosterAgents
+        .filter(function (ag) { return !ag.isOrchestrator; })
+        .forEach(function (ag) {
+          var opt = document.createElement("option");
+          opt.value = ag.id;
+          opt.textContent = ag.name || ag.id;
+          picker.appendChild(opt);
+        });
+      picker.addEventListener("change", function () {
+        var agentId = picker.value;
+        if (!agentId) return;
+        vscode.postMessage({ type: KEYWORD_HEALTH_MSG.FIX, action: "add", agentId: agentId, token: word });
+        keywordHealthOpenPickerToken = null;
+      });
+      chip.appendChild(picker);
+    }
+
+    return chip;
   }
 
   function handleRoutingPayload(payload) {
@@ -26536,15 +26753,13 @@ if (typeof module !== "undefined" && module.exports) {
             ? !!(themeDecorFlipOverrides && themeDecorFlipOverrides[charEntry.sitSeatId])
             : (clip.flippable || charEntry.dancing === true) && charEntry.facingLeft === true;
 
-          // Cross-vendor active ring (p24-t2): a working (isActive) foreign
-          // or fallback agent gets a colored outline ring around its sprite —
-          // native agents keep today's look (no ring). Drawn in un-flipped
-          // canvas coords, centered on the sprite's own box, so it never
-          // interacts with the flip transform below.
-          if (charEntry.isActive && (charEntry.accentKind === "foreign" || charEntry.accentKind === "fallback")) {
-            var accentRingColor = charEntry.accentKind === "fallback"
-              ? "rgba(255, 176, 32, 0.9)" // --accent amber
-              : "rgba(79, 195, 247, 0.9)"; // --accent-info light blue
+          // Fallback-only active ring (p70-t1, 2026-09-18): the foreign-vendor
+          // light-blue ring is removed from the stage — vendor is indicated
+          // only in the metrics panel now. The amber fallback ring/pulse is
+          // kept unchanged, since the user asked only for the foreign-vendor
+          // indication to go.
+          if (charEntry.isActive && charEntry.accentKind === "fallback") {
+            var accentRingColor = "rgba(255, 176, 32, 0.9)"; // --accent amber
             ctx.save();
             ctx.strokeStyle = accentRingColor;
             ctx.lineWidth = Math.max(1.5, 2 * depthScale);

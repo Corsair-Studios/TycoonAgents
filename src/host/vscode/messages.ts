@@ -122,10 +122,27 @@ export const MSG = {
   // ExecutionConfig.sessionJournalEntries).
   SET_SESSION_JOURNAL_ENTRIES: "setSessionJournalEntries",
   SET_AGENT_KEYWORDS: "setAgentKeywords",
+  // p68-t1: webview -> host, on-demand recompute (no payload beyond type).
+  GET_KEYWORD_HEALTH: "GET_KEYWORD_HEALTH",
+  // p68-t1: host -> webview, posted on Agents-screen open and after
+  // KEYWORD_HEALTH_FIX. Payload: `{ findings: KeywordFinding[],
+  // wildcardTasksThisSession: number, unmatchedWords: string[] }` (see
+  // src/core/keywordHealth.ts).
+  KEYWORD_HEALTH: "KEYWORD_HEALTH",
+  // p68-t1: webview -> host. Flat envelope like other messages, payload
+  // `{ action: "fix_all" } | { action: "add", agentId: string, token: string }`.
+  // "fix_all" runs normalizeAgentKeywords() and writes agent-keywords.json
+  // (with a .bak, like other config writes); "add" appends one token to one
+  // agent's existing pattern. Host re-posts KEYWORD_HEALTH either way.
+  KEYWORD_HEALTH_FIX: "KEYWORD_HEALTH_FIX",
   REMOVE_AGENT: "removeAgent",
   // Hand-written-backend provenance line's "Open" link — opens (VS Code) or
   // reveals (standalone) .claude/agents/<id>.md.
   OPEN_AGENT_FILE: "openAgentFile",
+  // p68-t1: Keyword health card's "Open" link — opens (VS Code) or posts a
+  // relative-path notice (standalone, no editor) for
+  // .claude/tycoon/agent-keywords.json. No payload beyond type.
+  OPEN_AGENT_KEYWORDS_FILE: "OPEN_AGENT_KEYWORDS_FILE",
   AGENT_REMOVED: "agentRemoved",
   RESET_METRICS: "resetMetrics",
   METRICS_RESET: "metricsReset",
@@ -490,6 +507,9 @@ export const MSG_SCHEMAS = {
   // (dispatcher reads `message.id` directly, not a nested `.payload`)
   ID_ONLY: z.object({ id: z.string().min(1) }).passthrough(),
 
+  // p68-t1: no payload beyond type.
+  OPEN_AGENT_KEYWORDS_FILE: z.object({}).passthrough(),
+
   INSTALL_PACK: z
     .object({
       id: z.string().min(1),
@@ -528,6 +548,19 @@ export const MSG_SCHEMAS = {
   SET_AGENT_KEYWORDS: z
     .object({ id: z.string().min(1), pattern: z.string() })
     .passthrough(),
+
+  // p68-t1: flat envelope — `{ action: "fix_all" }` or
+  // `{ action: "add", agentId, token }`.
+  KEYWORD_HEALTH_FIX: z.discriminatedUnion("action", [
+    z.object({ action: z.literal("fix_all") }).passthrough(),
+    z
+      .object({
+        action: z.literal("add"),
+        agentId: z.string().regex(/^[a-z0-9-]{1,64}$/),
+        token: z.string().regex(/^[a-z0-9_-]{1,40}$/),
+      })
+      .passthrough(),
+  ]),
 
   SET_DELEGATION_MODE: z
     .object({ delegation_mode: z.string().optional() })

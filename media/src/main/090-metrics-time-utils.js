@@ -1100,10 +1100,25 @@
     CLEAR_LOCAL: "clearLocalEnvValue",
   };
 
+  // p68-t2: mirrors MSG.GET_KEYWORD_HEALTH / KEYWORD_HEALTH / KEYWORD_HEALTH_FIX
+  // in src/host/vscode/messages.ts.
+  var KEYWORD_HEALTH_MSG = {
+    GET: "GET_KEYWORD_HEALTH",
+    HEALTH: "KEYWORD_HEALTH",
+    FIX: "KEYWORD_HEALTH_FIX",
+  };
+
   var ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
   var SLOT_SCALAR_FIELDS = ["vendor", "transport", "mcpServer", "model", "costModelClass", "endpointEnv", "credentialEnv", "useDefaultFallback"];
 
   var lastRoutingPayload = null; // last "routing" push from host: { profile, path, errors, orchestrator, agents, envProbe, presets, lastApplied }
+
+  // p68-t2: last "KEYWORD_HEALTH" push from host: { findings, wildcardTasksThisSession, unmatchedWords }
+  var lastKeywordHealth = null;
+  // Which agent a given unmatched-word chip's "add to <agent>" picker is
+  // currently open for (chip token -> true), so re-renders keep the picker
+  // expanded across unrelated state changes.
+  var keywordHealthOpenPickerToken = null;
   var routingDraft = null;       // working copy: { orchestrator: slot|null, agents: { [id]: slot } }
   var routingEnvProbe = {};      // merged env-var name -> {env: boolean, stored: boolean} cache, seeded from payload.envProbe + envProbe replies
   var routingSaving = false;

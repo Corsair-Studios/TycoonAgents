@@ -171,6 +171,11 @@ const CATALOG_SUMMARY_JS = path.join(REPO_ROOT, 'out', 'src', 'shared', 'catalog
 // absolute path for the codex MCP server's `command` the same way panel.ts
 // does, instead of reimplementing the discovery ladder.
 const CODEX_DISCOVERY_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'codex', 'codexDiscovery.js');
+// p68-t1: keyword-routing health model + fixer (pure) and its
+// parseAgentKeywords body-section reader — shared with panel.ts so the two
+// hosts' KEYWORD_HEALTH payload can never disagree.
+const KEYWORD_HEALTH_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'keywordHealth.js');
+const AGENT_KEYWORD_DEFAULTS_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'agentKeywordDefaults.js');
 
 function requireCompiledOrThrow(jsPath, label) {
   if (!fs.existsSync(jsPath)) {
@@ -206,6 +211,18 @@ let _codexDiscoveryModule;
 function codexDiscoveryModule() {
   if (!_codexDiscoveryModule) _codexDiscoveryModule = requireCompiledOrThrow(CODEX_DISCOVERY_JS, 'codexDiscovery');
   return _codexDiscoveryModule;
+}
+let _keywordHealthModule;
+function keywordHealthModule() {
+  if (!_keywordHealthModule) _keywordHealthModule = requireCompiledOrThrow(KEYWORD_HEALTH_JS, 'keywordHealth');
+  return _keywordHealthModule;
+}
+let _agentKeywordDefaultsModule;
+function agentKeywordDefaultsModule() {
+  if (!_agentKeywordDefaultsModule) {
+    _agentKeywordDefaultsModule = requireCompiledOrThrow(AGENT_KEYWORD_DEFAULTS_JS, 'agentKeywordDefaults');
+  }
+  return _agentKeywordDefaultsModule;
 }
 
 /**
@@ -1226,6 +1243,36 @@ function handleBrowserMessage(msg) {
       }
       break;
     }
+    case 'OPEN_AGENT_KEYWORDS_FILE': {
+      // Standalone analog of panel.ts's _handleOpenAgentKeywordsFile: no
+      // in-browser editor exists here, so broadcast a small notice with the
+      // relative path instead of opening a document.
+      const root = primaryProjectRoot;
+      if (!root) {
+        console.error('[tycoonagents-standalone] OPEN_AGENT_KEYWORDS_FILE: no project root resolved');
+        break;
+      }
+      const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+      const relPath = path.relative(root, keywordsPath);
+      if (!fs.existsSync(keywordsPath)) {
+        broadcast('message', {
+          type: 'settingsUpdated',
+          ok: false,
+          id: 'agent-keywords-file',
+          field: 'keywords',
+          error: `${relPath} does not exist yet.`,
+        });
+        break;
+      }
+      broadcast('message', {
+        type: 'settingsUpdated',
+        ok: true,
+        id: 'agent-keywords-file',
+        field: 'keywordsFileNotice',
+        path: relPath,
+      });
+      break;
+    }
     case 'getSettings':
       // Standalone analog of panel.ts's _handleGetSettings (~line 6783-
       // 6909). main.js's renderSettings() (media/main.js:16239) only shows
@@ -1237,7 +1284,101 @@ function handleBrowserMessage(msg) {
       // `default` "(unhandled)" log below and the Settings screen never
       // resolved out of "Loading settings…".
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+      if (primaryProjectRoot) {
+        try {
+          broadcast('message', { type: 'KEYWORD_HEALTH', ...buildKeywordHealthPayload(primaryProjectRoot) });
+        } catch (err) {
+          console.error('[tycoonagents-standalone] getSettings KEYWORD_HEALTH failed:', err instanceof Error ? err.message : err);
+        }
+      }
       break;
+    case 'GET_KEYWORD_HEALTH': {
+      // p68-t1: on-demand recompute, standalone analog of panel.ts's
+      // _postKeywordHealth via MSG.GET_KEYWORD_HEALTH.
+      const root = primaryProjectRoot;
+      if (!root) break;
+      try {
+        broadcast('message', { type: 'KEYWORD_HEALTH', ...buildKeywordHealthPayload(root) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] GET_KEYWORD_HEALTH failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    }
+    case 'KEYWORD_HEALTH_FIX': {
+      // p68-t1: standalone analog of panel.ts's _handleKeywordHealthFix.
+      // Flat envelope: { action: "fix_all" } | { action: "add", agentId, token }.
+      const root = primaryProjectRoot;
+      if (!root) break;
+      try {
+        const agentsDir = path.join(root, '.claude', 'agents');
+        let agentIds = [];
+        try {
+          agentIds = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, ''));
+        } catch {
+          agentIds = [];
+        }
+        const { parseAgentKeywords } = agentKeywordDefaultsModule();
+        const { normalizeAgentKeywords } = keywordHealthModule();
+        const { setKeywordPattern } = agentConfigModule();
+        const agents = agentIds.map((id) => {
+          let content = '';
+          try {
+            content = fs.readFileSync(path.join(agentsDir, `${id}.md`), 'utf8');
+          } catch {
+            content = '';
+          }
+          return { id, keywords: parseAgentKeywords(content) };
+        });
+
+        let config = readKeywordsConfigStandalone(root);
+        let changed = false;
+
+        if (msg.action === 'fix_all') {
+          const result = normalizeAgentKeywords(config, agents);
+          config = result.config;
+          changed = result.changed;
+        } else if (msg.action === 'add') {
+          // Review fix: mirror messages.ts's KEYWORD_HEALTH_FIX zod schema
+          // (token /^[a-z0-9_-]{1,40}$/, agentId /^[a-z0-9-]{1,64}$/) and
+          // panel.ts's roster check — reject and log without values.
+          const agentId = String(msg.agentId || '');
+          const token = String(msg.token || '');
+          const validShape = /^[a-z0-9-]{1,64}$/.test(agentId) && /^[a-z0-9_-]{1,40}$/.test(token);
+          if (!validShape || !agentIds.includes(agentId)) {
+            console.error('[tycoonagents-standalone] keyword add rejected (invalid shape or agentId not in current roster)');
+            broadcast('message', { type: 'KEYWORD_HEALTH', ...buildKeywordHealthPayload(root) });
+            break;
+          }
+          const agentsMap = config && typeof config.agents === 'object' && config.agents !== null ? config.agents : {};
+          const entry = agentsMap[agentId];
+          const existing = entry && typeof entry.pattern === 'string' ? entry.pattern : '';
+          const segments = existing.split('|').map((s) => s.trim()).filter((s) => s !== '');
+          if (!segments.some((s) => s.toLowerCase() === token.toLowerCase())) segments.push(token);
+          config = setKeywordPattern(config, agentId, segments.join('|'));
+          changed = true;
+        }
+
+        if (changed) {
+          const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+          fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+          try {
+            const existingRaw = fs.readFileSync(keywordsPath, 'utf8');
+            fs.writeFileSync(`${keywordsPath}.bak`, existingRaw);
+          } catch {
+            /* no existing file to back up -> first write */
+          }
+          atomicWriteFileSyncStandalone(keywordsPath, JSON.stringify(config, null, 2));
+        }
+      } catch (err) {
+        console.error('[tycoonagents-standalone] KEYWORD_HEALTH_FIX failed:', err instanceof Error ? err.message : err);
+      }
+      try {
+        broadcast('message', { type: 'KEYWORD_HEALTH', ...buildKeywordHealthPayload(root) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] KEYWORD_HEALTH_FIX re-post failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    }
     case 'getEngineStatus':
       // main.js's "engineStatus" handler: renderEngineChips(Array.isArray(msg.chips) ? msg.chips : []).
       broadcast('message', { type: 'engineStatus', chips: [] });
@@ -1868,6 +2009,94 @@ function readKeywordsConfigStandalone(root) {
     /* missing/invalid => default */
   }
   return { fallback_agent: 'primary-agent', agents: {} };
+}
+
+/**
+ * p68-t1 review fix: standalone analog of panel.ts's `atomicWriteFileSync` —
+ * write to a temp file in the same directory, then rename over the target,
+ * so a concurrent reader never observes a partially-written
+ * agent-keywords.json.
+ */
+function atomicWriteFileSyncStandalone(filePath, content) {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmpPath, content);
+  fs.renameSync(tmpPath, filePath);
+}
+
+/**
+ * Standalone analog of panel.ts's `_postKeywordHealth` (p68-t1): reads
+ * `.claude/agents/*.md` + agent-keywords.json, runs computeKeywordHealth,
+ * and this session's wildcard/unmatched-word stats via activity.jsonl
+ * filtered to the current sessionId. Returns the KEYWORD_HEALTH payload
+ * shape directly (no broadcast — callers broadcast it).
+ */
+function buildKeywordHealthPayload(root) {
+  const agentsDir = path.join(root, '.claude', 'agents');
+  let agentIds = [];
+  try {
+    agentIds = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md')).map((f) => f.replace(/\.md$/, ''));
+  } catch {
+    agentIds = [];
+  }
+  const { parseAgentKeywords } = agentKeywordDefaultsModule();
+  const { computeKeywordHealth, computeWildcardStats } = keywordHealthModule();
+  const agents = agentIds.map((id) => {
+    let content = '';
+    try {
+      content = fs.readFileSync(path.join(agentsDir, `${id}.md`), 'utf8');
+    } catch {
+      content = '';
+    }
+    return { id, keywords: parseAgentKeywords(content) };
+  });
+
+  const config = readKeywordsConfigStandalone(root);
+  const findings = computeKeywordHealth(agents, config);
+
+  const knownTokens = new Set();
+  const configAgents = config && typeof config.agents === 'object' && config.agents !== null ? config.agents : {};
+  for (const entry of Object.values(configAgents)) {
+    const pattern = entry && typeof entry.pattern === 'string' ? entry.pattern : '';
+    for (const seg of pattern.split('|')) {
+      const t = seg.trim().toLowerCase();
+      if (t !== '') knownTokens.add(t);
+    }
+  }
+
+  let wildcardTasksThisSession = 0;
+  let unmatchedWords = [];
+  try {
+    const raw = fs.readFileSync(path.join(root, '.claude', 'tycoon', 'activity.jsonl'), 'utf8');
+    const lines = raw.split('\n').filter((l) => l.trim() !== '');
+    const records = [];
+    let sessionId;
+    for (let i = lines.length - 1; i >= 0 && sessionId === undefined; i--) {
+      try {
+        const rec = JSON.parse(lines[i]);
+        if (rec && typeof rec.sessionId === 'string') sessionId = rec.sessionId;
+      } catch {
+        /* skip malformed line */
+      }
+    }
+    if (sessionId !== undefined) {
+      for (const l of lines) {
+        try {
+          const rec = JSON.parse(l);
+          if (rec && rec.sessionId === sessionId) records.push(rec);
+        } catch {
+          /* skip malformed line */
+        }
+      }
+      const stats = computeWildcardStats(records, knownTokens);
+      wildcardTasksThisSession = stats.wildcardTasksThisSession;
+      unmatchedWords = stats.unmatchedWords;
+    }
+  } catch {
+    /* activity.jsonl missing/unreadable -> zeros */
+  }
+
+  return { findings, wildcardTasksThisSession, unmatchedWords };
 }
 
 /**

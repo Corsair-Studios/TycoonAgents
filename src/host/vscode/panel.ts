@@ -41,6 +41,7 @@ import {
   reconcileAgentKeywords,
   migrateSupersededKeywords,
 } from "./agentKeywordDefaults";
+import { computeKeywordHealth, normalizeAgentKeywords, computeWildcardStats } from "../../core/keywordHealth";
 import {
   renderDelegationDoctrine,
   upsertDelegationSection,
@@ -193,6 +194,21 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * p68-t1 review fix: write `content` atomically — a temp file in the SAME
+ * directory (so the rename is same-filesystem, never cross-device) followed
+ * by `fs.renameSync` over `filePath`. Avoids a reader (e.g. a concurrent
+ * panel/standalone read of agent-keywords.json) ever observing a
+ * partially-written file. Caller is responsible for any `.bak` backup
+ * first; this only makes the final write itself atomic.
+ */
+function atomicWriteFileSync(filePath: string, content: string): void {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmpPath, content);
+  fs.renameSync(tmpPath, filePath);
+}
+
+/**
  * p66-t1 review fix: a thrown openExternal/handler error's `.message` can
  * echo the Google sign-in URL it was given (which carries a PKCE
  * code_challenge) — never logged or posted verbatim on the openExternal
@@ -226,6 +242,7 @@ import {
   findLegacyHookCommands,
   LEGACY_STATE_FILE_NAMES,
   syncRuntimeFile,
+  MCP_BRIDGE_HOOK_FILES,
   enableMcpJsonServerInSettings,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
@@ -1459,6 +1476,15 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: setAgentKeywords payload rejected:", parsedSetAgentKeywords.error.message);
           }
+        } else if (message.type === MSG.GET_KEYWORD_HEALTH) {
+          this._postKeywordHealth();
+        } else if (message.type === MSG.KEYWORD_HEALTH_FIX) {
+          const parsedKeywordHealthFix = MSG_SCHEMAS.KEYWORD_HEALTH_FIX.safeParse(message);
+          if (parsedKeywordHealthFix.success) {
+            this._handleKeywordHealthFix(parsedKeywordHealthFix.data);
+          } else {
+            console.error("TycoonAgents: KEYWORD_HEALTH_FIX payload rejected:", parsedKeywordHealthFix.error.message);
+          }
         } else if (message.type === MSG.REMOVE_AGENT) {
           const parsedRemoveAgent = MSG_SCHEMAS.ID_ONLY.safeParse(message);
           if (parsedRemoveAgent.success) {
@@ -1473,6 +1499,8 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: openAgentFile payload rejected:", parsedOpenAgentFile.error.message);
           }
+        } else if (message.type === MSG.OPEN_AGENT_KEYWORDS_FILE) {
+          await this._handleOpenAgentKeywordsFile();
         } else if (message.type === MSG.GENERATE_DIAGNOSTIC) {
           const parsedGenerateDiagnostic = MSG_SCHEMAS.GENERATE_DIAGNOSTIC.safeParse(message);
           if (parsedGenerateDiagnostic.success) {
@@ -6310,6 +6338,25 @@ export class TycoonPanel {
         /* best-effort; hook falls back to legacy behavior when absent */
       }
 
+      // 2c. Copy the MCP bridge scripts (codex-mcp-launcher.cjs,
+      // codex-app-server-mcp.cjs) into .claude/hooks/ so .mcp.json entries
+      // can reference them with a project-relative path instead of an
+      // extension-install-dependent ${EXTENSION_DIR} token — see
+      // MCP_BRIDGE_HOOK_FILES in hookInstall.ts. Best-effort: a packaged
+      // install missing hooks/ for any reason must not break hook install.
+      try {
+        const hooksDestDir = path.join(claudeDir, "hooks");
+        for (const fileName of MCP_BRIDGE_HOOK_FILES) {
+          const bridgeSrc = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
+          if (fs.existsSync(bridgeSrc)) {
+            fs.mkdirSync(hooksDestDir, { recursive: true });
+            syncRuntimeFile(bridgeSrc, path.join(hooksDestDir, fileName));
+          }
+        }
+      } catch {
+        /* best-effort; MCP bridge entries simply won't resolve if absent */
+      }
+
       // 3. Relative hook command (Claude Code runs hooks with cwd = project root).
       const hookCommand = this._buildHookCommand();
 
@@ -7537,6 +7584,9 @@ export class TycoonPanel {
     const root = this._projectRoot();
     const agentsDir = path.join(root, ".claude", "agents");
 
+    // p68-t1: Agents screen open -> recompute keyword health alongside settings.
+    this._postKeywordHealth();
+
     const keywordsConfig = this._readKeywordsConfig(root);
     const keywordAgents =
       keywordsConfig &&
@@ -8074,6 +8124,37 @@ export class TycoonPanel {
   }
 
   /**
+   * p68-t1: Keyword health card's "Open" link — opens
+   * `.claude/tycoon/agent-keywords.json`. Same shape as
+   * `_handleOpenAgentFile`: creates nothing when the file is missing, just
+   * posts a one-line notice (SETTINGS_UPDATED, ok:false) instead.
+   */
+  private async _handleOpenAgentKeywordsFile(): Promise<void> {
+    const root = this._projectRoot();
+    if (root === "") {
+      console.error("TycoonAgents: openAgentKeywordsFile: no workspace folder open");
+      return;
+    }
+    const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+    if (!fs.existsSync(keywordsPath)) {
+      void this._panel.webview.postMessage({
+        type: MSG.SETTINGS_UPDATED,
+        ok: false,
+        id: "agent-keywords-file",
+        field: "keywords",
+        error: "agent-keywords.json does not exist yet.",
+      });
+      return;
+    }
+    try {
+      const doc = await vscode.workspace.openTextDocument(keywordsPath);
+      await vscode.window.showTextDocument(doc);
+    } catch (err) {
+      console.error("TycoonAgents: openAgentKeywordsFile: failed to open:", err);
+    }
+  }
+
+  /**
    * Remove a single agent: delete its `.claude/agents/<id>.md` file and its
    * `agent-keywords.json` routing entry, gated behind a native modal confirm.
    * The orchestrator/coordinator is the core session-model agent and cannot be
@@ -8203,6 +8284,183 @@ export class TycoonPanel {
         error: String(err),
       });
     }
+  }
+
+  /**
+   * p68-t1: compute keyword-routing findings + wildcard/session stats via
+   * src/core/keywordHealth.ts and post MSG.KEYWORD_HEALTH. Called on
+   * Agents-screen open (`_handleGetSettings`) and on-demand
+   * (`MSG.GET_KEYWORD_HEALTH`). Best-effort — a read/parse failure posts an
+   * empty result rather than throwing.
+   */
+  private _postKeywordHealth(): void {
+    const root = this._projectRoot();
+    if (root === "") return;
+
+    const agentsDir = path.join(root, ".claude", "agents");
+    let agentIds: string[] = [];
+    try {
+      agentIds = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""));
+    } catch {
+      agentIds = [];
+    }
+    const agents = agentIds.map((id) => {
+      let content = "";
+      try {
+        content = fs.readFileSync(path.join(agentsDir, `${id}.md`), "utf8");
+      } catch {
+        content = "";
+      }
+      return { id, keywords: parseAgentKeywords(content) };
+    });
+
+    const config = this._readKeywordsConfig(root);
+    const findings = computeKeywordHealth(agents, config);
+
+    // Known tokens across every configured agent's pattern, for the
+    // unmatched-word signal below.
+    const knownTokens = new Set<string>();
+    const configAgents: Record<string, any> =
+      config && typeof config.agents === "object" && config.agents !== null ? config.agents : {};
+    for (const entry of Object.values(configAgents)) {
+      const pattern = entry && typeof (entry as any).pattern === "string" ? (entry as any).pattern : "";
+      for (const seg of pattern.split("|")) {
+        const t = seg.trim().toLowerCase();
+        if (t !== "") knownTokens.add(t);
+      }
+    }
+
+    const session = this._sessionDelegationHealthThrottled(root);
+    let wildcardTasksThisSession = 0;
+    let unmatchedWords: string[] = [];
+    if (session?.sessionId) {
+      try {
+        const raw = fs.readFileSync(path.join(root, ".claude", "tycoon", "activity.jsonl"), "utf8");
+        const records = raw
+          .split("\n")
+          .filter((l) => l.trim() !== "")
+          .map((l) => {
+            try {
+              return JSON.parse(l) as {
+                event?: string;
+                workerId?: string;
+                routingMethod?: string;
+                sessionId?: string;
+                description?: string;
+                agentDescription?: string;
+              };
+            } catch {
+              return null;
+            }
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null && r.sessionId === session.sessionId);
+        const stats = computeWildcardStats(records, knownTokens);
+        wildcardTasksThisSession = stats.wildcardTasksThisSession;
+        unmatchedWords = stats.unmatchedWords;
+      } catch {
+        /* activity.jsonl missing/unreadable -> zeros */
+      }
+    }
+
+    void this._panel.webview.postMessage({
+      type: MSG.KEYWORD_HEALTH,
+      findings,
+      wildcardTasksThisSession,
+      unmatchedWords,
+    });
+  }
+
+  /**
+   * p68-t1: apply the keyword-health fixer. `fix_all` runs
+   * normalizeAgentKeywords() over the current roster/config; `add` appends
+   * one token to one agent's existing pattern (empty-pattern case falls back
+   * to just that token). Writes agent-keywords.json atomically with a
+   * `.bak` (like other config writes — see `_installAgentFiles`), then
+   * re-posts KEYWORD_HEALTH either way.
+   */
+  private _handleKeywordHealthFix(
+    payload: { action: "fix_all" } | { action: "add"; agentId: string; token: string }
+  ): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+
+      const agentsDir = path.join(root, ".claude", "agents");
+      let agentIds: string[] = [];
+      try {
+        agentIds = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""));
+      } catch {
+        agentIds = [];
+      }
+
+      // Review fix: an "add" whose agentId isn't in the current roster (agent
+      // files on disk) is rejected outright rather than silently creating a
+      // routing entry for an id that doesn't exist — log without the
+      // (untrusted) values and re-post the CURRENT (unchanged) health.
+      if (payload.action === "add" && !agentIds.includes(payload.agentId)) {
+        console.error("TycoonAgents: keyword add rejected (agentId not in current roster)");
+        this._postKeywordHealth();
+        return;
+      }
+
+      const agents = agentIds.map((id) => {
+        let content = "";
+        try {
+          content = fs.readFileSync(path.join(agentsDir, `${id}.md`), "utf8");
+        } catch {
+          content = "";
+        }
+        return { id, keywords: parseAgentKeywords(content) };
+      });
+
+      let config = this._readKeywordsConfig(root);
+      let changed = false;
+
+      if (payload.action === "fix_all") {
+        const result = normalizeAgentKeywords(config, agents);
+        config = result.config;
+        changed = result.changed;
+      } else {
+        config = setKeywordPattern(
+          config,
+          payload.agentId,
+          this._appendKeywordToken(config, payload.agentId, payload.token)
+        );
+        changed = true;
+      }
+
+      if (changed) {
+        const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        try {
+          const existing = fs.readFileSync(keywordsPath, "utf8");
+          fs.writeFileSync(`${keywordsPath}.bak`, existing);
+        } catch {
+          /* no existing file to back up -> first write */
+        }
+        atomicWriteFileSync(keywordsPath, JSON.stringify(config, null, 2));
+      }
+    } catch (err) {
+      console.error("TycoonAgents: KEYWORD_HEALTH_FIX failed:", err);
+    }
+    this._postKeywordHealth();
+  }
+
+  /** Helper for the "add" fix action: append `token` to `agentId`'s existing pattern (deduped). */
+  private _appendKeywordToken(config: Record<string, any>, agentId: string, token: string): string {
+    const agentsMap: Record<string, any> =
+      config && typeof config.agents === "object" && config.agents !== null ? config.agents : {};
+    const entry = agentsMap[agentId];
+    const existing = entry && typeof entry.pattern === "string" ? entry.pattern : "";
+    const segments = existing
+      .split("|")
+      .map((s: string) => s.trim())
+      .filter((s: string) => s !== "");
+    const clean = token.trim();
+    if (clean !== "" && !segments.some((s: string) => s.toLowerCase() === clean.toLowerCase())) {
+      segments.push(clean);
+    }
+    return segments.join("|");
   }
 
   /**

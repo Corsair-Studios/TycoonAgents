@@ -28,6 +28,28 @@ test("parseAgentBackend: no backend block, slashed top-level model (openai/gpt-5
   });
 });
 
+test("parseAgentBackend: backend.reasoningEffort with an allowlisted value ('high') is kept, lowercased/trimmed", () => {
+  const result = parseAgentBackend({ model: "sonnet", backend: { vendor: "openai", transport: "claude-native", model: "openai/gpt-5", costModelClass: "metered", reasoningEffort: "  HIGH  " } });
+  assert.equal(result.reasoningEffort, "high");
+});
+
+test("parseAgentBackend: backend.reasoningEffort with a non-allowlisted value is dropped entirely (key absent)", () => {
+  const result = parseAgentBackend({ model: "sonnet", backend: { vendor: "openai", transport: "claude-native", model: "openai/gpt-5", costModelClass: "metered", reasoningEffort: "extreme" } });
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "reasoningEffort"), false, "an invalid reasoningEffort must not appear on the result at all");
+});
+
+test("parseAgentBackend: backend.reasoningEffort absent entirely leaves the key absent (no fabricated default)", () => {
+  const result = parseAgentBackend({ model: "sonnet", backend: { vendor: "openai", transport: "claude-native", model: "openai/gpt-5", costModelClass: "metered" } });
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "reasoningEffort"), false);
+});
+
+test("parseAgentBackend: every allowlisted reasoningEffort value round-trips unchanged", () => {
+  for (const v of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
+    const result = parseAgentBackend({ model: "sonnet", backend: { vendor: "openai", transport: "claude-native", model: "openai/gpt-5", costModelClass: "metered", reasoningEffort: v } });
+    assert.equal(result.reasoningEffort, v);
+  }
+});
+
 test("parseAgentBackend: no backend block, slashed top-level model with an anthropic prefix does not double-prefix", () => {
   const result = parseAgentBackend({ model: "anthropic/claude-sonnet-4-6" });
   assert.deepEqual(result, {
