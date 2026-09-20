@@ -103,6 +103,10 @@ test('handleListThemes: LIST_THEMES broadcasts THEMES_LIST with a seeded theme (
     assert.equal(themes[0].total, 0);
     assert.equal(themes[0].accepted, 0);
     assert.equal(themes[0].export_ready, false);
+    // p77-t3: seedTheme writes a non-empty frames.json (environment_background),
+    // so listThemesFromStore's themeBoardCountsFromStore must report a board.
+    assert.equal(themes[0].hasBoards, true);
+    assert.equal(themes[0].boardCount, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -138,6 +142,8 @@ test('handleSelectTheme: SELECT_THEME broadcasts THEME_INITIALIZED with manifest
     assert.deepEqual(payload.unlocked_badge_ids, []);
     assert.equal(payload.rebirth_state, null);
     assert.equal(payload.savedBuildProgress, 0);
+    assert.equal(payload.hasBoards, true, 'THEME_INITIALIZED must carry hasBoards from the seeded frames.json');
+    assert.equal(payload.boardCount, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

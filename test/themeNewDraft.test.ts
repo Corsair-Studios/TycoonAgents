@@ -102,7 +102,7 @@ function makeFakeImage(win: any) {
 // `.theme-plan-header` / `.theme-plan-footer-actions` containers the Save
 // theme / New theme buttons are appended into by class selector (not id).
 const THEME_BUILDER_MARKUP = `
-  <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Theme Builder</button>
+  <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Tycoon Theme Builder</button>
   <span id="theme-builder-credits-chip" class="theme-credits-chip" hidden></span>
   <div id="theme-picker-list" role="tabpanel"></div>
   <div id="theme-builder-panel" role="tabpanel" hidden>
@@ -287,37 +287,40 @@ async function openThemeBuilderOnEmptyDraft() {
 
 test('clicking the Theme Builder tab with no plan renders the empty plan editor with correct slot counts', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
-  const { doc } = h;
+  try {
+    const { doc } = h;
 
-  assert.ok(doc.getElementById('theme-plan-editor').hasAttribute('hidden') === false || !doc.getElementById('theme-plan-editor').hasAttribute('hidden'));
+    assert.ok(doc.getElementById('theme-plan-editor').hasAttribute('hidden') === false || !doc.getElementById('theme-plan-editor').hasAttribute('hidden'));
 
-  const nameInput = doc.getElementById('theme-plan-name');
-  assert.ok(nameInput, 'theme-plan-name field must exist');
-  assert.equal((nameInput.value || ''), '');
+    const nameInput = doc.getElementById('theme-plan-name');
+    assert.ok(nameInput, 'theme-plan-name field must exist');
+    assert.equal((nameInput.value || ''), '');
 
-  function slotRowCount(containerId: string): number {
-    const container = doc.getElementById(containerId);
-    assert.ok(container, `expected #${containerId}`);
-    return container.querySelectorAll('.theme-plan-slot-row').length;
+    function slotRowCount(containerId: string): number {
+      const container = doc.getElementById(containerId);
+      assert.ok(container, `expected #${containerId}`);
+      return container.querySelectorAll('.theme-plan-slot-row').length;
+    }
+
+    assert.equal(slotRowCount('theme-plan-characters'), 16);
+    assert.equal(slotRowCount('theme-plan-enemies'), 4);
+    assert.equal(slotRowCount('theme-plan-decor-slots'), 9);
+    assert.equal(slotRowCount('theme-plan-objects-slots'), 21);
+    assert.equal(slotRowCount('theme-plan-achievements-slots'), 25);
+
+    const expressionsContainer = doc.getElementById('theme-plan-expressions-slots');
+    const expressionRows = Array.from(expressionsContainer.querySelectorAll('.theme-plan-slot-row')) as any[];
+    assert.equal(expressionRows.length, 8);
+    const expressionLabels = expressionRows.map((row) => (row.querySelector('.theme-plan-slot-name-readonly')?.textContent || '').trim());
+    assert.ok(expressionLabels.every((label) => label.length > 0), `all 8 expression labels must be pre-filled, got: ${JSON.stringify(expressionLabels)}`);
+    assert.equal(new Set(expressionLabels).size, 8, 'the 8 fixed expression labels must be distinct');
+
+    // Review generated images stays hidden before anything is saved.
+    const review = doc.getElementById('theme-image-review');
+    assert.ok(review.hasAttribute('hidden'), 'theme-image-review must be hidden before the first save');
+  } finally {
+    h.win.close();
   }
-
-  assert.equal(slotRowCount('theme-plan-characters'), 16);
-  assert.equal(slotRowCount('theme-plan-enemies'), 4);
-  assert.equal(slotRowCount('theme-plan-decor-slots'), 9);
-  assert.equal(slotRowCount('theme-plan-objects-slots'), 21);
-  assert.equal(slotRowCount('theme-plan-achievements-slots'), 25);
-
-  const expressionsContainer = doc.getElementById('theme-plan-expressions-slots');
-  const expressionRows = Array.from(expressionsContainer.querySelectorAll('.theme-plan-slot-row')) as any[];
-  assert.equal(expressionRows.length, 8);
-  const expressionLabels = expressionRows.map((row) => (row.querySelector('.theme-plan-slot-name-readonly')?.textContent || '').trim());
-  assert.ok(expressionLabels.every((label) => label.length > 0), `all 8 expression labels must be pre-filled, got: ${JSON.stringify(expressionLabels)}`);
-  assert.equal(new Set(expressionLabels).size, 8, 'the 8 fixed expression labels must be distinct');
-
-  // Review generated images stays hidden before anything is saved.
-  const review = doc.getElementById('theme-image-review');
-  assert.ok(review.hasAttribute('hidden'), 'theme-image-review must be hidden before the first save');
-  h.win.close();
 });
 
 // ── Save theme flow ──────────────────────────────────────────────────────
@@ -332,106 +335,118 @@ function fillFirstSlot(doc: any, containerId: string, value: string) {
 
 test('typing values then clicking Save theme posts saveThemePlan with those values and no theme_id', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
-  const { doc } = h;
+  try {
+    const { doc } = h;
 
-  const nameInput = doc.getElementById('theme-plan-name');
-  nameInput.value = 'My Hand-Built Theme';
-  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    const nameInput = doc.getElementById('theme-plan-name');
+    nameInput.value = 'My Hand-Built Theme';
+    nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
 
-  const directionInput = doc.getElementById('theme-plan-direction');
-  if (directionInput) {
-    directionInput.value = 'Bright cartoon style.';
-    directionInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    const directionInput = doc.getElementById('theme-plan-direction');
+    if (directionInput) {
+      directionInput.value = 'Bright cartoon style.';
+      directionInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    }
+
+    fillFirstSlot(doc, 'theme-plan-characters', 'Captain Byrd');
+
+    h.click('theme-save-theme-btn');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const posted = h.lastPosted('saveThemePlan');
+    assert.ok(posted, 'expected a saveThemePlan message to be posted');
+    assert.equal(posted.plan.display_name, 'My Hand-Built Theme');
+    assert.equal(posted.plan.characters[0], 'Captain Byrd');
+    assert.ok(posted.theme_id === undefined || posted.theme_id === null, `theme_id must be null/undefined on first save, got ${JSON.stringify(posted.theme_id)}`);
+  } finally {
+    h.win.close();
   }
-
-  fillFirstSlot(doc, 'theme-plan-characters', 'Captain Byrd');
-
-  h.click('theme-save-theme-btn');
-  await new Promise((r) => setTimeout(r, 0));
-
-  const posted = h.lastPosted('saveThemePlan');
-  assert.ok(posted, 'expected a saveThemePlan message to be posted');
-  assert.equal(posted.plan.display_name, 'My Hand-Built Theme');
-  assert.equal(posted.plan.characters[0], 'Captain Byrd');
-  assert.ok(posted.theme_id === undefined || posted.theme_id === null, `theme_id must be null/undefined on first save, got ${JSON.stringify(posted.theme_id)}`);
-  h.win.close();
 });
 
 test('THEME_PLAN_SAVED sets the draft id, a second Save posts the returned theme_id, and reveals the review section bound to it', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
-  const { doc } = h;
+  try {
+    const { doc } = h;
 
-  const nameInput = doc.getElementById('theme-plan-name');
-  nameInput.value = 'Second Save Theme';
-  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    const nameInput = doc.getElementById('theme-plan-name');
+    nameInput.value = 'Second Save Theme';
+    nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
 
-  h.click('theme-save-theme-btn');
-  await new Promise((r) => setTimeout(r, 0));
-  const firstSave = h.lastPosted('saveThemePlan');
-  assert.ok(firstSave.theme_id === undefined || firstSave.theme_id === null);
+    h.click('theme-save-theme-btn');
+    await new Promise((r) => setTimeout(r, 0));
+    const firstSave = h.lastPosted('saveThemePlan');
+    assert.ok(firstSave.theme_id === undefined || firstSave.theme_id === null);
 
-  h.dispatch({
-    type: 'THEME_PLAN_SAVED',
-    payload: { theme_id: 'second_save_theme', plan: { ...firstSave.plan, theme_id: 'second_save_theme' } },
-  });
-  await new Promise((r) => setTimeout(r, 0));
+    h.dispatch({
+      type: 'THEME_PLAN_SAVED',
+      payload: { theme_id: 'second_save_theme', plan: { ...firstSave.plan, theme_id: 'second_save_theme' } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
 
-  // Review section reveals bound to the saved id.
-  const review = doc.getElementById('theme-image-review');
-  assert.ok(!review.hasAttribute('hidden'), 'theme-image-review must be revealed after THEME_PLAN_SAVED');
-  const reviewGet = h.lastPosted('GET_THEME_IMAGE_REVIEW');
-  assert.ok(reviewGet, 'expected GET_THEME_IMAGE_REVIEW to be posted after save');
-  assert.equal(reviewGet.payload.theme_id, 'second_save_theme');
+    // Review section reveals bound to the saved id.
+    const review = doc.getElementById('theme-image-review');
+    assert.ok(!review.hasAttribute('hidden'), 'theme-image-review must be revealed after THEME_PLAN_SAVED');
+    const reviewGet = h.lastPosted('GET_THEME_IMAGE_REVIEW');
+    assert.ok(reviewGet, 'expected GET_THEME_IMAGE_REVIEW to be posted after save');
+    assert.equal(reviewGet.payload.theme_id, 'second_save_theme');
 
-  // A second Save theme click must carry the assigned theme_id forward.
-  h.click('theme-save-theme-btn');
-  await new Promise((r) => setTimeout(r, 0));
-  const secondSave = h.lastPosted('saveThemePlan');
-  assert.equal(secondSave.theme_id, 'second_save_theme', 'second save must reuse the theme_id THEME_PLAN_SAVED returned');
-  h.win.close();
+    // A second Save theme click must carry the assigned theme_id forward.
+    h.click('theme-save-theme-btn');
+    await new Promise((r) => setTimeout(r, 0));
+    const secondSave = h.lastPosted('saveThemePlan');
+    assert.equal(secondSave.theme_id, 'second_save_theme', 'second save must reuse the theme_id THEME_PLAN_SAVED returned');
+  } finally {
+    h.win.close();
+  }
 });
 
 // ── THEME_PLAN_READY overwrite confirm ──────────────────────────────────────
 
 test('THEME_PLAN_READY with typed content shows an inline confirm and does not overwrite until confirmed', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
-  const { doc } = h;
+  try {
+    const { doc } = h;
 
-  const nameInput = doc.getElementById('theme-plan-name');
-  nameInput.value = 'Typed By Hand';
-  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    const nameInput = doc.getElementById('theme-plan-name');
+    nameInput.value = 'Typed By Hand';
+    nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
 
-  h.dispatch({
-    type: 'THEME_PLAN_READY',
-    payload: { plan: { display_name: 'AI Generated Name', characters: new Array(16).fill('AI Char') } },
-  });
-  await new Promise((r) => setTimeout(r, 0));
+    h.dispatch({
+      type: 'THEME_PLAN_READY',
+      payload: { plan: { display_name: 'AI Generated Name', characters: new Array(16).fill('AI Char') } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
 
-  // Not yet overwritten.
-  assert.equal(doc.getElementById('theme-plan-name').value, 'Typed By Hand');
-  const validation = doc.getElementById('theme-plan-validation');
-  assert.ok(validation && (validation.textContent || '').length > 0, 'expected an inline confirm message');
-  const overwriteBtn = Array.from(validation.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Overwrite') as any;
-  assert.ok(overwriteBtn, 'expected an Overwrite button in the inline confirm');
+    // Not yet overwritten.
+    assert.equal(doc.getElementById('theme-plan-name').value, 'Typed By Hand');
+    const validation = doc.getElementById('theme-plan-validation');
+    assert.ok(validation && (validation.textContent || '').length > 0, 'expected an inline confirm message');
+    const overwriteBtn = Array.from(validation.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Overwrite') as any;
+    assert.ok(overwriteBtn, 'expected an Overwrite button in the inline confirm');
 
-  overwriteBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(doc.getElementById('theme-plan-name').value, 'AI Generated Name', 'confirming Overwrite must apply the AI plan');
-  h.win.close();
+    overwriteBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(doc.getElementById('theme-plan-name').value, 'AI Generated Name', 'confirming Overwrite must apply the AI plan');
+  } finally {
+    h.win.close();
+  }
 });
 
 test('THEME_PLAN_READY with empty fields fills directly with no confirm', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
-  const { doc } = h;
+  try {
+    const { doc } = h;
 
-  h.dispatch({
-    type: 'THEME_PLAN_READY',
-    payload: { plan: { display_name: 'Direct Fill Name', characters: new Array(16).fill('AI Char') } },
-  });
-  await new Promise((r) => setTimeout(r, 0));
+    h.dispatch({
+      type: 'THEME_PLAN_READY',
+      payload: { plan: { display_name: 'Direct Fill Name', characters: new Array(16).fill('AI Char') } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
 
-  assert.equal(doc.getElementById('theme-plan-name').value, 'Direct Fill Name');
-  const validation = doc.getElementById('theme-plan-validation');
-  assert.equal((validation.textContent || '').trim(), '', 'no confirm prompt expected when nothing was typed');
-  h.win.close();
+    assert.equal(doc.getElementById('theme-plan-name').value, 'Direct Fill Name');
+    const validation = doc.getElementById('theme-plan-validation');
+    assert.equal((validation.textContent || '').trim(), '', 'no confirm prompt expected when nothing was typed');
+  } finally {
+    h.win.close();
+  }
 });

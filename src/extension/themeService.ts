@@ -499,7 +499,11 @@ export async function planTheme(
 
 export async function listThemes(
   globalStorageUri: ThemeStorageRoot,
-): Promise<Array<{ theme_id: string; display_name: string; size_bytes: number } & ThemeApprovalSummary>> {
+): Promise<
+  Array<
+    { theme_id: string; display_name: string; size_bytes: number; hasBoards: boolean; boardCount: number } & ThemeApprovalSummary
+  >
+> {
   const store = resolveThemeFileStore(globalStorageUri);
   const results = new Map<string, { theme_id: string; display_name: string }>();
   try {
@@ -533,11 +537,12 @@ export async function listThemes(
   );
   const sorted = [...results.values()].sort((a, b) => a.display_name.localeCompare(b.display_name));
   return Promise.all(sorted.map(async (theme) => {
-    const [approval, sizeBytes] = await Promise.all([
+    const [approval, sizeBytes, boardCounts] = await Promise.all([
       getThemeApprovalSummary(globalStorageUri, theme.theme_id),
       getThemeDiskSize(globalStorageUri, theme.theme_id),
+      getThemeBoardCounts(globalStorageUri, theme.theme_id),
     ]);
-    return { ...theme, ...approval, size_bytes: sizeBytes };
+    return { ...theme, ...approval, size_bytes: sizeBytes, ...boardCounts };
   }));
 }
 
@@ -615,6 +620,34 @@ export async function getThemeApprovalSummary(
   if (!isThemeId(themeId)) return summarizeThemeApproval(undefined);
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   return summarizeThemeApproval(document?.items);
+}
+
+/**
+ * Cheap board-presence check (p77-t2): counts frames.json entries — every
+ * generated OR uploaded board writes its slot into frames.json (see
+ * uploadThemeImage / regenerateThemeBoardImage), so a key count there is a
+ * single-file read that answers "does this theme have anything to review"
+ * without a directory scan. Callers that already hold a loaded theme's
+ * `frames` object (loadTheme / saveThemePlan / regenerate handlers) should
+ * use `themeBoardCountsFromFrames` instead of re-reading the file.
+ */
+export async function getThemeBoardCounts(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+): Promise<{ hasBoards: boolean; boardCount: number }> {
+  if (!isThemeId(themeId)) return { hasBoards: false, boardCount: 0 };
+  const store = resolveThemeFileStore(globalStorageUri);
+  const frames = await readJson<Record<string, string[]>>(store, themeFramesPath(themeId));
+  return themeBoardCountsFromFrames(frames);
+}
+
+/** Same computation as `getThemeBoardCounts`, from an already-loaded frames object. */
+export function themeBoardCountsFromFrames(frames: Record<string, string[]> | undefined | null): {
+  hasBoards: boolean;
+  boardCount: number;
+} {
+  const boardCount = frames ? Object.keys(frames).length : 0;
+  return { hasBoards: boardCount > 0, boardCount };
 }
 
 /** Delete a saved theme, including sidecars created by legacy releases. */

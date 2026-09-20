@@ -4,13 +4,15 @@
  * Attribution header - optional; end users may remove it.
  */
 
-// p76-t3: panel message-boundary coverage for SAVE_THEME_PLAN/THEME_PLAN_SAVED,
+// p76-t3/p77-t3: panel message-boundary coverage for SAVE_THEME_PLAN/THEME_PLAN_SAVED,
 // following test/themeServiceMessageBoundary.test.ts's pattern: this task may
 // not edit panel.ts, so it replicates panel.ts's two relevant one-line pieces
 // (themeServiceMessagePayload at ~203-210, and the SAVE_THEME_PLAN branch's
-// exact success/error reply shapes at ~2773-2800) and exercises them against
-// the real MSG_SCHEMAS.SAVE_THEME_PLAN (src/host/vscode/messages.ts ~937) and
-// the real saveThemePlan (src/extension/themeService.ts ~2199), rather than
+// exact success/error reply shapes at ~2775-2803) and exercises them against
+// the real MSG_SCHEMAS.SAVE_THEME_PLAN (src/host/vscode/messages.ts ~937), the
+// real saveThemePlan (src/extension/themeService.ts ~2199), and (p77-t3) the
+// real getThemeBoardCounts (src/extension/themeService.ts ~634) whose spread
+// result panel.ts now appends to the THEME_PLAN_SAVED payload, rather than
 // instantiating the full TycoonPanel class (which needs a live vscode.Uri /
 // webview / extension context this test suite cannot construct).
 
@@ -53,7 +55,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { saveThemePlan, listThemes } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { saveThemePlan, listThemes, getThemeBoardCounts } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   configureThemeFileStore,
@@ -129,7 +131,8 @@ async function handleSaveThemePlan(message: Record<string, unknown>): Promise<Ar
   }
   try {
     const { theme_id, plan } = await saveThemePlan({} as any, parsed.data.plan as any, parsed.data.theme_id);
-    posted.push({ type: MSG.THEME_PLAN_SAVED, payload: { theme_id, plan } });
+    const savedBoardCounts = await getThemeBoardCounts({} as any, theme_id);
+    posted.push({ type: MSG.THEME_PLAN_SAVED, payload: { theme_id, plan, ...savedBoardCounts } });
     const themes = await listThemes({} as any);
     posted.push({ type: MSG.THEMES_LIST, payload: { themes } });
   } catch (err) {
@@ -150,6 +153,8 @@ test('saveThemePlan with a valid plan replies THEME_PLAN_SAVED then THEMES_LIST'
     assert.equal(posted.length, 2);
     assert.equal(posted[0].type, MSG.THEME_PLAN_SAVED);
     assert.equal((posted[0].payload as any).theme_id, 'message_boundary_theme');
+    assert.equal((posted[0].payload as any).hasBoards, false, 'a freshly saved empty-slot theme must report hasBoards:false');
+    assert.equal((posted[0].payload as any).boardCount, 0);
     assert.equal(posted[1].type, MSG.THEMES_LIST);
     const themes = (posted[1].payload as any).themes;
     assert.ok(Array.isArray(themes) && themes.some((t: any) => t.theme_id === 'message_boundary_theme'));
@@ -201,6 +206,12 @@ test('source guard: panel.ts SAVE_THEME_PLAN branch still parses via themeServic
 
   assert.match(
     branch,
+    /const savedBoardCounts = await getThemeBoardCounts\(\s*this\._globalStorageUri,\s*theme_id,?\s*\);/,
+    'branch must still compute savedBoardCounts via getThemeBoardCounts after saveThemePlan',
+  );
+
+  assert.match(
+    branch,
     /MSG_SCHEMAS\.SAVE_THEME_PLAN\.safeParse\(themeServiceMessagePayload\(message\)\)/,
     'SAVE_THEME_PLAN branch must still validate via MSG_SCHEMAS.SAVE_THEME_PLAN.safeParse(themeServiceMessagePayload(message))',
   );
@@ -216,8 +227,8 @@ test('source guard: panel.ts SAVE_THEME_PLAN branch still parses via themeServic
   );
   assert.match(
     branch,
-    /type:\s*MSG\.THEME_PLAN_SAVED,\s*payload:\s*\{\s*theme_id,\s*plan\s*\}/,
-    'success reply must still be { type: MSG.THEME_PLAN_SAVED, payload: { theme_id, plan } }',
+    /type:\s*MSG\.THEME_PLAN_SAVED,\s*payload:\s*\{\s*theme_id,\s*plan,\s*\.\.\.savedBoardCounts\s*\}/,
+    'success reply must still be { type: MSG.THEME_PLAN_SAVED, payload: { theme_id, plan, ...savedBoardCounts } }',
   );
   assert.match(
     branch,

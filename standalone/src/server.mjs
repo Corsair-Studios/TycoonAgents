@@ -3707,7 +3707,7 @@ function buildHostHtml(token) {
     <div id="menu-popover" role="menu" hidden>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
       <button class="menu-item" role="menuitem" id="menu-routing">Agents</button>
-      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-themes">Tycoon Themes</button>
       <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
       <button class="menu-item" role="menuitem" id="menu-about">About</button>
@@ -3915,20 +3915,20 @@ function buildHostHtml(token) {
   </div>
 
   <!-- Themes modal overlay -->
-  <div id="themes-modal" role="dialog" aria-modal="true" aria-label="Themes" hidden>
+  <div id="themes-modal" role="dialog" aria-modal="true" aria-label="Tycoon Themes" hidden>
     <div id="themes-backdrop"></div>
     <div id="themes-dialog">
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
       <div id="themes-scroll">
       <div id="theme-picker-list" role="tabpanel">
         <section id="theme-library-section" class="theme-library-section">
-          <h2 style="margin: 0 0 16px;">Themes</h2>
+          <h2 style="margin: 0 0 16px;">Tycoon Themes</h2>
           <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
           <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
           <div class="theme-cta-block">
             <div class="theme-cta-primary-row">
               <div class="theme-cta-primary-row-top">
-                <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Theme Builder</button>
+                <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Tycoon Theme Builder</button>
                 <span id="theme-builder-credits-chip" class="theme-credits-chip" hidden></span>
               </div>
               <p class="theme-cta-value">Generate a full sprite theme from a description.</p>
@@ -4066,7 +4066,7 @@ function buildHostHtml(token) {
     <div id="theme-builder-shell-backdrop"></div>
     <div id="theme-builder-shell-dialog">
       <button id="theme-builder-shell-close" aria-label="Close dialog">&times;</button>
-      <h2 id="theme-builder-shell-title">Theme Builder</h2>
+      <h2 id="theme-builder-shell-title">Tycoon Theme Builder</h2>
       <div id="theme-service-panel-body"></div>
       <div class="theme-builder-shell-footer">
         <button id="theme-builder-shell-continue" class="skill-btn primary">Continue to builder</button>

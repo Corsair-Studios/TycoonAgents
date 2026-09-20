@@ -394,6 +394,13 @@
 
   function showThemeImageReview(themeId) {
     if (!themeId) return;
+    // p77-t1 review fix: opening review for a theme other than the one
+    // being drafted drops the stale draft state first (picker "Review
+    // images" on a different saved theme). Same theme_id as the draft
+    // (e.g. right after saveThemePlan) keeps the draft intact.
+    if (draftThemeId && themeId !== draftThemeId) {
+      clearThemeBuilderDraftState();
+    }
     reviewThemeId = themeId;
     themePickerList.setAttribute("hidden", "");
     themeBuilderPanel.removeAttribute("hidden");
@@ -2186,6 +2193,20 @@
           : "Generate a replacement using the current visual description.")
           + " Saves your creative-direction edit first.";
       retryBtn.addEventListener("click", () => {
+        // p77-t1: a fresh per-board "Generate with AI" (no image/error yet —
+        // the manual-draft board grid state) gates on sign-in the same way
+        // as the main "Generate with AI" button, via the pending-intent
+        // mechanism, so it resumes THIS board once sign-in completes instead
+        // of only surfacing a not_signed_in error after a round trip.
+        const isFreshGenerate = !(item.image_src || item.generation_error);
+        const signedIn = typeof themeServiceStatus !== "undefined" && themeServiceStatus && themeServiceStatus.signedIn;
+        if (isFreshGenerate && !signedIn) {
+          themeGeneratePendingIntent = true;
+          themePendingIntentResume = () => retryBtn.click();
+          openThemeBuilderShellModal();
+          renderThemeServicePanel(themeServiceStatus);
+          return;
+        }
         retryBtn.disabled = true;
         retryBtn.textContent = "Generating...";
         themeReviewBusyItems.set(item.id, "retry");

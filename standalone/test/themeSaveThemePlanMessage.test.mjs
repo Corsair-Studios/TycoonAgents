@@ -61,12 +61,19 @@ test('SAVE_THEME_PLAN writes theme files under the configured store and broadcas
   const themeId = saved[0].data.payload.theme_id;
   assert.equal(themeId, 'standalone_draft_theme');
   assert.equal(saved[0].data.payload.plan.characters.length, 16);
+  // p77-t3: a freshly saved plan (no frames.json boards written yet) must
+  // report hasBoards:false/boardCount:0 (themeBoardCountsFromStore).
+  assert.equal(saved[0].data.payload.hasBoards, false);
+  assert.equal(saved[0].data.payload.boardCount, 0);
 
   const listedIndex = calls.findIndex((c) => c.data?.type === 'THEMES_LIST');
   const savedIndex = calls.findIndex((c) => c.data?.type === 'THEME_PLAN_SAVED');
   assert.ok(listedIndex > savedIndex, 'THEMES_LIST must broadcast after THEME_PLAN_SAVED');
   const themes = calls[listedIndex].data.payload.themes;
-  assert.ok(themes.some((theme) => theme.theme_id === themeId));
+  const listedTheme = themes.find((theme) => theme.theme_id === themeId);
+  assert.ok(listedTheme, 'expected the saved theme in THEMES_LIST');
+  assert.equal(listedTheme.hasBoards, false, 'THEMES_LIST entries must carry hasBoards');
+  assert.equal(listedTheme.boardCount, 0, 'THEMES_LIST entries must carry boardCount');
 
   // Real files landed under the configured fs store's root.
   const planPath = path.join(root, 'themes', themeId, 'plan.json');

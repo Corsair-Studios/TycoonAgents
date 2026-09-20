@@ -1499,6 +1499,9 @@
       confirmThemePlanOverwrite(() => {
         renderThemePlan(planPayload);
         updateThemeDraftUi();
+        // p77-t1: an AI-filled plan needs full review — expand the "Edit
+        // plan details" disclosure that a fresh manual draft starts collapsed.
+        setThemePlanDetailsDisclosureOpen(true);
       });
       if (themeBuildStatus) {
         themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
@@ -1513,6 +1516,9 @@
         themeSaveThemeBtn.disabled = false;
         themeSaveThemeBtn.textContent = "Save theme";
       }
+      if (themeBuildManuallyBtn) themeBuildManuallyBtn.disabled = false;
+      // p77-t1: host contract — missing hasBoards treated as false.
+      currentThemeHasBoards = Boolean(msg.payload?.hasBoards);
       const savedThemeId = msg.payload?.theme_id;
       if (savedThemeId) {
         draftThemeId = savedThemeId;
@@ -1566,11 +1572,17 @@
       const readyThemeId = msg.payload?.theme_id;
       if (readyThemeId) {
         reviewThemeId = readyThemeId;
-        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+        // p77-t1 review fix: THEME_REVIEW_READY carries no hasBoards field —
+        // just re-run the gate; showThemeImageReview's GET_THEME_IMAGE_REVIEW
+        // round trip will set currentThemeHasBoards from THEME_IMAGE_REVIEW.
+        updateThemeDraftUi();
         showThemeImageReview(readyThemeId);
       }
     } else if (msg && msg.type === "THEME_IMAGE_REVIEW") {
       if (msg.payload?.theme_id) reviewThemeId = msg.payload.theme_id;
+      // p77-t1: host contract — missing hasBoards treated as false.
+      currentThemeHasBoards = Boolean(msg.payload?.hasBoards);
+      updateThemeDraftUi();
       renderThemeImageReview(msg.payload || {});
     } else if (msg && msg.type === "THEME_PROMPT_MISMATCH") {
       // p59-t3: one-line notice when generateBoardImage's sha256 compare
@@ -1669,7 +1681,9 @@
       const cancelledThemeId = msg.payload?.theme_id;
       if (cancelledThemeId) {
         reviewThemeId = cancelledThemeId;
-        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+        // p77-t1 review fix: no hasBoards on this payload — re-run the gate
+        // against whatever currentThemeHasBoards already holds.
+        updateThemeDraftUi();
       }
       if (themeBuildStatus) {
         themeBuildStatus.textContent = msg.payload?.message || "Generation stopped.";
@@ -1716,10 +1730,23 @@
       }
       const initializedThemeId = msg.payload?.manifest?.theme_id;
       if (initializedThemeId) {
+        // p77-t1 review fix: a different theme than the one being drafted
+        // is loading — drop the stale draft state (Save-theme id, empty
+        // plan, hasBoards) so it can't leak "Review generated images" or a
+        // future save into the wrong theme. Re-initializing the SAME
+        // theme_id (e.g. after an upload lands on the current draft) keeps
+        // the draft intact.
+        if (draftThemeId && initializedThemeId !== draftThemeId) {
+          clearThemeBuilderDraftState();
+        }
         reviewThemeId = initializedThemeId;
         // Track which theme is currently loaded on stage (auto-loaded = selected)
         selectedThemeId = initializedThemeId;
-        if (themeBuildActions) themeBuildActions.removeAttribute("hidden");
+        // p77-t1 review fix: host contract — missing hasBoards treated as
+        // false. updateThemeDraftUi (010-modals-badges-rebirth.js) is the
+        // single source of truth for #theme-build-actions visibility.
+        currentThemeHasBoards = Boolean(msg.payload?.hasBoards);
+        updateThemeDraftUi();
       }
       // Load theme character sprites for the stage canvas
       if (msg.payload?.frames && typeof msg.payload.frames === "object") {

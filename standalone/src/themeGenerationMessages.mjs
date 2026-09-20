@@ -45,7 +45,14 @@
 // on).
 
 import * as genBridge from './themeGenerationBridge.mjs';
-import { MSG_WIRE, handleGetThemeImageReview, listThemesFromStore, isThemeId } from './themeMessages.mjs';
+import {
+  MSG_WIRE,
+  handleGetThemeImageReview,
+  listThemesFromStore,
+  isThemeId,
+  themeBoardCounts,
+  themeBoardCountsFromStore,
+} from './themeMessages.mjs';
 
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
@@ -76,6 +83,7 @@ function buildThemeInitPayload(manifest, frames, isEditorMode) {
     unlocked_badge_ids: [],
     rebirth_state: null,
     savedBuildProgress: 0,
+    ...themeBoardCounts(frames),
   };
 }
 
@@ -268,7 +276,11 @@ export async function handleSaveThemePlan(store, broadcast, payload) {
       plan,
       payload?.theme_id,
     );
-    broadcast('message', { type: MSG_WIRE.THEME_PLAN_SAVED, payload: { theme_id, plan: savedPlan } });
+    const savedBoardCounts = await themeBoardCountsFromStore(store, theme_id);
+    broadcast('message', {
+      type: MSG_WIRE.THEME_PLAN_SAVED,
+      payload: { theme_id, plan: savedPlan, ...savedBoardCounts },
+    });
     const themes = await listThemesFromStore(store);
     broadcast('message', { type: MSG_WIRE.THEMES_LIST, payload: { themes } });
   } catch (err) {

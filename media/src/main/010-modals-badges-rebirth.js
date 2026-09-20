@@ -1066,6 +1066,12 @@
   /** @type {Array<any>} Last received THEMES_LIST payload, for re-render on selection change. */
   let lastThemesList = [];
   let currentThemePlan = null;
+  /** p77-t1: whether the theme currently open in the builder has at least
+   *  one generated or uploaded board — set from the `hasBoards` field on
+   *  THEME_PLAN_SAVED/THEME_IMAGE_REVIEW payloads (missing => false). Gates
+   *  "Review generated images"/#theme-build-actions so it never appears for
+   *  an unsaved draft or a freshly saved empty theme. */
+  let currentThemeHasBoards = false;
   /** p76-t2: true while the plan editor is showing a hand-started new theme
    *  (no PLAN_THEME/GENERATE_THEME round trip yet) rather than an
    *  AI-generated or already-saved one. See enterNewThemeDraftMode. */
@@ -1537,6 +1543,16 @@
     }
   }
 
+  /**
+   * p77-t1: single shared entry point for every path into the Theme Builder
+   * plan editor (tab click, themes-modal Theme Builder button — same
+   * element — openThemeBuilderFromReview in 020-theme-plan-editor.js, and
+   * the sign-in shell's "Back to builder" button). Previously only the tab
+   * click handler ran this check, so openThemeBuilderFromReview skipped it
+   * and landed on an editor with no session initialized: no empty plan
+   * template, no Save/New-theme controls, no updateThemeDraftUi. Moving the
+   * check in here means every caller gets it for free.
+   */
   function openThemeBuilderPlanEditorTab() {
     themeBuilderPanel.removeAttribute("hidden");
     themePickerList.setAttribute("hidden", "");
@@ -1546,6 +1562,18 @@
       if (themePlanEditor && !themePlanEditor.hasAttribute("hidden")) themeBuilderRoot.setAttribute("hidden", "");
       else themeBuilderRoot.removeAttribute("hidden");
     }
+
+    // p76-t2/p77-t1: land straight on a blank new-theme draft — every plan
+    // field empty and editable — when nothing is already being edited (no
+    // AI-generated plan, no in-progress draft/save, no post-generation
+    // review). Reopening a tab/path that already has a session in flight
+    // must not reset it.
+    const hasActiveThemeBuilderSession = Boolean(currentThemePlan)
+      || Boolean(draftThemeId)
+      || Boolean(reviewThemeId)
+      || (themePlanEditor && !themePlanEditor.hasAttribute("hidden"))
+      || (themeImageReview && !themeImageReview.hasAttribute("hidden"));
+    if (!hasActiveThemeBuilderSession) enterNewThemeDraftMode();
 
     // Boot up the theme builder canvas when the tab is first visited
     const root = document.getElementById("theme-builder-root");
@@ -1568,16 +1596,16 @@
     themeBuilderShellContinue.addEventListener("click", () => {
       // p75-t2: cancelling the sign-in prompt drops any pending "Generate
       // with AI" intent — it does not fire once a later status arrives.
-      themeGeneratePendingIntent = false;
+      themeGeneratePendingIntent = false; themePendingIntentResume = null;
       closeThemeBuilderShellModal();
       openThemeBuilderPlanEditorTab();
     });
   }
   if (themeBuilderShellClose) {
-    themeBuilderShellClose.addEventListener("click", () => { themeGeneratePendingIntent = false; });
+    themeBuilderShellClose.addEventListener("click", () => { themeGeneratePendingIntent = false; themePendingIntentResume = null; });
   }
   if (themeBuilderShellBackdrop) {
-    themeBuilderShellBackdrop.addEventListener("click", () => { themeGeneratePendingIntent = false; });
+    themeBuilderShellBackdrop.addEventListener("click", () => { themeGeneratePendingIntent = false; themePendingIntentResume = null; });
   }
 
   // ── Theme Service panel (p42-t2/p42-t4) ─────────────────────────────
@@ -1608,6 +1636,12 @@
   // Cleared without firing if the modal is cancelled (see the shell-close/
   // backdrop/continue handlers above).
   let themeGeneratePendingIntent = false;
+  /** p77-t1: when themeGeneratePendingIntent fires, this callback runs
+   *  instead of the default runThemeGeneratePlan — used by a per-board
+   *  "Generate with AI" click (060-theme-image-review.js) so sign-in resumes
+   *  that specific board's generation rather than the plan-autofill action.
+   *  @type {(() => void)|null} */
+  let themePendingIntentResume = null;
 
   function postThemeService(type, payload) {
     vscode.postMessage(Object.assign({ type: type }, payload || {}));
@@ -2095,8 +2129,10 @@
     // once — the modal closes and the plan-generation action fires.
     if (themeGeneratePendingIntent) {
       themeGeneratePendingIntent = false;
+      const resume = themePendingIntentResume || runThemeGeneratePlan;
+      themePendingIntentResume = null;
       closeThemeBuilderShellModal();
-      runThemeGeneratePlan();
+      resume();
       return;
     }
     renderThemeServiceSignedIn(themeServicePanelBody, s);
@@ -2136,6 +2172,12 @@
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
       leaveThemeBuilderPlanEditorIfOpen();
+      // p77-t1 review fix: "Back to themes" drops the in-progress draft
+      // state so re-entering the builder later starts a clean check
+      // (hasActiveThemeBuilderSession in openThemeBuilderPlanEditorTab) —
+      // otherwise leftover draftThemeId/currentThemePlan would make the
+      // next tab click look like a session already in flight.
+      clearThemeBuilderDraftState();
       themePickerList.removeAttribute("hidden");
       themeBuilderPanel.setAttribute("hidden", "");
       tabThemeBuilder.focus();
@@ -2151,17 +2193,8 @@
       // followed by a real THEME_SERVICE_STATUS) still drives the header
       // status chip and credits chip via renderThemeServicePanel.
       themeBuilderPlanEditorOpen = true;
-      // p76-t2: land straight on a blank new-theme draft — every plan field
-      // empty and editable — when nothing is already being edited (no
-      // AI-generated plan, no in-progress draft/save, no post-generation
-      // review). Returning to a tab that already has a session in flight
-      // (e.g. picker -> builder -> picker -> builder) must not reset it.
-      const hasActiveThemeBuilderSession = Boolean(currentThemePlan)
-        || Boolean(draftThemeId)
-        || Boolean(reviewThemeId)
-        || (themePlanEditor && !themePlanEditor.hasAttribute("hidden"))
-        || (themeImageReview && !themeImageReview.hasAttribute("hidden"));
-      if (!hasActiveThemeBuilderSession) enterNewThemeDraftMode();
+      // p77-t1: draft-mode initialization now lives inside
+      // openThemeBuilderPlanEditorTab itself, so every entry point gets it.
       openThemeBuilderPlanEditorTab();
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
@@ -2230,6 +2263,7 @@
   // the sign-in modal and defers the action via themeGeneratePendingIntent
   // until a THEME_SERVICE_STATUS with signedIn:true arrives.
   let themeGenerateWithAiBtn = null;
+  let themeBuildManuallyBtn = null;
   let themeBuilderStatusChip = null;
   if (themeBuilderPanel && themePromptContainer) {
     themeGenerateWithAiBtn = document.createElement("button");
@@ -2246,6 +2280,29 @@
     themeGenerateWithAiBtn.appendChild(aiLabel);
     themeGenerateWithAiBtn.appendChild(aiSubtitle);
 
+    // p77-t1: "Build manually" sits beside "Generate with AI" — name it,
+    // Save posts an empty-slot plan, then the board grid opens (per-board
+    // Upload + Generate with AI) instead of the credited AI autofill path.
+    themeBuildManuallyBtn = document.createElement("button");
+    themeBuildManuallyBtn.type = "button";
+    themeBuildManuallyBtn.id = "theme-build-manually-btn";
+    themeBuildManuallyBtn.className = "skill-btn secondary tsp-build-manually-btn";
+
+    const manualLabel = document.createElement("span");
+    manualLabel.className = "tsp-build-manually-label";
+    manualLabel.textContent = "Build manually";
+    const manualSubtitle = document.createElement("span");
+    manualSubtitle.className = "tsp-build-manually-subtitle";
+    manualSubtitle.textContent = "Name it, then upload your own sprite boards";
+    themeBuildManuallyBtn.appendChild(manualLabel);
+    themeBuildManuallyBtn.appendChild(manualSubtitle);
+
+    const buildChoiceRow = document.createElement("div");
+    buildChoiceRow.id = "theme-build-choice-row";
+    buildChoiceRow.className = "tsp-build-choice-row";
+    buildChoiceRow.appendChild(themeGenerateWithAiBtn);
+    buildChoiceRow.appendChild(themeBuildManuallyBtn);
+
     themeBuilderStatusChip = document.createElement("div");
     themeBuilderStatusChip.id = "theme-builder-status-chip";
     themeBuilderStatusChip.className = "tsp-status-chip";
@@ -2253,7 +2310,7 @@
     themeBuilderStatusChip.setAttribute("aria-live", "polite");
 
     themePromptContainer.insertAdjacentElement("beforebegin", themeBuilderStatusChip);
-    themePromptContainer.insertAdjacentElement("afterend", themeGenerateWithAiBtn);
+    themePromptContainer.insertAdjacentElement("afterend", buildChoiceRow);
 
     themeGenerateWithAiBtn.addEventListener("click", () => {
       if (themeServiceStatus && themeServiceStatus.signedIn) {
@@ -2263,6 +2320,17 @@
         openThemeBuilderShellModal();
         renderThemeServicePanel(themeServiceStatus);
       }
+    });
+
+    themeBuildManuallyBtn.addEventListener("click", () => {
+      const name = themePlanName ? themePlanName.value.trim() : "";
+      if (!name) {
+        if (themePlanValidation) themePlanValidation.textContent = "Give the theme a name before building manually.";
+        if (themePlanName) themePlanName.focus();
+        return;
+      }
+      setThemePlanDetailsDisclosureOpen(false);
+      submitDraftThemePlan(themeBuildManuallyBtn, "Saving...");
     });
   }
 
@@ -2600,9 +2668,31 @@
       else themeNewThemeBtn.setAttribute("hidden", "");
     }
     if (themeBuildActions) {
-      if (newThemeDraft && !draftThemeId) themeBuildActions.setAttribute("hidden", "");
-      else themeBuildActions.removeAttribute("hidden");
+      // p77-t1: never shown for an unsaved draft, a freshly saved empty
+      // theme, or any theme the host hasn't confirmed has boards for.
+      const showBuildActions = currentThemeHasBoards && !(newThemeDraft && !draftThemeId);
+      if (showBuildActions) themeBuildActions.removeAttribute("hidden");
+      else themeBuildActions.setAttribute("hidden", "");
     }
+  }
+
+  /**
+   * p77-t1 review fix: drops in-memory draft/review state (Save-theme id,
+   * the empty/edited plan, hasBoards, and any pending sign-in intent)
+   * without touching the DOM — used before switching to a DIFFERENT theme
+   * (picker selection, a THEME_INITIALIZED for another theme_id, opening
+   * "Review images" on another saved theme, or leaving the builder via
+   * "Back to themes") so stale state can't leak "Review generated images"
+   * or a future Save into the wrong theme. Does not itself re-render — the
+   * caller renders whatever comes next.
+   */
+  function clearThemeBuilderDraftState() {
+    newThemeDraft = false;
+    draftThemeId = null;
+    currentThemePlan = null;
+    currentThemeHasBoards = false;
+    themeGeneratePendingIntent = false;
+    themePendingIntentResume = null;
   }
 
   /**
@@ -2616,6 +2706,7 @@
     newThemeDraft = true;
     draftThemeId = null;
     reviewThemeId = "";
+    currentThemeHasBoards = false;
     if (themeImageReview) themeImageReview.setAttribute("hidden", "");
     if (themeBuildStatus) {
       themeBuildStatus.textContent = "Fill in the plan by hand, or use Generate with AI.";
@@ -2623,9 +2714,109 @@
     }
     renderThemePlan(buildEmptyThemePlan());
     updateThemeDraftUi();
+    setThemePlanDetailsDisclosureOpen(false);
+  }
+
+  /** p77-t1: "Edit plan details" disclosure — built once, wraps every plan
+   *  field between the name field and the footer (creative direction,
+   *  environment, and all per-slot fieldsets). Collapsed by default when a
+   *  fresh manual draft starts (enterNewThemeDraftMode); expanded once an
+   *  AI-generated plan lands (THEME_PLAN_READY, 060-theme-image-review.js)
+   *  so the full review flow is unchanged. The name field and the footer
+   *  (Save theme / Generate images) are left in place and stay visible. */
+  let themePlanDetailsWrap = null;
+  let themePlanDetailsToggleBtn = null;
+
+  function buildThemePlanDetailsDisclosure() {
+    if (!themePlanEditor || themePlanDetailsWrap || !themePlanName) return;
+    const footerEl = themePlanEditor.querySelector(".theme-plan-footer");
+    const nameLabel = themePlanName.closest("label") || themePlanName.parentElement;
+    if (!nameLabel) return;
+
+    themePlanDetailsToggleBtn = document.createElement("button");
+    themePlanDetailsToggleBtn.type = "button";
+    themePlanDetailsToggleBtn.id = "theme-plan-details-toggle";
+    themePlanDetailsToggleBtn.className = "skill-btn secondary-info tsp-plan-details-toggle";
+    themePlanDetailsToggleBtn.textContent = "Edit plan details";
+    themePlanDetailsToggleBtn.setAttribute("aria-expanded", "false");
+
+    themePlanDetailsWrap = document.createElement("div");
+    themePlanDetailsWrap.id = "theme-plan-details-wrap";
+    themePlanDetailsWrap.className = "tsp-plan-details-wrap";
+
+    nameLabel.insertAdjacentElement("afterend", themePlanDetailsWrap);
+    nameLabel.insertAdjacentElement("afterend", themePlanDetailsToggleBtn);
+
+    // Move every field between the name field and the footer into the wrap
+    // (direction, environment, and every per-slot fieldset) — DOM moves via
+    // appendChild, so element ids/listeners already wired to them keep working.
+    let node = themePlanDetailsWrap.nextSibling;
+    while (node && node !== footerEl) {
+      const next = node.nextSibling;
+      themePlanDetailsWrap.appendChild(node);
+      node = next;
+    }
+
+    themePlanDetailsToggleBtn.addEventListener("click", () => {
+      setThemePlanDetailsDisclosureOpen(themePlanDetailsWrap.hasAttribute("hidden"));
+    });
+
+    // Start collapsed to match the fresh-draft state applied right after.
+    setThemePlanDetailsDisclosureOpen(false);
+  }
+
+  /** @param {boolean} open */
+  function setThemePlanDetailsDisclosureOpen(open) {
+    if (!themePlanDetailsWrap || !themePlanDetailsToggleBtn) return;
+    if (open) {
+      themePlanDetailsWrap.removeAttribute("hidden");
+      themePlanDetailsToggleBtn.setAttribute("aria-expanded", "true");
+      themePlanDetailsToggleBtn.textContent = "Hide plan details";
+    } else {
+      themePlanDetailsWrap.setAttribute("hidden", "");
+      themePlanDetailsToggleBtn.setAttribute("aria-expanded", "false");
+      themePlanDetailsToggleBtn.textContent = "Edit plan details";
+    }
+  }
+
+  /**
+   * p77-t1: shared save action for "Save theme" (full-form footer button)
+   * and "Build manually" (name-only entry, under the name field). Both post
+   * the same saveThemePlan wire message; on success THEME_PLAN_SAVED reveals
+   * the board grid (060-theme-image-review.js's showThemeImageReview). The
+   * caller's own button gets the disabled/"Saving..." treatment so each
+   * button's own busy state is visible regardless of which one was clicked.
+   * @param {HTMLButtonElement|null} busyBtn
+   * @param {string} busyLabel
+   * @returns {boolean} true if the save was posted, false on validation error
+   */
+  function submitDraftThemePlan(busyBtn, busyLabel) {
+    let plan;
+    try {
+      plan = collectDraftThemePlan();
+    } catch (error) {
+      if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+    currentThemePlan = plan;
+    if (busyBtn) {
+      busyBtn.disabled = true;
+      // Compound buttons (label+subtitle spans, e.g. Build manually) keep
+      // their structure — only a plain-text button like Save theme swaps
+      // its text for a busy label.
+      if (busyLabel && busyBtn.children.length === 0) busyBtn.textContent = busyLabel;
+    }
+    if (themePlanValidation) themePlanValidation.textContent = "";
+    vscode.postMessage({
+      type: "saveThemePlan",
+      plan,
+      theme_id: draftThemeId || undefined,
+    });
+    return true;
   }
 
   if (themePlanEditor) {
+    buildThemePlanDetailsDisclosure();
     const footerActions = themePlanEditor.querySelector(".theme-plan-footer-actions");
     if (footerActions) {
       themeSaveThemeBtn = document.createElement("button");
@@ -2636,22 +2827,7 @@
       themeSaveThemeBtn.title = "Saves the plan as-is, no account or credits needed — you can upload your own images afterward.";
       footerActions.insertBefore(themeSaveThemeBtn, footerActions.firstChild);
       themeSaveThemeBtn.addEventListener("click", () => {
-        let plan;
-        try {
-          plan = collectDraftThemePlan();
-        } catch (error) {
-          if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
-          return;
-        }
-        currentThemePlan = plan;
-        themeSaveThemeBtn.disabled = true;
-        themeSaveThemeBtn.textContent = "Saving...";
-        if (themePlanValidation) themePlanValidation.textContent = "";
-        vscode.postMessage({
-          type: "saveThemePlan",
-          plan,
-          theme_id: draftThemeId || undefined,
-        });
+        submitDraftThemePlan(themeSaveThemeBtn, "Saving...");
       });
     }
     const headerEl = themePlanEditor.querySelector(".theme-plan-header");

@@ -362,6 +362,24 @@ async function diskUsageBytes(store, relativePath) {
 }
 
 /**
+ * Mirrors themeService.ts's themeBoardCountsFromFrames (p77-t2): counts
+ * frames.json keys — every generated OR uploaded board writes its slot into
+ * frames.json, so this cheap key count answers "does this theme have
+ * anything to review" without a directory scan.
+ */
+export function themeBoardCounts(frames) {
+  const boardCount = frames ? Object.keys(frames).length : 0;
+  return { hasBoards: boardCount > 0, boardCount };
+}
+
+/** Same as `themeBoardCounts`, reading frames.json for `themeId` from `store`. */
+export async function themeBoardCountsFromStore(store, themeId) {
+  if (!isThemeId(themeId)) return { hasBoards: false, boardCount: 0 };
+  const frames = await readJsonSafe(store, themeFramesPath(themeId));
+  return themeBoardCounts(frames);
+}
+
+/**
  * Mirrors themeService.ts's listThemes() for the modern per-directory
  * layout only (no legacy flat-file fallback — the standalone never writes
  * that layout). Returns theme_id/display_name/size_bytes plus the
@@ -386,12 +404,13 @@ export async function listThemesFromStore(store) {
   const sorted = [...results.values()].sort((a, b) => a.display_name.localeCompare(b.display_name));
   return Promise.all(
     sorted.map(async (theme) => {
-      const [reviewDoc, sizeBytes] = await Promise.all([
+      const [reviewDoc, sizeBytes, boardCounts] = await Promise.all([
         readJsonSafe(store, themeReviewPath(theme.theme_id)),
         diskUsageBytes(store, themeDirectoryPath(theme.theme_id)),
+        themeBoardCountsFromStore(store, theme.theme_id),
       ]);
       const approval = summarizeThemeApproval(reviewDoc?.items);
-      return { ...theme, ...approval, size_bytes: sizeBytes };
+      return { ...theme, ...approval, size_bytes: sizeBytes, ...boardCounts };
     }),
   );
 }
@@ -449,6 +468,7 @@ export async function handleSelectTheme(store, broadcast, themeId, progress = {}
       // No per-theme build-progress persistence in the standalone yet (see
       // module header) — safe default only.
       savedBuildProgress: 0,
+      ...themeBoardCounts(loaded.frames),
     },
   });
 }
@@ -584,12 +604,13 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
         descriptionsStale: currentPlan ? themePlanModule().themeDescriptionsStale(currentPlan) : false,
         descriptionsDirection: currentPlan?.descriptions_direction,
         items: outItems,
+        ...themeBoardCounts(framesMap),
       },
     });
   } catch (err) {
     broadcast('message', {
       type: MSG_WIRE.THEME_IMAGE_REVIEW,
-      payload: { theme_id: themeId, items: [], error: String(err) },
+      payload: { theme_id: themeId, items: [], error: String(err), hasBoards: false, boardCount: 0 },
     });
   }
 }

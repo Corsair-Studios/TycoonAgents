@@ -119,6 +119,8 @@ import {
   upgradeInstalledThemes,
   uploadThemeImage,
   generateTheme as generateThemeService,
+  themeBoardCountsFromFrames,
+  getThemeBoardCounts,
 } from "../../extension/themeService";
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
@@ -2786,9 +2788,10 @@ export class TycoonPanel {
               parsedSavePlan.data.plan as Partial<ThemePlan>,
               parsedSavePlan.data.theme_id,
             );
+            const savedBoardCounts = await getThemeBoardCounts(this._globalStorageUri, theme_id);
             void this._panel.webview.postMessage({
               type: MSG.THEME_PLAN_SAVED,
-              payload: { theme_id, plan },
+              payload: { theme_id, plan, ...savedBoardCounts },
             });
             const themes = await listThemes(this._globalStorageUri);
             void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
@@ -3433,8 +3436,11 @@ export class TycoonPanel {
     rebirth_state: RebirthPersist | null;
     savedBuildProgress: number;
     savedRosterOrder: string[] | null;
+    hasBoards: boolean;
+    boardCount: number;
   }> {
     this._currentThemeId = manifest?.theme_id;
+    const boardCounts = themeBoardCountsFromFrames(frames);
     return {
       manifest,
       frames,
@@ -3443,6 +3449,7 @@ export class TycoonPanel {
       rebirth_state: await this.getRebirthState(manifest?.theme_id),
       savedBuildProgress: await this.getBuildProgress(manifest?.theme_id),
       savedRosterOrder: await this.getRosterOrder(manifest?.theme_id),
+      ...boardCounts,
     };
   }
 
@@ -3585,12 +3592,13 @@ export class TycoonPanel {
           descriptionsStale: currentPlan ? themeDescriptionsStale(currentPlan) : false,
           descriptionsDirection: currentPlan?.descriptions_direction,
           items,
+          ...themeBoardCountsFromFrames(loadedTheme?.frames),
         },
       });
     } catch (err) {
       void this._panel.webview.postMessage({
         type: MSG.THEME_IMAGE_REVIEW,
-        payload: { theme_id: themeId, items: [], error: String(err) },
+        payload: { theme_id: themeId, items: [], error: String(err), hasBoards: false, boardCount: 0 },
       });
     }
   }
@@ -9805,7 +9813,7 @@ export class TycoonPanel {
     <div id="menu-popover" role="menu" hidden>
       <button class="menu-item" role="menuitem" id="menu-settings">Settings</button>
       <button class="menu-item" role="menuitem" id="menu-routing">Agents</button>
-      <button class="menu-item" role="menuitem" id="menu-themes">Themes</button>
+      <button class="menu-item" role="menuitem" id="menu-themes">Tycoon Themes</button>
       <button class="menu-item" role="menuitem" id="menu-catalog">Skills / MCP / Packs</button>
       <button class="menu-item" role="menuitem" id="menu-uefn">UEFN / Verse</button>
       <button class="menu-item" role="menuitem" id="menu-feedback">Feedback</button>
@@ -10023,20 +10031,20 @@ export class TycoonPanel {
   </div>
 
   <!-- Themes modal overlay -->
-  <div id="themes-modal" role="dialog" aria-modal="true" aria-label="Themes" hidden>
+  <div id="themes-modal" role="dialog" aria-modal="true" aria-label="Tycoon Themes" hidden>
     <div id="themes-backdrop"></div>
     <div id="themes-dialog">
       <button id="themes-modal-close" aria-label="Close dialog">&times;</button>
       <div id="themes-scroll">
       <div id="theme-picker-list" role="tabpanel">
         <section id="theme-library-section" class="theme-library-section">
-          <h2 style="margin: 0 0 16px;">Themes</h2>
+          <h2 style="margin: 0 0 16px;">Tycoon Themes</h2>
           <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
           <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
           <div class="theme-cta-block">
             <div class="theme-cta-primary-row">
               <div class="theme-cta-primary-row-top">
-                <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Theme Builder</button>
+                <button id="tab-theme-builder" class="skill-btn primary theme-builder-launch">Tycoon Theme Builder</button>
                 <span id="theme-builder-credits-chip" class="theme-credits-chip" hidden></span>
               </div>
               <p class="theme-cta-value">Generate a full sprite theme from a description.</p>
@@ -10176,7 +10184,7 @@ export class TycoonPanel {
     <div id="theme-builder-shell-backdrop"></div>
     <div id="theme-builder-shell-dialog">
       <button id="theme-builder-shell-close" aria-label="Close dialog">&times;</button>
-      <h2 id="theme-builder-shell-title">Theme Builder</h2>
+      <h2 id="theme-builder-shell-title">Tycoon Theme Builder</h2>
       <div id="theme-service-panel-body"></div>
       <div class="theme-builder-shell-footer">
         <button id="theme-builder-shell-continue" class="skill-btn primary">Continue to builder</button>
