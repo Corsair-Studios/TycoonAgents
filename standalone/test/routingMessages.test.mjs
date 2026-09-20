@@ -101,6 +101,13 @@ test('POST /message {type: "getRouting"} -> broadcasts a "routing" reply with no
     assert.equal(agent.backend.model, 'anthropic/haiku');
     assert.ok(Array.isArray(routing.payload.presets.models));
     assert.ok(routing.payload.presets.vendors.includes('anthropic'));
+    // p74-t3: the standalone host is always the "multi" Agents UI mode
+    // (buildRoutingPayload in standalone/src/server.mjs) — it has no harness
+    // concept of its own, so the single-provider-tier simplification never
+    // applies and the multi-provider checkbox never shows.
+    assert.equal(routing.payload.uiMode, 'multi');
+    assert.equal(routing.payload.harness, 'standalone');
+    assert.equal(routing.payload.multiProviderCheckboxVisible, false);
   } finally {
     controller.abort();
     await runtime.close();

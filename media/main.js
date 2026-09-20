@@ -20407,6 +20407,48 @@ if (typeof module !== "undefined" && module.exports) {
       head.appendChild(desc);
     }
 
+    // p74-t2: single-provider mode (payload.uiMode === "single") replaces the
+    // whole vendor/fallback/claudeTier decision tree below with one radio
+    // group built from payload.singleProvider.tiers, matched against the
+    // agent's current model string. Falls back to multi whenever uiMode is
+    // absent (older host payload) per the interface contract.
+    const singleMode = !!(payload && payload.uiMode === "single");
+    const buildSingleProviderRadioGroup = () => {
+      const group = document.createElement("div");
+      group.className = "model-radio-group";
+      const groupName = `model-single-${a.id}`;
+      const tiers = (payload.singleProvider && payload.singleProvider.tiers) || [];
+      const currentModel = a.model || a.resolvedModel || "";
+      const hasMatch = tiers.some((t) => t.model === currentModel);
+      tiers.forEach((tier) => {
+        const lbl = document.createElement("label");
+        lbl.className = "model-radio";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = groupName;
+        input.value = tier.id;
+        if (currentModel && tier.model === currentModel) input.checked = true;
+        input.addEventListener("change", () => {
+          if (input.checked) {
+            justSetAgentModelId = a.id;
+            vscode.postMessage({ type: "setAgentModel", id: a.id, model: tier.model });
+          }
+        });
+        const span = document.createElement("span");
+        span.textContent = tier.label;
+        lbl.appendChild(input);
+        lbl.appendChild(span);
+        group.appendChild(lbl);
+      });
+      if (!hasMatch && currentModel) {
+        const note = document.createElement("p");
+        note.className = "delegation-mode-footnote single-provider-mismatch-note";
+        note.textContent = `Uses ${currentModel}; turn on multi-provider in Settings to edit vendors and fallbacks.`;
+        group.appendChild(note);
+      }
+      return group;
+    };
+
     // p18-t2: route-aware model row. Three shapes, mutually exclusive:
     //  1. claudeTier set        -> the radios as before, that tier checked.
     //  2. handWrittenBackend    -> a static "Backend: <vendor> via MCP" line.
@@ -20438,7 +20480,9 @@ if (typeof module !== "undefined" && module.exports) {
       return group;
     };
 
-    if (a.claudeTier) {
+    if (singleMode) {
+      head.appendChild(buildSingleProviderRadioGroup());
+    } else if (a.claudeTier) {
       head.appendChild(buildModelRadioGroup());
     } else {
       const buildUseClaudeDisclosure = () => {
@@ -20603,6 +20647,14 @@ if (typeof module !== "undefined" && module.exports) {
     kwInputWrap.appendChild(kwInput);
     kwRow.appendChild(kwInputWrap);
     card.appendChild(kwRow);
+
+    // p74-t2: single mode stops here — no vendor dropdown, fallback chain
+    // editor, routing profile picker, or cost-class controls. Keyword
+    // health badge, name, keyword row and the remove footer above/below
+    // already render for both modes.
+    if (singleMode) {
+      return appendCardRemoveFooter(card, a);
+    }
 
     if (density !== "full") {
       // ── Classic (Claude Code) density: "Use another provider" checkbox
@@ -20895,6 +20947,9 @@ if (typeof module !== "undefined" && module.exports) {
     if (!routingDraft) routingDraft = ensureDefaultFallbackDraft(buildRoutingDraft(lastRoutingPayload), lastRoutingPayload);
 
     var payload = lastRoutingPayload;
+    // p74-t2: single-provider UI mode (2026-09-19 decision). Absent uiMode
+    // (older host payload) renders multi, per the interface contract.
+    var uiMode = payload.uiMode === "single" ? "single" : "multi";
     // Density (p20-t2): keyed on the harness itself, not the old
     // routing.visible toggle — full (OpenCode's editable routing table) when
     // the effective harness is opencode, classic (the plain agent cards)
@@ -20929,10 +20984,12 @@ if (typeof module !== "undefined" && module.exports) {
       // p71-t1: this single line also covers the fallback picker/warnings
       // below — a second "Amber (fb)/(dfb)" line used to render right after
       // it, duplicating the same legend.
-      var accentLegend = document.createElement("p");
-      accentLegend.className = "agent-accent-legend";
-      accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback · (dfb): default fallback";
-      routingContentEl.appendChild(accentLegend);
+      if (uiMode !== "single") {
+        var accentLegend = document.createElement("p");
+        accentLegend.className = "agent-accent-legend";
+        accentLegend.textContent = "Light blue: running on an LLM foreign to this harness · Amber (fb): fallback · (dfb): default fallback";
+        routingContentEl.appendChild(accentLegend);
+      }
     }
 
     var rawPresets = payload.presets || { vendors: [], models: [] };
@@ -21008,6 +21065,7 @@ if (typeof module !== "undefined" && module.exports) {
     // current state so a set default is visible without expanding.
     if (!routingDraft.defaultFallback) routingDraft.defaultFallback = {};
     var defaultFallbackIsSet = slotHasContent(routingDraft.defaultFallback);
+    if (uiMode !== "single") {
     var defaultFallbackDetails = document.createElement("details");
     defaultFallbackDetails.className = "routing-default-fallback-section";
     var defaultFallbackSummary = document.createElement("summary");
@@ -21110,11 +21168,12 @@ if (typeof module !== "undefined" && module.exports) {
     defaultFallbackFooter.appendChild(clearDefaultFallbackBtn);
     defaultFallbackDetails.appendChild(defaultFallbackFooter);
     routingContentEl.appendChild(defaultFallbackDetails);
+    } // uiMode !== "single"
 
     // ── Defaults (p17-t3) — full density only. One slot applied to every
     // agent that has neither its own routing.json entry nor a hand-written
     // backend block.
-    if (density === "full") {
+    if (density === "full" && uiMode !== "single") {
       var defaultsSection = buildSection("Default for all agents");
       var defaultsHelp = document.createElement("p");
       defaultsHelp.className = "routing-defaults-help";
@@ -21832,6 +21891,36 @@ if (typeof module !== "undefined" && module.exports) {
       const harnessSection = buildSection("Agent harness");
       const harnessRow = buildHarnessControl("settings");
       if (harnessRow) harnessSection.appendChild(harnessRow);
+
+      // p74-t2: "I use more than one AI provider" checkbox (2026-09-19
+      // decision), rendered directly under the harness line. These two
+      // fields live on the Agents-screen payload (lastRoutingPayload), not
+      // lastSettings, per the interface contract — read them from there.
+      const multiProviderPayload = lastRoutingPayload;
+      if (multiProviderPayload && multiProviderPayload.multiProviderCheckboxVisible) {
+        const multiProviderRow = document.createElement("label");
+        multiProviderRow.className = "delegation-mode-option settings-multi-provider-row";
+        const multiProviderCheckbox = document.createElement("input");
+        multiProviderCheckbox.type = "checkbox";
+        multiProviderCheckbox.className = "settings-multi-provider-checkbox";
+        multiProviderCheckbox.checked = !!multiProviderPayload.multiProviderSetting;
+        multiProviderCheckbox.addEventListener("change", () => {
+          vscode.postMessage({ type: "setAgentsMultiProvider", value: multiProviderCheckbox.checked });
+        });
+        const multiProviderBody = document.createElement("span");
+        multiProviderBody.className = "delegation-mode-option-body";
+        const multiProviderLabelSpan = document.createElement("span");
+        multiProviderLabelSpan.className = "delegation-mode-option-label";
+        multiProviderLabelSpan.textContent = "I use more than one AI provider";
+        const multiProviderHelpSpan = document.createElement("span");
+        multiProviderHelpSpan.className = "delegation-mode-option-help";
+        multiProviderHelpSpan.textContent = "Shows vendor and fallback controls for every agent.";
+        multiProviderBody.appendChild(multiProviderLabelSpan);
+        multiProviderBody.appendChild(multiProviderHelpSpan);
+        multiProviderRow.appendChild(multiProviderCheckbox);
+        multiProviderRow.appendChild(multiProviderBody);
+        harnessSection.appendChild(multiProviderRow);
+      }
 
       // Exactly one "Open Agents" link in this section (2026-09-05 fix):
       // when the OpenCode needsDefaultRoute hint shows, its own trailing

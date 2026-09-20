@@ -90,6 +90,8 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 - **Build & defend** — agents build objects across your site and defend the base from incoming attacks.
 - **Achievements, badges & rebirths** — earn badges for milestones; rebirth for compounding bonuses (and the whole fleet dances for three seconds when you do).
 
+The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; OpenCode and the standalone host always show the full view.
+
 The Agents screen's **Keyword health** card flags routing problems in `agent-keywords.json` (dangling refs, multi-word segments that can never match, an agent listed after the Wildcard Agent) and offers a **Fix all** to normalize them. See [`docs/keyword-routing.md`](docs/keyword-routing.md) for how Task routing scores keywords.
 
 ## Custom themes

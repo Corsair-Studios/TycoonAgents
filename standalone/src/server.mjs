@@ -343,6 +343,24 @@ function routingHostOpsModule() {
   return _routingHostOpsModule;
 }
 
+/**
+ * Standalone analog of panel.ts's _handleGetRouting payload build (p74-t1).
+ * The standalone host has no harness of its own — it is always "multi" and
+ * never shows the multiProvider checkbox (see agentsUiMode.ts's
+ * resolveAgentsUiMode, which also treats harness "standalone" as multi).
+ */
+function buildRoutingPayload(root) {
+  const { buildRoutingView } = routingHostOpsModule();
+  const view = buildRoutingView({ root, env: process.env });
+  return {
+    ...view,
+    uiMode: 'multi',
+    harness: 'standalone',
+    multiProviderSetting: true,
+    multiProviderCheckboxVisible: false,
+  };
+}
+
 let _delegationDoctrineModule;
 function delegationDoctrineModule() {
   if (!_delegationDoctrineModule) _delegationDoctrineModule = requireCompiledOrThrow(DELEGATION_DOCTRINE_JS, 'delegationDoctrine');
@@ -860,8 +878,7 @@ function handleBrowserMessage(msg) {
     case 'getRouting':
       // Standalone analog of panel.ts's _handleGetRouting.
       try {
-        const { buildRoutingView } = routingHostOpsModule();
-        const view = buildRoutingView({ root: primaryProjectRoot || process.cwd(), env: process.env });
+        const view = buildRoutingPayload(primaryProjectRoot || process.cwd());
         broadcast('message', { type: 'routing', payload: view });
       } catch (err) {
         console.error('[tycoonagents-standalone] getRouting failed:', err);
@@ -874,12 +891,12 @@ function handleBrowserMessage(msg) {
       // under `payload` (that wrapper is for the THEME_MSG_WIRE cases
       // above). Reading payload.profile here silently saved `undefined`.
       try {
-        const { saveRoutingProfile, buildRoutingView } = routingHostOpsModule();
+        const { saveRoutingProfile } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
         const effectiveHarness = resolveEffectiveHarness(root);
         const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT, effectiveHarness });
         broadcast('message', { type: 'routingSaved', ...result });
-        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+        broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
       } catch (err) {
         console.error('[tycoonagents-standalone] saveRouting failed:', err);
       }
@@ -887,11 +904,11 @@ function handleBrowserMessage(msg) {
     case 'clearRouting':
       // Standalone analog of panel.ts's _handleClearRouting.
       try {
-        const { clearRoutingProfile, buildRoutingView } = routingHostOpsModule();
+        const { clearRoutingProfile } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
         const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT });
         broadcast('message', { type: 'routingSaved', ...result });
-        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+        broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
       } catch (err) {
         console.error('[tycoonagents-standalone] clearRouting failed:', err);
       }
@@ -1126,8 +1143,7 @@ function handleBrowserMessage(msg) {
         }
         broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
         try {
-          const { buildRoutingView } = routingHostOpsModule();
-          broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+          broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
         } catch (err) {
           console.error('[tycoonagents-standalone] clearAgentRoute routing re-post failed:', err instanceof Error ? err.message : err);
         }
@@ -1202,8 +1218,7 @@ function handleBrowserMessage(msg) {
       }
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
       try {
-        const { buildRoutingView } = routingHostOpsModule();
-        broadcast('message', { type: 'routing', payload: buildRoutingView({ root, env: process.env }) });
+        broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
       } catch (err) {
         console.error('[tycoonagents-standalone] removeAgent routing re-post failed:', err instanceof Error ? err.message : err);
       }

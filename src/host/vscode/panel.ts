@@ -61,6 +61,7 @@ import {
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
+import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { REFERRAL_CODE_PATTERN } from "../../core/themeServiceClient";
 import { exportTeamSetup, applyTeamSetupHost, buildTeamReadinessHost, getTeamSetupDriftHost } from "./teamSetupHost";
@@ -1462,6 +1463,13 @@ export class TycoonPanel {
             this._handleSetUseMultipleLlms(parsedSetUseMultipleLlms.data.value);
           } else {
             console.error("TycoonAgents: setUseMultipleLlms payload rejected:", parsedSetUseMultipleLlms.error.message);
+          }
+        } else if (message.type === MSG.SET_AGENTS_MULTI_PROVIDER) {
+          const parsedSetAgentsMultiProvider = MSG_SCHEMAS.SET_AGENTS_MULTI_PROVIDER.safeParse(message);
+          if (parsedSetAgentsMultiProvider.success) {
+            void this._handleSetAgentsMultiProvider(parsedSetAgentsMultiProvider.data.value);
+          } else {
+            console.error("TycoonAgents: setAgentsMultiProvider payload rejected:", parsedSetAgentsMultiProvider.error.message);
           }
         } else if (message.type === MSG.CLEAR_AGENT_ROUTE) {
           const parsedClearAgentRoute = MSG_SCHEMAS.CLEAR_AGENT_ROUTE.safeParse(message);
@@ -3064,6 +3072,18 @@ export class TycoonPanel {
 
     // Clean up on panel dispose
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+    // p74-t1: re-post the Agents payload (MSG.ROUTING) when the
+    // multiProvider setting changes from OUTSIDE the panel (e.g. the VS
+    // Code Settings UI), so an already-open Agents screen flips modes
+    // without needing a manual refresh.
+    this._disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("tycoonagents.agents.multiProvider")) {
+          this._handleGetRouting();
+        }
+      })
+    );
   }
 
   // --- Badge unlock persistence -------------------------------------
@@ -7510,11 +7530,49 @@ export class TycoonPanel {
     return this._cachedToolCompliance;
   }
 
-  /** Post the current routing view (see src/core/routingHostOps.ts's RoutingView). */
+  /**
+   * Post the current routing view (see src/core/routingHostOps.ts's
+   * RoutingView), plus the Agents screen's UI-mode fields (p74-t1):
+   * `uiMode`, `harness`, `multiProviderSetting`,
+   * `multiProviderCheckboxVisible`, and — only in single mode —
+   * `singleProvider`. VS Code is never the "standalone" harness, so the
+   * checkbox is hidden only for opencode here (see agentsUiMode.ts).
+   */
   private _handleGetRouting(): void {
     const root = this._projectRoot();
     const view = buildRoutingView({ root, env: process.env });
-    void this._panel.webview.postMessage({ type: MSG.ROUTING, payload: view });
+    const harness = this._resolveEffectiveHarness(root);
+    const multiProviderSetting = !!vscode.workspace
+      .getConfiguration("tycoonagents")
+      .get("agents.multiProvider", false);
+    const uiMode = resolveAgentsUiMode({ harness, multiProvider: multiProviderSetting });
+    const payload: Record<string, unknown> = {
+      ...view,
+      uiMode,
+      harness,
+      multiProviderSetting,
+      multiProviderCheckboxVisible: harness.toLowerCase() !== "opencode",
+    };
+    if (uiMode === "single") {
+      payload.singleProvider = singleProviderTiers(harness);
+    }
+    void this._panel.webview.postMessage({ type: MSG.ROUTING, payload });
+  }
+
+  /** Handles MSG.SET_AGENTS_MULTI_PROVIDER (p74-t1): writes the
+   *  `tycoonagents.agents.multiProvider` setting at Global scope (per user,
+   *  not per workspace — matches the setting's package.json "application"
+   *  scope), then re-posts a fresh MSG.ROUTING so the Agents screen's
+   *  uiMode flips immediately. */
+  private async _handleSetAgentsMultiProvider(value: boolean): Promise<void> {
+    try {
+      await vscode.workspace
+        .getConfiguration("tycoonagents")
+        .update("agents.multiProvider", value, vscode.ConfigurationTarget.Global);
+    } catch (err) {
+      console.error("TycoonAgents: setAgentsMultiProvider failed:", err instanceof Error ? err.message : err);
+    }
+    this._handleGetRouting();
   }
 
   /**

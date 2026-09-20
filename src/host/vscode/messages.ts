@@ -426,6 +426,10 @@ export const MSG = {
   SAVE_ROUTING: "saveRouting",
   ROUTING_SAVED: "routingSaved",
   CLEAR_ROUTING: "clearRouting",
+  // p74-t1: webview -> host, writes tycoonagents.agents.multiProvider
+  // (ConfigurationTarget.Global) then re-posts a fresh MSG.ROUTING so the
+  // Agents screen's uiMode flips immediately.
+  SET_AGENTS_MULTI_PROVIDER: "setAgentsMultiProvider",
   PROBE_ENV: "probeEnv",
   ENV_PROBE: "envProbe",
   // p13-t6: per-user, outside-any-project stored endpoint URL / API key
@@ -583,6 +587,7 @@ export const MSG_SCHEMAS = {
   // it to be a plain object so a malformed payload can't crash the handler
   // before reaching that validation.
   SAVE_ROUTING: z.object({ profile: z.record(z.unknown()) }).passthrough(),
+  SET_AGENTS_MULTI_PROVIDER: z.object({ value: z.boolean() }).passthrough(),
   PROBE_ENV: z.object({ names: z.array(z.string()) }).passthrough(),
   SET_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1), value: z.string() }).passthrough(),
   CLEAR_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1) }).passthrough(),

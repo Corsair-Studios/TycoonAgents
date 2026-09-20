@@ -478,3 +478,29 @@ test('THEME_SERVICE_STATUS schema payload never needs to carry token fields (acc
   // (see test/themeServiceHost.test.ts assertNoTokenLeak), not by this schema.
   assert.equal(result.success, true);
 });
+
+// p74-t3: MSG.SET_AGENTS_MULTI_PROVIDER wire string + schema, posted by the
+// single-provider Agents view's "I use more than one AI provider" checkbox.
+test('MSG.SET_AGENTS_MULTI_PROVIDER wire string is "setAgentsMultiProvider"', () => {
+  assert.equal(MSG.SET_AGENTS_MULTI_PROVIDER, 'setAgentsMultiProvider');
+});
+
+test('SET_AGENTS_MULTI_PROVIDER schema: {value: true} passes', () => {
+  const result = MSG_SCHEMAS.SET_AGENTS_MULTI_PROVIDER.safeParse({ type: 'setAgentsMultiProvider', value: true });
+  assert.equal(result.success, true);
+});
+
+test('SET_AGENTS_MULTI_PROVIDER schema: {value: false} passes', () => {
+  const result = MSG_SCHEMAS.SET_AGENTS_MULTI_PROVIDER.safeParse({ type: 'setAgentsMultiProvider', value: false });
+  assert.equal(result.success, true);
+});
+
+test('SET_AGENTS_MULTI_PROVIDER schema: non-boolean value rejects', () => {
+  const result = MSG_SCHEMAS.SET_AGENTS_MULTI_PROVIDER.safeParse({ type: 'setAgentsMultiProvider', value: 'yes' });
+  assert.equal(result.success, false);
+});
+
+test('SET_AGENTS_MULTI_PROVIDER schema: missing value rejects', () => {
+  const result = MSG_SCHEMAS.SET_AGENTS_MULTI_PROVIDER.safeParse({ type: 'setAgentsMultiProvider' });
+  assert.equal(result.success, false);
+});

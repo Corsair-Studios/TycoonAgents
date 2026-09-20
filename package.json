@@ -119,6 +119,12 @@
           ],
           "default": "claude-code",
           "description": "Which coding agent harness TycoonAgents reads activity from: 'claude-code' watches .claude/tycoon/activity.jsonl written by the Claude Code hook; 'opencode' watches the OpenCode harness's activity log instead. The TYCOON_PROVIDER environment variable, if set, always overrides this setting."
+        },
+        "tycoonagents.agents.multiProvider": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Show vendor and fallback controls for every agent. Leave off if you use a single AI provider."
         }
       }
     }

@@ -836,6 +836,24 @@ body {
   cursor: pointer;
 }
 
+/* p74-t2: single-provider mode — model radio group's "no matching tier"
+   note (foreign vendor, custom model, or a fallback chain still set on an
+   agent that predates the single/multi toggle). Full-width under the
+   radios in both density modes. */
+.single-provider-mismatch-note {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* p74-t2: Settings screen "I use more than one AI provider" checkbox,
+   reusing the delegation-mode-option row styling already used by other
+   labeled checkboxes in this panel. */
+.settings-multi-provider-row {
+  margin-top: 6px;
+}
+
 /* p18-t2: route-aware model row — hand-written-backend line, routed-vendor
    chip, and the "Use Claude tier…" disclosure that reveals the radios for
    both non-radio cases. */
