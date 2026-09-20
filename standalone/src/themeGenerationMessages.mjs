@@ -253,6 +253,29 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
   }
 }
 
+// ── SAVE_THEME_PLAN -> THEME_PLAN_SAVED / THEMES_LIST | THEME_GENERATION_ERROR
+// Mirrors panel.ts's MSG.SAVE_THEME_PLAN branch (p76-t1): persist a
+// hand-built ThemePlan as a real, selectable theme with NO generation, NO
+// network call, and NO theme-service credit check.
+export async function handleSaveThemePlan(store, broadcast, payload) {
+  try {
+    const plan = payload?.plan;
+    if (!plan || typeof plan !== 'object') {
+      throw new Error('A theme plan is required.');
+    }
+    const { theme_id, plan: savedPlan } = await bridge().saveThemePlan(
+      store,
+      plan,
+      payload?.theme_id,
+    );
+    broadcast('message', { type: MSG_WIRE.THEME_PLAN_SAVED, payload: { theme_id, plan: savedPlan } });
+    const themes = await listThemesFromStore(store);
+    broadcast('message', { type: MSG_WIRE.THEMES_LIST, payload: { themes } });
+  } catch (err) {
+    broadcast('message', { type: MSG_WIRE.THEME_GENERATION_ERROR, payload: { message: String(err) } });
+  }
+}
+
 // ── RETRY_THEME_IMAGE -> THEME_IMAGE_RETRY_STATE* / THEME_IMAGE_REVIEW /
 //    THEME_INITIALIZED
 // Mirrors panel.ts's MSG.RETRY_THEME_IMAGE branch, including the

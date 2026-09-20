@@ -2195,6 +2195,87 @@ export async function approveAllThemeImages(
   return document;
 }
 
+/**
+ * Persist a hand-built (or partially hand-built) ThemePlan as a real, selectable
+ * theme WITHOUT starting any generation: no image-generation calls, no theme
+ * service credit check, no network at all. Mirrors the storage-setup half of
+ * `generateTheme` (normalize plan, allocate a unique theme_id, derive the
+ * manifest, write plan.json + manifest.json + an EMPTY frames.json, and seed a
+ * fully-pending review document) but stops there instead of continuing into
+ * `continueThemeGeneration`. This is what lets UPLOAD_THEME_IMAGE and
+ * GET_THEME_IMAGE_REVIEW work immediately: every board shows up with no
+ * generated frames and upload allowed.
+ *
+ * `requestedThemeId`, when given, must already be a valid slug
+ * ([a-z0-9_]+) — an invalid explicit id is rejected outright rather than
+ * silently slugified, so a caller-specified id is never silently rewritten.
+ * An EXPLICIT id is also reused AS-IS (update in place, no uniqueness
+ * remint): a second "Save theme" against an already-saved draft must land
+ * on the SAME directory rather than minting `<id>_2` and orphaning the
+ * first directory's uploaded boards. `resolveUniqueNewThemeId` only runs on
+ * the create path (no id given), where the id is derived from
+ * `plan.display_name` the same way `generateTheme` does.
+ *
+ * On the update path (an existing theme dir for this id), any frames.json
+ * already on disk (e.g. boards a user already uploaded via
+ * UPLOAD_THEME_IMAGE) are preserved rather than clobbered with an empty
+ * object, and an existing review.json is left untouched rather than
+ * re-seeded with fresh all-pending items — re-seeding would silently revert
+ * an already-uploaded board's review status/frame_keys back to pending.
+ */
+export async function saveThemePlan(
+  globalStorageUri: ThemeStorageRoot,
+  requestedPlan: Partial<ThemePlan>,
+  requestedThemeId?: string,
+): Promise<{ theme_id: string; plan: ThemePlan }> {
+  if (requestedThemeId !== undefined && !isThemeId(requestedThemeId)) {
+    throw new Error('Invalid theme ID. Use lowercase letters, numbers, and underscores.');
+  }
+  const plan = normalizeThemePlan(requestedPlan, requestedPlan.display_name);
+  const themeId = requestedThemeId ?? await resolveUniqueNewThemeId(globalStorageUri, plan.theme_id);
+  plan.theme_id = themeId;
+  const creativeDirection = themePlanCreativeDirection(plan);
+  const suggestedManifest = themePlanToManifest(plan);
+  const manifest: ThemeManifest = {
+    manifest_version: '1.0.0',
+    theme_id: themeId,
+    display_name: plan.display_name,
+    author: 'TycoonAgents Factory',
+    viewport: suggestedManifest.viewport!,
+    roster_agents: suggestedManifest.roster_agents!,
+    roster_rivals: suggestedManifest.roster_rivals!,
+    buildable_objects: suggestedManifest.buildable_objects!,
+    decor_objects: suggestedManifest.decor_objects!,
+    badges: buildDefaultBadges(),
+    freed_frames: 'v2',
+  };
+  const store = resolveThemeFileStore(globalStorageUri);
+  await store.mkdirp(themeDirectoryPath(themeId));
+  await store.mkdirp(themeImagesDirectoryPath(themeId));
+  await store.writeFile(themePlanPath(themeId), jsonBuffer(plan));
+
+  // Preserve any frames already on disk (uploaded boards) instead of
+  // clobbering frames.json with an empty object on an update-in-place save.
+  const existingFrames = await readJson<Record<string, string[]>>(store, themeFramesPath(themeId));
+  await writeThemeFiles(globalStorageUri, manifest, existingFrames ?? {});
+
+  // Only seed a fresh all-pending review document when this theme has none
+  // yet — an existing review.json (e.g. one carrying an already-uploaded
+  // board's accepted/pending status and frame_keys) is left exactly as is.
+  const existingReview = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+  if (!existingReview) {
+    const reviewItems = createReviewItems(
+      plan,
+      manifest,
+      creativeDirection,
+      boardBackgroundModeForProvider(),
+    );
+    await initializeThemeImageReviewDocument(globalStorageUri, themeId, plan.display_name, reviewItems);
+  }
+
+  return { theme_id: themeId, plan };
+}
+
 export async function generateTheme(
   globalStorageUri: ThemeStorageRoot,
   requestedPlan: ThemePlan | string,

@@ -88,6 +88,7 @@ import {
   handleRegenerateThemeDescriptions,
   handleRenameThemeCharacter,
   handleApproveAllThemeImages,
+  handleSaveThemePlan,
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
 import { handleExportTeamSetupStandalone, handleApplyTeamSetupStandalone, handleCheckTeamReadinessStandalone, handleGetTeamSetupDriftStandalone } from './teamSetupMessages.mjs';
@@ -743,6 +744,14 @@ function handleBrowserMessage(msg) {
     case THEME_MSG_WIRE.GENERATE_THEME:
       handleGenerateTheme(themeStore, broadcast, payload).catch((err) => {
         console.error('[tycoonagents-standalone] GENERATE_THEME failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.SAVE_THEME_PLAN:
+      // p76-t1: flat message (like the THEME_SERVICE_* family) — use
+      // themeServicePayload (the whole msg minus nothing, same posture as
+      // THEME_SERVICE_GET_STATUS etc.), not `payload` (msg.payload).
+      handleSaveThemePlan(themeStore, broadcast, themeServicePayload).catch((err) => {
+        console.error('[tycoonagents-standalone] SAVE_THEME_PLAN failed:', err);
       });
       break;
     case THEME_MSG_WIRE.RETRY_THEME_IMAGE:

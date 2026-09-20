@@ -149,6 +149,15 @@ export function generateTheme(
   );
 }
 
+/**
+ * p76-t1 standalone parity: persist a hand-built ThemePlan (no generation, no
+ * network) — thin pass-through to themeService.js's saveThemePlan, same
+ * posture as every other export in this module.
+ */
+export function saveThemePlan(storageRoot, requestedPlan, requestedThemeId) {
+  return themeServiceModule().saveThemePlan(storageRoot, requestedPlan, requestedThemeId);
+}
+
 export function resumeThemeGeneration(
   storageRoot,
   themeId,

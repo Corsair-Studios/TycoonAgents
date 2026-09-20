@@ -1066,6 +1066,15 @@
   /** @type {Array<any>} Last received THEMES_LIST payload, for re-render on selection change. */
   let lastThemesList = [];
   let currentThemePlan = null;
+  /** p76-t2: true while the plan editor is showing a hand-started new theme
+   *  (no PLAN_THEME/GENERATE_THEME round trip yet) rather than an
+   *  AI-generated or already-saved one. See enterNewThemeDraftMode. */
+  let newThemeDraft = false;
+  /** p76-t2: theme_id assigned by the host's first saveThemePlan reply for
+   *  the theme currently being drafted. null until THEME_PLAN_SAVED. Never
+   *  conflated with reviewThemeId (the selected theme's post-generation
+   *  review id) — see the "Review generated images" wiring below. */
+  let draftThemeId = null;
   let themeGenerationRunning = false;
   let themeGenerationStopping = false;
   let themeImageLightboxTrigger = null;
@@ -2142,6 +2151,17 @@
       // followed by a real THEME_SERVICE_STATUS) still drives the header
       // status chip and credits chip via renderThemeServicePanel.
       themeBuilderPlanEditorOpen = true;
+      // p76-t2: land straight on a blank new-theme draft — every plan field
+      // empty and editable — when nothing is already being edited (no
+      // AI-generated plan, no in-progress draft/save, no post-generation
+      // review). Returning to a tab that already has a session in flight
+      // (e.g. picker -> builder -> picker -> builder) must not reset it.
+      const hasActiveThemeBuilderSession = Boolean(currentThemePlan)
+        || Boolean(draftThemeId)
+        || Boolean(reviewThemeId)
+        || (themePlanEditor && !themePlanEditor.hasAttribute("hidden"))
+        || (themeImageReview && !themeImageReview.hasAttribute("hidden"));
+      if (!hasActiveThemeBuilderSession) enterNewThemeDraftMode();
       openThemeBuilderPlanEditorTab();
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
@@ -2458,6 +2478,195 @@
     if (themePlanEditor) themePlanEditor.removeAttribute("hidden");
     if (themeImageReview) themeImageReview.setAttribute("hidden", "");
     if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
+  }
+
+  /**
+   * p76-t2: an all-empty ThemePlan with the right slot counts (characters
+   * 16, enemies 4, decor 9, objects 21, expressions 8 fixed labels, and
+   * achievements 25) for the new-theme draft mode's initial render — see
+   * enterNewThemeDraftMode. Mirrors the counts renderThemePlan itself uses.
+   * @returns {object}
+   */
+  function buildEmptyThemePlan() {
+    return {
+      theme_id: "",
+      display_name: "",
+      creative_direction: "",
+      environment: "",
+      characters: new Array(THEME_PLAN_CHARACTER_COUNT).fill(""),
+      character_descriptions: new Array(THEME_PLAN_CHARACTER_COUNT).fill(""),
+      enemies: new Array(THEME_PLAN_ENEMY_COUNT).fill(""),
+      enemy_descriptions: new Array(THEME_PLAN_ENEMY_COUNT).fill(""),
+      enemy_attack_styles: new Array(THEME_PLAN_ENEMY_COUNT).fill("melee"),
+      decor: new Array(THEME_PLAN_DECOR_COUNT).fill(""),
+      decor_descriptions: new Array(THEME_PLAN_DECOR_COUNT).fill(""),
+      objects: new Array(THEME_PLAN_OBJECT_COUNT).fill(""),
+      object_descriptions: new Array(THEME_PLAN_OBJECT_COUNT).fill(""),
+      crate_description: "",
+      poof_description: "",
+      projectile_description: "",
+      expressions: THEME_PLAN_FIXED_EXPRESSION_LABELS.slice(),
+      expression_descriptions: new Array(THEME_PLAN_EXPRESSION_COUNT).fill(""),
+      achievements: new Array(THEME_PLAN_ACHIEVEMENT_COUNT).fill(""),
+      achievement_descriptions: new Array(THEME_PLAN_ACHIEVEMENT_COUNT).fill(""),
+    };
+  }
+
+  /**
+   * p76-t2: true if any plan-editor field currently rendered holds text a
+   * user could have typed (name/direction/environment/any slot name or
+   * description, plus the three fixed-object descriptions). Used to decide
+   * whether a THEME_PLAN_READY autofill needs to confirm before overwriting
+   * — see confirmThemePlanOverwrite.
+   * @returns {boolean}
+   */
+  function themePlanFieldsHaveContent() {
+    if (themePlanName && (themePlanName.value || "").trim()) return true;
+    if (themePlanDirection && (themePlanDirection.value || "").trim()) return true;
+    if (themePlanEnvironment && (themePlanEnvironment.value || "").trim()) return true;
+    if (themePlanCrateDesc && (themePlanCrateDesc.value || "").trim()) return true;
+    if (themePlanPoofDesc && (themePlanPoofDesc.value || "").trim()) return true;
+    if (themePlanProjectileDesc && (themePlanProjectileDesc.value || "").trim()) return true;
+    const groups = [
+      themePlanCharacters, themePlanEnemies, themePlanDecorSlots,
+      themePlanObjectsSlots, themePlanExpressionsSlots, themePlanAchievementsSlots,
+    ];
+    for (const group of groups) {
+      if (!group) continue;
+      const fields = group.querySelectorAll('input[type="text"], textarea');
+      for (const field of fields) {
+        if ((field.value || "").trim()) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * p76-t2: small inline confirm (no window.confirm — reuses the plan
+   * editor's own validation status line) shown before an AI autofill
+   * overwrites fields the user already typed into. Calls `applyFn`
+   * immediately, with no prompt, when there's nothing to lose.
+   * @param {() => void} applyFn
+   */
+  function confirmThemePlanOverwrite(applyFn) {
+    if (!themePlanFieldsHaveContent() || !themePlanValidation) {
+      applyFn();
+      return;
+    }
+    themePlanValidation.innerHTML = "";
+    themePlanValidation.appendChild(document.createTextNode(
+      "Generate with AI will overwrite what you've typed. ",
+    ));
+    const overwriteBtn = document.createElement("button");
+    overwriteBtn.type = "button";
+    overwriteBtn.className = "skill-btn theme-plan-inline-confirm-btn";
+    overwriteBtn.textContent = "Overwrite";
+    overwriteBtn.addEventListener("click", () => {
+      themePlanValidation.textContent = "";
+      applyFn();
+    });
+    const keepBtn = document.createElement("button");
+    keepBtn.type = "button";
+    keepBtn.className = "skill-btn secondary theme-plan-inline-confirm-btn";
+    keepBtn.textContent = "Keep mine";
+    keepBtn.addEventListener("click", () => {
+      themePlanValidation.textContent = "";
+    });
+    themePlanValidation.appendChild(overwriteBtn);
+    themePlanValidation.appendChild(keepBtn);
+  }
+
+  /** p76-t2: "Save theme" / "New theme" buttons, created once and toggled by
+   *  updateThemeDraftUi — see their creation block below renderThemePlan. */
+  let themeSaveThemeBtn = null;
+  let themeNewThemeBtn = null;
+
+  /**
+   * p76-t2: refreshes the Save/New-theme controls and the Review-images
+   * button for the current newThemeDraft/draftThemeId state. Called after
+   * enterNewThemeDraftMode, after a THEME_PLAN_SAVED reply, and after
+   * showing an AI-generated or saved plan.
+   */
+  function updateThemeDraftUi() {
+    if (themeSaveThemeBtn) {
+      themeSaveThemeBtn.removeAttribute("hidden");
+      themeSaveThemeBtn.classList.toggle(
+        "primary",
+        !themeServiceStatus || !themeServiceStatus.signedIn || themePlanFieldsHaveContent(),
+      );
+    }
+    if (themeNewThemeBtn) {
+      if (currentThemePlan) themeNewThemeBtn.removeAttribute("hidden");
+      else themeNewThemeBtn.setAttribute("hidden", "");
+    }
+    if (themeBuildActions) {
+      if (newThemeDraft && !draftThemeId) themeBuildActions.setAttribute("hidden", "");
+      else themeBuildActions.removeAttribute("hidden");
+    }
+  }
+
+  /**
+   * p76-t2: enters (or resets to) the new-theme draft: clears any
+   * AI-generated/saved plan state, renders an all-empty plan template
+   * directly under the name/describe field (never hidden behind Generate),
+   * and hides "Review generated images" until the first saveThemePlan
+   * reply — see requirement 1/4 in plan.json p76-t2.
+   */
+  function enterNewThemeDraftMode() {
+    newThemeDraft = true;
+    draftThemeId = null;
+    reviewThemeId = "";
+    if (themeImageReview) themeImageReview.setAttribute("hidden", "");
+    if (themeBuildStatus) {
+      themeBuildStatus.textContent = "Fill in the plan by hand, or use Generate with AI.";
+      themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+    }
+    renderThemePlan(buildEmptyThemePlan());
+    updateThemeDraftUi();
+  }
+
+  if (themePlanEditor) {
+    const footerActions = themePlanEditor.querySelector(".theme-plan-footer-actions");
+    if (footerActions) {
+      themeSaveThemeBtn = document.createElement("button");
+      themeSaveThemeBtn.type = "button";
+      themeSaveThemeBtn.id = "theme-save-theme-btn";
+      themeSaveThemeBtn.className = "skill-btn";
+      themeSaveThemeBtn.textContent = "Save theme";
+      themeSaveThemeBtn.title = "Saves the plan as-is, no account or credits needed — you can upload your own images afterward.";
+      footerActions.insertBefore(themeSaveThemeBtn, footerActions.firstChild);
+      themeSaveThemeBtn.addEventListener("click", () => {
+        let plan;
+        try {
+          plan = collectDraftThemePlan();
+        } catch (error) {
+          if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
+          return;
+        }
+        currentThemePlan = plan;
+        themeSaveThemeBtn.disabled = true;
+        themeSaveThemeBtn.textContent = "Saving...";
+        if (themePlanValidation) themePlanValidation.textContent = "";
+        vscode.postMessage({
+          type: "saveThemePlan",
+          plan,
+          theme_id: draftThemeId || undefined,
+        });
+      });
+    }
+    const headerEl = themePlanEditor.querySelector(".theme-plan-header");
+    if (headerEl) {
+      themeNewThemeBtn = document.createElement("button");
+      themeNewThemeBtn.type = "button";
+      themeNewThemeBtn.id = "theme-new-theme-btn";
+      themeNewThemeBtn.className = "skill-btn secondary-info tsp-new-theme-btn";
+      themeNewThemeBtn.textContent = "New theme";
+      themeNewThemeBtn.setAttribute("hidden", "");
+      headerEl.appendChild(themeNewThemeBtn);
+      themeNewThemeBtn.addEventListener("click", () => {
+        confirmThemePlanOverwrite(() => enterNewThemeDraftMode());
+      });
+    }
   }
 
   /**

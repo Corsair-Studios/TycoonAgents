@@ -86,6 +86,52 @@
     };
   }
 
+  /**
+   * p76-t2: lenient counterpart to collectEditedThemePlan for the "Save
+   * theme" button — takes the plan editor fields exactly as typed, with no
+   * required-slot validation (a hand-saved theme can be partially filled;
+   * saveThemePlan's host-side normalizer pads any missing slots). Reused by
+   * both a fresh draft (currentThemePlan is the empty template from
+   * buildEmptyThemePlan) and re-saving an already-saved/generated plan.
+   * @returns {object}
+   */
+  function collectDraftThemePlan() {
+    const characterSlots = collectPlanSlotsWithDesc(themePlanCharacters);
+    const enemySlots = collectPlanSlotsWithDesc(themePlanEnemies);
+    const enemyAttackStyles = enemySlots.attackStyles.map((style) => (style === "ranged" ? "ranged" : "melee"));
+    const decorSlots = collectPlanSlotsWithDesc(themePlanDecorSlots);
+    const objectSlots = collectPlanSlotsWithDesc(themePlanObjectsSlots);
+    const achievementSlots = collectPlanSlotsWithDesc(themePlanAchievementsSlots);
+    const expressionSlots = collectPlanSlotsWithDesc(themePlanExpressionsSlots);
+
+    const displayName = themePlanName ? themePlanName.value.trim() : "";
+    if (!displayName) throw new Error("Give the theme a name before saving.");
+
+    return {
+      ...(currentThemePlan || {}),
+      theme_id: "",
+      display_name: displayName,
+      creative_direction: themePlanDirection ? themePlanDirection.value.trim() : "",
+      environment: themePlanEnvironment ? themePlanEnvironment.value.trim() : "",
+      characters: characterSlots.names,
+      character_descriptions: characterSlots.descriptions,
+      enemies: enemySlots.names,
+      enemy_descriptions: enemySlots.descriptions,
+      enemy_attack_styles: enemyAttackStyles,
+      decor: decorSlots.names,
+      decor_descriptions: decorSlots.descriptions,
+      objects: objectSlots.names,
+      object_descriptions: objectSlots.descriptions,
+      crate_description: themePlanCrateDesc ? themePlanCrateDesc.value.trim() : "",
+      poof_description: themePlanPoofDesc ? themePlanPoofDesc.value.trim() : "",
+      projectile_description: themePlanProjectileDesc ? themePlanProjectileDesc.value.trim() : "",
+      expressions: THEME_PLAN_FIXED_EXPRESSION_LABELS.slice(),
+      expression_descriptions: expressionSlots.descriptions,
+      achievements: achievementSlots.names,
+      achievement_descriptions: achievementSlots.descriptions,
+    };
+  }
+
   function requestThemeGenerationStop() {
     if (!themeGenerationRunning || themeGenerationStopping) return;
     themeGenerationStopping = true;

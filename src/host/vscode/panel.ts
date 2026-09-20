@@ -108,6 +108,7 @@ import {
   resliceThemeImageFromRaw,
   retryThemeImage,
   resumeThemeGeneration,
+  saveThemePlan,
   saveThemeTuning,
   setThemeImageGenerator,
   setThemePromptMismatchNotifier,
@@ -2768,6 +2769,34 @@ export class TycoonPanel {
               this._themeGenerationAbortController = undefined;
             }
             if (generatedThemeId) await this._postThemeImageReview(generatedThemeId);
+          }
+        } else if (message.type === MSG.SAVE_THEME_PLAN) {
+          const parsedSavePlan = MSG_SCHEMAS.SAVE_THEME_PLAN.safeParse(themeServiceMessagePayload(message));
+          if (!parsedSavePlan.success) {
+            logThemeServiceRejection(MSG.SAVE_THEME_PLAN, parsedSavePlan.error);
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_GENERATION_ERROR,
+              payload: { message: "Invalid theme plan." },
+            });
+            return;
+          }
+          try {
+            const { theme_id, plan } = await saveThemePlan(
+              this._globalStorageUri,
+              parsedSavePlan.data.plan as Partial<ThemePlan>,
+              parsedSavePlan.data.theme_id,
+            );
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_PLAN_SAVED,
+              payload: { theme_id, plan },
+            });
+            const themes = await listThemes(this._globalStorageUri);
+            void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_GENERATION_ERROR,
+              payload: { message: errorMessage(err) },
+            });
           }
         } else if (message.type === MSG.REGENERATE_BOARD) {
           const payload = (message as any).payload as {

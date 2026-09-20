@@ -1493,11 +1493,45 @@
         themeGenerateBtn.removeAttribute("disabled");
         themeGenerateBtn.textContent = "Plan theme";
       }
-      renderThemePlan(msg.payload?.plan || {});
+      // p76-t2: confirm (inline, not window.confirm) before an AI autofill
+      // clobbers anything the user already typed by hand.
+      const planPayload = msg.payload?.plan || {};
+      confirmThemePlanOverwrite(() => {
+        renderThemePlan(planPayload);
+        updateThemeDraftUi();
+      });
       if (themeBuildStatus) {
         themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
+    } else if (msg && msg.type === "THEME_PLAN_SAVED") {
+      // p76-t2: host contract — flat saveThemePlan request, payload-wrapped
+      // reply { theme_id, plan }. Only meaningful in new-theme draft mode;
+      // an existing-theme re-save (not built by this task) would land here
+      // too but draftThemeId/newThemeDraft stay whatever they already were.
+      if (themeSaveThemeBtn) {
+        themeSaveThemeBtn.disabled = false;
+        themeSaveThemeBtn.textContent = "Save theme";
+      }
+      const savedThemeId = msg.payload?.theme_id;
+      if (savedThemeId) {
+        draftThemeId = savedThemeId;
+        updateThemeDraftUi();
+        if (newThemeDraft) {
+          if (themeBuildStatus) {
+            themeBuildStatus.textContent = "Saved. Upload your own images below, or keep editing and Generate with AI.";
+            themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+          }
+          // Reveal the board list (Upload button per board, empty
+          // thumbnails) bound to draftThemeId — never reviewThemeId of a
+          // previously selected theme.
+          showThemeImageReview(savedThemeId);
+          return;
+        }
+      }
+      updateThemeDraftUi();
+      // THEMES_LIST re-post (host contract) refreshes the picker separately
+      // via the existing THEMES_LIST handler — nothing to do here for it.
     } else if (msg && msg.type === "THEME_PLAN_ERROR") {
       if (themeGenerateBtn) {
         themeGenerateBtn.removeAttribute("disabled");

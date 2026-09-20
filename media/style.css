@@ -4855,6 +4855,18 @@ td.col-status {
   font-size: 11px;
 }
 
+/* p76-t2: "New theme" reset control in the plan editor header, and the
+   inline overwrite-confirm buttons injected into #theme-plan-validation. */
+.tsp-new-theme-btn {
+  flex: 0 0 auto;
+}
+
+.theme-plan-inline-confirm-btn {
+  margin-left: 8px;
+  padding: 2px 10px;
+  font-size: 11px;
+}
+
 .theme-plan-field {
   display: flex;
   flex-direction: column;

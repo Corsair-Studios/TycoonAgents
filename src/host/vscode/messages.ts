@@ -388,6 +388,12 @@ export const MSG = {
   CANCEL_THEME_GENERATION: "CANCEL_THEME_GENERATION",
   THEME_GENERATION_CANCELLED: "THEME_GENERATION_CANCELLED",
   GENERATE_THEME: "GENERATE_THEME",
+  // p76-t1: persist a hand-built ThemePlan (name/describe + every sprite-board
+  // slot filled in by hand) as a real theme WITHOUT starting paid generation.
+  // Wire string is "saveThemePlan" (flat message, like the THEME_SERVICE_*
+  // family — see themeServiceMessagePayload) to match the webview contract.
+  SAVE_THEME_PLAN: "saveThemePlan",
+  THEME_PLAN_SAVED: "THEME_PLAN_SAVED",
   THEME_GENERATION_PROGRESS: "THEME_GENERATION_PROGRESS",
   THEME_GENERATION_ERROR: "THEME_GENERATION_ERROR",
   THEME_REVIEW_READY: "THEME_REVIEW_READY",
@@ -924,6 +930,16 @@ export const MSG_SCHEMAS = {
 
   // ---- Theme Service auth / balance / checkout (p42-t1) -------------------
   THEME_SERVICE_GET_STATUS: z.object({}).passthrough(),
+
+  // p76-t1: flat message (see themeServiceMessagePayload) — `plan` is the
+  // full/partial ThemePlan object; `theme_id` is optional and, when given,
+  // must already be a valid slug (validated again in saveThemePlan itself).
+  SAVE_THEME_PLAN: z
+    .object({
+      plan: z.record(z.unknown()),
+      theme_id: z.string().min(1).max(40).optional(),
+    })
+    .passthrough(),
   THEME_SERVICE_REQUEST_MAGIC_LINK: z.object({ email: z.string().min(1) }).passthrough(),
   THEME_SERVICE_VERIFY: z.object({ email: z.string().min(1), code: z.string().min(1) }).passthrough(),
   THEME_SERVICE_GOOGLE_START: z.object({}).passthrough(),
