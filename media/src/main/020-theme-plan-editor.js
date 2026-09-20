@@ -1651,7 +1651,11 @@
   };
 
   function openThemeBuilderFromReview() {
-    openThemeBuilderShellModal();
+    // p75: builder-first flow — mirror the Theme Builder tab click handler
+    // (openThemeBuilderPlanEditorTab, 010-modals-badges-rebirth.js) instead
+    // of opening the sign-in shell modal.
+    themeBuilderPlanEditorOpen = true;
+    openThemeBuilderPlanEditorTab();
     vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
   }
 

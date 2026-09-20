@@ -240,12 +240,12 @@ function themeServiceStatus(payload: any) {
 
 // ── THEME_BUILDER_OPENED / THEME_SERVICE_STATUS wiring ─────────────────────
 
-test('THEME_BUILDER_OPENED renders the status then posts THEME_SERVICE_GET_STATUS once', async () => {
+test('THEME_BUILDER_OPENED renders the status and posts no THEME_SERVICE_GET_STATUS (p75-t2: host already refreshes in background)', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
   assert.match(h.panelText(), /Generate a theme/);
   const getStatusPosts = h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS');
-  assert.equal(getStatusPosts.length, 1, 'THEME_BUILDER_OPENED should post exactly one THEME_SERVICE_GET_STATUS');
+  assert.equal(getStatusPosts.length, 0, 'THEME_BUILDER_OPENED must not post the now-redundant THEME_SERVICE_GET_STATUS');
   h.win.close();
 });
 
@@ -436,7 +436,7 @@ test('pending-checkout state renders "I completed payment" and posts GET_STATUS'
 
 // ── State: unreachable ────────────────────────────────────────────────────────
 
-test('unreachable state renders error + Retry, and Retry posts GET_STATUS', async () => {
+test('unreachable state renders error + Retry, and Retry posts requestThemeServiceStatus (p75-t1)', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(
     themeBuilderOpened(
@@ -444,10 +444,11 @@ test('unreachable state renders error + Retry, and Retry posts GET_STATUS', asyn
     ),
   );
   assert.match(h.panelText(), /unavailable/i);
-  const countBefore = h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length;
+  const countBefore = h.posted.filter((p) => p.type === 'requestThemeServiceStatus').length;
   h.clickButtonByText('Retry');
-  const countAfter = h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length;
-  assert.equal(countAfter, countBefore + 1, 'Retry should post THEME_SERVICE_GET_STATUS');
+  const countAfter = h.posted.filter((p) => p.type === 'requestThemeServiceStatus').length;
+  assert.equal(countAfter, countBefore + 1, 'Retry should post requestThemeServiceStatus, not the old THEME_SERVICE_GET_STATUS');
+  assert.equal(h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length, 0, 'Retry must not also post the old GET_STATUS wire message');
   h.win.close();
 });
 
@@ -479,24 +480,60 @@ test('renderThemeServicePanel and its helpers never use innerHTML for status tex
   assert.ok(!/\.innerHTML\s*=/.test(section), 'Theme Service panel render helpers must not assign innerHTML (use textContent/DOM nodes)');
 });
 
-// ── Shell modal layering + always-visible click feedback (bug fix, 0.0.611) ──
+// ── Builder-first Theme Builder tab (p75-t3): no shell modal on tab click ────
 
-test('clicking #tab-theme-builder opens the shell modal immediately with a Connecting… body, before THEME_BUILDER_OPENED arrives', async () => {
+test('clicking #tab-theme-builder opens the plan editor directly (no shell modal, no Connecting…) and posts OPEN_THEME_BUILDER', async () => {
   const h = await bootThemePanelHarness();
   const shell = h.doc.getElementById('theme-builder-shell-modal');
   // The harness stubs every getElementById id as a bare <div> (it doesn't
   // replicate panel.ts/server.mjs's `hidden` attribute on the real modal
   // markup), so start it hidden explicitly, matching production markup.
   shell.setAttribute('hidden', '');
+  const themeBuilderPanel = h.doc.getElementById('theme-builder-panel');
+  themeBuilderPanel.setAttribute('hidden', '');
+  const themePickerList = h.doc.getElementById('theme-picker-list');
+  themePickerList.removeAttribute('hidden');
 
   h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
 
-  assert.ok(!shell.hasAttribute('hidden'), 'shell modal must be visible immediately on click, before any host reply');
-  assert.match(h.panelText(), /Connecting/, 'panel body should show a Connecting… placeholder immediately on click');
+  assert.ok(shell.hasAttribute('hidden'), 'the sign-in shell modal must stay closed on a plain tab click');
+  assert.ok(!themeBuilderPanel.hasAttribute('hidden'), 'the plan editor panel must be shown immediately on tab click');
   assert.ok(h.posted.some((p) => p.type === 'OPEN_THEME_BUILDER'), 'click should still post OPEN_THEME_BUILDER');
 
   h.dispatch(themeBuilderOpened(signedOutStatus()));
-  assert.match(h.panelText(), /Generate a theme/, 'THEME_BUILDER_OPENED should replace the Connecting… placeholder with the real status');
+  assert.match(h.panelText(), /Generate a theme/, 'THEME_BUILDER_OPENED should still drive the status/credits chip once it arrives');
+  h.win.close();
+});
+
+test('THEME_BUILDER_OPENED after a tab click (signed-out, then pending:true) leaves the shell modal hidden and posts no THEME_SERVICE_GET_STATUS', async () => {
+  const h = await bootThemePanelHarness();
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+  const themeBuilderPanel = h.doc.getElementById('theme-builder-panel');
+  themeBuilderPanel.setAttribute('hidden', '');
+  const themePickerList = h.doc.getElementById('theme-picker-list');
+  themePickerList.removeAttribute('hidden');
+
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(shell.hasAttribute('hidden'), 'the shell modal must stay closed on the tab click itself');
+
+  const countBefore = h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length;
+
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  assert.ok(shell.hasAttribute('hidden'), 'THEME_BUILDER_OPENED (signed-out) must not open the shell modal');
+  assert.equal(
+    h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length,
+    countBefore,
+    'THEME_BUILDER_OPENED must not post THEME_SERVICE_GET_STATUS',
+  );
+
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  assert.ok(shell.hasAttribute('hidden'), 'THEME_BUILDER_OPENED (pending:true) must not open the shell modal');
+  assert.equal(
+    h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length,
+    countBefore,
+    'THEME_BUILDER_OPENED with pending:true must not post THEME_SERVICE_GET_STATUS either',
+  );
   h.win.close();
 });
 
@@ -530,9 +567,16 @@ test('the image provider/model/quality selects are gone from the webview bundle,
 
 test('PLAN_THEME still sends a default image_provider silently even with no provider UI', async () => {
   const h = await bootThemePanelHarness();
+  // p75-t2: #theme-generate-btn is retired (class tsp-hidden-retired) and now
+  // routes through the same signed-in gate as "Generate with AI" — sign in
+  // first so the click fires PLAN_THEME directly instead of opening the
+  // sign-in modal.
+  h.dispatch(themeBuilderOpened(signedInStatus()));
   const input = h.doc.getElementById('theme-prompt-input');
   input.value = 'a cozy forest theme';
-  h.doc.getElementById('theme-generate-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const generateBtn = h.doc.getElementById('theme-generate-btn');
+  assert.ok(generateBtn.classList.contains('tsp-hidden-retired'), 'theme-generate-btn should be retired/hidden');
+  generateBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
   const plan = h.lastPosted('PLAN_THEME');
   assert.ok(plan, 'expected a PLAN_THEME message');
   assert.equal(plan.payload.image_provider, 'openai', 'image_provider should still default silently to "openai"');
@@ -724,10 +768,15 @@ for (const [errorKind, cls, expectedText] of ERROR_KIND_CASES) {
   });
 }
 
-test('not_signed_in notice button opens the Theme Builder shell and posts OPEN_THEME_BUILDER', async () => {
+test('not_signed_in notice button (openThemeBuilderFromReview) opens the plan editor tab and posts OPEN_THEME_BUILDER without opening the shell modal (p75)', async () => {
   const h = await bootThemePanelHarness();
   const shell = h.doc.getElementById('theme-builder-shell-modal');
   shell.setAttribute('hidden', '');
+  const themeBuilderPanel = h.doc.getElementById('theme-builder-panel');
+  themeBuilderPanel.setAttribute('hidden', '');
+  const themePickerList = h.doc.getElementById('theme-picker-list');
+  themePickerList.removeAttribute('hidden');
+
   h.dispatch(themeImageReview({
     theme_id: 't1',
     creditsSpent: 0,
@@ -737,7 +786,9 @@ test('not_signed_in notice button opens the Theme Builder shell and posts OPEN_T
   const btn = notice.querySelector('button');
   assert.ok(btn, 'expected an action button on the not_signed_in notice');
   btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
-  assert.ok(!shell.hasAttribute('hidden'), 'clicking the notice button should open the Theme Builder shell');
+
+  assert.ok(shell.hasAttribute('hidden'), 'openThemeBuilderFromReview must not open the sign-in shell modal (p75)');
+  assert.ok(!themeBuilderPanel.hasAttribute('hidden'), 'openThemeBuilderFromReview must open the plan editor panel directly');
   assert.ok(h.posted.some((p: any) => p.type === 'OPEN_THEME_BUILDER'), 'clicking should post OPEN_THEME_BUILDER');
   h.win.close();
 });
@@ -952,11 +1003,11 @@ test('google-wait state: the 90s nudge notice appears after the wait timer fires
 
 // ── "Continue without signing in" relabel + help line (p65-t3) ─────────────
 
-test('theme-builder-shell-continue is relabeled "Continue without signing in" with a help line naming what upload-only vs AI needs', async () => {
+test('theme-builder-shell-continue is relabeled "Back to builder" (p75-t2) with a help line naming what upload-only vs AI needs', async () => {
   const h = await bootThemePanelHarness();
   const continueBtn = h.doc.getElementById('theme-builder-shell-continue');
   assert.ok(continueBtn, 'expected the theme-builder-shell-continue element');
-  assert.equal(continueBtn.textContent, 'Continue without signing in');
+  assert.equal(continueBtn.textContent, 'Back to builder');
   const help = h.doc.getElementById('theme-builder-shell-continue-help');
   assert.ok(help, 'expected a help paragraph next to the relabeled button');
   assert.match(help.textContent, /upload your own images/i);
@@ -986,5 +1037,120 @@ test('THEME_PLAN_ERROR with a different kind falls back to raw "Error: <message>
   assert.match(status.textContent, /Error: boom/);
   const signInBtn = Array.from(status.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Sign in');
   assert.equal(signInBtn, undefined, 'no Sign in button for a non-not_signed_in error kind');
+  h.win.close();
+});
+
+// ── "Generate with AI" signed-in gate + builder status chip (p75-t2/t3) ────
+
+function setPrompt(h: any, text: string): void {
+  const input: any = h.doc.getElementById('theme-prompt-input');
+  input.value = text;
+}
+
+test('Generate with AI signed out opens the shell modal and does not post PLAN_THEME', async () => {
+  const h = await bootThemePanelHarness();
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.ok(!shell.hasAttribute('hidden'), 'the sign-in shell modal should open');
+  assert.equal(h.lastPosted('PLAN_THEME'), undefined, 'PLAN_THEME must not be posted while signed out');
+  h.win.close();
+});
+
+test('a subsequent signedIn status posts PLAN_THEME exactly once and closes the modal', async () => {
+  const h = await bootThemePanelHarness();
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(!shell.hasAttribute('hidden'));
+
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  assert.equal(h.posted.filter((p: any) => p.type === 'PLAN_THEME').length, 1, 'PLAN_THEME should post exactly once');
+  assert.ok(shell.hasAttribute('hidden'), 'the modal should close once the pending intent fires');
+
+  // A later signedIn status must not re-fire the now-cleared intent.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 41 })));
+  assert.equal(h.posted.filter((p: any) => p.type === 'PLAN_THEME').length, 1, 'PLAN_THEME must not post again on a later status');
+  h.win.close();
+});
+
+test('cancelling the modal ("Back to builder") clears the pending intent — a later signedIn status posts nothing', async () => {
+  const h = await bootThemePanelHarness();
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  h.doc.getElementById('theme-builder-shell-continue').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  assert.equal(h.lastPosted('PLAN_THEME'), undefined, 'cancelling the modal must clear the pending intent so no later status fires it');
+  h.win.close();
+});
+
+test('Generate with AI signed in posts PLAN_THEME directly, no modal', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.ok(shell.hasAttribute('hidden'), 'the shell modal must not open when already signed in');
+  const plan = h.lastPosted('PLAN_THEME');
+  assert.ok(plan, 'expected PLAN_THEME to post directly');
+  h.win.close();
+});
+
+test('#theme-generate-btn carries class tsp-hidden-retired', async () => {
+  const h = await bootThemePanelHarness();
+  assert.ok(h.doc.getElementById('theme-generate-btn').classList.contains('tsp-hidden-retired'));
+  h.win.close();
+});
+
+test('builder status chip: waking/unavailable/signed-in text, and Retry posts requestThemeServiceStatus', async () => {
+  const h = await bootThemePanelHarness();
+  const chip = () => h.doc.getElementById('theme-builder-status-chip');
+
+  h.dispatch(themeBuilderOpened(signedOutStatus({ error: { kind: 'waking', message: 'The theme service is starting up. This can take about a minute.' } })));
+  assert.match(chip().textContent, /Starting service/);
+
+  h.dispatch(themeServiceStatus(signedOutStatus({ error: { kind: 'unavailable', message: 'Theme Service unavailable. No credits were charged.' } })));
+  assert.match(chip().textContent, /Service unavailable/);
+
+  const countBefore = h.posted.filter((p: any) => p.type === 'requestThemeServiceStatus').length;
+  const retryLink: any = Array.from(chip().querySelectorAll('a')).find((a: any) => (a.textContent || '').trim() === 'Retry');
+  assert.ok(retryLink, 'expected a Retry link in the chip');
+  retryLink.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(
+    h.posted.filter((p: any) => p.type === 'requestThemeServiceStatus').length,
+    countBefore + 1,
+    'chip Retry should post requestThemeServiceStatus',
+  );
+
+  h.dispatch(themeServiceStatus(signedInStatus({ email: 'dev@example.com', credits: 12 })));
+  assert.match(chip().textContent, /dev@example\.com/);
+  assert.match(chip().textContent, /12 credits/);
+  h.win.close();
+});
+
+test('leaving the theme builder tab posts THEME_BUILDER_CLOSED exactly once', async () => {
+  const h = await bootThemePanelHarness();
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const countAfterOpen = h.posted.filter((p: any) => p.type === 'THEME_BUILDER_CLOSED').length;
+  assert.equal(countAfterOpen, 0, 'no THEME_BUILDER_CLOSED while the builder tab is open');
+
+  h.doc.getElementById('tab-theme-picker').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(h.posted.filter((p: any) => p.type === 'THEME_BUILDER_CLOSED').length, 1, 'leaving the builder tab should post THEME_BUILDER_CLOSED once');
+
+  // Leaving again without re-opening the builder must not post a second time.
+  h.doc.getElementById('tab-theme-picker').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(h.posted.filter((p: any) => p.type === 'THEME_BUILDER_CLOSED').length, 1, 'a second leave without reopening must not double-post');
   h.win.close();
 });

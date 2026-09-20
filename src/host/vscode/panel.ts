@@ -1981,8 +1981,21 @@ export class TycoonPanel {
           // check instead of the old hardcoded { signedIn: false }.
           const parsedOpen = MSG_SCHEMAS.OPEN_THEME_BUILDER.safeParse((message as any).payload);
           if (!parsedOpen.success) return;
-          const openStatus = await this._themeServiceHost.getStatusSnapshot();
+          // p75-t1: never await a network fetch before this first post — reply
+          // immediately with the last cached snapshot (or a pending stub), then
+          // refresh in the background and post THEME_SERVICE_STATUS when it
+          // resolves (with "waking"/retry-backoff while the backend is asleep).
+          const openStatus = this._themeServiceHost.getCachedOrPendingStatus();
           void this._panel.webview.postMessage({ type: MSG.THEME_BUILDER_OPENED, payload: openStatus });
+          this._themeServiceHost.refreshStatusInBackground();
+        } else if (message.type === MSG.THEME_BUILDER_CLOSED) {
+          const parsedClosed = MSG_SCHEMAS.THEME_BUILDER_CLOSED.safeParse((message as any).payload);
+          if (!parsedClosed.success) return;
+          this._themeServiceHost.cancelBackgroundStatusRetry();
+        } else if (message.type === MSG.REQUEST_THEME_SERVICE_STATUS) {
+          const parsedReq = MSG_SCHEMAS.REQUEST_THEME_SERVICE_STATUS.safeParse((message as any).payload);
+          if (!parsedReq.success) return;
+          this._themeServiceHost.refreshStatusInBackground();
         } else if (message.type === MSG.THEME_SERVICE_GET_STATUS) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GET_STATUS.safeParse(themeServiceMessagePayload(message));
           if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }

@@ -378,6 +378,13 @@ export function createThemeServiceHost(opts) {
   return {
     handleGetStatus: () => inner.handleGetStatus(),
     getStatusSnapshot: async () => withEndpointHost(await inner.getStatusSnapshot()),
+    // p75-t1: mirrors the VS Code panel's OPEN_THEME_BUILDER immediate-post
+    // flow — getCachedOrPendingStatus is synchronous (no network), and
+    // refreshStatusInBackground/cancelBackgroundStatusRetry drive the
+    // "waking" retry-with-backoff via inner's own postStatus wiring above.
+    getCachedOrPendingStatus: () => withEndpointHost(inner.getCachedOrPendingStatus()),
+    refreshStatusInBackground: () => inner.refreshStatusInBackground(),
+    cancelBackgroundStatusRetry: () => inner.cancelBackgroundStatusRetry(),
     handleRequestMagicLink: (email) => inner.handleRequestMagicLink(email),
     handleVerify: (email, code) => inner.handleVerify(email, code),
     handleGoogleStart,

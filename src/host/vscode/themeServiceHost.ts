@@ -69,6 +69,13 @@ export interface ThemeServiceHostStatus {
    * and "Copy link" buttons instead of only the paste-code fallback.
    */
   browserUrl?: string;
+  /**
+   * p75-t1: set only on OPEN_THEME_BUILDER's immediate reply when no status
+   * has ever been fetched yet (no cached snapshot) — the webview shows its
+   * normal "Connecting…" state and waits for the THEME_SERVICE_STATUS that
+   * follows shortly. Never set on a cached snapshot, even a stale one.
+   */
+  pending?: boolean;
 }
 
 /**
@@ -109,6 +116,8 @@ export interface ThemeServiceHostOptions {
   endpointOverride?: string;
   /** p59-t3: extension version sent as the X-Tycoon-Client header on every Theme Service request. */
   clientVersion?: string;
+  /** p75-t1: passed through to createThemeServiceClient's statusTimeoutMs; test-only (a real client build ignores this when `client` is injected). */
+  statusTimeoutMs?: number;
   /** p62-t2: per-device first-sign-in tracker, gating the referral field and
    * the one-time apply-on-first-sign-in call. Omitting it disables the
    * referral prompt entirely (showReferralField stays false) rather than
@@ -117,6 +126,9 @@ export interface ThemeServiceHostOptions {
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
+  /** Injectable timers for the OPEN_THEME_BUILDER "waking" retry backoff (p75-t1); default global setTimeout/clearTimeout. */
+  setTimeout?: (fn: () => void, ms: number) => unknown;
+  clearTimeout?: (handle: unknown) => void;
   /**
    * p66-t1: optional diagnostic logger (the shared "TycoonAgents" output
    * channel from src/host/vscode/log.ts). Logs step names and hostnames
@@ -168,6 +180,24 @@ export interface ThemeServiceHost {
   handleGetStatus(): Promise<void>;
   /** Same computation as handleGetStatus but returns instead of posting — used by OPEN_THEME_BUILDER's THEME_BUILDER_OPENED reply. */
   getStatusSnapshot(): Promise<ThemeServiceHostStatus>;
+  /**
+   * p75-t1: the last snapshot successfully built (by getStatusSnapshot,
+   * handleGetStatus, or a background retry), if any — returned SYNCHRONOUSLY
+   * with no network call, so OPEN_THEME_BUILDER's THEME_BUILDER_OPENED reply
+   * never awaits a fetch. `{ signedIn: false, pending: true }` when nothing
+   * has ever resolved yet.
+   */
+  getCachedOrPendingStatus(): ThemeServiceHostStatus;
+  /**
+   * p75-t1: kicks off a background status/pricing fetch (short
+   * statusTimeoutMs) with retry-with-backoff on 503/timeout, posting
+   * THEME_SERVICE_STATUS on every result via opts.postStatus. Called right
+   * after OPEN_THEME_BUILDER's immediate getCachedOrPendingStatus() reply.
+   * Safe to call repeatedly — a new call cancels any retry already pending.
+   */
+  refreshStatusInBackground(): void;
+  /** p75-t1: cancels a pending background retry — called on THEME_BUILDER_CLOSED or panel dispose. */
+  cancelBackgroundStatusRetry(): void;
   handleRequestMagicLink(email: string): Promise<void>;
   handleVerify(email: string, code: string): Promise<void>;
   handleGoogleStart(): Promise<void>;
@@ -247,10 +277,20 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       tokenStore: createVsCodeThemeServiceTokenStore(opts.secrets),
       clientVersion: opts.clientVersion,
       endpoint: endpointResolution.overridden ? endpointResolution.endpoint : undefined,
+      statusTimeoutMs: opts.statusTimeoutMs,
     });
   const now = opts.now ?? (() => Date.now());
   const setIntervalImpl = opts.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const clearIntervalImpl = opts.clearInterval ?? ((handle: unknown) => clearInterval(handle as NodeJS.Timeout));
+  const setTimeoutImpl = opts.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimeoutImpl = opts.clearTimeout ?? ((handle: unknown) => clearTimeout(handle as NodeJS.Timeout));
+
+  // p75-t1: fixed, never server text — see OPEN_THEME_BUILDER contract.
+  const WAKING_MESSAGE = "The theme service is starting up. This can take about a minute.";
+  const UNAVAILABLE_MESSAGE = "Theme Service unavailable. No credits were charged.";
+  // 5, 10, 20, 30, 30, 30... seconds, up to ~3 minutes total.
+  const STATUS_RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000, 30_000, 30_000];
+  const STATUS_RETRY_MAX_TOTAL_MS = 3 * 60_000;
 
   let disposed = false;
   let pendingGoogleCodeVerifier: string | null = null;
@@ -269,6 +309,12 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   // handleSetReferralCode docs above.
   let pendingReferralCode: string | null = null;
   let pendingReferralMessage: string | undefined;
+  // p75-t1: last snapshot successfully built, for OPEN_THEME_BUILDER's
+  // immediate (no-await) reply. Never cleared on a later failure — a stale
+  // signed-in snapshot is a better first paint than a bare "Connecting…".
+  let lastSnapshot: ThemeServiceHostStatus | undefined;
+  let statusRetryHandle: unknown | undefined;
+  let statusRetryGeneration = 0;
 
   /**
    * Called right after ANY sign-in completes successfully (magic-link
@@ -353,7 +399,59 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   async function postFreshStatus(): Promise<void> {
     if (disposed) return;
     const status = await buildStatus();
+    lastSnapshot = status;
     opts.postStatus(status);
+  }
+
+  /**
+   * p75-t1: same as buildStatus, but a 503/timeout from the status/pricing
+   * fetch is remapped to kind "waking" (fixed message) instead of
+   * "unavailable" — used only by the OPEN_THEME_BUILDER open flow and its
+   * background retry, never by handleGetStatus/poll, which keep their
+   * existing "unavailable" behavior.
+   */
+  async function buildSnapshotForOpen(): Promise<ThemeServiceHostStatus> {
+    const status = await buildStatus();
+    if (status.error && (status.error.kind === "unavailable" || status.error.kind === "timeout")) {
+      return { ...status, error: { kind: "waking", message: WAKING_MESSAGE } };
+    }
+    return status;
+  }
+
+  function stopStatusRetry(): void {
+    statusRetryGeneration++;
+    if (statusRetryHandle !== undefined) {
+      clearTimeoutImpl(statusRetryHandle);
+      statusRetryHandle = undefined;
+    }
+  }
+
+  /**
+   * Runs one background snapshot fetch, posts it, and — if it's still
+   * "waking" — schedules the next retry per STATUS_RETRY_BACKOFF_MS, up to
+   * STATUS_RETRY_MAX_TOTAL_MS total, after which it posts a final
+   * "unavailable" result and stops.
+   */
+  function scheduleStatusRetry(attemptIndex: number, elapsedMs: number, generation: number): void {
+    const delay = STATUS_RETRY_BACKOFF_MS[Math.min(attemptIndex, STATUS_RETRY_BACKOFF_MS.length - 1)];
+    if (elapsedMs + delay > STATUS_RETRY_MAX_TOTAL_MS) {
+      if (disposed || generation !== statusRetryGeneration) return;
+      lastSnapshot = { signedIn: false, pendingCheckout, error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE } };
+      opts.postStatus(lastSnapshot);
+      return;
+    }
+    statusRetryHandle = setTimeoutImpl(() => {
+      void (async () => {
+        if (disposed || generation !== statusRetryGeneration) return;
+        const status = await buildSnapshotForOpen();
+        if (disposed || generation !== statusRetryGeneration) return;
+        lastSnapshot = status;
+        opts.postStatus(status);
+        if (status.error?.kind === "waking") {
+          scheduleStatusRetry(attemptIndex + 1, elapsedMs + delay, generation);
+        }
+      })();
+    }, delay);
   }
 
   async function pollTick(): Promise<void> {
@@ -411,7 +509,32 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     async getStatusSnapshot() {
-      return buildStatus();
+      const status = await buildSnapshotForOpen();
+      lastSnapshot = status;
+      return status;
+    },
+
+    getCachedOrPendingStatus() {
+      return lastSnapshot ?? { signedIn: false, pending: true };
+    },
+
+    refreshStatusInBackground() {
+      stopStatusRetry();
+      const generation = statusRetryGeneration;
+      void (async () => {
+        if (disposed || generation !== statusRetryGeneration) return;
+        const status = await buildSnapshotForOpen();
+        if (disposed || generation !== statusRetryGeneration) return;
+        lastSnapshot = status;
+        opts.postStatus(status);
+        if (status.error?.kind === "waking") {
+          scheduleStatusRetry(0, 0, generation);
+        }
+      })();
+    },
+
+    cancelBackgroundStatusRetry() {
+      stopStatusRetry();
     },
 
     async handleRequestMagicLink(email) {
@@ -588,6 +711,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     dispose() {
       disposed = true;
+      stopStatusRetry();
       stopPoll();
       pendingGoogleCodeVerifier = null;
       pendingGoogleBrowserUrl = null;

@@ -236,8 +236,12 @@ test('boundary contract: every THEME_SERVICE_* message the real webview posts pa
   // machine's transition never leaves stale DOM for the next action.
 
   {
+    // p75-t2: THEME_BUILDER_OPENED no longer auto-posts GET_STATUS; the
+    // only UI path left to THEME_SERVICE_GET_STATUS is the pending-checkout
+    // screen's "I completed payment, refresh balance" button.
     const h = await bootThemePanelHarness();
-    h.dispatch(themeBuilderOpened(signedOutStatus()));
+    h.dispatch(themeBuilderOpened(signedInStatus({ pendingCheckout: true })));
+    h.clickButtonByText('I completed payment, refresh balance');
     capturedByType.set('THEME_SERVICE_GET_STATUS', h.lastPosted('THEME_SERVICE_GET_STATUS'));
     h.win.close();
   }

@@ -166,6 +166,14 @@ export interface ThemeServiceClientOptions {
    * the Supabase auth requests.
    */
   requestTimeoutMs?: number;
+  /**
+   * Bounds the status/pricing snapshot fetches (getStatus, getPricing) used
+   * by OPEN_THEME_BUILDER's immediate-open flow and its background retry —
+   * intentionally much shorter than {@link requestTimeoutMs} so a sleeping
+   * Render Free backend doesn't hold the webview on "Connecting…" for
+   * minutes. Default 10_000ms (10s).
+   */
+  statusTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -438,6 +446,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   const createCodeVerifier: () => string | null = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
   const clientVersion = opts.clientVersion;
   const requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
+  const statusTimeoutMs = opts.statusTimeoutMs ?? 10_000;
   // Shorter than requestTimeoutMs on purpose — this is a small, cacheable
   // config GET the Theme Service should answer fast; it must not stall
   // sign-in as long as the 180s generation-request budget.
@@ -743,7 +752,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   /** GET/POST against the Theme Service itself, with bearer auth + one 401 refresh-and-retry. */
   async function serviceRequest(
     path: string,
-    init: { method: "GET" | "POST"; body?: unknown; auth: boolean }
+    init: { method: "GET" | "POST"; body?: unknown; auth: boolean; timeoutMs?: number }
   ): Promise<ThemeServiceResult<unknown>> {
     // Clock-skew margin: refresh a little before actual expiry so a token
     // that is about to lapse mid-flight doesn't round-trip as a 401.
@@ -773,9 +782,10 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       let res: Response;
       // Bounded request timeout (v3.4): the client previously had none, so a
       // hung connection to the service could stall a caller indefinitely.
+      const effectiveTimeoutMs = init.timeoutMs ?? requestTimeoutMs;
       const timeoutController = typeof AbortController !== "undefined" ? new AbortController() : undefined;
       const timeoutHandle = timeoutController
-        ? setTimeout(() => timeoutController.abort(), requestTimeoutMs)
+        ? setTimeout(() => timeoutController.abort(), effectiveTimeoutMs)
         : undefined;
       try {
         res = await fetchImpl(`${endpoint}${path}`, {
@@ -789,7 +799,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
         return {
           status: "error",
           error: timedOut
-            ? { kind: "timeout", message: `request timed out after ${requestTimeoutMs}ms` }
+            ? { kind: "timeout", message: `request timed out after ${effectiveTimeoutMs}ms` }
             : { kind: "unreachable", message: err instanceof Error ? err.message : String(err) },
         };
       } finally {
@@ -952,7 +962,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     async getStatus() {
       const session = await loadSession();
       if (!session) return { ok: true, value: { signedIn: false } };
-      const res = await serviceRequest("/api/account", { method: "GET", auth: true });
+      const res = await serviceRequest("/api/account", { method: "GET", auth: true, timeoutMs: statusTimeoutMs });
       if (!res.ok) {
         if (res.error.kind === "not_signed_in") return { ok: true, value: { signedIn: false } };
         return res;
@@ -976,7 +986,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     },
 
     async getPricing() {
-      const res = await serviceRequest("/api/pricing", { method: "GET", auth: false });
+      const res = await serviceRequest("/api/pricing", { method: "GET", auth: false, timeoutMs: statusTimeoutMs });
       if (!res.ok) return res;
       const json = res.value;
       if (

@@ -231,6 +231,13 @@ Render is used the same way it is for Speciary.
    - **Stage 3:** move to the **Pro workspace** only when a collaborator
      needs dashboard access or bandwidth exceeds 25 GB (several hundred
      themes a month).
+   - **Cold start on the Free instance:** the client already handles this —
+     when the service is asleep it shows **"Starting service…"** and
+     retries automatically for about a minute while Render spins the
+     instance back up, so a cold start reads as a brief wait rather than
+     an error. This is still a real minute of latency on the first
+     request after idle, so once the service is live for real users,
+     move to the paid instance (Stage 2 above) to avoid it entirely.
 4. **Health check path:** `/api/health` (matches the contract's public,
    unauthenticated health endpoint).
 5. **Build command** / **start command**: use whatever the

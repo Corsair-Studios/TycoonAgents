@@ -288,7 +288,7 @@ test('clicking #tab-theme-builder posts OPEN_THEME_BUILDER', async () => {
   }
 });
 
-test('dispatching THEME_BUILDER_OPENED unhides the shell modal, close re-hides it', async () => {
+test('dispatching THEME_BUILDER_OPENED leaves the shell modal hidden; Generate with AI (signed out) unhides it, close re-hides it', async () => {
   const h = await bootMinimalHarness();
   try {
     const shellModal = h.doc.getElementById('theme-builder-shell-modal');
@@ -298,8 +298,17 @@ test('dispatching THEME_BUILDER_OPENED unhides the shell modal, close re-hides i
     h.dispatch({ type: 'THEME_BUILDER_OPENED', payload: { signedIn: false } });
     await h.flush();
     assert.ok(
+      shellModal.hasAttribute('hidden'),
+      '#theme-builder-shell-modal should stay hidden after THEME_BUILDER_OPENED (p75-t2)',
+    );
+
+    const generateWithAiBtn = h.doc.getElementById('theme-generate-with-ai-btn');
+    assert.ok(generateWithAiBtn, '#theme-generate-with-ai-btn should exist');
+    generateWithAiBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await h.flush();
+    assert.ok(
       !shellModal.hasAttribute('hidden'),
-      '#theme-builder-shell-modal should be visible after THEME_BUILDER_OPENED',
+      '#theme-builder-shell-modal should be visible after clicking Generate with AI while signed out',
     );
 
     const closeBtn = h.doc.getElementById('theme-builder-shell-close');
@@ -324,6 +333,11 @@ test('clicking the shell continue button opens the plan-editor tab', async () =>
     assert.ok(themeBuilderPanel, '#theme-builder-panel should exist');
 
     h.dispatch({ type: 'THEME_BUILDER_OPENED', payload: { signedIn: false } });
+    await h.flush();
+
+    const generateWithAiBtn = h.doc.getElementById('theme-generate-with-ai-btn');
+    assert.ok(generateWithAiBtn, '#theme-generate-with-ai-btn should exist');
+    generateWithAiBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
     await h.flush();
     assert.ok(!shellModal.hasAttribute('hidden'), 'shell modal should be open before continue is clicked');
 

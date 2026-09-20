@@ -925,3 +925,108 @@ test("authRequest: a 401 triggers exactly one refetch of auth config and one ret
   // caller's own 401 handling once — exactly one additional fetch here.
   assert.equal(configCalls.length, 1);
 });
+
+// ── p75-t1/t3: statusTimeoutMs applies to getStatus/getPricing only ────────
+
+function hangingFetchFor(matchPath: string, fake: ReturnType<typeof createFakeThemeService>): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes(matchPath)) {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          signal.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }
+      });
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+}
+
+test("getStatus: aborts at statusTimeoutMs (not the default requestTimeoutMs) under fake timers", async (t) => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = fake.helpers.createAccount("statustimeout@example.com");
+  fake.helpers.grant(account.id, 5);
+  const tokenStore = createMemoryTokenStore();
+  const hangingFetch = hangingFetchFor("/api/account", fake);
+  const client = createThemeServiceClient({
+    fetch: hangingFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+    statusTimeoutMs: 10_000,
+  });
+  await client.requestMagicLink("statustimeout@example.com");
+  await client.verifyMagicLink("statustimeout@example.com", "123456");
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let res: Awaited<ReturnType<typeof client.getStatus>>;
+  try {
+    const p = client.getStatus();
+    // getStatus awaits loadSession() before registering the AbortController's
+    // setTimeout, so the timer isn't scheduled yet on this same microtask
+    // turn — flush a few microtask hops before advancing the fake clock,
+    // or tick(10_000) races ahead of the setTimeout call and never fires it.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    await t.mock.timers.tick(10_000);
+    res = await p;
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "timeout");
+});
+
+test("getPricing: also bound by statusTimeoutMs under fake timers", async (t) => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const tokenStore = createMemoryTokenStore();
+  const hangingFetch = hangingFetchFor("/api/pricing", fake);
+  const client = createThemeServiceClient({
+    fetch: hangingFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+    statusTimeoutMs: 10_000,
+  });
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let res: Awaited<ReturnType<typeof client.getPricing>>;
+  try {
+    const p = client.getPricing();
+    await t.mock.timers.tick(10_000);
+    res = await p;
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "timeout");
+});
+
+test("createCheckoutSession (a generation-shaped request) is NOT bound by statusTimeoutMs — a short statusTimeoutMs does not abort it early", async (t) => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = fake.helpers.createAccount("nogenetimeout@example.com");
+  fake.helpers.grant(account.id, 5);
+  const tokenStore = createMemoryTokenStore();
+  // /api/account (status) hangs and would abort at 10ms; checkout must not
+  // share that short budget.
+  const hangingFetch = hangingFetchFor("/api/account", fake);
+  const client = createThemeServiceClient({
+    fetch: hangingFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+    statusTimeoutMs: 10, // deliberately tiny so a shared-budget bug would show up immediately
+  });
+  await client.requestMagicLink("nogenetimeout@example.com");
+  await client.verifyMagicLink("nogenetimeout@example.com", "123456");
+
+  const res = await client.createCheckoutSession("starter45");
+  assert.equal(res.ok, true, "checkout must succeed even though statusTimeoutMs is tiny");
+});

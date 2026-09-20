@@ -805,6 +805,160 @@ test('dispatch: a nested { payload: { pack } } message (the old, broken shape) i
   }
 });
 
+// ── p75-t3: builder-first open flow — OPEN_THEME_BUILDER never awaits a
+// network call, THEME_BUILDER_CLOSED cancels the background retry, and
+// requestThemeServiceStatus re-triggers it ──────────────────────────────────
+
+function neverResolvingFetch(matchPath, fallback) {
+  return async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes(matchPath)) {
+      return new Promise((_resolve, reject) => {
+        const signal = init && init.signal;
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+      });
+    }
+    return fallback(input, init);
+  };
+}
+
+test('OPEN_THEME_BUILDER: THEME_BUILDER_OPENED arrives before the /api/account call resolves (no client call awaited)', async () => {
+  const fake = createFakeThemeService();
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-themesvc-openflow-'));
+  const appDataDir = mkTempAppData();
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: appDataDir },
+    cwd: projectRoot,
+    themeServiceHostOptions: {
+      // /api/account (getStatus) never resolves — proves OPEN_THEME_BUILDER's
+      // THEME_BUILDER_OPENED reply cannot be waiting on it.
+      fetch: neverResolvingFetch('/api/account', fake.fetch),
+      endpoint: 'https://theme-service.example',
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+    },
+  });
+  try {
+    const sse = await readSse(runtime);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'OPEN_THEME_BUILDER' }),
+    });
+    const opened = await nextWithRaceTimeout(sse, 'THEME_BUILDER_OPENED', 5_000);
+    assert.ok(opened, 'THEME_BUILDER_OPENED must arrive promptly, without waiting on the hung /api/account call');
+    assert.equal(opened.payload.signedIn, false);
+    assert.equal(opened.payload.pending, true, 'no snapshot has ever resolved yet, so pending:true');
+    sse.abort();
+  } finally {
+    await runtime.close();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
+});
+
+// nextOfType returns undefined only after exhausting maxChunks reads, which
+// can itself take a while against a real (never-resolving) SSE stream if
+// nothing else is pushed; race it against a short real-timer deadline so a
+// regression (an accidental await on the hung fetch) fails fast instead of
+// hanging the whole run.
+async function nextWithRaceTimeout(sse, matchType, ms) {
+  return Promise.race([
+    sse.nextOfType(matchType, () => true, 5),
+    new Promise((resolve) => setTimeout(() => resolve(undefined), ms)),
+  ]);
+}
+
+test('THEME_BUILDER_CLOSED cancels the background retry; requestThemeServiceStatus re-triggers it', async () => {
+  const fake = createFakeThemeService();
+  fake.helpers.createAccount('closedflow@example.com');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-standalone-themesvc-closedflow-'));
+  const appDataDir = mkTempAppData();
+  // Every /api/account and /api/pricing call fails with 503 ("waking") once
+  // signed in, which would otherwise schedule an internal retry timer.
+  let signedIn = false;
+  const flakyFetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (signedIn && (url.includes('/api/account') || url.includes('/api/pricing'))) {
+      return new Response(JSON.stringify({ error: 'service unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return fake.fetch(input, init);
+  };
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: appDataDir },
+    cwd: projectRoot,
+    themeServiceHostOptions: {
+      fetch: flakyFetch,
+      endpoint: 'https://theme-service.example',
+      supabaseUrl: 'https://fake-project.supabase.co',
+      supabaseAnonKey: 'anon-key',
+    },
+  });
+  try {
+    const sse = await readSse(runtime);
+    // Sign in first (magic-link auth endpoints are never intercepted by
+    // flakyFetch), so the subsequent /api/account call has a session to send
+    // and actually reaches (and is failed by) flakyFetch.
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_REQUEST_MAGIC_LINK', email: 'closedflow@example.com' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === false);
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_SERVICE_VERIFY', email: 'closedflow@example.com', code: '123456' }),
+    });
+    await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.signedIn === true);
+    signedIn = true;
+
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'OPEN_THEME_BUILDER' }),
+    });
+    const opened = await sse.nextOfType('THEME_BUILDER_OPENED');
+    assert.ok(opened, 'expected THEME_BUILDER_OPENED');
+    const waking = await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.error && d.payload.error.kind === 'waking', 20);
+    assert.ok(waking, 'expected the background refresh to post a waking status');
+
+    // Cancel the retry — a bare-message THEME_BUILDER_CLOSED (empty payload).
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'THEME_BUILDER_CLOSED' }),
+    });
+
+    // requestThemeServiceStatus re-triggers a fresh background refresh, which
+    // posts another waking status — proving cancel actually stopped the
+    // scheduled retry rather than it merely coinciding with a later post.
+    await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'requestThemeServiceStatus' }),
+    });
+    const wakingAgain = await sse.nextOfType('THEME_SERVICE_STATUS', (d) => d.payload.error && d.payload.error.kind === 'waking', 20);
+    assert.ok(wakingAgain, 'requestThemeServiceStatus must re-trigger a background refresh after THEME_BUILDER_CLOSED cancelled the prior one');
+    sse.abort();
+  } finally {
+    await runtime.close();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.rmSync(appDataDir, { recursive: true, force: true });
+  }
+});
+
 test('env: THEME_SERVICE_ENDPOINT unset falls back to production, endpointHost stays undefined', async (t) => {
   await withEnv('THEME_SERVICE_ENDPOINT', undefined, async () => {
     const appDataDir = mkTempAppData();

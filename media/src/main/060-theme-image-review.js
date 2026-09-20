@@ -1229,15 +1229,17 @@
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "THEME_BUILDER_OPENED") {
-      // p40-t3: host reply to OPEN_THEME_BUILDER — only now does the shell
-      // modal open, via the shared openModal() helper (000-boot-and-state.js)
-      // so initial focus moves to the close button. p42: payload carries a
-      // real THEME_SERVICE_STATUS-shaped status; render it immediately, then
-      // ask for a fresh one once (renderThemeServicePanel is defined in
-      // 010-modals-badges-rebirth.js, shared IIFE scope).
-      openThemeBuilderShellModal();
+      // p75-t2 fix: THEME_BUILDER_OPENED must never open the sign-in shell
+      // modal on its own — the plan editor tab opens directly on click
+      // (010-modals-badges-rebirth.js), and the shell modal is now reached
+      // only via "Generate with AI" while signed out. This just updates the
+      // cached status (renderThemeServicePanel keeps the header status chip
+      // and #theme-builder-credits-chip current) and, if the shell modal
+      // already happens to be open (e.g. Generate with AI opened it and a
+      // fresher THEME_BUILDER_OPENED lands after), re-renders its body too.
+      // The host already refreshes status in the background after open, so
+      // the old extra THEME_SERVICE_GET_STATUS post is dropped as redundant.
       renderThemeServicePanel(msg.payload || null);
-      vscode.postMessage({ type: "THEME_SERVICE_GET_STATUS" });
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
       // p43-t2: refresh the image-review cards' attempt-cost line against

@@ -2830,6 +2830,7 @@ if (typeof module !== "undefined" && module.exports) {
   const themeSelectedHeading = /** @type {HTMLElement} */ (document.getElementById("theme-selected-heading"));
   const themeSelectedRoster  = /** @type {HTMLElement} */ (document.getElementById("theme-selected-roster"));
   const themeImportBtn      = /** @type {HTMLButtonElement} */ (document.getElementById("theme-import-btn"));
+  const themePromptContainer = /** @type {HTMLElement} */ (document.getElementById("theme-prompt-container"));
   const themePromptInput    = /** @type {HTMLInputElement} */ (document.getElementById("theme-prompt-input"));
   const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
   const themePlanEditor     = /** @type {HTMLElement} */ (document.getElementById("theme-plan-editor"));
@@ -3112,6 +3113,7 @@ if (typeof module !== "undefined" && module.exports) {
   if (menuThemesBtn) {
     menuThemesBtn.addEventListener("click", () => {
       closeMenu();
+      leaveThemeBuilderPlanEditorIfOpen();
       themePickerList.removeAttribute("hidden");
       themeBuilderPanel.setAttribute("hidden", "");
       openModal(themesModalEl, themesModalCloseBtn);
@@ -3120,7 +3122,10 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   if (themesModalCloseBtn) {
-    themesModalCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
+    themesModalCloseBtn.addEventListener("click", () => {
+      leaveThemeBuilderPlanEditorIfOpen();
+      closeModal(themesModalEl);
+    });
   }
 
   // ── Routing modal entry point ───────────────────────────────────────────
@@ -3230,7 +3235,10 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   if (themesFooterCloseBtn) {
-    themesFooterCloseBtn.addEventListener("click", () => closeModal(themesModalEl));
+    themesFooterCloseBtn.addEventListener("click", () => {
+      leaveThemeBuilderPlanEditorIfOpen();
+      closeModal(themesModalEl);
+    });
   }
 
   // ── UEFN / Verse modal (Path Health, split out of Settings) ────────
@@ -3314,7 +3322,11 @@ if (typeof module !== "undefined" && module.exports) {
   // first. Set here (not in panel.ts/server.mjs markup) so both hosts pick
   // it up from the same shared JS without touching the HTML shell twice.
   if (themeBuilderShellContinue) {
-    themeBuilderShellContinue.textContent = "Continue without signing in";
+    // p75-t2: the shell modal is now reached only as a sign-in prompt (from
+    // "Generate with AI"), not automatically on every Theme Builder open —
+    // "Back to builder" reads correctly in that context, unlike the older
+    // "Continue without signing in" (same handler; see themeGeneratePendingIntent below).
+    themeBuilderShellContinue.textContent = "Back to builder";
     if (!document.getElementById("theme-builder-shell-continue-help")) {
       const help = document.createElement("p");
       help.id = "theme-builder-shell-continue-help";
@@ -3353,9 +3365,18 @@ if (typeof module !== "undefined" && module.exports) {
   if (themeBuilderShellBackdrop) themeBuilderShellBackdrop.addEventListener("click", closeThemeBuilderShellModal);
   if (themeBuilderShellContinue) {
     themeBuilderShellContinue.addEventListener("click", () => {
+      // p75-t2: cancelling the sign-in prompt drops any pending "Generate
+      // with AI" intent — it does not fire once a later status arrives.
+      themeGeneratePendingIntent = false;
       closeThemeBuilderShellModal();
       openThemeBuilderPlanEditorTab();
     });
+  }
+  if (themeBuilderShellClose) {
+    themeBuilderShellClose.addEventListener("click", () => { themeGeneratePendingIntent = false; });
+  }
+  if (themeBuilderShellBackdrop) {
+    themeBuilderShellBackdrop.addEventListener("click", () => { themeGeneratePendingIntent = false; });
   }
 
   // ── Theme Service panel (p42-t2/p42-t4) ─────────────────────────────
@@ -3380,8 +3401,19 @@ if (typeof module !== "undefined" && module.exports) {
   // (see themeServiceReferralPrefill below).
   let themeServicePendingReferral = "";
 
+  // p75-t2: set when "Generate with AI" is clicked while signed out; the
+  // sign-in shell modal opens, and once a THEME_SERVICE_STATUS arrives with
+  // signedIn true this fires the generate action once and clears itself.
+  // Cleared without firing if the modal is cancelled (see the shell-close/
+  // backdrop/continue handlers above).
+  let themeGeneratePendingIntent = false;
+
   function postThemeService(type, payload) {
     vscode.postMessage(Object.assign({ type: type }, payload || {}));
+  }
+
+  function requestThemeServiceStatus() {
+    vscode.postMessage({ type: "requestThemeServiceStatus" });
   }
 
   function updateThemeBuilderCreditsChip(status) {
@@ -3784,15 +3816,26 @@ if (typeof module !== "undefined" && module.exports) {
     container.appendChild(row);
   }
 
-  // G. Theme Service unreachable.
+  // G. Theme Service unreachable, or (p75-t2) still waking up.
   function renderThemeServiceUnreachable(container, status) {
+    const waking = status && status.error && status.error.kind === "waking";
     container.appendChild(tspEl("h3", null, "Generate a theme"));
-    container.appendChild(tspNotice("error", (status.error && status.error.message) || "Theme Service unavailable — no credits were charged."));
+    const message = (status.error && status.error.message) || "Theme Service unavailable — no credits were charged.";
+    if (waking) {
+      const notice = tspNotice("info", "");
+      notice.appendChild(tspEl("span", "tsp-spinner", null));
+      notice.appendChild(document.createTextNode(message));
+      container.appendChild(notice);
+    } else {
+      container.appendChild(tspNotice("error", message));
+    }
     container.appendChild(tspButton(null, "Retry", () => {
-      postThemeService("THEME_SERVICE_GET_STATUS", {});
+      requestThemeServiceStatus();
     }));
-    container.appendChild(tspEl("p", "muted tsp-note-bottom",
-      "Imports still work while the service is down — use Import .zip from the Themes page."));
+    if (!waking) {
+      container.appendChild(tspEl("p", "muted tsp-note-bottom",
+        "Imports still work while the service is down — use Import .zip from the Themes page."));
+    }
   }
 
   /**
@@ -3808,6 +3851,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (!themeServicePanelBody) return;
     themeServiceStatus = status || themeServiceStatus;
     updateThemeBuilderCreditsChip(themeServiceStatus);
+    renderThemeBuilderStatusChip(themeServiceStatus);
     tspClear(themeServicePanelBody);
     const s = themeServiceStatus;
     if (!s) return;
@@ -3829,7 +3873,7 @@ if (typeof module !== "undefined" && module.exports) {
       renderThemeServicePendingCheckout(themeServicePanelBody);
       return;
     }
-    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable")) {
+    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable" || s.error.kind === "waking")) {
       renderThemeServiceUnreachable(themeServicePanelBody, s);
       return;
     }
@@ -3845,6 +3889,15 @@ if (typeof module !== "undefined" && module.exports) {
     }
     clearThemeServiceGoogleWaitTimer();
     themeServiceView = "signin";
+    // p75-t2: a "Generate with AI" click that was waiting on sign-in
+    // continues automatically now that status.signedIn is true, exactly
+    // once — the modal closes and the plan-generation action fires.
+    if (themeGeneratePendingIntent) {
+      themeGeneratePendingIntent = false;
+      closeThemeBuilderShellModal();
+      runThemeGeneratePlan();
+      return;
+    }
     renderThemeServiceSignedIn(themeServicePanelBody, s);
   }
 
@@ -3865,8 +3918,23 @@ if (typeof module !== "undefined" && module.exports) {
     /* no-op: absence of window/location must never break panel init */
   }
 
+  // p75-t2 follow-up: tracks whether the plan editor tab is the visible
+  // Theme Builder view, so leaving it (any other tab/view, not the sign-in
+  // modal, which leaves the builder open underneath) posts the exact wire
+  // string THEME_BUILDER_CLOSED (empty payload) to cancel the host's
+  // background status retries, and coming back re-issues OPEN_THEME_BUILDER
+  // to restart them.
+  let themeBuilderPlanEditorOpen = false;
+
+  function leaveThemeBuilderPlanEditorIfOpen() {
+    if (!themeBuilderPlanEditorOpen) return;
+    themeBuilderPlanEditorOpen = false;
+    vscode.postMessage({ type: "THEME_BUILDER_CLOSED" });
+  }
+
   if (tabThemePicker && tabThemeBuilder) {
     tabThemePicker.addEventListener("click", () => {
+      leaveThemeBuilderPlanEditorIfOpen();
       themePickerList.removeAttribute("hidden");
       themeBuilderPanel.setAttribute("hidden", "");
       tabThemeBuilder.focus();
@@ -3874,15 +3942,15 @@ if (typeof module !== "undefined" && module.exports) {
     });
 
     tabThemeBuilder.addEventListener("click", () => {
-      // Open the shell immediately so the click always produces visible
-      // feedback, even if THEME_BUILDER_OPENED never arrives (host error).
-      // THEME_BUILDER_OPENED (060-theme-image-review.js) later replaces this
-      // with the real status via renderThemeServicePanel.
-      openThemeBuilderShellModal();
-      if (themeServicePanelBody) {
-        tspClear(themeServicePanelBody);
-        themeServicePanelBody.appendChild(tspEl("p", "muted", "Connecting…"));
-      }
+      // p75-t2: land on the builder immediately — manual plan editing and
+      // uploading your own images need no account or service, so the
+      // shell/"Connecting…" modal no longer opens automatically. It now
+      // opens only as a sign-in prompt from "Generate with AI" below.
+      // THEME_BUILDER_OPENED (may arrive with signedIn:false, pending:true,
+      // followed by a real THEME_SERVICE_STATUS) still drives the header
+      // status chip and credits chip via renderThemeServicePanel.
+      themeBuilderPlanEditorOpen = true;
+      openThemeBuilderPlanEditorTab();
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
   }
@@ -3899,24 +3967,134 @@ if (typeof module !== "undefined" && module.exports) {
     return "openai";
   }
 
-  if (themeGenerateBtn && themePromptInput) {
-    themeGenerateBtn.addEventListener("click", () => {
-      const prompt = themePromptInput.value.trim();
-      if (!prompt) return;
-      const imageProvider = selectedThemeImageProvider();
+  /**
+   * p75-t2: the shared AI-autofill entry point (posts PLAN_THEME). Reused by
+   * the original "Plan theme" button and by "Generate with AI" once the
+   * caller has confirmed the user is signed in (or has just signed in via
+   * the pending-intent flow in renderThemeServicePanel above).
+   */
+  function runThemeGeneratePlan() {
+    if (!themePromptInput) return;
+    const prompt = themePromptInput.value.trim();
+    if (!prompt) return;
+    const imageProvider = selectedThemeImageProvider();
 
+    if (themeGenerateBtn) {
       themeGenerateBtn.setAttribute("disabled", "");
       themeGenerateBtn.textContent = "Planning...";
-      if (themeBuildStatus) {
-        themeBuildStatus.textContent = "AI is filling the theme slots...";
-        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
-      }
-      
-      vscode.postMessage({
-        type: 'PLAN_THEME',
-        payload: { prompt, image_provider: imageProvider },
-      });
+    }
+    if (themeGenerateWithAiBtn) {
+      themeGenerateWithAiBtn.setAttribute("disabled", "");
+    }
+    if (themeBuildStatus) {
+      themeBuildStatus.textContent = "AI is filling the theme slots...";
+      themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+    }
+
+    vscode.postMessage({
+      type: 'PLAN_THEME',
+      payload: { prompt, image_provider: imageProvider },
     });
+  }
+
+  if (themeGenerateBtn && themePromptInput) {
+    // p75-t2 follow-up: retired in favor of "Generate with AI" below —
+    // hidden (not removed, in case host markup still references its id)
+    // and, if still reachable, routed through the same signed-in gate.
+    themeGenerateBtn.classList.add("tsp-hidden-retired");
+    themeGenerateBtn.addEventListener("click", () => {
+      if (themeServiceStatus && themeServiceStatus.signedIn) {
+        runThemeGeneratePlan();
+      } else {
+        themeGeneratePendingIntent = true;
+        openThemeBuilderShellModal();
+        renderThemeServicePanel(themeServiceStatus);
+      }
+    });
+  }
+
+  // p75-t2: "Generate with AI" — the credited path. Signed in: runs the
+  // same PLAN_THEME entry point as "Plan theme" above. Signed out: opens
+  // the sign-in modal and defers the action via themeGeneratePendingIntent
+  // until a THEME_SERVICE_STATUS with signedIn:true arrives.
+  let themeGenerateWithAiBtn = null;
+  let themeBuilderStatusChip = null;
+  if (themeBuilderPanel && themePromptContainer) {
+    themeGenerateWithAiBtn = document.createElement("button");
+    themeGenerateWithAiBtn.type = "button";
+    themeGenerateWithAiBtn.id = "theme-generate-with-ai-btn";
+    themeGenerateWithAiBtn.className = "skill-btn primary tsp-generate-ai-btn";
+
+    const aiLabel = document.createElement("span");
+    aiLabel.className = "tsp-generate-ai-label";
+    aiLabel.textContent = "Generate with AI";
+    const aiSubtitle = document.createElement("span");
+    aiSubtitle.className = "tsp-generate-ai-subtitle";
+    aiSubtitle.textContent = "Autofill the plan for 1 credit, then generate sprite boards";
+    themeGenerateWithAiBtn.appendChild(aiLabel);
+    themeGenerateWithAiBtn.appendChild(aiSubtitle);
+
+    themeBuilderStatusChip = document.createElement("div");
+    themeBuilderStatusChip.id = "theme-builder-status-chip";
+    themeBuilderStatusChip.className = "tsp-status-chip";
+    themeBuilderStatusChip.setAttribute("role", "status");
+    themeBuilderStatusChip.setAttribute("aria-live", "polite");
+
+    themePromptContainer.insertAdjacentElement("beforebegin", themeBuilderStatusChip);
+    themePromptContainer.insertAdjacentElement("afterend", themeGenerateWithAiBtn);
+
+    themeGenerateWithAiBtn.addEventListener("click", () => {
+      if (themeServiceStatus && themeServiceStatus.signedIn) {
+        runThemeGeneratePlan();
+      } else {
+        themeGeneratePendingIntent = true;
+        openThemeBuilderShellModal();
+        renderThemeServicePanel(themeServiceStatus);
+      }
+    });
+  }
+
+  /**
+   * p75-t2: header status chip inside the builder tab. Never blocks
+   * editing — it only informs. Precedence mirrors renderThemeServicePanel:
+   * pending > waking > unavailable/unreachable > signed-out > signed-in.
+   */
+  function renderThemeBuilderStatusChip(status) {
+    if (!themeBuilderStatusChip) return;
+    tspClear(themeBuilderStatusChip);
+    themeBuilderStatusChip.className = "tsp-status-chip";
+
+    if (!status) {
+      themeBuilderStatusChip.textContent = "Sign in to generate";
+      return;
+    }
+    if (status.pending) {
+      themeBuilderStatusChip.classList.add("tsp-status-chip-info");
+      themeBuilderStatusChip.appendChild(tspEl("span", "tsp-spinner"));
+      themeBuilderStatusChip.appendChild(document.createTextNode("Checking service…"));
+      return;
+    }
+    const kind = status.error && status.error.kind;
+    if (kind === "waking") {
+      themeBuilderStatusChip.classList.add("tsp-status-chip-info");
+      themeBuilderStatusChip.appendChild(tspEl("span", "tsp-spinner"));
+      themeBuilderStatusChip.appendChild(document.createTextNode("Starting service…"));
+      themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
+      return;
+    }
+    if (kind === "unavailable" || kind === "unreachable") {
+      themeBuilderStatusChip.classList.add("tsp-status-chip-error");
+      themeBuilderStatusChip.appendChild(document.createTextNode("Service unavailable — no credits charged"));
+      themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
+      return;
+    }
+    if (status.signedIn) {
+      themeBuilderStatusChip.classList.add("tsp-status-chip-ok");
+      const credits = typeof status.credits === "number" ? status.credits : 0;
+      themeBuilderStatusChip.textContent = (status.email || "") + " · " + credits + " credits";
+      return;
+    }
+    themeBuilderStatusChip.textContent = "Sign in to generate";
   }
 
   // Fixed expression slot labels for the theme-plan generation form. Mirrors
@@ -5757,7 +5935,11 @@ if (typeof module !== "undefined" && module.exports) {
   };
 
   function openThemeBuilderFromReview() {
-    openThemeBuilderShellModal();
+    // p75: builder-first flow — mirror the Theme Builder tab click handler
+    // (openThemeBuilderPlanEditorTab, 010-modals-badges-rebirth.js) instead
+    // of opening the sign-in shell modal.
+    themeBuilderPlanEditorOpen = true;
+    openThemeBuilderPlanEditorTab();
     vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
   }
 
@@ -12544,15 +12726,17 @@ if (typeof module !== "undefined" && module.exports) {
   window.addEventListener("message", (/** @type {MessageEvent} */ event) => {
     const msg = event.data;
     if (msg && msg.type === "THEME_BUILDER_OPENED") {
-      // p40-t3: host reply to OPEN_THEME_BUILDER — only now does the shell
-      // modal open, via the shared openModal() helper (000-boot-and-state.js)
-      // so initial focus moves to the close button. p42: payload carries a
-      // real THEME_SERVICE_STATUS-shaped status; render it immediately, then
-      // ask for a fresh one once (renderThemeServicePanel is defined in
-      // 010-modals-badges-rebirth.js, shared IIFE scope).
-      openThemeBuilderShellModal();
+      // p75-t2 fix: THEME_BUILDER_OPENED must never open the sign-in shell
+      // modal on its own — the plan editor tab opens directly on click
+      // (010-modals-badges-rebirth.js), and the shell modal is now reached
+      // only via "Generate with AI" while signed out. This just updates the
+      // cached status (renderThemeServicePanel keeps the header status chip
+      // and #theme-builder-credits-chip current) and, if the shell modal
+      // already happens to be open (e.g. Generate with AI opened it and a
+      // fresher THEME_BUILDER_OPENED lands after), re-renders its body too.
+      // The host already refreshes status in the background after open, so
+      // the old extra THEME_SERVICE_GET_STATUS post is dropped as redundant.
       renderThemeServicePanel(msg.payload || null);
-      vscode.postMessage({ type: "THEME_SERVICE_GET_STATUS" });
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
       // p43-t2: refresh the image-review cards' attempt-cost line against

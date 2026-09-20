@@ -317,6 +317,13 @@ export const MSG = {
   // { signedIn: false }. The webview only opens the shell modal once this
   // arrives.
   THEME_BUILDER_OPENED: "THEME_BUILDER_OPENED",
+  // Webview -> host, no payload. Sent when the Theme Builder shell modal is
+  // closed — cancels any pending background status retry (p75-t1) since
+  // there's no longer a webview visible to receive THEME_SERVICE_STATUS.
+  THEME_BUILDER_CLOSED: "THEME_BUILDER_CLOSED",
+  // Webview -> host, no payload (p75-t1). Cancels the pending background
+  // status retry and fetches immediately, posting THEME_SERVICE_STATUS.
+  REQUEST_THEME_SERVICE_STATUS: "requestThemeServiceStatus",
 
   // ---- theme image review / retry / reslice / normalize / rename ---------
   OPEN_THEME_IMAGES: "OPEN_THEME_IMAGES",
@@ -496,6 +503,10 @@ export type MsgType = (typeof MSG)[keyof typeof MSG];
 export const MSG_SCHEMAS = {
   // p40-t3: no payload beyond type.
   OPEN_THEME_BUILDER: z.object({}).passthrough(),
+
+  // p75-t1: no payload beyond type.
+  THEME_BUILDER_CLOSED: z.object({}).passthrough(),
+  REQUEST_THEME_SERVICE_STATUS: z.object({}).passthrough(),
 
   // p59-t3: host -> webview only, kept for documentation/type purposes — see
   // the THEME_PROMPT_MISMATCH comment above for why it is never safeParse'd.

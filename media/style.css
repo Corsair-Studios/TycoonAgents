@@ -2045,6 +2045,73 @@ body {
   margin-top: 10px;
 }
 
+/* ── p75-t2: builder-tab "Generate with AI" button + header status chip ── */
+.tsp-hidden-retired {
+  display: none !important;
+}
+
+.tsp-generate-ai-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  margin: 6px 0 10px;
+  padding: 8px 12px;
+}
+
+.tsp-generate-ai-label {
+  font-weight: 700;
+}
+
+.tsp-generate-ai-subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.tsp-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.tsp-status-chip-ok {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tsp-status-chip-info {
+  color: var(--vscode-descriptionForeground, var(--muted));
+}
+
+.tsp-status-chip-error {
+  color: var(--status-error);
+}
+
+.tsp-notice-info {
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  border-left: 3px solid var(--muted);
+}
+
+.tsp-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tsp-spin 0.7s linear infinite;
+  flex: none;
+}
+
+@keyframes tsp-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Settings "subpage" modals (UEFN/Verse, Feedback) ─────────────────── */
 /* Shared classes (not per-id like #about-modal/#badge-modal above) since
    #uefn-modal and #feedback-modal are structurally identical: a scrollable

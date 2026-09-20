@@ -99,6 +99,11 @@ import { createThemeServiceHost } from './themeServiceHost.mjs';
 // src/host/vscode/messages.ts's MSG.OPEN_THEME_BUILDER / MSG.THEME_BUILDER_OPENED.
 const OPEN_THEME_BUILDER_WIRE = 'OPEN_THEME_BUILDER';
 const THEME_BUILDER_OPENED_WIRE = 'THEME_BUILDER_OPENED';
+// p75-t1: THEME_BUILDER_CLOSED / REQUEST_THEME_SERVICE_STATUS — must stay
+// byte-identical to src/host/vscode/messages.ts's MSG.THEME_BUILDER_CLOSED /
+// MSG.REQUEST_THEME_SERVICE_STATUS.
+const THEME_BUILDER_CLOSED_WIRE = 'THEME_BUILDER_CLOSED';
+const REQUEST_THEME_SERVICE_STATUS_WIRE = 'requestThemeServiceStatus';
 
 // p44-t1: THEME_SERVICE_* wire strings — must stay byte-identical to
 // src/host/vscode/messages.ts's MSG.THEME_SERVICE_*.
@@ -1400,19 +1405,21 @@ function handleBrowserMessage(msg) {
       break;
     case OPEN_THEME_BUILDER_WIRE:
       // Standalone analog of panel.ts's MSG.OPEN_THEME_BUILDER branch
-      // (p40-t3/p44-t1) — real Theme Service status via themeServiceHostInstance,
-      // same as panel.ts's this._themeServiceHost.getStatusSnapshot().
+      // (p40-t3/p44-t1/p75-t1) — never awaits a network fetch: replies
+      // immediately with the cached/pending snapshot, then refreshes in the
+      // background (with "waking"/retry-backoff while the backend is asleep).
       if (themeServiceHostInstance) {
-        themeServiceHostInstance
-          .getStatusSnapshot()
-          .then((status) => broadcast('message', { type: THEME_BUILDER_OPENED_WIRE, payload: status }))
-          .catch((err) => {
-            console.error('[tycoonagents-standalone] OPEN_THEME_BUILDER getStatusSnapshot failed:', err instanceof Error ? err.message : err);
-            broadcast('message', { type: THEME_BUILDER_OPENED_WIRE, payload: { signedIn: false } });
-          });
+        broadcast('message', { type: THEME_BUILDER_OPENED_WIRE, payload: themeServiceHostInstance.getCachedOrPendingStatus() });
+        themeServiceHostInstance.refreshStatusInBackground();
       } else {
         broadcast('message', { type: THEME_BUILDER_OPENED_WIRE, payload: { signedIn: false } });
       }
+      break;
+    case THEME_BUILDER_CLOSED_WIRE:
+      if (themeServiceHostInstance) themeServiceHostInstance.cancelBackgroundStatusRetry();
+      break;
+    case REQUEST_THEME_SERVICE_STATUS_WIRE:
+      if (themeServiceHostInstance) themeServiceHostInstance.refreshStatusInBackground();
       break;
     case THEME_SERVICE_GET_STATUS_WIRE:
       if (themeServiceHostInstance) void themeServiceHostInstance.handleGetStatus();
