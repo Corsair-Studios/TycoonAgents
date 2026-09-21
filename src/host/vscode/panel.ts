@@ -121,6 +121,7 @@ import {
   generateTheme as generateThemeService,
   themeBoardCountsFromFrames,
   getThemeBoardCounts,
+  setThemeGenerationStatus,
 } from "../../extension/themeService";
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
@@ -866,6 +867,16 @@ export class TycoonPanel {
   /** Coalesces bursts of rapid `.mcp.json` writes into a single OFFLOAD_OFFER_STATE repost. */
   private _mcpWatcherDebounce: NodeJS.Timeout | undefined;
   private _themeGenerationActive = false;
+  /**
+   * theme_id of the AI batch generation currently in flight when
+   * `_themeGenerationActive` is true (p80). Set as soon as the theme id is
+   * known (immediately for a resume, on THEME_REVIEW_READY for a fresh
+   * generation) and cleared in the GENERATE_THEME handler's `finally`.
+   * Lets `_postThemeImageReview` tell "this session's own in-memory run"
+   * apart from a persisted "active" status left over from a different
+   * session/theme or an extension restart mid-run (generation_resumable).
+   */
+  private _themeGenerationThemeId: string | undefined;
   /**
    * theme_id of the theme most recently sent to the webview via
    * THEME_INITIALIZED (set inside `_buildThemeInitPayload`, which every
@@ -2706,14 +2717,30 @@ export class TycoonPanel {
             if (!plan && !resumeThemeId) {
               throw new Error("Create and review the theme plan before generating images.");
             }
-            if (resumeThemeId) generatedThemeId = resumeThemeId;
+            if (resumeThemeId) {
+              generatedThemeId = resumeThemeId;
+              this._themeGenerationThemeId = resumeThemeId;
+              // Awaited: serialized through themeImageReviewState.ts's
+              // per-theme write queue, but still awaited here so this status
+              // write is definitely ENQUEUED (and, in practice, landed)
+              // before generation proceeds to its first item upsert.
+              await setThemeGenerationStatus(this._globalStorageUri, resumeThemeId, "active");
+            }
             this._themePauseForReview = payload?.pause_for_review !== false;
             const onProgress = (msg: string) => void this._panel.webview.postMessage({
               type: MSG.THEME_GENERATION_PROGRESS,
               payload: { message: msg },
             });
-            const onReviewReady = (themeId: string) => {
+            const onReviewReady = async (themeId: string) => {
               generatedThemeId = themeId;
+              this._themeGenerationThemeId = themeId;
+              // Awaited for the same reason as the resume path above; the
+              // caller (generateThemeService/resumeThemeGeneration) invokes
+              // this fire-and-forget (`onReviewReady?.(themeId)`) and never
+              // awaits it itself, but the per-theme write queue still
+              // guarantees this write is ordered before any upsert this
+              // handler's own subsequent awaits trigger.
+              await setThemeGenerationStatus(this._globalStorageUri, themeId, "active");
               void this._panel.webview.postMessage({ type: MSG.THEME_REVIEW_READY, payload: { theme_id: themeId } });
             };
             const imageOptions = {
@@ -2748,11 +2775,13 @@ export class TycoonPanel {
                   imageOptions,
                   waitForReview,
                 );
+            if (generatedThemeId) await setThemeGenerationStatus(this._globalStorageUri, generatedThemeId, "completed");
             void this._panel.webview.postMessage({
               type: MSG.THEME_INITIALIZED,
               payload: await this._buildThemeInitPayload(r.manifest, r.frames, true),
             });
           } catch (err) {
+            if (generatedThemeId) await setThemeGenerationStatus(this._globalStorageUri, generatedThemeId, "stopped");
             if (abortController.signal.aborted) {
               void this._panel.webview.postMessage({
                 type: MSG.THEME_GENERATION_CANCELLED,
@@ -2767,6 +2796,7 @@ export class TycoonPanel {
           } finally {
             this._themeGenerationActive = false;
             this._themeGenerationGateRetryActive = false;
+            this._themeGenerationThemeId = undefined;
             if (this._themeGenerationAbortController === abortController) {
               this._themeGenerationAbortController = undefined;
             }
@@ -3576,12 +3606,25 @@ export class TycoonPanel {
             : "",
         };
       }));
+      // p80: a persisted "active" run with no matching in-memory run means
+      // the extension closed mid-generation — treat it as interrupted, same
+      // as an explicit "stopped", PROVIDED at least one board is still
+      // unfinished (an interrupted run whose last board just happened to
+      // finish first isn't resumable — there's nothing left to resume).
+      const generationStatus = review.generation?.status ?? "idle";
+      const inMemoryRunForThisTheme = this._themeGenerationActive && this._themeGenerationThemeId === themeId;
+      const hasUnfinishedItem = items.some((item) => !item.generated);
+      const generationResumable = (
+        generationStatus === "stopped" || (generationStatus === "active" && !inMemoryRunForThisTheme)
+      ) && hasUnfinishedItem;
       void this._panel.webview.postMessage({
         type: MSG.THEME_IMAGE_REVIEW,
         payload: {
           theme_id: review.theme_id,
           display_name: review.display_name,
           generation_active: this._themeGenerationActive,
+          generation_status: generationStatus,
+          generation_resumable: generationResumable,
           pause_for_review: this._themePauseForReview,
           waiting_for_review_item_id: this._themeGenerationReviewGate?.themeId === themeId
             ? this._themeGenerationReviewGate.itemId

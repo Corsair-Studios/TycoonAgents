@@ -158,6 +158,11 @@ export function saveThemePlan(storageRoot, requestedPlan, requestedThemeId) {
   return themeServiceModule().saveThemePlan(storageRoot, requestedPlan, requestedThemeId);
 }
 
+/** p80 parity: durable AI batch-generation run status — thin pass-through to themeService.js's setThemeGenerationStatus. */
+export function setThemeGenerationStatus(storageRoot, themeId, status) {
+  return themeServiceModule().setThemeGenerationStatus(storageRoot, themeId, status);
+}
+
 export function resumeThemeGeneration(
   storageRoot,
   themeId,

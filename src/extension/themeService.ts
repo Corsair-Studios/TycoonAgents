@@ -74,10 +74,12 @@ import {
   setThemeImageGenerationError,
   setThemeImageReviewErrorKind,
   setThemeImageReviewStatus,
+  setThemeGenerationStatus,
   upsertThemeImageReviewItem,
 } from './themeImageReviewState';
 import type {
   ThemeDecorBoardRow,
+  ThemeGenerationRunState,
   ThemeImageKind,
   ThemeImageReviewDocument,
   ThemeImageReviewItem,
@@ -434,7 +436,12 @@ export interface ThemeImageReview {
   /** Sum of every entry's item.attemptCost (successful Theme Service attempts only; undefined attemptCost counts as 0) — p43-t1. Webview surfacing is p43-t2. */
   creditsSpent: number;
   entries: ThemeImageReviewEntry[];
+  /** Durable AI batch-generation run state (p80), undefined when the review document has none yet (treat as "idle"). */
+  generation?: ThemeGenerationRunState;
 }
+
+/** Re-exported so both hosts (panel.ts and the standalone bridge, which requires this compiled module directly) call one function to record batch-generation run status (p80). */
+export { setThemeGenerationStatus };
 
 export interface ThemeImageReviewWaitOptions {
   requiresReplacement?: boolean;
@@ -1319,6 +1326,7 @@ export async function getThemeImageReview(
     theme_id: themeId,
     display_name: document?.display_name ?? displayName,
     creditsSpent: items.reduce((sum, item) => sum + (item.attemptCost ?? 0), 0),
+    generation: document?.generation,
     entries: items.map((item) => {
       const imageUri = imagesByFilename.get(item.filename);
       // Backfill boardType onto the live payload regardless of what the

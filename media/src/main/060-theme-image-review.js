@@ -1577,6 +1577,20 @@
       const readyThemeId = msg.payload?.theme_id;
       if (readyThemeId) {
         reviewThemeId = readyThemeId;
+        // p80-t1: THEME_REVIEW_READY can arrive (e.g. a generation resumed
+        // from a previous session) before the user ever clicked Generate
+        // with AI / Build manually, leaving themeBuilderScreen at its
+        // default "start" — advance it to "manual" so renderThemeBuilderScreen
+        // hides the Start-only elements once the board grid appears (mirrors
+        // the same fix in the THEME_PLAN_SAVED handler above).
+        // p80-t3: prefer the host's explicit generation state over the
+        // "always manual" default — a resumed/active AI run should land back
+        // on the ai screen, not the manual board grid.
+        if (themeBuilderScreen === "start") {
+          themeBuilderScreen = (msg.payload?.generation_status === "active" || msg.payload?.generation_resumable === true)
+            ? "ai"
+            : "manual";
+        }
         // p77-t1 review fix: THEME_REVIEW_READY carries no hasBoards field —
         // just re-run the gate; showThemeImageReview's GET_THEME_IMAGE_REVIEW
         // round trip will set currentThemeHasBoards from THEME_IMAGE_REVIEW.

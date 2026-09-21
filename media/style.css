@@ -4,6 +4,15 @@
  * Attribution header - optional; end users may remove it.
  */
 
+/* p80-t2: author rules like `.tsp-build-choice-row { display:flex }` or
+   `.theme-image-settings { display:flex }` win over the UA `[hidden]{display:none}`
+   whenever their selector specificity ties or beats it, so elements given the
+   `hidden` attribute (e.g. by renderThemeBuilderScreen) kept rendering. Force
+   `[hidden]` to win globally instead of chasing every individual override. */
+[hidden] {
+  display: none !important;
+}
+
 /* ── Hi-Vis Construction palette ─────────────────────────────── */
 :root {
   --bg: #0A0A0B;
@@ -2059,6 +2068,11 @@ body {
   justify-content: space-between;
   gap: 10px;
   margin: 0 0 12px;
+  /* p80-t1: at narrow widths the title truncates instead of pushing Save
+     theme off the edge; flex-wrap is the fallback once even a truncated
+     title plus the button can't both fit min-content width. */
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .tsp-builder-header-title {
@@ -2067,6 +2081,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* p80-t1: required for text-overflow:ellipsis to take effect on a flex
+     item — a flex item's default min-width is auto (its content size),
+     which otherwise forces the row wider than the panel instead of
+     truncating. */
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 /* p77-t1: "Generate with AI" / "Build manually" choice row, under the theme
@@ -4533,17 +4553,26 @@ td.col-status {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 28px 32px 0;
-  min-width: 600px;
-  min-height: 800px;
-  width: 90%;
+  /* p80-t2: a fixed 600px min-width/800px min-height clipped the dialog on
+     both edges at narrow panel widths (e.g. a 300px webview). Scale to the
+     viewport instead — width/height caps still keep it from sprawling on
+     large panels. */
+  min-width: 0;
+  width: min(1280px, calc(100vw - 16px));
   max-width: 1280px;
-  max-height: 85vh;
+  max-height: min(85vh, calc(100vh - 16px));
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
   box-sizing: border-box;
+}
+
+@media (max-width: 480px) {
+  #themes-dialog {
+    padding: 16px 12px 0;
+  }
 }
 
 #themes-scroll {
@@ -4604,6 +4633,12 @@ td.col-status {
 #theme-builder-panel {
   display: flex;
   flex-direction: column;
+  /* p80-t1: last-resort backstop — every child below is fixed to wrap/
+     shrink instead of overflowing, but this keeps a narrow panel (down to
+     ~280px) from ever showing a horizontal scrollbar if something still
+     doesn't. */
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 #theme-picker-list[hidden],
@@ -5122,19 +5157,43 @@ td.col-status {
 
 .theme-image-review-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  /* p80-t1: title block and the action-button row each get their own line
+     once they can't both fit — required so the action buttons wrap into a
+     row of their own instead of overflowing into a horizontal scrollbar. */
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.theme-image-review-header > div:first-child {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 200px;
 }
 
 .theme-image-review-header h3 {
   margin: 0 0 3px;
+  overflow-wrap: anywhere;
 }
 
 .theme-image-review-header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.theme-image-review-header-actions .skill-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
 }
 
 .theme-image-review-summary,

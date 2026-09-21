@@ -5860,7 +5860,10 @@ if (typeof module !== "undefined" && module.exports) {
     section.className = "theme-review-names-descriptions";
     const details = document.createElement("details");
     details.className = "theme-review-names-descriptions-details";
-    details.open = Boolean(savedDraft?.namesOpen);
+    // p80-t4: every board card shows its name/description fields visible by
+    // default, no extra click — open unless the user has explicitly
+    // collapsed this card before (savedDraft.namesOpen === false).
+    details.open = savedDraft?.namesOpen === false ? false : true;
     const summary = document.createElement("summary");
     summary.textContent = "Names & descriptions";
     details.appendChild(summary);
@@ -6735,7 +6738,22 @@ if (typeof module !== "undefined" && module.exports) {
     // those local drafts and the review position instead of treating every
     // update as a brand-new panel.
     const reviewUiState = captureThemeReviewUiState();
-    themeImageReview.removeAttribute("hidden");
+    // p80-t3: THEME_IMAGE_REVIEW carries generation_status/generation_resumable
+    // (host contract) — an active or resumable AI run should land on the ai
+    // screen rather than the manual board grid's default.
+    if (themeBuilderScreen === "start") {
+      themeBuilderScreen = (payload.generation_status === "active" || payload.generation_resumable === true)
+        ? "ai"
+        : "manual";
+    }
+    // p80-t1: renderThemeBuilderScreen is the single authority for whether
+    // #theme-image-review (and every Start/AI-only element) is shown — an
+    // unconditional removeAttribute("hidden") here bypassed it whenever a
+    // review payload arrived (e.g. THEME_REVIEW_READY, 060-theme-image-
+    // review.js) before themeBuilderScreen had been advanced off "start",
+    // leaving the board grid visible alongside the Start screen's name
+    // field/choice row and the AI-only credits/sign-in elements.
+    renderThemeBuilderScreen();
     if (themePlanEditor) themePlanEditor.setAttribute("hidden", "");
     if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
     themeImageReviewList.innerHTML = "";
@@ -6795,8 +6813,19 @@ if (typeof module !== "undefined" && module.exports) {
       themeReviewStopGeneration.disabled = themeGenerationStopping;
       themeReviewStopGeneration.textContent = themeGenerationStopping ? "Stopping..." : "Stop generation";
     }
+    // p80-t1: "Resume N generations" is a paid batch action, so it must only
+    // offer to continue an AI generation run that was actually started and
+    // then paused/stopped — not merely because boards are unfinished. A
+    // manually built theme's boards are unfinished from the moment they're
+    // created (revision 0, no image_src, no generation_error) with no
+    // generation ever having run, so `unfinished` alone can't gate this.
+    // p80-t3: the host now reports generation_resumable directly on the
+    // THEME_IMAGE_REVIEW payload — use it instead of inferring from
+    // per-item image_src/generation_error, which fired after a single
+    // manual upload with no generation ever having run. Missing means false.
+    const hasInterruptedGenerationRun = payload.generation_resumable === true;
     if (themeReviewResumeGeneration) {
-      themeReviewResumeGeneration.hidden = Boolean(payload.generation_active) || unfinished === 0;
+      themeReviewResumeGeneration.hidden = Boolean(payload.generation_active) || unfinished === 0 || !hasInterruptedGenerationRun;
       themeReviewResumeGeneration.disabled = Boolean(payload.generation_active);
       themeReviewResumeGeneration.textContent = unfinished === 1
         ? "Resume 1 generation"
@@ -13784,6 +13813,20 @@ if (typeof module !== "undefined" && module.exports) {
       const readyThemeId = msg.payload?.theme_id;
       if (readyThemeId) {
         reviewThemeId = readyThemeId;
+        // p80-t1: THEME_REVIEW_READY can arrive (e.g. a generation resumed
+        // from a previous session) before the user ever clicked Generate
+        // with AI / Build manually, leaving themeBuilderScreen at its
+        // default "start" — advance it to "manual" so renderThemeBuilderScreen
+        // hides the Start-only elements once the board grid appears (mirrors
+        // the same fix in the THEME_PLAN_SAVED handler above).
+        // p80-t3: prefer the host's explicit generation state over the
+        // "always manual" default — a resumed/active AI run should land back
+        // on the ai screen, not the manual board grid.
+        if (themeBuilderScreen === "start") {
+          themeBuilderScreen = (msg.payload?.generation_status === "active" || msg.payload?.generation_resumable === true)
+            ? "ai"
+            : "manual";
+        }
         // p77-t1 review fix: THEME_REVIEW_READY carries no hasBoards field —
         // just re-run the gate; showThemeImageReview's GET_THEME_IMAGE_REVIEW
         // round trip will set currentThemeHasBoards from THEME_IMAGE_REVIEW.

@@ -57,6 +57,8 @@ import {
 // ── Module-level generation state (single in-flight generation, mirrors
 // panel.ts's per-panel-instance fields — see module header) ────────────────
 let themeGenerationActive = false;
+/** theme_id of the run backing themeGenerationActive (p80) — mirrors panel.ts's _themeGenerationThemeId. */
+let themeGenerationThemeId;
 let themeGenerationAbortController;
 let themeGenerationGateRetryActive = false;
 let themePauseForReview = true;
@@ -201,7 +203,15 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
     if (!plan && !resumeThemeId) {
       throw new Error('Create and review the theme plan before generating images.');
     }
-    if (resumeThemeId) generatedThemeId = resumeThemeId;
+    if (resumeThemeId) {
+      generatedThemeId = resumeThemeId;
+      themeGenerationThemeId = resumeThemeId;
+      // Awaited: themeImageReviewState.js serializes every read-modify-write
+      // of a theme's review.json through a per-theme queue, but this write
+      // is still awaited so it's definitely enqueued (and, in practice,
+      // landed) before generation proceeds to its first item upsert.
+      await bridge().setThemeGenerationStatus(store, resumeThemeId, 'active');
+    }
     themePauseForReview = payload?.pause_for_review !== false;
     // p44-t2: image generation routes through the Corsair Theme Service via
     // the ThemeImageGenerator seam wired at server startup
@@ -210,8 +220,15 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
     // pause-for-review waitForReview gate below.
     const imageOptions = buildImageOptions({ signal: abortController.signal });
     const onProgress = (msg) => broadcast('message', { type: MSG_WIRE.THEME_GENERATION_PROGRESS, payload: { message: msg } });
-    const onReviewReady = (themeId) => {
+    const onReviewReady = async (themeId) => {
       generatedThemeId = themeId;
+      themeGenerationThemeId = themeId;
+      // Awaited for the same reason as the resume path above; the caller
+      // (bridge().generateTheme/resumeThemeGeneration) invokes this
+      // fire-and-forget and never awaits it itself, but the per-theme write
+      // queue still guarantees this write is ordered before any upsert this
+      // handler's own subsequent awaits trigger.
+      await bridge().setThemeGenerationStatus(store, themeId, 'active');
       broadcast('message', { type: MSG_WIRE.THEME_REVIEW_READY, payload: { theme_id: themeId } });
     };
     const waitForReview = (themeId, itemId, reviewOptions) =>
@@ -237,11 +254,13 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
           imageOptions,
           waitForReview,
         );
+    if (generatedThemeId) await bridge().setThemeGenerationStatus(store, generatedThemeId, 'completed');
     broadcast('message', {
       type: MSG_WIRE.THEME_INITIALIZED,
       payload: buildThemeInitPayload(result.manifest, result.frames, true),
     });
   } catch (err) {
+    if (generatedThemeId) await bridge().setThemeGenerationStatus(store, generatedThemeId, 'stopped');
     if (abortController.signal.aborted) {
       broadcast('message', {
         type: MSG_WIRE.THEME_GENERATION_CANCELLED,
@@ -256,9 +275,20 @@ export async function handleGenerateTheme(store, broadcast, payload, hostOptions
   } finally {
     themeGenerationActive = false;
     themeGenerationGateRetryActive = false;
+    themeGenerationThemeId = undefined;
     if (themeGenerationAbortController === abortController) themeGenerationAbortController = undefined;
     if (generatedThemeId) await handleGetThemeImageReview(store, broadcast, generatedThemeId);
   }
+}
+
+/**
+ * Read-only accessor for the in-flight generation's theme id (p80) — lets
+ * themeMessages.mjs's handleGetThemeImageReview tell "this process's own
+ * in-memory run" apart from a persisted "active" status left by a different
+ * process/session, mirroring panel.ts's _themeGenerationThemeId check.
+ */
+export function getActiveThemeGenerationThemeId() {
+  return themeGenerationActive ? themeGenerationThemeId : undefined;
 }
 
 // ── SAVE_THEME_PLAN -> THEME_PLAN_SAVED / THEMES_LIST | THEME_GENERATION_ERROR

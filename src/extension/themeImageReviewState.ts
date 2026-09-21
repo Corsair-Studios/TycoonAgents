@@ -147,11 +147,51 @@ export interface ThemeImageReviewItem {
   updated_at: string;
 }
 
+/**
+ * Durable, per-theme AI batch-generation run state (p80). Distinguishes an
+ * interrupted AI generation (persisted "active" with no in-memory run after
+ * a reload, or an explicit "stopped") from a manual upload, which never
+ * touches this field — see panel.ts's MSG.GENERATE_THEME branch for the
+ * write points and _postThemeImageReview for how it becomes
+ * generation_resumable/generation_status on the wire.
+ */
+export type ThemeGenerationRunStatus = 'idle' | 'active' | 'stopped' | 'completed';
+
+export interface ThemeGenerationRunState {
+  status: ThemeGenerationRunStatus;
+  updated_at: string;
+}
+
 export interface ThemeImageReviewDocument {
   version: 1;
   theme_id: string;
   display_name: string;
   items: ThemeImageReviewItem[];
+  /** Absent is treated as "idle" (never started, or predates this field). */
+  generation?: ThemeGenerationRunState;
+}
+
+/**
+ * Per-theme_id promise queue serializing every read-modify-write of that
+ * theme's review.json (review-fix HIGH finding, p80). Every function below
+ * that loads the document, mutates it and writes it back MUST run its whole
+ * load->mutate->write body through this, keyed by theme id — otherwise two
+ * concurrent writers (e.g. an upload's upsertThemeImageReviewItem racing a
+ * batch-generation setThemeGenerationStatus) can each load a stale copy and
+ * the second write silently drops the first writer's change. Module-scoped:
+ * both hosts run this compiled module as a single process-local instance
+ * (the standalone bridge requires the SAME out/ file, not a copy), so the
+ * queue covers every writer in that process.
+ */
+const reviewDocumentQueues = new Map<string, Promise<unknown>>();
+
+function withThemeReviewDocumentLock<T>(themeId: string, task: () => Promise<T>): Promise<T> {
+  const previous = reviewDocumentQueues.get(themeId) ?? Promise.resolve();
+  const result = previous.then(task, task);
+  // Never let a rejected task wedge the queue for later callers — only the
+  // caller that issued this call sees the rejection.
+  reviewDocumentQueues.set(themeId, result.then(() => undefined, () => undefined));
+  return result;
 }
 
 export async function initializeThemeImageReviewDocument(
@@ -160,15 +200,17 @@ export async function initializeThemeImageReviewDocument(
   displayName: string,
   items: Array<Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string }>,
 ): Promise<ThemeImageReviewDocument> {
-  const now = new Date().toISOString();
-  const document: ThemeImageReviewDocument = {
-    version: 1,
-    theme_id: themeId,
-    display_name: displayName,
-    items: items.map((item) => ({ ...item, updated_at: item.updated_at ?? now })),
-  };
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const now = new Date().toISOString();
+    const document: ThemeImageReviewDocument = {
+      version: 1,
+      theme_id: themeId,
+      display_name: displayName,
+      items: items.map((item) => ({ ...item, updated_at: item.updated_at ?? now })),
+    };
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 export async function loadThemeImageReviewDocument(
@@ -201,22 +243,24 @@ export async function upsertThemeImageReviewItem(
   displayName: string,
   item: Omit<ThemeImageReviewItem, 'updated_at'> & { updated_at?: string },
 ): Promise<ThemeImageReviewDocument> {
-  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId) ?? {
-    version: 1 as const,
-    theme_id: themeId,
-    display_name: displayName,
-    items: [],
-  };
-  document.display_name = displayName;
-  const nextItem: ThemeImageReviewItem = {
-    ...item,
-    updated_at: item.updated_at ?? new Date().toISOString(),
-  };
-  const index = document.items.findIndex((existing) => existing.id === item.id);
-  if (index >= 0) document.items[index] = nextItem;
-  else document.items.push(nextItem);
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId) ?? {
+      version: 1 as const,
+      theme_id: themeId,
+      display_name: displayName,
+      items: [],
+    };
+    document.display_name = displayName;
+    const nextItem: ThemeImageReviewItem = {
+      ...item,
+      updated_at: item.updated_at ?? new Date().toISOString(),
+    };
+    const index = document.items.findIndex((existing) => existing.id === item.id);
+    if (index >= 0) document.items[index] = nextItem;
+    else document.items.push(nextItem);
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 export async function setThemeImageReviewStatus(
@@ -225,14 +269,16 @@ export async function setThemeImageReviewStatus(
   itemId: string,
   status: ThemeImageReviewStatus,
 ): Promise<ThemeImageReviewDocument | undefined> {
-  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
-  if (!document) return undefined;
-  const item = document.items.find((candidate) => candidate.id === itemId);
-  if (!item) return undefined;
-  item.status = status;
-  item.updated_at = new Date().toISOString();
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return undefined;
+    const item = document.items.find((candidate) => candidate.id === itemId);
+    if (!item) return undefined;
+    item.status = status;
+    item.updated_at = new Date().toISOString();
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 export async function setThemeImageGenerationError(
@@ -241,15 +287,17 @@ export async function setThemeImageGenerationError(
   itemId: string,
   generationError: ThemeImageGenerationError,
 ): Promise<ThemeImageReviewDocument | undefined> {
-  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
-  if (!document) return undefined;
-  const item = document.items.find((candidate) => candidate.id === itemId);
-  if (!item) return undefined;
-  item.status = 'pending';
-  item.generation_error = generationError;
-  item.updated_at = new Date().toISOString();
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return undefined;
+    const item = document.items.find((candidate) => candidate.id === itemId);
+    if (!item) return undefined;
+    item.status = 'pending';
+    item.generation_error = generationError;
+    item.updated_at = new Date().toISOString();
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 /** Records a Corsair Theme Service attempt failure's distinct error kind (p43-t1) — sibling of setThemeImageGenerationError, for THEME_SERVICE-originated failures rather than OpenAI moderation blocks. */
@@ -261,32 +309,58 @@ export async function setThemeImageReviewErrorKind(
   refunded?: boolean,
   attemptCost?: number,
 ): Promise<ThemeImageReviewDocument | undefined> {
-  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
-  if (!document) return undefined;
-  const item = document.items.find((candidate) => candidate.id === itemId);
-  if (!item) return undefined;
-  item.status = 'pending';
-  item.error_kind = errorKind;
-  if (refunded !== undefined) item.lastAttemptRefunded = refunded;
-  if (attemptCost !== undefined) item.attemptCost = attemptCost;
-  item.updated_at = new Date().toISOString();
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return undefined;
+    const item = document.items.find((candidate) => candidate.id === itemId);
+    if (!item) return undefined;
+    item.status = 'pending';
+    item.error_kind = errorKind;
+    if (refunded !== undefined) item.lastAttemptRefunded = refunded;
+    if (attemptCost !== undefined) item.attemptCost = attemptCost;
+    item.updated_at = new Date().toISOString();
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
+}
+
+/**
+ * Records the durable AI batch-generation run status for a theme (p80).
+ * Only the batch-generation start/resume/stop/finish points in panel.ts's
+ * MSG.GENERATE_THEME branch (and its standalone mirror) call this — manual
+ * uploads, saveThemePlan and single-board retry/regenerate never do.
+ * Silently a no-op when the theme has no review document yet (nothing to
+ * mark active before the first board is even planned).
+ */
+export async function setThemeGenerationStatus(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  status: ThemeGenerationRunStatus,
+): Promise<ThemeImageReviewDocument | undefined> {
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return undefined;
+    document.generation = { status, updated_at: new Date().toISOString() };
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 export async function acceptAllThemeImageReviewItems(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
 ): Promise<ThemeImageReviewDocument | undefined> {
-  const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
-  if (!document?.items.length) return undefined;
-  const updatedAt = new Date().toISOString();
-  for (const item of document.items) {
-    item.status = 'accepted';
-    item.updated_at = updatedAt;
-  }
-  await writeReviewDocument(globalStorageUri, document);
-  return document;
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document?.items.length) return undefined;
+    const updatedAt = new Date().toISOString();
+    for (const item of document.items) {
+      item.status = 'accepted';
+      item.updated_at = updatedAt;
+    }
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
 }
 
 export function inferLegacyReviewItem(filename: string): ThemeImageReviewItem {

@@ -534,6 +534,10 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
       }
     }
     const items = Array.isArray(effectiveReviewDoc?.items) ? effectiveReviewDoc.items : [];
+    // p80: lazy dynamic import avoids a static circular import with
+    // themeGenerationMessages.mjs, which itself imports handlers from this
+    // module — see getActiveThemeGenerationThemeId's doc comment.
+    const activeGenerationThemeId = (await import('./themeGenerationMessages.mjs')).getActiveThemeGenerationThemeId();
 
     // Prefill the same stale-descriptions signal panel.ts sends (see
     // themeDescriptionsStale in themePlan.ts) so both hosts' webviews can
@@ -592,12 +596,25 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
       };
     });
 
+    // p80 parity with panel.ts's _postThemeImageReview: a persisted "active"
+    // run with no in-memory run for THIS theme (this standalone process) is
+    // treated as interrupted, same as an explicit "stopped", provided at
+    // least one board is still unfinished.
+    const generationStatus = effectiveReviewDoc?.generation?.status ?? 'idle';
+    const inMemoryRunForThisTheme = activeGenerationThemeId === themeId;
+    const hasUnfinishedItem = outItems.some((item) => !item.generated);
+    const generationResumable = (
+      generationStatus === 'stopped' || (generationStatus === 'active' && !inMemoryRunForThisTheme)
+    ) && hasUnfinishedItem;
+
     broadcast('message', {
       type: MSG_WIRE.THEME_IMAGE_REVIEW,
       payload: {
         theme_id: themeId,
         display_name: effectiveReviewDoc?.display_name ?? manifest?.display_name ?? themeId,
-        generation_active: false,
+        generation_active: inMemoryRunForThisTheme,
+        generation_status: generationStatus,
+        generation_resumable: generationResumable,
         pause_for_review: true,
         waiting_for_review_item_id: undefined,
         creative_direction: currentPlan?.creative_direction,
