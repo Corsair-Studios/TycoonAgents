@@ -1557,6 +1557,17 @@
     themeBuilderPanel.removeAttribute("hidden");
     themePickerList.setAttribute("hidden", "");
     tabThemePicker.focus();
+
+    // p78-t1 review fix: read whether the image review / plan editor panels
+    // were actually being SHOWN before anything below hides them — hiding
+    // themeImageReview unconditionally first, then reading its hidden
+    // attribute for the session check, made that disjunct always false
+    // (030-theme-picker-list.js's showThemeImageReview has no draftThemeId,
+    // so a genuine in-progress review got wiped by enterNewThemeDraftMode
+    // on tab re-entry).
+    const themeImageReviewWasVisible = Boolean(themeImageReview) && !themeImageReview.hasAttribute("hidden");
+    const themePlanEditorWasVisible = Boolean(themePlanEditor) && !themePlanEditor.hasAttribute("hidden");
+
     if (themeImageReview) themeImageReview.setAttribute("hidden", "");
     if (themeBuilderRoot) {
       if (themePlanEditor && !themePlanEditor.hasAttribute("hidden")) themeBuilderRoot.setAttribute("hidden", "");
@@ -1568,12 +1579,29 @@
     // AI-generated plan, no in-progress draft/save, no post-generation
     // review). Reopening a tab/path that already has a session in flight
     // must not reset it.
-    const hasActiveThemeBuilderSession = Boolean(currentThemePlan)
-      || Boolean(draftThemeId)
-      || Boolean(reviewThemeId)
-      || (themePlanEditor && !themePlanEditor.hasAttribute("hidden"))
-      || (themeImageReview && !themeImageReview.hasAttribute("hidden"));
-    if (!hasActiveThemeBuilderSession) enterNewThemeDraftMode();
+    // p78-t1: a theme merely loaded/selected on stage (THEME_INITIALIZED
+    // sets reviewThemeId and currentThemeHasBoards for whatever is showing
+    // on stage, whether or not the user ever opened the builder for it)
+    // must NOT count as an active builder session — only a draft actually
+    // in progress does: an in-flight save (draftThemeId), a running
+    // generation, plan fields the user has actually typed into, or a
+    // review actually being displayed for the current reviewThemeId (not
+    // just a stale reviewThemeId left over from stage load).
+    const hasActiveThemeBuilderSession = Boolean(draftThemeId)
+      || Boolean(themeGenerationRunning)
+      || themePlanFieldsHaveContent()
+      || themePlanEditorWasVisible
+      || (Boolean(reviewThemeId) && themeImageReviewWasVisible);
+    if (!hasActiveThemeBuilderSession) {
+      enterNewThemeDraftMode();
+    } else {
+      // p78-t1: refresh #theme-build-actions/Review-images for whatever
+      // state is actually current every time the builder panel opens.
+      updateThemeDraftUi();
+      // Restore the review panel this open interrupted (setAttribute
+      // "hidden" above) — a genuinely active session must stay visible.
+      if (themeImageReviewWasVisible && themeImageReview) themeImageReview.removeAttribute("hidden");
+    }
 
     // Boot up the theme builder canvas when the tab is first visited
     const root = document.getElementById("theme-builder-root");
@@ -2265,6 +2293,9 @@
   let themeGenerateWithAiBtn = null;
   let themeBuildManuallyBtn = null;
   let themeBuilderStatusChip = null;
+  /** p78-t1: visible validation message for the choice row, outside the
+   *  hidden #theme-plan-editor — see buildChoiceRow below. */
+  let themeBuildChoiceValidation = null;
   if (themeBuilderPanel && themePromptContainer) {
     themeGenerateWithAiBtn = document.createElement("button");
     themeGenerateWithAiBtn.type = "button";
@@ -2303,6 +2334,33 @@
     buildChoiceRow.appendChild(themeGenerateWithAiBtn);
     buildChoiceRow.appendChild(themeBuildManuallyBtn);
 
+    // p78-t1: validation lives inside #theme-build-choice-row, which is
+    // always visible on the builder screen — never inside the hidden
+    // #theme-plan-editor (that container can stay hidden for reasons
+    // unrelated to this message, so writing into it means the user gets
+    // no feedback at all).
+    themeBuildChoiceValidation = document.createElement("div");
+    themeBuildChoiceValidation.id = "theme-build-choice-validation";
+    themeBuildChoiceValidation.className = "theme-plan-validation tsp-build-choice-validation";
+    themeBuildChoiceValidation.setAttribute("role", "status");
+    themeBuildChoiceValidation.setAttribute("aria-live", "polite");
+    buildChoiceRow.appendChild(themeBuildChoiceValidation);
+
+    // p78-t1: the visible #theme-prompt-input is the authoritative name
+    // field on the builder screen; keep the (hidden-in-draft-mode)
+    // #theme-plan-name duplicate in sync both ways so anything that still
+    // reads themePlanName (collectDraftThemePlan, collectEditedThemePlan,
+    // themePlanFieldsHaveContent) sees exactly what the user typed.
+    if (themePromptInput && themePlanName) {
+      themePromptInput.addEventListener("input", () => {
+        themePlanName.value = themePromptInput.value;
+        if (themeBuildChoiceValidation) themeBuildChoiceValidation.textContent = "";
+      });
+      themePlanName.addEventListener("input", () => {
+        themePromptInput.value = themePlanName.value;
+      });
+    }
+
     themeBuilderStatusChip = document.createElement("div");
     themeBuilderStatusChip.id = "theme-builder-status-chip";
     themeBuilderStatusChip.className = "tsp-status-chip";
@@ -2323,14 +2381,21 @@
     });
 
     themeBuildManuallyBtn.addEventListener("click", () => {
-      const name = themePlanName ? themePlanName.value.trim() : "";
+      // p78-t1: the visible #theme-prompt-input is authoritative — the
+      // old bug read the hidden #theme-plan-name duplicate, which was
+      // always empty, so this handler returned silently.
+      const name = themePromptInput ? themePromptInput.value.trim() : "";
       if (!name) {
-        if (themePlanValidation) themePlanValidation.textContent = "Give the theme a name before building manually.";
-        if (themePlanName) themePlanName.focus();
+        if (themeBuildChoiceValidation) themeBuildChoiceValidation.textContent = "Give the theme a name first.";
+        if (themePromptInput) themePromptInput.focus();
         return;
       }
-      setThemePlanDetailsDisclosureOpen(false);
-      submitDraftThemePlan(themeBuildManuallyBtn, "Saving...");
+      if (themeBuildChoiceValidation) themeBuildChoiceValidation.textContent = "";
+      if (themePlanName) themePlanName.value = name;
+      // p78-t1: manual mode lands on the full plan fields expanded, not
+      // behind the collapsed "Edit plan details" disclosure.
+      setThemePlanDetailsDisclosureOpen(true);
+      submitDraftThemePlan(themeBuildManuallyBtn, "Saving...", themeBuildChoiceValidation);
     });
   }
 
@@ -2477,9 +2542,19 @@
     }
   }
 
-  function renderThemePlan(plan) {
+  /**
+   * @param {object} plan
+   * @param {{forceClearName?: boolean}} [opts] p78-t1 review fix: a plan
+   *  with an empty display_name (e.g. an AI-filled plan that didn't name
+   *  the theme) must not blank out a name the user already typed — only
+   *  buildEmptyThemePlan's genuine "start a fresh draft" reset should clear
+   *  the name field on an empty display_name, and it opts in explicitly.
+   */
+  function renderThemePlan(plan, opts) {
     currentThemePlan = plan;
-    if (themePlanName) themePlanName.value = plan.display_name || "";
+    const forceClearName = Boolean(opts && opts.forceClearName);
+    if (themePlanName) themePlanName.value = plan.display_name || (forceClearName ? "" : themePlanName.value);
+    if (themePromptInput) themePromptInput.value = plan.display_name || (forceClearName ? "" : themePromptInput.value);
     if (themePlanDirection) themePlanDirection.value = plan.creative_direction || "";
     if (themePlanEnvironment) themePlanEnvironment.value = plan.environment || "";
     renderPlanSlotsWithDesc(themePlanCharacters, plan.characters || [], plan.character_descriptions || [], {
@@ -2712,7 +2787,7 @@
       themeBuildStatus.textContent = "Fill in the plan by hand, or use Generate with AI.";
       themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
     }
-    renderThemePlan(buildEmptyThemePlan());
+    renderThemePlan(buildEmptyThemePlan(), { forceClearName: true });
     updateThemeDraftUi();
     setThemePlanDetailsDisclosureOpen(false);
   }
@@ -2788,14 +2863,20 @@
    * button's own busy state is visible regardless of which one was clicked.
    * @param {HTMLButtonElement|null} busyBtn
    * @param {string} busyLabel
+   * @param {HTMLElement|null} [validationEl] p78-t1: an additional visible
+   *  validation target (e.g. themeBuildChoiceValidation) to mirror the
+   *  message into — themePlanValidation alone can be inside a container
+   *  that isn't shown yet.
    * @returns {boolean} true if the save was posted, false on validation error
    */
-  function submitDraftThemePlan(busyBtn, busyLabel) {
+  function submitDraftThemePlan(busyBtn, busyLabel, validationEl) {
     let plan;
     try {
       plan = collectDraftThemePlan();
     } catch (error) {
-      if (themePlanValidation) themePlanValidation.textContent = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      if (themePlanValidation) themePlanValidation.textContent = message;
+      if (validationEl) validationEl.textContent = message;
       return false;
     }
     currentThemePlan = plan;
@@ -2807,6 +2888,7 @@
       if (busyLabel && busyBtn.children.length === 0) busyBtn.textContent = busyLabel;
     }
     if (themePlanValidation) themePlanValidation.textContent = "";
+    if (validationEl) validationEl.textContent = "";
     vscode.postMessage({
       type: "saveThemePlan",
       plan,

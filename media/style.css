@@ -2062,6 +2062,14 @@ body {
   flex-wrap: wrap;
 }
 
+/* p78-t1: visible validation message for the choice row, always in the
+   DOM outside #theme-plan-editor so it shows regardless of that
+   container's own hidden state. Empty text collapses to no extra space. */
+.tsp-build-choice-validation {
+  flex: 1 1 100%;
+  min-height: 0;
+}
+
 .tsp-generate-ai-btn,
 .tsp-build-manually-btn {
   display: flex;

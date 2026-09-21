@@ -26,7 +26,7 @@ const { JSDOM } = require('jsdom');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const vm = require('vm');
 
-const MAIN_JS_PATH = join(process.cwd(), 'media', 'main.js');
+const MAIN_JS_PATH = process.env.TYCOON_WEBVIEW_BUNDLE || join(process.cwd(), 'media', 'main.js');
 
 function scanElementIds(src: string): string[] {
   const ids = new Set<string>();
@@ -283,6 +283,36 @@ async function openThemeBuilderOnEmptyDraft() {
   return h;
 }
 
+// p78-t2: walks an element's ancestor chain (parentElement) up to the
+// document, failing if any ancestor carries the `hidden` attribute or an
+// inline `display: none`. Used for every user-facing assertion below so a
+// test can only pass if a real user could actually see the element — the
+// p77 bug (validation/name field written into a still-hidden container)
+// would have failed this check.
+function assertVisible(el: any, label?: string): void {
+  const what = label || (el && el.id ? `#${el.id}` : 'element');
+  assert.ok(el, `expected ${what} to exist`);
+  let node = el;
+  while (node) {
+    if (typeof node.hasAttribute === 'function' && node.hasAttribute('hidden')) {
+      assert.fail(`${what} is not visible: ancestor <${node.tagName}${node.id ? ` #${node.id}` : ''}> has [hidden]`);
+    }
+    if (node.style && node.style.display === 'none') {
+      assert.fail(`${what} is not visible: ancestor <${node.tagName}${node.id ? ` #${node.id}` : ''}> has display:none`);
+    }
+    node = node.parentElement;
+  }
+}
+
+const SPRITE_BOARD_SLOTS: Array<{ containerId: string; count: number }> = [
+  { containerId: 'theme-plan-characters', count: 16 },
+  { containerId: 'theme-plan-enemies', count: 4 },
+  { containerId: 'theme-plan-decor-slots', count: 9 },
+  { containerId: 'theme-plan-objects-slots', count: 21 },
+  { containerId: 'theme-plan-expressions-slots', count: 8 },
+  { containerId: 'theme-plan-achievements-slots', count: 25 },
+];
+
 // ── Entry path: tab click renders the choice row ────────────────────────────
 
 test('clicking the Theme Builder tab renders the draft form with the Generate with AI / Build manually choice row', async () => {
@@ -341,8 +371,13 @@ test('Build manually with an empty name shows a validation message and posts not
     await new Promise((r) => setTimeout(r, 0));
 
     assert.equal(h.posted.length, preCount, 'no message should be posted on validation failure');
-    const validation = doc.getElementById('theme-plan-validation');
+    // p78-t2: the real handler writes into #theme-build-choice-validation,
+    // which lives inside #theme-build-choice-row (outside the hidden
+    // #theme-plan-editor) — writing into the old #theme-plan-validation
+    // gave the user no feedback at all, since that container can be hidden.
+    const validation = doc.getElementById('theme-build-choice-validation');
     assert.ok((validation.textContent || '').length > 0, 'expected a validation message');
+    assertVisible(validation, '#theme-build-choice-validation');
   } finally {
     h.win.close();
   }
@@ -353,9 +388,12 @@ test('Build manually with a name posts saveThemePlan with that display_name and 
   try {
     const { doc } = h;
 
-    const nameInput = doc.getElementById('theme-plan-name');
-    nameInput.value = 'Manual Draft Theme';
-    nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+    // p78-t2: type into the visible #theme-prompt-input only — never set
+    // #theme-plan-name directly. That hidden duplicate is what the p77
+    // tests typed into, which is exactly why they missed the real bug.
+    const promptInput = doc.getElementById('theme-prompt-input');
+    promptInput.value = 'Manual Draft Theme';
+    promptInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
 
     h.click('theme-build-manually-btn');
     await new Promise((r) => setTimeout(r, 0));
@@ -368,6 +406,118 @@ test('Build manually with a name posts saveThemePlan with that display_name and 
       posted.plan.characters.every((c: string) => !c || c.trim() === ''),
       'Build manually must post empty (unfilled) slots',
     );
+  } finally {
+    h.win.close();
+  }
+});
+
+// p78-t2: the real user path end-to-end — type into #theme-prompt-input
+// only, click #theme-build-manually-btn, follow through THEME_PLAN_SAVED
+// and THEME_IMAGE_REVIEW, asserting every user-facing element is actually
+// visible (no hidden ancestor) at each step.
+test('Build manually real user path: typed name posts, plan editor and every sprite-board slot become visible, then per-board Upload/Generate controls appear', async () => {
+  const h = await openThemeBuilderOnEmptyDraft();
+  try {
+    const { doc } = h;
+
+    const promptInput = doc.getElementById('theme-prompt-input');
+    assertVisible(promptInput, '#theme-prompt-input');
+    promptInput.value = 'Star Trek';
+    promptInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    const buildManuallyBtn = doc.getElementById('theme-build-manually-btn');
+    assertVisible(buildManuallyBtn, '#theme-build-manually-btn');
+    buildManuallyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const posted = h.lastPosted('saveThemePlan');
+    assert.ok(posted, 'expected a saveThemePlan message from the visible-field path');
+    assert.equal(posted.plan.display_name, 'Star Trek', 'display_name must equal what the user typed into #theme-prompt-input');
+
+    h.dispatch({
+      type: 'THEME_PLAN_SAVED',
+      payload: { theme_id: 'star_trek', plan: { ...posted.plan, theme_id: 'star_trek' }, hasBoards: false, boardCount: 0 },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const planEditor = doc.getElementById('theme-plan-editor');
+    assertVisible(planEditor, '#theme-plan-editor');
+
+    for (const { containerId, count } of SPRITE_BOARD_SLOTS) {
+      const container = doc.getElementById(containerId);
+      assertVisible(container, `#${containerId}`);
+      const rows = Array.from(container.querySelectorAll('.theme-plan-slot-row'));
+      assert.equal(rows.length, count, `expected ${count} slot rows in #${containerId}, got ${rows.length}`);
+      // Expressions render fixed, read-only labels (no editable name
+      // input) — every other slot group has an editable name + desc pair.
+      const isReadOnlyNameGroup = containerId === 'theme-plan-expressions-slots';
+      for (const row of rows as any[]) {
+        const descField = row.querySelector('[data-plan-field="desc"]');
+        assertVisible(descField, `${containerId} desc field`);
+        if (!isReadOnlyNameGroup) {
+          const nameField = row.querySelector('[data-plan-field="name"]');
+          assertVisible(nameField, `${containerId} name field`);
+        }
+      }
+    }
+
+    // Build a THEME_IMAGE_REVIEW item per sprite-board slot so the per-board
+    // Upload/Generate controls can be asserted for real board coverage.
+    const items: any[] = [];
+    let n = 0;
+    for (const { count } of SPRITE_BOARD_SLOTS) {
+      for (let i = 0; i < count; i++) {
+        n += 1;
+        items.push({
+          id: `item_${n}`, filename: `item_${n}.png`, label: `Item ${n}`, kind: 'object',
+          status: 'pending', prompt: 'p', revision: 0, frame_keys: [], updated_at: '',
+        });
+      }
+    }
+    h.dispatch({
+      type: 'THEME_IMAGE_REVIEW',
+      payload: { theme_id: 'star_trek', display_name: 'Star Trek', hasBoards: false, items },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const reviewSection = doc.getElementById('theme-image-review');
+    assertVisible(reviewSection, '#theme-image-review');
+    const uploadBtns = doc.querySelectorAll('.theme-review-upload');
+    const generateBtns = doc.querySelectorAll('.theme-review-retry');
+    assert.equal(uploadBtns.length, items.length, 'expected one Upload control per board item');
+    assert.equal(generateBtns.length, items.length, 'expected one Generate/Retry control per board item');
+    for (const btn of Array.from(uploadBtns) as any[]) assertVisible(btn, '.theme-review-upload');
+    for (const btn of Array.from(generateBtns) as any[]) assertVisible(btn, '.theme-review-retry');
+  } finally {
+    h.win.close();
+  }
+});
+
+// p78-t2: a theme selected earlier (hasBoards:true) must not leak into a
+// freshly opened new-theme draft — #theme-build-actions must stay hidden.
+test('#theme-build-actions stays hidden when opening the builder for a new theme, even after a previous theme had boards', async () => {
+  const h = await bootThemePanelHarness();
+  try {
+    const { doc } = h;
+
+    h.dispatch({
+      type: 'THEME_INITIALIZED',
+      payload: {
+        manifest: { theme_id: 'theme_a', display_name: 'Theme A' },
+        frames: { environment_background: ['data:image/png;base64,AA=='] },
+        hasBoards: true,
+        boardCount: 1,
+      },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Open the builder fresh (new-theme draft entry), as a user would from
+    // the tab, not from "Review images" on theme A.
+    h.click('tab-theme-builder');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const buildActions = doc.getElementById('theme-build-actions');
+    assert.ok(buildActions.hasAttribute('hidden'), '#theme-build-actions must be hidden for a fresh new-theme draft');
   } finally {
     h.win.close();
   }

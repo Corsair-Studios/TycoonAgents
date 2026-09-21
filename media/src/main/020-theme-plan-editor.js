@@ -392,7 +392,15 @@
     }
   });
 
-  function showThemeImageReview(themeId) {
+  /**
+   * @param {string} themeId
+   * @param {{keepPlanEditor?: boolean}} [opts] p78-t1: keepPlanEditor keeps
+   *  #theme-plan-editor visible alongside the board grid — used right after
+   *  Build manually saves an empty-slot plan, so the user lands on a screen
+   *  showing every sprite board's name/description/image slot AND the
+   *  expanded plan fields, not just the board grid alone.
+   */
+  function showThemeImageReview(themeId, opts) {
     if (!themeId) return;
     // p77-t1 review fix: opening review for a theme other than the one
     // being drafted drops the stale draft state first (picker "Review
@@ -404,7 +412,10 @@
     reviewThemeId = themeId;
     themePickerList.setAttribute("hidden", "");
     themeBuilderPanel.removeAttribute("hidden");
-    if (themePlanEditor) themePlanEditor.setAttribute("hidden", "");
+    if (themePlanEditor) {
+      if (opts && opts.keepPlanEditor) themePlanEditor.removeAttribute("hidden");
+      else themePlanEditor.setAttribute("hidden", "");
+    }
     if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
     if (themeImageReview) themeImageReview.removeAttribute("hidden");
     if (themeImageReviewList) themeImageReviewList.textContent = "Loading generated images...";

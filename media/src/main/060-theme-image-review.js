@@ -1530,8 +1530,12 @@
           }
           // Reveal the board list (Upload button per board, empty
           // thumbnails) bound to draftThemeId — never reviewThemeId of a
-          // previously selected theme.
-          showThemeImageReview(savedThemeId);
+          // previously selected theme. p78-t1: keep the plan editor
+          // visible too (expanded, not the collapsed disclosure) so the
+          // user sees every sprite board's name/description/image slot
+          // alongside the plan fields they just saved.
+          setThemePlanDetailsDisclosureOpen(true);
+          showThemeImageReview(savedThemeId, { keepPlanEditor: true });
           return;
         }
       }
