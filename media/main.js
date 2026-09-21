@@ -4197,6 +4197,33 @@ if (typeof module !== "undefined" && module.exports) {
     return "openai";
   }
 
+  /** p84: whether a PLAN_THEME request is currently awaiting a reply. */
+  let themePlanRequestInFlight = false;
+
+  /**
+   * p84: single authority for the "Plan theme"/"Generate with AI" disabled
+   * state. Bug fix: previously only runThemeGeneratePlan disabled
+   * themeGenerateWithAiBtn, and only THEME_PLAN_READY re-enabled it (and
+   * only the legacy themeGenerateBtn at that) — THEME_PLAN_ERROR, cancel,
+   * and every other terminal path left "Generate with AI" permanently
+   * disabled after any failed attempt. Every path that starts or ends a
+   * plan request, plus every return to a fresh Start screen, now goes
+   * through this one function.
+   * @param {boolean} inFlight
+   */
+  function setThemePlanRequestInFlight(inFlight) {
+    themePlanRequestInFlight = inFlight;
+    if (themeGenerateBtn) {
+      if (inFlight) themeGenerateBtn.setAttribute("disabled", "");
+      else themeGenerateBtn.removeAttribute("disabled");
+      themeGenerateBtn.textContent = inFlight ? "Planning..." : "Plan theme";
+    }
+    if (themeGenerateWithAiBtn) {
+      if (inFlight) themeGenerateWithAiBtn.setAttribute("disabled", "");
+      else themeGenerateWithAiBtn.removeAttribute("disabled");
+    }
+  }
+
   /**
    * p75-t2: the shared AI-autofill entry point (posts PLAN_THEME). Reused by
    * the original "Plan theme" button and by "Generate with AI" once the
@@ -4209,13 +4236,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (!prompt) return;
     const imageProvider = selectedThemeImageProvider();
 
-    if (themeGenerateBtn) {
-      themeGenerateBtn.setAttribute("disabled", "");
-      themeGenerateBtn.textContent = "Planning...";
-    }
-    if (themeGenerateWithAiBtn) {
-      themeGenerateWithAiBtn.setAttribute("disabled", "");
-    }
+    setThemePlanRequestInFlight(true);
     if (themeBuildStatus) {
       themeBuildStatus.textContent = "AI is filling the theme slots...";
       themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
@@ -4733,6 +4754,9 @@ if (typeof module !== "undefined" && module.exports) {
     currentThemeHasBoards = false;
     themeGeneratePendingIntent = false;
     themePendingIntentResume = null;
+    // p84: a fresh/entering Start screen must never inherit a stale
+    // disabled "Generate with AI" from an earlier attempt's request.
+    setThemePlanRequestInFlight(false);
   }
 
   /**
@@ -13505,6 +13529,21 @@ if (typeof module !== "undefined" && module.exports) {
       renderThemeServicePanel(msg.payload || null);
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
+      // p84: a signed-in status clears any stale "Sign in" prompt left over
+      // from before this sign-in completed — the THEME_PLAN_ERROR
+      // not_signed_in notice written into themeBuildStatus, and any
+      // per-card not_signed_in notice baked into the last review payload
+      // (renderThemeImageReview below would otherwise rebuild that same
+      // stale "Sign in" card from item.error_kind forever, since nothing
+      // else clears it once the user signs in).
+      if (msg.payload && msg.payload.signedIn) {
+        if (themeBuildStatus) themeBuildStatus.innerHTML = "";
+        if (lastThemeImageReviewPayload && Array.isArray(lastThemeImageReviewPayload.items)) {
+          lastThemeImageReviewPayload.items.forEach((item) => {
+            if (item && item.error_kind === "not_signed_in") item.error_kind = undefined;
+          });
+        }
+      }
       // p43-t2: refresh the image-review cards' attempt-cost line against
       // the freshly-arrived credits/pricing, without waiting for the host
       // to re-send THEME_IMAGE_REVIEW.
@@ -13752,10 +13791,7 @@ if (typeof module !== "undefined" && module.exports) {
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       // p76-t2: confirm (inline, not window.confirm) before an AI autofill
       // clobbers anything the user already typed by hand.
       const planPayload = msg.payload?.plan || {};
@@ -13807,10 +13843,7 @@ if (typeof module !== "undefined" && module.exports) {
       // THEMES_LIST re-post (host contract) refreshes the picker separately
       // via the existing THEMES_LIST handler — nothing to do here for it.
     } else if (msg && msg.type === "THEME_PLAN_ERROR") {
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeBuildStatus) {
         themeBuildStatus.innerHTML = "";
         if (msg.payload?.kind === "not_signed_in") {
@@ -13948,10 +13981,7 @@ if (typeof module !== "undefined" && module.exports) {
         themeBuildStatus.textContent = "Error: " + (msg.payload?.message || msg.message || "Unknown error");
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeStartGenerationBtn) {
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
@@ -13971,10 +14001,7 @@ if (typeof module !== "undefined" && module.exports) {
         themeBuildStatus.textContent = msg.payload?.message || "Generation stopped.";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeStartGenerationBtn) {
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
@@ -14001,10 +14028,7 @@ if (typeof module !== "undefined" && module.exports) {
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
       if (completedGeneration && themeBuildStatus && themeBuildStatus.textContent.indexOf("Error") !== 0) {
         themeBuildStatus.textContent = "Theme generated successfully.";

@@ -1242,6 +1242,21 @@
       renderThemeServicePanel(msg.payload || null);
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
+      // p84: a signed-in status clears any stale "Sign in" prompt left over
+      // from before this sign-in completed — the THEME_PLAN_ERROR
+      // not_signed_in notice written into themeBuildStatus, and any
+      // per-card not_signed_in notice baked into the last review payload
+      // (renderThemeImageReview below would otherwise rebuild that same
+      // stale "Sign in" card from item.error_kind forever, since nothing
+      // else clears it once the user signs in).
+      if (msg.payload && msg.payload.signedIn) {
+        if (themeBuildStatus) themeBuildStatus.innerHTML = "";
+        if (lastThemeImageReviewPayload && Array.isArray(lastThemeImageReviewPayload.items)) {
+          lastThemeImageReviewPayload.items.forEach((item) => {
+            if (item && item.error_kind === "not_signed_in") item.error_kind = undefined;
+          });
+        }
+      }
       // p43-t2: refresh the image-review cards' attempt-cost line against
       // the freshly-arrived credits/pricing, without waiting for the host
       // to re-send THEME_IMAGE_REVIEW.
@@ -1489,10 +1504,7 @@
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       // p76-t2: confirm (inline, not window.confirm) before an AI autofill
       // clobbers anything the user already typed by hand.
       const planPayload = msg.payload?.plan || {};
@@ -1544,10 +1556,7 @@
       // THEMES_LIST re-post (host contract) refreshes the picker separately
       // via the existing THEMES_LIST handler — nothing to do here for it.
     } else if (msg && msg.type === "THEME_PLAN_ERROR") {
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeBuildStatus) {
         themeBuildStatus.innerHTML = "";
         if (msg.payload?.kind === "not_signed_in") {
@@ -1685,10 +1694,7 @@
         themeBuildStatus.textContent = "Error: " + (msg.payload?.message || msg.message || "Unknown error");
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeStartGenerationBtn) {
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
@@ -1708,10 +1714,7 @@
         themeBuildStatus.textContent = msg.payload?.message || "Generation stopped.";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeStartGenerationBtn) {
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
@@ -1738,10 +1741,7 @@
         themeStartGenerationBtn.disabled = false;
         themeStartGenerationBtn.textContent = "Generate images";
       }
-      if (themeGenerateBtn) {
-        themeGenerateBtn.removeAttribute("disabled");
-        themeGenerateBtn.textContent = "Plan theme";
-      }
+      setThemePlanRequestInFlight(false);
       if (themeReviewStopGeneration) themeReviewStopGeneration.hidden = true;
       if (completedGeneration && themeBuildStatus && themeBuildStatus.textContent.indexOf("Error") !== 0) {
         themeBuildStatus.textContent = "Theme generated successfully.";

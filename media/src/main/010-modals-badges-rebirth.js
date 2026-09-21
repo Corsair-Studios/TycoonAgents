@@ -2389,6 +2389,33 @@
     return "openai";
   }
 
+  /** p84: whether a PLAN_THEME request is currently awaiting a reply. */
+  let themePlanRequestInFlight = false;
+
+  /**
+   * p84: single authority for the "Plan theme"/"Generate with AI" disabled
+   * state. Bug fix: previously only runThemeGeneratePlan disabled
+   * themeGenerateWithAiBtn, and only THEME_PLAN_READY re-enabled it (and
+   * only the legacy themeGenerateBtn at that) — THEME_PLAN_ERROR, cancel,
+   * and every other terminal path left "Generate with AI" permanently
+   * disabled after any failed attempt. Every path that starts or ends a
+   * plan request, plus every return to a fresh Start screen, now goes
+   * through this one function.
+   * @param {boolean} inFlight
+   */
+  function setThemePlanRequestInFlight(inFlight) {
+    themePlanRequestInFlight = inFlight;
+    if (themeGenerateBtn) {
+      if (inFlight) themeGenerateBtn.setAttribute("disabled", "");
+      else themeGenerateBtn.removeAttribute("disabled");
+      themeGenerateBtn.textContent = inFlight ? "Planning..." : "Plan theme";
+    }
+    if (themeGenerateWithAiBtn) {
+      if (inFlight) themeGenerateWithAiBtn.setAttribute("disabled", "");
+      else themeGenerateWithAiBtn.removeAttribute("disabled");
+    }
+  }
+
   /**
    * p75-t2: the shared AI-autofill entry point (posts PLAN_THEME). Reused by
    * the original "Plan theme" button and by "Generate with AI" once the
@@ -2401,13 +2428,7 @@
     if (!prompt) return;
     const imageProvider = selectedThemeImageProvider();
 
-    if (themeGenerateBtn) {
-      themeGenerateBtn.setAttribute("disabled", "");
-      themeGenerateBtn.textContent = "Planning...";
-    }
-    if (themeGenerateWithAiBtn) {
-      themeGenerateWithAiBtn.setAttribute("disabled", "");
-    }
+    setThemePlanRequestInFlight(true);
     if (themeBuildStatus) {
       themeBuildStatus.textContent = "AI is filling the theme slots...";
       themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
@@ -2925,6 +2946,9 @@
     currentThemeHasBoards = false;
     themeGeneratePendingIntent = false;
     themePendingIntentResume = null;
+    // p84: a fresh/entering Start screen must never inherit a stale
+    // disabled "Generate with AI" from an earlier attempt's request.
+    setThemePlanRequestInFlight(false);
   }
 
   /**
