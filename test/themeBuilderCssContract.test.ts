@@ -64,6 +64,20 @@ test('#themes-dialog has no min-width above 0 and no fixed min-height of 600px o
   }
 });
 
+// p81-t2: proves the p81-t1 spacing fix (a dropped inline
+// margin-bottom:16px on #tab-theme-picker, moved to CSS since the real
+// webview CSP has no 'unsafe-inline' — see themeBuilderCspGuard.test.ts)
+// actually lands in the stylesheet.
+test('#tab-theme-picker declares a margin-bottom of at least 10px (Back to themes spacing)', () => {
+  const css = loadCss();
+  const rules = splitRules(css);
+  const rule = rules.find((r) => r.selector.split(',').some((s) => s.trim() === '#tab-theme-picker'));
+  assert.ok(rule, 'expected a #tab-theme-picker rule in media/style.css');
+  const match = /margin-bottom\s*:\s*([0-9.]+)px/.exec(rule!.body);
+  assert.ok(match, '#tab-theme-picker must declare a margin-bottom in px');
+  assert.ok(parseFloat(match![1]) >= 10, `#tab-theme-picker margin-bottom must be >= 10px, found ${match![1]}px`);
+});
+
 test('the review header and action rows declare flex-wrap: wrap', () => {
   const css = loadCss();
   const rules = splitRules(css);

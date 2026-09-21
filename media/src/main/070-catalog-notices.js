@@ -505,7 +505,6 @@
         const setupBadge = document.createElement("span");
         setupBadge.className = "mcp-setup-badge";
         setupBadge.textContent = "Template — needs setup";
-        setupBadge.style.cssText = "margin-left:8px;font-size:11px;padding:1px 7px;border-radius:9px;background:rgba(224,168,0,0.18);color:#b8860b;border:1px solid rgba(224,168,0,0.4);vertical-align:middle;";
         header.appendChild(setupBadge);
       }
 

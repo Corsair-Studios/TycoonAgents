@@ -3752,7 +3752,7 @@ function buildHostHtml(token) {
            this hidden defs-only sprite (referenced via fill:url(#...) from
            each cup) so the cup markup itself only needs to live in ONE
            place (media/main.js's TROPHY_CUP_SVG). -->
-      <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+      <svg width="0" height="0" class="svg-abs-hidden" aria-hidden="true" focusable="false">
         <defs>
           <linearGradient id="trophyCupGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#ffe9a8" />
@@ -3786,7 +3786,7 @@ function buildHostHtml(token) {
       </div>
       <div id="metrics-body">
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
-        <table id="metrics-table" style="display:none">
+        <table id="metrics-table" class="metrics-table-hidden">
           <thead>
             <tr>
               <th>Agent</th>
@@ -3922,8 +3922,8 @@ function buildHostHtml(token) {
       <div id="themes-scroll">
       <div id="theme-picker-list" role="tabpanel">
         <section id="theme-library-section" class="theme-library-section">
-          <h2 style="margin: 0 0 16px;">Tycoon Themes</h2>
-          <div id="theme-picker-grid" style="display: flex; flex-direction: column; gap: 8px;"></div>
+          <h2 class="theme-library-heading">Tycoon Themes</h2>
+          <div id="theme-picker-grid" class="theme-picker-grid-list"></div>
           <div id="theme-picker-status" class="theme-picker-status" role="status" aria-live="polite"></div>
           <div class="theme-cta-block">
             <div class="theme-cta-primary-row">
@@ -3945,12 +3945,12 @@ function buildHostHtml(token) {
         </section>
       </div>
       <div id="theme-builder-panel" role="tabpanel" hidden>
-        <button id="tab-theme-picker" class="skill-btn" style="margin-bottom: 16px;">&larr; Back to themes</button>
+        <button id="tab-theme-picker" class="skill-btn">&larr; Back to themes</button>
         <div id="theme-image-settings" class="theme-image-settings">
           <div class="theme-image-settings-heading">Image generation</div>
           <p class="theme-image-settings-note muted">Image generation runs through your Corsair credits. Sign in from the Theme Builder to see your balance.</p>
         </div>
-        <p class="theme-generation-approval-warning" style="margin: 6px 0 0; padding: 8px 10px; border-left: 3px solid #d9a441; background: rgba(217, 164, 65, 0.12); border-radius: 4px; font-size: 12px; line-height: 1.4;">
+        <p class="theme-generation-approval-warning">
           &#9888; AI image generation isn't perfect &mdash; expect to regenerate some images and do a little manual cleanup (use Retry, Upload, or edit the prompt).
         </p>
         <div id="theme-prompt-container" class="theme-prompt-container">
@@ -4030,8 +4030,8 @@ function buildHostHtml(token) {
             </div>
           </div>
         </section>
-        <div id="theme-build-status" style="margin-bottom: 12px; font-style: italic; min-height: 20px; color: var(--vscode-descriptionForeground);"></div>
-        <div id="theme-build-actions" hidden style="margin-bottom: 12px;">
+        <div id="theme-build-status"></div>
+        <div id="theme-build-actions" hidden>
           <button id="theme-review-images-btn" class="skill-btn">Review generated images</button>
         </div>
         <section id="theme-image-review" class="theme-image-review" hidden>

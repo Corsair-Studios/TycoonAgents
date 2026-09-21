@@ -24,8 +24,20 @@
 
       const btn = document.createElement("button");
       btn.className = "skill-btn theme-picker-select" + (isSelected ? " theme-picker-select--active" : "");
+      // p81-t1: name first, full flexible width, ellipsis only once it runs
+      // out of room; status/SELECTED badge move to a second line underneath
+      // so a long name never gets squeezed by the status text next to it.
       const nameLabel = document.createElement("span");
+      nameLabel.className = "theme-picker-name";
       nameLabel.textContent = themeName;
+      const metaRow = document.createElement("span");
+      metaRow.className = "theme-picker-meta";
+      if (isSelected) {
+        const badge = document.createElement("span");
+        badge.className = "theme-selected-badge";
+        badge.textContent = "Selected";
+        metaRow.appendChild(badge);
+      }
       const approvalLabel = document.createElement("span");
       approvalLabel.className = "theme-picker-approval" + (theme.export_ready ? " theme-picker-approval--ready" : "");
       approvalLabel.textContent = theme.export_ready
@@ -33,15 +45,9 @@
         : theme.total
           ? `${theme.accepted}/${theme.total} approved`
           : "Review required";
+      metaRow.appendChild(approvalLabel);
       btn.appendChild(nameLabel);
-      // Selected badge
-      if (isSelected) {
-        const badge = document.createElement("span");
-        badge.className = "theme-selected-badge";
-        badge.textContent = "Selected";
-        btn.appendChild(badge);
-      }
-      btn.appendChild(approvalLabel);
+      btn.appendChild(metaRow);
       btn.addEventListener("click", () => {
         selectedThemeId = theme.theme_id;
         vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: theme.theme_id } });
@@ -51,7 +57,9 @@
 
       const reviewBtn = document.createElement("button");
       reviewBtn.className = "skill-btn";
-      reviewBtn.textContent = "Review images";
+      reviewBtn.textContent = "Review";
+      reviewBtn.title = "Review images";
+      reviewBtn.setAttribute("aria-label", "Review images");
       reviewBtn.addEventListener("click", () => {
         // p79-t1: reviewing an existing theme reuses the manual screen —
         // board grid + header (Back/name/Save theme), no AI-only elements.
@@ -65,12 +73,13 @@
       const exportBtn = document.createElement("button");
       exportBtn.className = "skill-btn";
       exportBtn.type = "button";
-      exportBtn.textContent = "Export .zip";
+      exportBtn.textContent = "Export";
       exportBtn.disabled = !theme.export_ready;
       exportBtn.dataset.exportReady = String(Boolean(theme.export_ready));
       exportBtn.title = theme.export_ready
         ? `Export ${themeName} as a .zip file`
         : `Approve every theme image before exporting (${theme.accepted || 0}/${theme.total || 0} approved)`;
+      exportBtn.setAttribute("aria-label", "Export .zip");
       exportBtn.dataset.themeExportId = theme.theme_id;
       exportBtn.addEventListener("click", () => {
         exportBtn.disabled = true;

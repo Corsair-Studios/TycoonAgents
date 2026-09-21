@@ -1675,7 +1675,14 @@
    * template, no Save/New-theme controls, no updateThemeDraftUi. Moving the
    * check in here means every caller gets it for free.
    */
-  function openThemeBuilderPlanEditorTab() {
+  function openThemeBuilderPlanEditorTab(opts) {
+    // p81-t1: the Tycoon Theme Builder button (tabThemeBuilder below) is its
+    // own entry point — it must always land on Start with an empty name,
+    // never reopen whatever theme happened to be under review/staged.
+    // "Review images" (openThemeBuilderFromReview) and the sign-in shell's
+    // "Back to builder" continue button call this with no opts and keep the
+    // existing session-preserving behavior below.
+    const forceStart = Boolean(opts && opts.forceStart);
     themeBuilderPanel.removeAttribute("hidden");
     themePickerList.setAttribute("hidden", "");
     tabThemePicker.focus();
@@ -1709,23 +1716,38 @@
     // generation, plan fields the user has actually typed into, or a
     // review actually being displayed for the current reviewThemeId (not
     // just a stale reviewThemeId left over from stage load).
-    const hasActiveThemeBuilderSession = Boolean(draftThemeId)
-      || Boolean(themeGenerationRunning)
-      || themePlanFieldsHaveContent()
-      || themePlanEditorWasVisible
-      || (Boolean(reviewThemeId) && themeImageReviewWasVisible);
-    if (!hasActiveThemeBuilderSession) {
-      enterNewThemeDraftMode();
+    if (forceStart) {
+      // p81-t1: the builder button always resets the draft/review state —
+      // draftThemeId, typed plan content, and a visible review no longer
+      // count as reasons to keep the previous screen for THIS entry point.
+      // Only a live AI batch generation stays visible, so an in-flight run
+      // isn't lost.
+      clearThemeBuilderDraftState();
+      if (themeGenerationRunning) {
+        updateThemeDraftUi();
+        renderThemeBuilderScreen();
+      } else {
+        enterNewThemeDraftMode();
+      }
     } else {
-      // p78-t1: refresh #theme-build-actions/Review-images for whatever
-      // state is actually current every time the builder panel opens.
-      updateThemeDraftUi();
-      // Restore the review panel this open interrupted (setAttribute
-      // "hidden" above) — a genuinely active session must stay visible.
-      if (themeImageReviewWasVisible && themeImageReview) themeImageReview.removeAttribute("hidden");
-      // p79-t1: re-apply the current screen's visibility (themeBuilderScreen
-      // persists across tab re-entry) after the DOM pokes above.
-      renderThemeBuilderScreen();
+      const hasActiveThemeBuilderSession = Boolean(draftThemeId)
+        || Boolean(themeGenerationRunning)
+        || themePlanFieldsHaveContent()
+        || themePlanEditorWasVisible
+        || (Boolean(reviewThemeId) && themeImageReviewWasVisible);
+      if (!hasActiveThemeBuilderSession) {
+        enterNewThemeDraftMode();
+      } else {
+        // p78-t1: refresh #theme-build-actions/Review-images for whatever
+        // state is actually current every time the builder panel opens.
+        updateThemeDraftUi();
+        // Restore the review panel this open interrupted (setAttribute
+        // "hidden" above) — a genuinely active session must stay visible.
+        if (themeImageReviewWasVisible && themeImageReview) themeImageReview.removeAttribute("hidden");
+        // p79-t1: re-apply the current screen's visibility (themeBuilderScreen
+        // persists across tab re-entry) after the DOM pokes above.
+        renderThemeBuilderScreen();
+      }
     }
 
     // Boot up the theme builder canvas when the tab is first visited
@@ -2348,7 +2370,9 @@
       themeBuilderPlanEditorOpen = true;
       // p77-t1: draft-mode initialization now lives inside
       // openThemeBuilderPlanEditorTab itself, so every entry point gets it.
-      openThemeBuilderPlanEditorTab();
+      // p81-t1: this button is its own entry — always Start with an empty
+      // name, unless an AI batch generation is actively running.
+      openThemeBuilderPlanEditorTab({ forceStart: true });
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
   }

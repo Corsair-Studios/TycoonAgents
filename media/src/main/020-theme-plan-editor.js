@@ -1715,20 +1715,16 @@
     closeThemeReviewContextMenu();
     const menu = document.createElement("div");
     menu.className = "theme-review-context-menu";
-    menu.style.cssText = "position:fixed;z-index:9999;min-width:150px;padding:4px;"
-      + "background:var(--vscode-menu-background,#252526);"
-      + "color:var(--vscode-menu-foreground,#ccc);"
-      + "border:1px solid var(--vscode-menu-border,rgba(255,255,255,0.15));"
-      + "border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:12px;";
     const openItem = document.createElement("button");
     openItem.type = "button";
     openItem.textContent = "Open file location";
-    openItem.style.cssText = "display:block;width:100%;text-align:left;padding:5px 10px;"
-      + "background:transparent;border:none;color:inherit;cursor:pointer;border-radius:3px;font-size:12px;";
+    openItem.className = "theme-review-context-menu-item";
     openItem.addEventListener("mouseenter", () => {
-      openItem.style.background = "var(--vscode-menu-selectionBackground,rgba(255,255,255,0.12))";
+      openItem.classList.add("theme-review-context-menu-item--hover");
     });
-    openItem.addEventListener("mouseleave", () => { openItem.style.background = "transparent"; });
+    openItem.addEventListener("mouseleave", () => {
+      openItem.classList.remove("theme-review-context-menu-item--hover");
+    });
     openItem.addEventListener("click", () => {
       closeThemeReviewContextMenu();
       vscode.postMessage({
@@ -2058,14 +2054,12 @@
         const placeholderBoard = THEME_REVIEW_BOARD_BY_KIND[item.kind]
           || item.kind.replace(/_/g, " ");
         const placeholderBox = document.createElement("div");
-        placeholderBox.style.cssText = "display:flex;flex-direction:column;align-items:center;"
-          + "justify-content:center;gap:4px;width:100%;height:100%;min-height:96px;box-sizing:border-box;"
-          + "padding:8px;text-align:center;background:rgba(255,0,255,0.14);border:2px dashed #ff33ff;color:#ff33ff;";
+        placeholderBox.className = "theme-review-placeholder-box";
         const placeholderKind = document.createElement("div");
-        placeholderKind.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;";
+        placeholderKind.className = "theme-review-placeholder-kind";
         placeholderKind.textContent = `${placeholderBoard} board — not generated`;
         const placeholderLabel = document.createElement("div");
-        placeholderLabel.style.cssText = "font-size:11px;opacity:0.85;";
+        placeholderLabel.className = "theme-review-placeholder-label";
         placeholderLabel.textContent = item.label;
         placeholderBox.appendChild(placeholderKind);
         placeholderBox.appendChild(placeholderLabel);

@@ -4759,30 +4759,66 @@ td.col-status {
   background: color-mix(in srgb, var(--accent-info) 16%, transparent);
 }
 
+/* p81-t1: grid keeps Review/Export/size/delete column-aligned across rows
+   (each row is its own grid, but all rows share the same fixed-width
+   tracks — a flex row's free-space distribution shifted these per row
+   depending on the size label's rendered width). Below 420px there isn't
+   room for a fixed-track layout without clipping, so it switches to a
+   wrapping flex row instead. */
 .theme-picker-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto minmax(52px, auto) 36px;
+  grid-template-columns: minmax(0, 1fr) auto auto minmax(6ch, auto) 36px;
+  align-items: stretch;
   gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .theme-picker-row {
+    display: flex;
+    flex-wrap: wrap;
+  }
 }
 
 .theme-picker-select {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  flex: 1 1 0;
   min-width: 0;
   padding: 8px 12px;
   overflow: hidden;
   color: var(--vscode-button-secondaryForeground, #fff);
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   text-align: left;
-  text-overflow: ellipsis;
 }
 
-.theme-picker-select > span:first-child {
+/* Review/Export/delete never grow or shrink — only the name cell (above)
+   and the size label (below) flex, so these stay column-aligned across
+   rows regardless of name length. */
+.theme-picker-row > button {
+  flex: 0 0 auto;
+}
+
+/* Name first, full flexible width — ellipsis only once it truly runs out
+   of room (min-width:0 lets the flex item shrink below its content size). */
+.theme-picker-name {
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status/SELECTED badge on their own line, directly under the name, in
+   smaller muted text. */
+.theme-picker-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
 }
 
 .theme-picker-approval {
@@ -4797,9 +4833,12 @@ td.col-status {
 
 .theme-picker-size {
   align-self: center;
+  flex: 0 0 auto;
+  min-width: 6ch;
   color: var(--vscode-descriptionForeground, #aaa);
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
 }
@@ -7965,5 +8004,129 @@ button.theme-review-preview:focus-visible::after {
   border-radius: 50%;
   background: var(--vscode-editorWarning-foreground, #cca700);
   margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* p81-t1: moved off inline style="" attributes in panel.ts/server.mjs
+   markup — the real webview CSP (style-src with a nonce, no
+   'unsafe-inline') silently drops inline style attributes, so those never
+   applied in the actual extension even though a CSP-less harness showed
+   them. Class names describe intent; values are unchanged from the
+   removed inline styles. */
+.svg-abs-hidden {
+  position: absolute;
+}
+
+.metrics-table-hidden {
+  display: none;
+}
+
+.theme-library-heading {
+  margin: 0 0 16px;
+}
+
+.theme-picker-grid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Back to themes — at least 12px below it on every builder screen (was a
+   dropped inline margin-bottom:16px). */
+#tab-theme-picker {
+  margin-bottom: 16px;
+}
+
+.theme-generation-approval-warning {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid #d9a441;
+  background: rgba(217, 164, 65, 0.12);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#theme-build-status {
+  margin-bottom: 12px;
+  font-style: italic;
+  min-height: 20px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#theme-build-actions {
+  margin-bottom: 12px;
+}
+
+/* p81-t1: moved off .style.cssText assignments (same CSP reason as above —
+   style-src has no 'unsafe-inline'; only .style.<prop> property assignment
+   and class toggles are allowed, not cssText/innerHTML style="" strings). */
+.theme-review-context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--vscode-menu-background, #252526);
+  color: var(--vscode-menu-foreground, #ccc);
+  border: 1px solid var(--vscode-menu-border, rgba(255, 255, 255, 0.15));
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+
+.theme-review-context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.theme-review-context-menu-item--hover {
+  background: var(--vscode-menu-selectionBackground, rgba(255, 255, 255, 0.12));
+}
+
+.theme-review-placeholder-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  min-height: 96px;
+  box-sizing: border-box;
+  padding: 8px;
+  text-align: center;
+  background: rgba(255, 0, 255, 0.14);
+  border: 2px dashed #ff33ff;
+  color: #ff33ff;
+}
+
+.theme-review-placeholder-kind {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.theme-review-placeholder-label {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.mcp-setup-badge {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(224, 168, 0, 0.18);
+  color: #b8860b;
+  border: 1px solid rgba(224, 168, 0, 0.4);
   vertical-align: middle;
 }

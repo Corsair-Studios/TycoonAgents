@@ -3483,7 +3483,14 @@ if (typeof module !== "undefined" && module.exports) {
    * template, no Save/New-theme controls, no updateThemeDraftUi. Moving the
    * check in here means every caller gets it for free.
    */
-  function openThemeBuilderPlanEditorTab() {
+  function openThemeBuilderPlanEditorTab(opts) {
+    // p81-t1: the Tycoon Theme Builder button (tabThemeBuilder below) is its
+    // own entry point — it must always land on Start with an empty name,
+    // never reopen whatever theme happened to be under review/staged.
+    // "Review images" (openThemeBuilderFromReview) and the sign-in shell's
+    // "Back to builder" continue button call this with no opts and keep the
+    // existing session-preserving behavior below.
+    const forceStart = Boolean(opts && opts.forceStart);
     themeBuilderPanel.removeAttribute("hidden");
     themePickerList.setAttribute("hidden", "");
     tabThemePicker.focus();
@@ -3517,23 +3524,38 @@ if (typeof module !== "undefined" && module.exports) {
     // generation, plan fields the user has actually typed into, or a
     // review actually being displayed for the current reviewThemeId (not
     // just a stale reviewThemeId left over from stage load).
-    const hasActiveThemeBuilderSession = Boolean(draftThemeId)
-      || Boolean(themeGenerationRunning)
-      || themePlanFieldsHaveContent()
-      || themePlanEditorWasVisible
-      || (Boolean(reviewThemeId) && themeImageReviewWasVisible);
-    if (!hasActiveThemeBuilderSession) {
-      enterNewThemeDraftMode();
+    if (forceStart) {
+      // p81-t1: the builder button always resets the draft/review state —
+      // draftThemeId, typed plan content, and a visible review no longer
+      // count as reasons to keep the previous screen for THIS entry point.
+      // Only a live AI batch generation stays visible, so an in-flight run
+      // isn't lost.
+      clearThemeBuilderDraftState();
+      if (themeGenerationRunning) {
+        updateThemeDraftUi();
+        renderThemeBuilderScreen();
+      } else {
+        enterNewThemeDraftMode();
+      }
     } else {
-      // p78-t1: refresh #theme-build-actions/Review-images for whatever
-      // state is actually current every time the builder panel opens.
-      updateThemeDraftUi();
-      // Restore the review panel this open interrupted (setAttribute
-      // "hidden" above) — a genuinely active session must stay visible.
-      if (themeImageReviewWasVisible && themeImageReview) themeImageReview.removeAttribute("hidden");
-      // p79-t1: re-apply the current screen's visibility (themeBuilderScreen
-      // persists across tab re-entry) after the DOM pokes above.
-      renderThemeBuilderScreen();
+      const hasActiveThemeBuilderSession = Boolean(draftThemeId)
+        || Boolean(themeGenerationRunning)
+        || themePlanFieldsHaveContent()
+        || themePlanEditorWasVisible
+        || (Boolean(reviewThemeId) && themeImageReviewWasVisible);
+      if (!hasActiveThemeBuilderSession) {
+        enterNewThemeDraftMode();
+      } else {
+        // p78-t1: refresh #theme-build-actions/Review-images for whatever
+        // state is actually current every time the builder panel opens.
+        updateThemeDraftUi();
+        // Restore the review panel this open interrupted (setAttribute
+        // "hidden" above) — a genuinely active session must stay visible.
+        if (themeImageReviewWasVisible && themeImageReview) themeImageReview.removeAttribute("hidden");
+        // p79-t1: re-apply the current screen's visibility (themeBuilderScreen
+        // persists across tab re-entry) after the DOM pokes above.
+        renderThemeBuilderScreen();
+      }
     }
 
     // Boot up the theme builder canvas when the tab is first visited
@@ -4156,7 +4178,9 @@ if (typeof module !== "undefined" && module.exports) {
       themeBuilderPlanEditorOpen = true;
       // p77-t1: draft-mode initialization now lives inside
       // openThemeBuilderPlanEditorTab itself, so every entry point gets it.
-      openThemeBuilderPlanEditorTab();
+      // p81-t1: this button is its own entry — always Start with an empty
+      // name, unless an AI batch generation is actively running.
+      openThemeBuilderPlanEditorTab({ forceStart: true });
       vscode.postMessage({ type: "OPEN_THEME_BUILDER" });
     });
   }
@@ -6551,20 +6575,16 @@ if (typeof module !== "undefined" && module.exports) {
     closeThemeReviewContextMenu();
     const menu = document.createElement("div");
     menu.className = "theme-review-context-menu";
-    menu.style.cssText = "position:fixed;z-index:9999;min-width:150px;padding:4px;"
-      + "background:var(--vscode-menu-background,#252526);"
-      + "color:var(--vscode-menu-foreground,#ccc);"
-      + "border:1px solid var(--vscode-menu-border,rgba(255,255,255,0.15));"
-      + "border-radius:5px;box-shadow:0 2px 8px rgba(0,0,0,0.4);font-size:12px;";
     const openItem = document.createElement("button");
     openItem.type = "button";
     openItem.textContent = "Open file location";
-    openItem.style.cssText = "display:block;width:100%;text-align:left;padding:5px 10px;"
-      + "background:transparent;border:none;color:inherit;cursor:pointer;border-radius:3px;font-size:12px;";
+    openItem.className = "theme-review-context-menu-item";
     openItem.addEventListener("mouseenter", () => {
-      openItem.style.background = "var(--vscode-menu-selectionBackground,rgba(255,255,255,0.12))";
+      openItem.classList.add("theme-review-context-menu-item--hover");
     });
-    openItem.addEventListener("mouseleave", () => { openItem.style.background = "transparent"; });
+    openItem.addEventListener("mouseleave", () => {
+      openItem.classList.remove("theme-review-context-menu-item--hover");
+    });
     openItem.addEventListener("click", () => {
       closeThemeReviewContextMenu();
       vscode.postMessage({
@@ -6894,14 +6914,12 @@ if (typeof module !== "undefined" && module.exports) {
         const placeholderBoard = THEME_REVIEW_BOARD_BY_KIND[item.kind]
           || item.kind.replace(/_/g, " ");
         const placeholderBox = document.createElement("div");
-        placeholderBox.style.cssText = "display:flex;flex-direction:column;align-items:center;"
-          + "justify-content:center;gap:4px;width:100%;height:100%;min-height:96px;box-sizing:border-box;"
-          + "padding:8px;text-align:center;background:rgba(255,0,255,0.14);border:2px dashed #ff33ff;color:#ff33ff;";
+        placeholderBox.className = "theme-review-placeholder-box";
         const placeholderKind = document.createElement("div");
-        placeholderKind.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;";
+        placeholderKind.className = "theme-review-placeholder-kind";
         placeholderKind.textContent = `${placeholderBoard} board — not generated`;
         const placeholderLabel = document.createElement("div");
-        placeholderLabel.style.cssText = "font-size:11px;opacity:0.85;";
+        placeholderLabel.className = "theme-review-placeholder-label";
         placeholderLabel.textContent = item.label;
         placeholderBox.appendChild(placeholderKind);
         placeholderBox.appendChild(placeholderLabel);
@@ -7266,8 +7284,20 @@ if (typeof module !== "undefined" && module.exports) {
 
       const btn = document.createElement("button");
       btn.className = "skill-btn theme-picker-select" + (isSelected ? " theme-picker-select--active" : "");
+      // p81-t1: name first, full flexible width, ellipsis only once it runs
+      // out of room; status/SELECTED badge move to a second line underneath
+      // so a long name never gets squeezed by the status text next to it.
       const nameLabel = document.createElement("span");
+      nameLabel.className = "theme-picker-name";
       nameLabel.textContent = themeName;
+      const metaRow = document.createElement("span");
+      metaRow.className = "theme-picker-meta";
+      if (isSelected) {
+        const badge = document.createElement("span");
+        badge.className = "theme-selected-badge";
+        badge.textContent = "Selected";
+        metaRow.appendChild(badge);
+      }
       const approvalLabel = document.createElement("span");
       approvalLabel.className = "theme-picker-approval" + (theme.export_ready ? " theme-picker-approval--ready" : "");
       approvalLabel.textContent = theme.export_ready
@@ -7275,15 +7305,9 @@ if (typeof module !== "undefined" && module.exports) {
         : theme.total
           ? `${theme.accepted}/${theme.total} approved`
           : "Review required";
+      metaRow.appendChild(approvalLabel);
       btn.appendChild(nameLabel);
-      // Selected badge
-      if (isSelected) {
-        const badge = document.createElement("span");
-        badge.className = "theme-selected-badge";
-        badge.textContent = "Selected";
-        btn.appendChild(badge);
-      }
-      btn.appendChild(approvalLabel);
+      btn.appendChild(metaRow);
       btn.addEventListener("click", () => {
         selectedThemeId = theme.theme_id;
         vscode.postMessage({ type: 'SELECT_THEME', payload: { theme_id: theme.theme_id } });
@@ -7293,7 +7317,9 @@ if (typeof module !== "undefined" && module.exports) {
 
       const reviewBtn = document.createElement("button");
       reviewBtn.className = "skill-btn";
-      reviewBtn.textContent = "Review images";
+      reviewBtn.textContent = "Review";
+      reviewBtn.title = "Review images";
+      reviewBtn.setAttribute("aria-label", "Review images");
       reviewBtn.addEventListener("click", () => {
         // p79-t1: reviewing an existing theme reuses the manual screen —
         // board grid + header (Back/name/Save theme), no AI-only elements.
@@ -7307,12 +7333,13 @@ if (typeof module !== "undefined" && module.exports) {
       const exportBtn = document.createElement("button");
       exportBtn.className = "skill-btn";
       exportBtn.type = "button";
-      exportBtn.textContent = "Export .zip";
+      exportBtn.textContent = "Export";
       exportBtn.disabled = !theme.export_ready;
       exportBtn.dataset.exportReady = String(Boolean(theme.export_ready));
       exportBtn.title = theme.export_ready
         ? `Export ${themeName} as a .zip file`
         : `Approve every theme image before exporting (${theme.accepted || 0}/${theme.total || 0} approved)`;
+      exportBtn.setAttribute("aria-label", "Export .zip");
       exportBtn.dataset.themeExportId = theme.theme_id;
       exportBtn.addEventListener("click", () => {
         exportBtn.disabled = true;
@@ -15572,7 +15599,6 @@ if (typeof module !== "undefined" && module.exports) {
         const setupBadge = document.createElement("span");
         setupBadge.className = "mcp-setup-badge";
         setupBadge.textContent = "Template — needs setup";
-        setupBadge.style.cssText = "margin-left:8px;font-size:11px;padding:1px 7px;border-radius:9px;background:rgba(224,168,0,0.18);color:#b8860b;border:1px solid rgba(224,168,0,0.4);vertical-align:middle;";
         header.appendChild(setupBadge);
       }
 
