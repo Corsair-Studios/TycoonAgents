@@ -963,7 +963,38 @@ export class TycoonPanel {
       return;
     }
     if (uri.path !== "/theme-service-auth") return;
-    const code = new URLSearchParams(uri.query).get("code");
+    // p83-t1: parse both the PKCE `?code=` query and the implicit-flow
+    // `#access_token=...&refresh_token=...` fragment — VS Code's Uri
+    // exposes the fragment separately from the query, and a Supabase
+    // implicit-flow redirect carries its tokens there, never in the query.
+    const query = new URLSearchParams(uri.query);
+    const fragment = new URLSearchParams(uri.fragment);
+    const code = query.get("code") ?? undefined;
+    const accessToken = fragment.get("access_token") ?? undefined;
+    const refreshToken = fragment.get("refresh_token") ?? undefined;
+    const expiresInRaw = fragment.get("expires_in");
+    const expiresIn = expiresInRaw ? Number(expiresInRaw) : undefined;
+    const errorCode = query.get("error") ?? fragment.get("error") ?? undefined;
+
+    const host = TycoonPanel.currentPanel?._themeServiceHost;
+    // Captured BEFORE forwarding to the host below, since a successful
+    // code-branch completion clears this flag as part of the same call.
+    const wasPending = Boolean(host && host.hasPendingGoogleSignIn());
+    if (host) {
+      // p83-t1: every callback is forwarded so the host can record what
+      // arrived — parameter NAMES only, via the existing output channel
+      // helper it already holds — regardless of whether anything here is
+      // usable. This function itself never records anything.
+      void host.handleUriCallback({
+        code,
+        accessToken,
+        refreshToken,
+        expiresIn,
+        errorCode,
+        queryParamNames: Array.from(query.keys()),
+        fragmentParamNames: Array.from(fragment.keys()),
+      });
+    }
     if (!code) return;
     // p72-t1: a callback can land in a window/editor other than the one
     // that started sign-in (e.g. the browser reopened stable VS Code while
@@ -971,12 +1002,8 @@ export class TycoonPanel {
     // window after the pending verifier was already consumed/cleared. In
     // either case there's nothing here to complete, so offer the code for
     // the user to paste into the Theme Builder where sign-in actually
-    // started, instead of a bare "not signed in" error. Never logged.
-    const host = TycoonPanel.currentPanel?._themeServiceHost;
-    if (host && host.hasPendingGoogleSignIn()) {
-      void host.handleUriCallback(code);
-      return;
-    }
+    // started, instead of a bare "not signed in" error. Never recorded.
+    if (wasPending) return;
     void vscode.window
       .showInformationMessage(
         "Sign-in code received. Paste it into the Theme Builder of the IDE where you started sign-in to finish signing in.",

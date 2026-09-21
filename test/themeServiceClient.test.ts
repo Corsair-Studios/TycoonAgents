@@ -400,6 +400,19 @@ test("service unavailable (503)", async () => {
   if (!res.ok) assert.equal(res.error.kind, "unavailable");
 });
 
+// p83-t2: the 503 message must be the fixed, human-readable string, never
+// the raw backend body (e.g. a bare "unavailable").
+test("service unavailable (503) surfaces the fixed message, never a raw 'unavailable' body", async () => {
+  const { fake, client } = setupClient();
+  fake.helpers.setUnavailable(true);
+  const res = await client.getPricing();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.message, "Theme Service unavailable (503). No credits were charged.");
+    assert.notEqual(res.error.message, "unavailable");
+  }
+});
+
 test("unreachable network failure (fetch throws)", async () => {
   const throwingFetch: typeof fetch = (async () => {
     throw new Error("network down");

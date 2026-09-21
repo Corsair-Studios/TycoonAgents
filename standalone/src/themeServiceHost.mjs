@@ -132,17 +132,24 @@ const CLOSE_TAB_HTML =
  * single-use-verifier posture).
  *
  * @param {(code: string) => void} onCode
+ * @param {(errorCode: string) => void} [onError] p83-t1: an OAuth `error`
+ *   query param (e.g. access_denied) with no `code` — never called for a
+ *   request with neither, which is logged by the caller as no-usable-params.
+ * @param {() => void} [onEmpty] p83-t1: neither `code` nor `error` present.
  * @returns {Promise<{ redirectTo: string, port: number, close: () => void }>}
  */
-function startGoogleLoopbackListener(onCode) {
+function startGoogleLoopbackListener(onCode, onError, onEmpty) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       try {
         const url = new URL(req.url, 'http://127.0.0.1');
         const code = url.searchParams.get('code');
+        const errorCode = url.searchParams.get('error');
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(CLOSE_TAB_HTML);
         if (code) onCode(code);
+        else if (errorCode) onError?.(errorCode);
+        else onEmpty?.();
       } catch (err) {
         console.error('[tycoonagents-standalone] themeServiceHost: loopback listener request failed:', err instanceof Error ? err.message : err);
         try {
@@ -294,24 +301,36 @@ export function createThemeServiceHost(opts) {
   // inner.handleGoogleStart is never called) using the identical client call
   // and error-payload posting shape as the VS Code host.
   async function handleGoogleComplete(code) {
-    if (!code) return;
+    // p83-t1: the loopback listener only ever receives a query string (a
+    // browser never sends the URL fragment to a server), so this path only
+    // ever sees a PKCE `code` — never access_token/refresh_token.
+    if (!code) {
+      log('themeServiceHost.handleGoogleComplete: no code, early exit');
+      return;
+    }
     const codeVerifier = pendingCodeVerifier;
     if (!codeVerifier) {
+      log('themeServiceHost.handleGoogleComplete: no pending Google sign-in, early exit');
       opts.postStatus({ signedIn: false, pendingCheckout: false, error: { kind: 'not_signed_in', message: 'no pending Google sign-in' } });
       return;
     }
     pendingCodeVerifier = null;
     pendingBrowserUrl = null;
+    log('themeServiceHost.handleGoogleComplete: code exchange request start');
     const res = await client.completeGoogleSignIn({ authCode: code, codeVerifier });
+    log(`themeServiceHost.handleGoogleComplete: code exchange status=${res.ok ? 'ok' : `error kind=${res.error.kind}${res.error.status !== undefined ? ` http=${res.error.status}` : ''}`}`);
     if (!res.ok) {
       opts.postStatus({ signedIn: false, pendingCheckout: false, error: { kind: res.error.kind, message: res.error.message } });
       return;
     }
+    log('themeServiceHost.handleGoogleComplete: session stored=yes');
     // p62-t2: this path bypasses inner.handleGoogleComplete entirely (see
     // module doc above), so the first-sign-in/referral-apply bookkeeping
     // inner would otherwise do internally has to be invoked explicitly here.
     await inner.notifySignInSucceeded();
-    opts.postStatus(withEndpointHost(await inner.getStatusSnapshot()));
+    const snapshot = await inner.getStatusSnapshot();
+    log(`themeServiceHost.handleGoogleComplete: account fetch=${snapshot.error ? `error kind=${snapshot.error.kind}` : 'ok'}`);
+    opts.postStatus(withEndpointHost(snapshot));
   }
 
   // Overrides the VS Code host's vscode:// deep-link redirectTo: starts a
@@ -320,9 +339,38 @@ export function createThemeServiceHost(opts) {
     log('themeServiceHost.handleGoogleStart: start');
     closeLoopback();
     try {
-      const listener = await startGoogleLoopbackListener((code) => {
-        void handleGoogleComplete(code).finally(() => closeLoopback());
-      });
+      const listener = await startGoogleLoopbackListener(
+        (code) => {
+          void handleGoogleComplete(code).finally(() => closeLoopback());
+        },
+        (errorCode) => {
+          log(`themeServiceHost.handleGoogleStart: loopback callback branch=oauth-error code=${errorCode}`);
+          closeLoopback();
+          pendingCodeVerifier = null;
+          pendingBrowserUrl = null;
+          opts.postStatus({
+            signedIn: false,
+            pendingCheckout: false,
+            error: { kind: 'oauth_error', message: `Google sign-in wasn't completed (${errorCode}).` },
+          });
+        },
+        () => {
+          log('themeServiceHost.handleGoogleStart: loopback callback branch=no-usable-params');
+          // p83-t2: don't leave the modal waiting forever on an
+          // unrecognized callback — post a visible status, but keep the
+          // pending verifier so a subsequent legitimate callback can still
+          // complete (mirrors src/host/vscode/themeServiceHost.ts's
+          // no-usable-params branch, which also doesn't clear pending).
+          if (pendingCodeVerifier !== null) {
+            opts.postStatus({
+              signedIn: false,
+              pendingCheckout: false,
+              error: { kind: 'not_signed_in', message: "Google sign-in callback didn't include a code or tokens." },
+              browserUrl: pendingBrowserUrl ?? undefined,
+            });
+          }
+        },
+      );
       loopback = listener;
       loopbackTimeoutHandle = setTimeout(() => {
         closeLoopback();

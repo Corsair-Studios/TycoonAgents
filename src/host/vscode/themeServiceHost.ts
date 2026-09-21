@@ -92,6 +92,31 @@ export interface ThemeServiceDeviceState {
   markSignedIn(): Promise<void>;
 }
 
+/**
+ * p83-t1: the shape of a parsed `/theme-service-auth` callback URI, built
+ * by the host's static URI handler (panel.ts / standalone equivalent) and
+ * handed to {@link ThemeServiceHost.handleUriCallback}. Only parameter
+ * NAMES are ever carried for logging (`queryParamNames`/
+ * `fragmentParamNames`) — never a raw query string or fragment, and never
+ * anything not explicitly named here (code/tokens/error code only).
+ */
+export interface GoogleCallbackParams {
+  /** PKCE `?code=` query parameter, when present. */
+  code?: string;
+  /** Implicit-flow `#access_token=` fragment parameter, when present. */
+  accessToken?: string;
+  /** Implicit-flow `#refresh_token=` fragment parameter, when present. */
+  refreshToken?: string;
+  /** Implicit-flow `#expires_in=` fragment parameter, when present. */
+  expiresIn?: number;
+  /** Standard OAuth `error`/`error_description` code name (e.g. "access_denied") from the query or fragment — never the description text verbatim. */
+  errorCode?: string;
+  /** Names only (never values) of every query parameter on the callback URI, for logging. */
+  queryParamNames?: string[];
+  /** Names only (never values) of every fragment parameter on the callback URI, for logging. */
+  fragmentParamNames?: string[];
+}
+
 export interface ThemeServiceHostOptions {
   secrets: vscode.SecretStorage;
   /**
@@ -216,8 +241,16 @@ export interface ThemeServiceHost {
    * anywhere until {@link ThemeServiceHost}'s next successful first
    * sign-in on this device; never persisted. */
   handleSetReferralCode(code: string | undefined): void;
-  /** Called by the registered vscode.window.registerUriHandler on a deep-link callback. */
-  handleUriCallback(code: string): Promise<void>;
+  /**
+   * Called by the registered vscode.window.registerUriHandler on a
+   * deep-link callback. A plain string is the legacy shape (a bare
+   * `code`, kept for backward compatibility with the pasted-code path and
+   * existing callers). p83-t1: a {@link GoogleCallbackParams} object
+   * additionally covers the implicit flow (`access_token`/`refresh_token`
+   * in the URL fragment) and an OAuth `error` code, plus the query/
+   * fragment parameter NAMES (never values) for logging.
+   */
+  handleUriCallback(input: string | GoogleCallbackParams): Promise<void>;
   /**
    * p72-t1: true iff a Google sign-in is currently awaiting its deep-link
    * completion (handleGoogleStart succeeded and nothing has consumed the
@@ -399,6 +432,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   async function postFreshStatus(): Promise<void> {
     if (disposed) return;
     const status = await buildStatus();
+    log(`themeServiceHost.postFreshStatus: account fetch=${status.error ? `error kind=${status.error.kind}` : "ok"}`);
     lastSnapshot = status;
     opts.postStatus(status);
   }
@@ -486,21 +520,113 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   }
 
   async function completeGoogle(authCode: string | undefined): Promise<void> {
-    if (!authCode || authCode.length === 0) return;
+    if (!authCode || authCode.length === 0) {
+      log("themeServiceHost.completeGoogle: no code, early exit");
+      return;
+    }
     const codeVerifier = pendingGoogleCodeVerifier;
     if (!codeVerifier) {
+      log("themeServiceHost.completeGoogle: no pending Google sign-in, early exit");
       opts.postStatus({ signedIn: false, pendingCheckout, error: { kind: "not_signed_in", message: "no pending Google sign-in" } });
       return;
     }
     pendingGoogleCodeVerifier = null;
     pendingGoogleBrowserUrl = null;
+    log("themeServiceHost.completeGoogle: code exchange request start");
     const res = await client.completeGoogleSignIn({ authCode, codeVerifier });
+    log(`themeServiceHost.completeGoogle: code exchange status=${res.ok ? "ok" : `error kind=${res.error.kind}${res.error.status !== undefined ? ` http=${res.error.status}` : ""}`}`);
     if (!res.ok) {
       opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
       return;
     }
+    log("themeServiceHost.completeGoogle: session stored=yes");
     await afterSignInSucceeded();
     await postFreshStatus();
+  }
+
+  /**
+   * p83-t1: single entry point for both the deep-link callback and the
+   * legacy pasted-code path. Accepts either a bare code string (legacy) or
+   * a {@link GoogleCallbackParams} object covering the implicit flow and
+   * OAuth errors. Every branch is logged (names/kinds only, never values).
+   */
+  async function handleGoogleCallback(input: string | GoogleCallbackParams): Promise<void> {
+    const params: GoogleCallbackParams = typeof input === "string" ? { code: input } : input;
+    const queryNames = params.queryParamNames ?? (params.code !== undefined ? ["code"] : []);
+    const fragmentNames =
+      params.fragmentParamNames ??
+      (params.accessToken !== undefined || params.refreshToken !== undefined
+        ? ["access_token", "refresh_token"]
+        : []);
+    log(
+      `themeServiceHost.handleUriCallback: received query=[${queryNames.join(",")}] fragment=[${fragmentNames.join(",")}]`,
+    );
+    const pending = pendingGoogleCodeVerifier !== null;
+    log(`themeServiceHost.handleUriCallback: pending sign-in=${pending}`);
+
+    if (params.errorCode) {
+      log(`themeServiceHost.handleUriCallback: branch=oauth-error code=${params.errorCode}`);
+      if (pending) {
+        pendingGoogleCodeVerifier = null;
+        pendingGoogleBrowserUrl = null;
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "oauth_error", message: `Google sign-in wasn't completed (${params.errorCode}).` },
+        });
+      }
+      return;
+    }
+
+    if (params.accessToken && params.refreshToken) {
+      log("themeServiceHost.handleUriCallback: branch=implicit-tokens");
+      if (!pending) {
+        log("themeServiceHost.handleUriCallback: no pending Google sign-in, early exit");
+        return;
+      }
+      pendingGoogleCodeVerifier = null;
+      pendingGoogleBrowserUrl = null;
+      log("themeServiceHost.handleUriCallback: verifying implicit token before storing session");
+      const res = await client.completeGoogleSignInImplicit({
+        accessToken: params.accessToken,
+        refreshToken: params.refreshToken,
+        expiresIn: params.expiresIn,
+      });
+      log(
+        `themeServiceHost.handleUriCallback: implicit token verify kind=${res.ok ? "ok" : res.error.kind}${!res.ok && res.error.status !== undefined ? ` http=${res.error.status}` : ""} session stored=${res.ok ? "yes" : "no"}`,
+      );
+      if (!res.ok) {
+        // p83-t2 review fix: the candidate token failed verification (e.g.
+        // it was crafted/bogus) — nothing was ever persisted (see
+        // completeGoogleSignInImplicit), and the pending sign-in was
+        // already cleared above so this can't be retried with the same
+        // stale tokens. Fixed, non-server-text message only.
+        opts.postStatus({
+          signedIn: false,
+          pendingCheckout,
+          error: { kind: "not_signed_in", message: "Sign-in could not be verified." },
+        });
+        return;
+      }
+      await afterSignInSucceeded();
+      await postFreshStatus();
+      return;
+    }
+
+    if (params.code) {
+      log("themeServiceHost.handleUriCallback: branch=code");
+      await completeGoogle(params.code);
+      return;
+    }
+
+    log("themeServiceHost.handleUriCallback: branch=no-usable-params");
+    if (pending) {
+      opts.postStatus({
+        signedIn: false,
+        pendingCheckout,
+        error: { kind: "not_signed_in", message: "Google sign-in callback didn't include a code or tokens." },
+      });
+    }
   }
 
   return {
@@ -655,8 +781,8 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       await completeGoogle(code);
     },
 
-    async handleUriCallback(code) {
-      await completeGoogle(code);
+    async handleUriCallback(input) {
+      await handleGoogleCallback(input);
     },
 
     hasPendingGoogleSignIn() {

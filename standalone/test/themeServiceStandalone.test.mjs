@@ -260,6 +260,54 @@ test('Google pasted-code fallback: THEME_SERVICE_GOOGLE_COMPLETE-equivalent (han
   assert.equal(last.signedIn, true, 'pasted-code completion must sign in identically to the loopback path');
 });
 
+// p83-t2: loopback onError/onEmpty paths (standalone/src/themeServiceHost.mjs
+// startGoogleLoopbackListener onError/onEmpty callbacks) must post a visible
+// status rather than leaving the modal on "waiting" forever.
+test('Google loopback: a GET with ?error=access_denied posts a visible oauth_error status', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, statuses, openExternalCalls } = newHost(t, fake);
+
+  await host.handleGoogleStart();
+  const port = host.getLoopbackPort();
+  assert.ok(port > 0, 'a loopback listener must be open after handleGoogleStart');
+  assert.equal(openExternalCalls.length, 1);
+
+  const before = statuses.length;
+  const res = await fetch(`http://127.0.0.1:${port}/?error=access_denied&error_description=user%40example.com%20leaked`);
+  assert.equal(res.status, 200);
+
+  for (let i = 0; i < 50 && statuses.length === before; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  const last = statuses[statuses.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.kind, 'oauth_error');
+  assert.ok(last.error?.message.includes('access_denied'), `expected access_denied in message: ${last.error?.message}`);
+  const dump = JSON.stringify(statuses);
+  assert.ok(!dump.includes('leaked'), 'error_description text must never be posted');
+});
+
+test('Google loopback: a GET with neither code nor error posts a visible status instead of leaving the modal waiting', async (t) => {
+  const fake = createFakeThemeService();
+  const { host, statuses } = newHost(t, fake);
+
+  await host.handleGoogleStart();
+  const port = host.getLoopbackPort();
+  assert.ok(port > 0);
+
+  const before = statuses.length;
+  const res = await fetch(`http://127.0.0.1:${port}/`);
+  assert.equal(res.status, 200);
+
+  for (let i = 0; i < 50 && statuses.length === before; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(statuses.length > before, 'a no-usable-params callback while pending must post a visible status, not stay silent');
+  const last = statuses[statuses.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.ok(last.error, 'should carry a visible error rather than leaving the caller to infer failure');
+});
+
 // p65-t4: standalone equivalents of the VS Code host's handleGoogleOpen
 // no-op/pending coverage (src/host/vscode/themeServiceHost.ts ~422).
 test('handleGoogleOpen: no-ops (opens nothing) when there is no pending Google browser URL', async (t) => {

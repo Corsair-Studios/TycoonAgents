@@ -146,7 +146,7 @@ typed code.) Response `200`:
 
 ### Google OAuth (PKCE)
 
-`GET {SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=<redirect>&code_challenge=<challenge>&code_challenge_method=s256`
+`GET {SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=<redirect>&code_challenge=<challenge>&code_challenge_method=S256`
 Opens in the system browser. `redirect_to` is:
 - VS Code (and forks): deep link `<scheme>://<publisher>.<extension>/theme-service-auth`,
   where `<scheme>` is the running host's own `vscode.env.uriScheme` (p72-t1,

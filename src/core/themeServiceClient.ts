@@ -279,6 +279,12 @@ export interface ThemeServiceClient {
   verifyMagicLink(email: string, code: string): Promise<ThemeServiceResult<void>>;
   startGoogleSignIn(input: { redirectTo: string }): Promise<ThemeServiceResult<GoogleSignInStart>>;
   completeGoogleSignIn(input: { authCode: string; codeVerifier: string }): Promise<ThemeServiceResult<void>>;
+  /** p83-t1: implicit-flow completion (fragment access_token/refresh_token, no code). */
+  completeGoogleSignInImplicit(input: {
+    accessToken: string;
+    refreshToken: string;
+    expiresIn?: number;
+  }): Promise<ThemeServiceResult<void>>;
   refreshSession(): Promise<ThemeServiceResult<void>>;
   signOut(): Promise<ThemeServiceResult<void>>;
   getStatus(): Promise<ThemeServiceResult<ThemeServiceStatus>>;
@@ -752,7 +758,19 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   /** GET/POST against the Theme Service itself, with bearer auth + one 401 refresh-and-retry. */
   async function serviceRequest(
     path: string,
-    init: { method: "GET" | "POST"; body?: unknown; auth: boolean; timeoutMs?: number }
+    init: {
+      method: "GET" | "POST";
+      body?: unknown;
+      auth: boolean;
+      timeoutMs?: number;
+      /**
+       * p83-t2: sends this bearer token instead of the stored session, and
+       * never touches loadSession/doRefreshSession/tokenStore — used only
+       * to VALIDATE a candidate access token (implicit-flow completion)
+       * before it is ever persisted. Never combined with `auth: true`.
+       */
+      bearerOverride?: string;
+    }
   ): Promise<ThemeServiceResult<unknown>> {
     // Clock-skew margin: refresh a little before actual expiry so a token
     // that is about to lapse mid-flight doesn't round-trip as a 401.
@@ -765,7 +783,9 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     async function once(): Promise<{ status: "ok"; value: unknown } | { status: "unauthorized" } | { status: "error"; error: ThemeServiceError }> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (clientVersion) headers["X-Tycoon-Client"] = clientVersion;
-      if (init.auth) {
+      if (init.bearerOverride) {
+        headers.Authorization = `Bearer ${init.bearerOverride}`;
+      } else if (init.auth) {
         let session = await loadSession();
         if (!session) return { status: "unauthorized" };
         if (session.expiresAt - EXPIRY_SKEW_MS <= now()) {
@@ -847,7 +867,13 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
             error: { kind: "provider_failed", status: 502, message: errorField ?? "provider failed", refunded, credits },
           };
         case 503:
-          return { status: "error", error: { kind: "unavailable", status: 503, message: errorField ?? "service unavailable" } };
+          // p83-t1: the backend's `error` field for a 503 can be the bare
+          // short code "unavailable" (not a readable sentence) — that
+          // verbatim text was rendered straight into the sign-in UI. Always
+          // use a fixed, readable message here instead of trusting
+          // `errorField`; nothing about the raw field is lost since callers
+          // only ever consult `kind` for behavior.
+          return { status: "error", error: { kind: "unavailable", status: 503, message: "Theme Service unavailable (503). No credits were charged." } };
         default:
           return {
             status: "error",
@@ -910,9 +936,10 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       url.searchParams.set("provider", "google");
       url.searchParams.set("redirect_to", redirectTo);
       url.searchParams.set("code_challenge", codeChallenge);
-      // Lowercase "s256" per Supabase's GoTrue docs (not the RFC 7636
-      // uppercase "S256" some OAuth providers expect).
-      url.searchParams.set("code_challenge_method", "s256");
+      // p83-t1: uppercase "S256" per RFC 7636 (Supabase's GoTrue accepts the
+      // RFC-standard spelling; the previous lowercase "s256" was non-
+      // standard and risked the challenge method not being recognized).
+      url.searchParams.set("code_challenge_method", "S256");
       return { ok: true, value: { browserUrl: url.toString(), codeVerifier } };
     },
 
@@ -922,6 +949,33 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       const parsed = parseGoTrueSession(res.value, now());
       if (!parsed) return { ok: false, error: invalidResponse("malformed pkce token response") };
       await saveSession(parsed);
+      return { ok: true, value: undefined };
+    },
+
+    // p83-t1: completes Google sign-in from the implicit-flow fragment
+    // (#access_token=...&refresh_token=...) instead of a PKCE code exchange
+    // — used when the callback URL carries tokens directly rather than a
+    // `code`. Stores the session exactly as the code-exchange path does; no
+    // network request is made (there is nothing left to exchange).
+    async completeGoogleSignInImplicit({ accessToken, refreshToken, expiresIn }) {
+      if (!accessToken || !refreshToken) {
+        return { ok: false, error: invalidResponse("missing access/refresh token") };
+      }
+      // p83-t2 review fix: validate the candidate access token against the
+      // service BEFORE persisting anything — a crafted callback carrying a
+      // bogus token pair must never reach the token store, even transiently.
+      const verify = await serviceRequest("/api/account", {
+        method: "GET",
+        auth: false,
+        bearerOverride: accessToken,
+        timeoutMs: statusTimeoutMs,
+      });
+      if (!verify.ok) return { ok: false, error: verify.error };
+      await saveSession({
+        accessToken,
+        refreshToken,
+        expiresAt: now() + (expiresIn ?? 3600) * 1000,
+      });
       return { ok: true, value: undefined };
     },
 

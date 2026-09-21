@@ -627,6 +627,24 @@ test("hasPendingGoogleSignIn: true after handleGoogleStart, false after handleGo
   }
 });
 
+test("p83-t2: pending sign-in, fragment tokens the fake rejects (401 on /api/account) must not persist a session", async () => {
+  const { host, tokenStore, posted, logLines } = setupWithLog();
+  await host.handleGoogleStart();
+  await host.handleUriCallback({
+    accessToken: SECRET_ACCESS_TOKEN,
+    refreshToken: SECRET_REFRESH_TOKEN,
+    expiresIn: 3600,
+    queryParamNames: [],
+    fragmentParamNames: ["access_token", "refresh_token", "expires_in"],
+  });
+  assert.equal(await tokenStore.get(), null, "a token the service rejects must never be persisted");
+  assert.ok(!host.hasPendingGoogleSignIn(), "pending sign-in should be cleared even on a rejected token");
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.equal(last.error?.message, "Sign-in could not be verified.");
+  assertNoSecrets(logLines, posted);
+});
+
 test("panel.ts: stray theme-service-auth callback shows the code via showInformationMessage and copies via clipboard, never logs it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -666,6 +684,143 @@ test("panel.ts: stray theme-service-auth callback shows the code via showInforma
     "'Copy code' action should write the code to the clipboard",
   );
   assert.ok(!/\blog\(/.test(body), "handleUriCallback body must never pass the code to log(...)");
+});
+
+// p83-t2: callback branch coverage (implicit tokens, oauth error, no-usable-
+// params) plus secret-scrubbing across every posted status and log line.
+// Planted values that must never appear anywhere in captured output.
+const SECRET_CODE = "CODE_SECRET_123";
+const SECRET_ACCESS_TOKEN = "AT_SECRET_456";
+const SECRET_REFRESH_TOKEN = "RT_SECRET_789";
+const SECRET_ERROR_DESCRIPTION = "user@example.com leaked";
+
+function setupWithLog() {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    createCodeVerifier: () => "fixed-test-verifier",
+  });
+  const posted: ThemeServiceHostStatus[] = [];
+  const opened: string[] = [];
+  const logLines: string[] = [];
+  const timers = fakeTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: (url) => {
+      opened.push(url);
+    },
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    log: (msg) => logLines.push(msg),
+  });
+  host.start();
+  return { fake, client, tokenStore, posted, opened, logLines, host };
+}
+
+function assertNoSecrets(logLines: string[], posted: ThemeServiceHostStatus[]): void {
+  const haystack = logLines.join("\n") + "\n" + JSON.stringify(posted);
+  for (const secret of [SECRET_CODE, SECRET_ACCESS_TOKEN, SECRET_REFRESH_TOKEN, SECRET_ERROR_DESCRIPTION]) {
+    assert.ok(!haystack.includes(secret), `captured output must not contain planted secret: ${secret}`);
+  }
+}
+
+test("p83-t2: pending sign-in, ?code= callback completes via fake exchange and posts signedIn", async () => {
+  const { fake, host, posted, opened, logLines } = setupWithLog();
+  await host.handleGoogleStart();
+  await fake.fetch(opened[0]);
+  const authCode = await fake.helpers.completeGoogleInBrowser();
+  await host.handleUriCallback({ code: authCode, queryParamNames: ["code"], fragmentParamNames: [] });
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, true);
+  assertNoSecrets(logLines, posted);
+});
+
+test("p83-t2: pending sign-in, fragment access_token+refresh_token completes via completeGoogleSignInImplicit", async () => {
+  // completeGoogleSignInImplicit verifies the candidate token against the
+  // service before storing it (p83-t2 review fix), so the test needs a
+  // token the fake actually recognizes — mint one through a real PKCE round
+  // trip on a throwaway client/session sharing the same fake backend, then
+  // feed those real token values through the host's implicit-fragment path.
+  const { fake, host, tokenStore, posted, logLines } = setupWithLog();
+  const donorTokenStore = createMemoryTokenStore();
+  const donorClient = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore: donorTokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    createCodeVerifier: () => "donor-verifier",
+  });
+  const startRes = await donorClient.startGoogleSignIn({ redirectTo: "vscode://tycoonagents.tycoonagents/theme-service-auth" });
+  assert.ok(startRes.ok);
+  await fake.fetch(startRes.value.browserUrl);
+  const donorCode = await fake.helpers.completeGoogleInBrowser();
+  const exchangeRes = await donorClient.completeGoogleSignIn({ authCode: donorCode, codeVerifier: startRes.value.codeVerifier });
+  assert.ok(exchangeRes.ok);
+  const donorSession = JSON.parse((await donorTokenStore.get())!);
+
+  await host.handleGoogleStart();
+  await host.handleUriCallback({
+    accessToken: donorSession.accessToken,
+    refreshToken: donorSession.refreshToken,
+    expiresIn: 3600,
+    queryParamNames: [],
+    fragmentParamNames: ["access_token", "refresh_token", "expires_in"],
+  });
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, true, `expected signedIn true, got ${JSON.stringify(last)}`);
+  assert.ok(!host.hasPendingGoogleSignIn(), "pending sign-in should be cleared after completion");
+  const stored = await tokenStore.get();
+  assert.ok(stored, "session should be stored after a verified implicit completion");
+  assertNoSecrets(logLines, posted);
+});
+
+test("p83-t2: pending sign-in, ?error=access_denied posts a visible error naming the code, never a description", async () => {
+  const { host, posted, logLines } = setupWithLog();
+  await host.handleGoogleStart();
+  await host.handleUriCallback({ errorCode: "access_denied", queryParamNames: ["error", "error_description"], fragmentParamNames: [] });
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, false);
+  assert.ok(last.error?.message.includes("access_denied"), `error message should include access_denied: ${last.error?.message}`);
+  assertNoSecrets(logLines, posted);
+});
+
+test("p83-t2: pending sign-in, callback with no usable params posts a visible message instead of waiting", async () => {
+  const { host, posted, logLines } = setupWithLog();
+  await host.handleGoogleStart();
+  posted.length = 0;
+  await host.handleUriCallback({ queryParamNames: [], fragmentParamNames: [] });
+  assert.equal(posted.length, 1, "an early exit while pending must post, never stay silently waiting");
+  assert.equal(posted[0].signedIn, false);
+  assert.ok(posted[0].error, "should carry a visible error");
+  assertNoSecrets(logLines, posted);
+});
+
+test("p83-t2: no pending sign-in, implicit-token callback does not create a session", async () => {
+  const { host, tokenStore, posted, logLines } = setupWithLog();
+  await host.handleUriCallback({
+    accessToken: SECRET_ACCESS_TOKEN,
+    refreshToken: SECRET_REFRESH_TOKEN,
+    queryParamNames: [],
+    fragmentParamNames: ["access_token", "refresh_token"],
+  });
+  assert.equal(await tokenStore.get(), null, "no session should be stored without a pending sign-in");
+  assert.ok(
+    posted.every((p) => p.signedIn !== true),
+    "must never report signedIn:true from an unsolicited callback",
+  );
+  assertNoSecrets(logLines, posted);
+});
+
+test("p83-t2: authorize URL uses code_challenge_method=S256", async () => {
+  const { host, opened } = setupWithLog();
+  await host.handleGoogleStart();
+  assert.ok(opened[0].includes("code_challenge_method=S256"), `authorize URL should carry S256: ${opened[0]}`);
 });
 
 test("diagnosticReport: includes 'URI scheme' line with the injected scheme", () => {
