@@ -283,6 +283,11 @@ export async function handleSaveThemePlan(store, broadcast, payload) {
     });
     const themes = await listThemesFromStore(store);
     broadcast('message', { type: MSG_WIRE.THEMES_LIST, payload: { themes } });
+    // p79-t2: mirrors panel.ts's SAVE_THEME_PLAN branch — re-saving an
+    // existing theme's plan (autosave-after-every-upload included) can
+    // change review.json's board labels/prompts, so re-post
+    // THEME_IMAGE_REVIEW to refresh the board grid.
+    await handleGetThemeImageReview(store, broadcast, theme_id);
   } catch (err) {
     broadcast('message', { type: MSG_WIRE.THEME_GENERATION_ERROR, payload: { message: String(err) } });
   }

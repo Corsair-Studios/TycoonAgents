@@ -2285,6 +2285,13 @@ export async function saveThemePlan(
   const store = resolveThemeFileStore(globalStorageUri);
   await store.mkdirp(themeDirectoryPath(themeId));
   await store.mkdirp(themeImagesDirectoryPath(themeId));
+
+  // p79-t2: read the PREVIOUS plan (if any) before it gets overwritten below,
+  // so an update-in-place save can tell which review items' prompts were
+  // still tracking the plan's own descriptions (safe to resync) versus a
+  // user-tweaked direction (must be left alone).
+  const previousPlan = await readJson<ThemePlan>(store, themePlanPath(themeId));
+
   await store.writeFile(themePlanPath(themeId), jsonBuffer(plan));
 
   // Preserve any frames already on disk (uploaded boards) instead of
@@ -2304,6 +2311,43 @@ export async function saveThemePlan(
       boardBackgroundModeForProvider(),
     );
     await initializeThemeImageReviewDocument(globalStorageUri, themeId, plan.display_name, reviewItems);
+  } else {
+    // p79-t2: an update-in-place save (including the redesigned builder's
+    // autosave-after-every-upload) must make the board grid show any edited
+    // board names/descriptions without clobbering review progress. Refresh
+    // each existing item's display label from the new plan unconditionally
+    // (labels are pure display text, never user-authored), and refresh its
+    // generation prompt ONLY when the item is still pending AND its current
+    // prompt still equals the prompt the PREVIOUS plan would have produced —
+    // i.e. the user never tweaked that board's direction/prompt by hand.
+    // Status/image/revision/frame_keys are always preserved from the saved
+    // item. No image reads here — cheap and idempotent: re-saving the same
+    // plan twice leaves every item's label/prompt unchanged (only updated_at
+    // may move, and only on an item that actually changed).
+    const nextExpected = createReviewItems(plan, manifest, creativeDirection, boardBackgroundModeForProvider());
+    const previousExpected = previousPlan
+      ? createReviewItems(
+          normalizeThemePlan(previousPlan, previousPlan.display_name),
+          manifest,
+          themePlanCreativeDirection(normalizeThemePlan(previousPlan, previousPlan.display_name)),
+          boardBackgroundModeForProvider(),
+        )
+      : undefined;
+    for (const saved of existingReview.items) {
+      const next = nextExpected.find((candidate) => candidate.id === saved.id);
+      if (!next) continue;
+      const prev = previousExpected?.find((candidate) => candidate.id === saved.id);
+      const promptStillMatchesPreviousPlan = saved.status === 'pending' && !!prev && saved.prompt === prev.prompt;
+      const nextLabel = next.label;
+      const nextPrompt = promptStillMatchesPreviousPlan ? next.prompt : saved.prompt;
+      if (nextLabel === saved.label && nextPrompt === saved.prompt) continue;
+      await upsertThemeImageReviewItem(globalStorageUri, themeId, plan.display_name, {
+        ...saved,
+        label: nextLabel,
+        prompt: nextPrompt,
+        updated_at: new Date().toISOString(),
+      });
+    }
   }
 
   return { theme_id: themeId, plan };

@@ -53,6 +53,12 @@
       reviewBtn.className = "skill-btn";
       reviewBtn.textContent = "Review images";
       reviewBtn.addEventListener("click", () => {
+        // p79-t1: reviewing an existing theme reuses the manual screen —
+        // board grid + header (Back/name/Save theme), no AI-only elements.
+        themeBuilderScreen = "manual";
+        if (themePromptInput) themePromptInput.value = theme.display_name || "";
+        // showThemeImageReview itself ends in renderThemeBuilderScreen
+        // (p79-t2 review fix).
         showThemeImageReview(theme.theme_id);
       });
 

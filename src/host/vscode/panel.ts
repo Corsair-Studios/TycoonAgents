@@ -2795,6 +2795,11 @@ export class TycoonPanel {
             });
             const themes = await listThemes(this._globalStorageUri);
             void this._panel.webview.postMessage({ type: MSG.THEMES_LIST, payload: { themes } });
+            // p79-t2: re-saving an existing theme's plan (including the
+            // redesigned builder's autosave-after-every-upload) can change
+            // board display labels/prompts in review.json — re-post
+            // THEME_IMAGE_REVIEW so the board grid re-renders with them.
+            await this._postThemeImageReview(theme_id);
           } catch (err) {
             void this._panel.webview.postMessage({
               type: MSG.THEME_GENERATION_ERROR,

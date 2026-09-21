@@ -87,6 +87,37 @@ test('SAVE_THEME_PLAN writes theme files under the configured store and broadcas
   assert.equal(writtenPlan.display_name, 'Standalone Draft Theme');
 });
 
+// p79-t3: parity with test/themeSavePlanReviewRepost.test.ts's host
+// assertion — panel.ts's SAVE_THEME_PLAN branch and this standalone
+// handler both re-post THEME_IMAGE_REVIEW after THEMES_LIST on a re-save
+// (~286-290), so the builder's board grid refreshes labels after Save
+// theme / the autosave-after-upload cycle.
+test('re-saving an existing theme broadcasts a third message, THEME_IMAGE_REVIEW, after THEMES_LIST', async (t) => {
+  const root = mkTempRoot();
+  resetThemeGenerationStateForTests();
+  const store = createFsThemeFileStore(root);
+  configureThemeFileStore(store);
+
+  t.after(() => {
+    resetThemeGenerationStateForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const calls = [];
+  await handleSaveThemePlan(store, fakeBroadcast(calls), { plan, theme_id: 'standalone_draft_theme' });
+  const themeId = callsOfType(calls, 'THEME_PLAN_SAVED')[0].data.payload.theme_id;
+
+  const secondCalls = [];
+  const updatedPlan = { ...plan, display_name: 'Standalone Draft Theme Renamed' };
+  await handleSaveThemePlan(store, fakeBroadcast(secondCalls), { plan: updatedPlan, theme_id: themeId });
+
+  assert.equal(secondCalls.length, 3, 'expected exactly THEME_PLAN_SAVED, THEMES_LIST, THEME_IMAGE_REVIEW');
+  assert.equal(secondCalls[0].data.type, 'THEME_PLAN_SAVED');
+  assert.equal(secondCalls[1].data.type, 'THEMES_LIST');
+  assert.equal(secondCalls[2].data.type, 'THEME_IMAGE_REVIEW');
+  assert.equal(secondCalls[2].data.payload.theme_id, themeId);
+});
+
 test('SAVE_THEME_PLAN with no plan broadcasts THEME_GENERATION_ERROR and writes nothing', async (t) => {
   const root = mkTempRoot();
   resetThemeGenerationStateForTests();

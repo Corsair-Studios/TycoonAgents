@@ -95,40 +95,24 @@
    * buildEmptyThemePlan) and re-saving an already-saved/generated plan.
    * @returns {object}
    */
+  /**
+   * p79-t2 review fix: currentThemePlan is now the single source of truth
+   * for every slot (both the plan editor and the board cards write into it
+   * live — see bindThemePlanEditorLiveSync in 010-modals-badges-rebirth.js
+   * and applyThemeReviewFieldToPlan below) — this no longer re-reads
+   * plan-editor DOM rows, which could hold stale AI-filled text that would
+   * otherwise clobber a later card edit. Only the one authoritative name
+   * field (#theme-prompt-input, synced to #theme-plan-name) is read here.
+   * @returns {object}
+   */
   function collectDraftThemePlan() {
-    const characterSlots = collectPlanSlotsWithDesc(themePlanCharacters);
-    const enemySlots = collectPlanSlotsWithDesc(themePlanEnemies);
-    const enemyAttackStyles = enemySlots.attackStyles.map((style) => (style === "ranged" ? "ranged" : "melee"));
-    const decorSlots = collectPlanSlotsWithDesc(themePlanDecorSlots);
-    const objectSlots = collectPlanSlotsWithDesc(themePlanObjectsSlots);
-    const achievementSlots = collectPlanSlotsWithDesc(themePlanAchievementsSlots);
-    const expressionSlots = collectPlanSlotsWithDesc(themePlanExpressionsSlots);
-
     const displayName = themePlanName ? themePlanName.value.trim() : "";
     if (!displayName) throw new Error("Give the theme a name before saving.");
-
     return {
       ...(currentThemePlan || {}),
       theme_id: "",
       display_name: displayName,
-      creative_direction: themePlanDirection ? themePlanDirection.value.trim() : "",
-      environment: themePlanEnvironment ? themePlanEnvironment.value.trim() : "",
-      characters: characterSlots.names,
-      character_descriptions: characterSlots.descriptions,
-      enemies: enemySlots.names,
-      enemy_descriptions: enemySlots.descriptions,
-      enemy_attack_styles: enemyAttackStyles,
-      decor: decorSlots.names,
-      decor_descriptions: decorSlots.descriptions,
-      objects: objectSlots.names,
-      object_descriptions: objectSlots.descriptions,
-      crate_description: themePlanCrateDesc ? themePlanCrateDesc.value.trim() : "",
-      poof_description: themePlanPoofDesc ? themePlanPoofDesc.value.trim() : "",
-      projectile_description: themePlanProjectileDesc ? themePlanProjectileDesc.value.trim() : "",
       expressions: THEME_PLAN_FIXED_EXPRESSION_LABELS.slice(),
-      expression_descriptions: expressionSlots.descriptions,
-      achievements: achievementSlots.names,
-      achievement_descriptions: achievementSlots.descriptions,
     };
   }
 
@@ -394,13 +378,13 @@
 
   /**
    * @param {string} themeId
-   * @param {{keepPlanEditor?: boolean}} [opts] p78-t1: keepPlanEditor keeps
-   *  #theme-plan-editor visible alongside the board grid — used right after
-   *  Build manually saves an empty-slot plan, so the user lands on a screen
-   *  showing every sprite board's name/description/image slot AND the
-   *  expanded plan fields, not just the board grid alone.
+   * p79-t2 review fix: no longer toggles element visibility itself — every
+   * screen element's shown/hidden state is decided in one place,
+   * renderThemeBuilderScreen (010-modals-badges-rebirth.js), which this
+   * calls at the end so every caller's transition ends there too, whatever
+   * themeBuilderScreen was already set to by that caller.
    */
-  function showThemeImageReview(themeId, opts) {
+  function showThemeImageReview(themeId) {
     if (!themeId) return;
     // p77-t1 review fix: opening review for a theme other than the one
     // being drafted drops the stale draft state first (picker "Review
@@ -412,17 +396,12 @@
     reviewThemeId = themeId;
     themePickerList.setAttribute("hidden", "");
     themeBuilderPanel.removeAttribute("hidden");
-    if (themePlanEditor) {
-      if (opts && opts.keepPlanEditor) themePlanEditor.removeAttribute("hidden");
-      else themePlanEditor.setAttribute("hidden", "");
-    }
-    if (themeBuilderRoot) themeBuilderRoot.setAttribute("hidden", "");
-    if (themeImageReview) themeImageReview.removeAttribute("hidden");
     if (themeImageReviewList) themeImageReviewList.textContent = "Loading generated images...";
     if (themeApproveAll) {
       themeApproveAll.disabled = true;
       themeApproveAll.textContent = "Approve all";
     }
+    renderThemeBuilderScreen();
     vscode.postMessage({ type: 'GET_THEME_IMAGE_REVIEW', payload: { theme_id: themeId } });
   }
 
@@ -945,6 +924,80 @@
   }
 
   /**
+   * p79-t2 fix: positional index within the matching plan array for a
+   * board-card row, so live typing can write straight into
+   * currentThemePlan.<field>[index] (see applyThemeReviewFieldToPlan).
+   * badge/expression/character rowIds already carry their index
+   * (achievement_<n>/expression_<n>/agent_<n>); object/decor/rival rowIds
+   * are the manifest's own opaque ids, looked up against the roster arrays
+   * (themeBuildables/themeDecor/themeRivals) that share plan array order.
+   * @param {string} itemKind
+   * @param {string} rowId
+   * @returns {number} -1 when no matching slot is found
+   */
+  function themeReviewIndexForRow(itemKind, rowId) {
+    if (itemKind === "badge" || itemKind === "expression" || itemKind === "character") {
+      const match = /(\d+)$/.exec(rowId || "");
+      return match ? parseInt(match[1], 10) : -1;
+    }
+    if (itemKind === "object") {
+      return (Array.isArray(themeBuildables) ? themeBuildables : []).findIndex((o) => o && o.object_id === rowId);
+    }
+    if (itemKind === "decor") {
+      return (Array.isArray(themeDecor) ? themeDecor : []).findIndex((d) => d && d.decor_id === rowId);
+    }
+    if (itemKind === "rival") {
+      return (Array.isArray(themeRivals) ? themeRivals : []).findIndex((r) => r && r.rival_id === rowId);
+    }
+    return -1;
+  }
+
+  /** @type {Record<string, [string|null, string|null]>} itemKind -> [namesArrayField, descriptionsArrayField] */
+  const THEME_REVIEW_PLAN_FIELD_BY_KIND = {
+    character: ["characters", "character_descriptions"],
+    rival: ["enemies", "enemy_descriptions"],
+    decor: ["decor", "decor_descriptions"],
+    object: ["objects", "object_descriptions"],
+    expression: [null, "expression_descriptions"],
+    badge: ["achievements", "achievement_descriptions"],
+  };
+
+  /**
+   * p79-t2 fix: keeps currentThemePlan live-updated as the user types a
+   * board card's name/description, so Save theme / the post-upload
+   * autosave (collectDraftThemePlan reads currentThemePlan directly) carry
+   * exactly what's on the cards without requiring the card's own Apply
+   * click first.
+   * @param {string} itemKind
+   * @param {string} rowId
+   * @param {"name"|"desc"} field
+   * @param {string} value
+   */
+  /** @type {Record<string, string>} itemKind -> scalar plan field (description-only rows with no array slot). */
+  const THEME_REVIEW_SCALAR_FIELD_BY_KIND = {
+    crate: "crate_description",
+    poof: "poof_description",
+    projectile: "projectile_description",
+  };
+
+  function applyThemeReviewFieldToPlan(itemKind, rowId, field, value) {
+    if (field === "desc" && THEME_REVIEW_SCALAR_FIELD_BY_KIND[itemKind]) {
+      if (!currentThemePlan) currentThemePlan = {};
+      currentThemePlan[THEME_REVIEW_SCALAR_FIELD_BY_KIND[itemKind]] = value;
+      return;
+    }
+    const fields = THEME_REVIEW_PLAN_FIELD_BY_KIND[itemKind];
+    if (!fields) return;
+    const arrayKey = field === "name" ? fields[0] : fields[1];
+    if (!arrayKey) return;
+    const index = themeReviewIndexForRow(itemKind, rowId);
+    if (index < 0) return;
+    if (!currentThemePlan) currentThemePlan = {};
+    if (!Array.isArray(currentThemePlan[arrayKey])) currentThemePlan[arrayKey] = [];
+    currentThemePlan[arrayKey][index] = value;
+  }
+
+  /**
    * Builds the single, merged "Names & descriptions" editor: one block per
    * unioned row (see themeReviewNamesDescriptionsRows) with the name <input>
    * directly above the description <textarea> — omitting whichever field the
@@ -1192,8 +1245,23 @@
       applyBtn.disabled = inputsDisabled
         || (dirtyNameChanges().length === 0 && dirtyDescriptionChanges().length === 0 && dirtyBodyPlanControls().length === 0);
     };
-    for (const input of nameInputs) input.addEventListener("input", updateApplyState);
-    for (const input of descInputs) input.addEventListener("input", updateApplyState);
+    // p79-t2 fix: live-sync currentThemePlan on every keystroke — independent
+    // of Apply (which still exists to persist immediately via
+    // SET_THEME_ITEM_NAMES/DESCRIPTIONS below) — so Save theme/autosave
+    // (collectDraftThemePlan) always see the card's current text even while
+    // the user is still typing and hasn't clicked Apply.
+    for (const input of nameInputs) {
+      input.addEventListener("input", updateApplyState);
+      input.addEventListener("input", () => {
+        applyThemeReviewFieldToPlan(input.dataset.itemKind, input.dataset.rowId, "name", input.value);
+      });
+    }
+    for (const input of descInputs) {
+      input.addEventListener("input", updateApplyState);
+      input.addEventListener("input", () => {
+        applyThemeReviewFieldToPlan(input.dataset.itemKind, input.dataset.rowId, "desc", input.value);
+      });
+    }
     updateApplyState();
     applyBtn.addEventListener("click", () => {
       const nameChanges = [];
@@ -2032,6 +2100,12 @@
           renameBtn.disabled = characterNameInput.disabled || !nextName || nextName === item.subject;
         };
         characterNameInput.addEventListener("input", updateRenameState);
+        // p79-t3 fix: RENAME_THEME_CHARACTER (below) is the immediate-persist
+        // action; this keeps currentThemePlan.characters[i] live so Save
+        // theme/autosave carry the typed name even before that click.
+        characterNameInput.addEventListener("input", () => {
+          applyThemeReviewFieldToPlan("character", item.id, "name", characterNameInput.value);
+        });
         characterNameInput.addEventListener("keydown", (event) => {
           if (event.key === "Enter" && !renameBtn.disabled) {
             event.preventDefault();

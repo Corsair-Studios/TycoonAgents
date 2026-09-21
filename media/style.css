@@ -2050,6 +2050,25 @@ body {
   display: none !important;
 }
 
+/* p79-t1: ai/manual screen header — Back to themes (existing button) sits
+   above this; the theme name reads as a title and Save theme sits beside
+   it. Hidden entirely on the start screen (renderThemeBuilderScreen). */
+.tsp-builder-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.tsp-builder-header-title {
+  margin: 0;
+  font-size: 1.1em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* p77-t1: "Generate with AI" / "Build manually" choice row, under the theme
    name field. Wraps at narrow widths (compact density / narrow panel) so
    both buttons stay full-width and legible instead of squeezing side by
@@ -4906,12 +4925,8 @@ td.col-status {
   font-size: 11px;
 }
 
-/* p76-t2: "New theme" reset control in the plan editor header, and the
-   inline overwrite-confirm buttons injected into #theme-plan-validation. */
-.tsp-new-theme-btn {
-  flex: 0 0 auto;
-}
-
+/* p79-t1: inline overwrite-confirm buttons injected into
+   #theme-plan-validation ("Generate with AI will overwrite..."). */
 .theme-plan-inline-confirm-btn {
   margin-left: 8px;
   padding: 2px 10px;

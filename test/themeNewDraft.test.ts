@@ -285,35 +285,22 @@ async function openThemeBuilderOnEmptyDraft() {
 
 // ── Blank-draft render on open ──────────────────────────────────────────────
 
-test('clicking the Theme Builder tab with no plan renders the empty plan editor with correct slot counts', async () => {
+// p79-t3: rewritten for the approved Start screen — the plan editor (with
+// its 83 fixed slot rows) is an ai-screen-only surface, built once an
+// AI-generated plan lands (THEME_PLAN_READY). A fresh, no-plan open of the
+// Theme Builder tab lands on Start: name field + choice row, plan editor and
+// board review both hidden. Slot-row counts are covered by the ai-path
+// test in test/themeBuilderScreens.test.ts (dispatches THEME_PLAN_READY).
+test('clicking the Theme Builder tab with no plan renders the Start screen: plan editor and board review both hidden', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
   try {
     const { doc } = h;
 
-    assert.ok(doc.getElementById('theme-plan-editor').hasAttribute('hidden') === false || !doc.getElementById('theme-plan-editor').hasAttribute('hidden'));
+    assert.ok(doc.getElementById('theme-plan-editor').hasAttribute('hidden'), 'plan editor must stay hidden on the Start screen');
 
     const nameInput = doc.getElementById('theme-plan-name');
     assert.ok(nameInput, 'theme-plan-name field must exist');
     assert.equal((nameInput.value || ''), '');
-
-    function slotRowCount(containerId: string): number {
-      const container = doc.getElementById(containerId);
-      assert.ok(container, `expected #${containerId}`);
-      return container.querySelectorAll('.theme-plan-slot-row').length;
-    }
-
-    assert.equal(slotRowCount('theme-plan-characters'), 16);
-    assert.equal(slotRowCount('theme-plan-enemies'), 4);
-    assert.equal(slotRowCount('theme-plan-decor-slots'), 9);
-    assert.equal(slotRowCount('theme-plan-objects-slots'), 21);
-    assert.equal(slotRowCount('theme-plan-achievements-slots'), 25);
-
-    const expressionsContainer = doc.getElementById('theme-plan-expressions-slots');
-    const expressionRows = Array.from(expressionsContainer.querySelectorAll('.theme-plan-slot-row')) as any[];
-    assert.equal(expressionRows.length, 8);
-    const expressionLabels = expressionRows.map((row) => (row.querySelector('.theme-plan-slot-name-readonly')?.textContent || '').trim());
-    assert.ok(expressionLabels.every((label) => label.length > 0), `all 8 expression labels must be pre-filled, got: ${JSON.stringify(expressionLabels)}`);
-    assert.equal(new Set(expressionLabels).size, 8, 'the 8 fixed expression labels must be distinct');
 
     // Review generated images stays hidden before anything is saved.
     const review = doc.getElementById('theme-image-review');

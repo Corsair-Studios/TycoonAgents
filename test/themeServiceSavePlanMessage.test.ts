@@ -55,7 +55,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { saveThemePlan, listThemes, getThemeBoardCounts } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
+const { saveThemePlan, listThemes, getThemeBoardCounts, getThemeImageReview } = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   configureThemeFileStore,
@@ -99,6 +99,9 @@ function createFsThemeFileStore(root: string): ThemeFileStore {
     async rename(fromRelativePath: string, toRelativePath: string): Promise<void> {
       await fsp.rename(resolve(fromRelativePath), resolve(toRelativePath));
     },
+    resolveHandle(relativePath: string) {
+      return { path: resolve(relativePath).split(path.sep).join('/') };
+    },
   };
 }
 
@@ -135,6 +138,11 @@ async function handleSaveThemePlan(message: Record<string, unknown>): Promise<Ar
     posted.push({ type: MSG.THEME_PLAN_SAVED, payload: { theme_id, plan, ...savedBoardCounts } });
     const themes = await listThemes({} as any);
     posted.push({ type: MSG.THEMES_LIST, payload: { themes } });
+    // p79-t2: panel.ts's branch also re-posts THEME_IMAGE_REVIEW after
+    // THEMES_LIST (via _postThemeImageReview) so the redesigned builder's
+    // board grid refreshes labels/prompts after every save/autosave.
+    const review = await getThemeImageReview({} as any, theme_id);
+    posted.push({ type: MSG.THEME_IMAGE_REVIEW, payload: { theme_id, items: review.entries.map((e) => e.item) } });
   } catch (err) {
     posted.push({ type: MSG.THEME_GENERATION_ERROR, payload: { message: err instanceof Error ? err.message : String(err) } });
   }
@@ -147,10 +155,10 @@ const validPlan = {
   environment: 'A test room.',
 };
 
-test('saveThemePlan with a valid plan replies THEME_PLAN_SAVED then THEMES_LIST', async () => {
+test('saveThemePlan with a valid plan replies THEME_PLAN_SAVED, THEMES_LIST, then THEME_IMAGE_REVIEW', async () => {
   await withTempRoot(async () => {
     const posted = await handleSaveThemePlan({ type: 'saveThemePlan', plan: validPlan });
-    assert.equal(posted.length, 2);
+    assert.equal(posted.length, 3);
     assert.equal(posted[0].type, MSG.THEME_PLAN_SAVED);
     assert.equal((posted[0].payload as any).theme_id, 'message_boundary_theme');
     assert.equal((posted[0].payload as any).hasBoards, false, 'a freshly saved empty-slot theme must report hasBoards:false');
@@ -158,6 +166,8 @@ test('saveThemePlan with a valid plan replies THEME_PLAN_SAVED then THEMES_LIST'
     assert.equal(posted[1].type, MSG.THEMES_LIST);
     const themes = (posted[1].payload as any).themes;
     assert.ok(Array.isArray(themes) && themes.some((t: any) => t.theme_id === 'message_boundary_theme'));
+    assert.equal(posted[2].type, MSG.THEME_IMAGE_REVIEW, 'panel.ts re-posts THEME_IMAGE_REVIEW after THEMES_LIST via _postThemeImageReview');
+    assert.equal((posted[2].payload as any).theme_id, 'message_boundary_theme');
   });
 });
 
@@ -241,9 +251,20 @@ test('source guard: panel.ts SAVE_THEME_PLAN branch still parses via themeServic
     'branch must still post { type: MSG.THEMES_LIST, payload: { themes } } after THEME_PLAN_SAVED',
   );
 
-  // THEME_PLAN_SAVED must be posted before THEMES_LIST, matching this file's
-  // replica ordering.
+  // p79-t2: the branch must still re-post THEME_IMAGE_REVIEW (via
+  // _postThemeImageReview) after THEMES_LIST, matching this file's replica.
+  assert.match(
+    branch,
+    /await this\._postThemeImageReview\(theme_id\);/,
+    'branch must still call this._postThemeImageReview(theme_id) after posting THEMES_LIST',
+  );
+
+  // THEME_PLAN_SAVED must be posted before THEMES_LIST, and the
+  // THEME_IMAGE_REVIEW re-post must come after THEMES_LIST, matching this
+  // file's replica ordering.
   const savedIdx = branch.indexOf('MSG.THEME_PLAN_SAVED');
   const listIdx = branch.indexOf('MSG.THEMES_LIST');
+  const repostIdx = branch.indexOf('_postThemeImageReview(theme_id)');
   assert.ok(savedIdx >= 0 && listIdx > savedIdx, 'THEME_PLAN_SAVED must be posted before THEMES_LIST in panel.ts');
+  assert.ok(repostIdx > listIdx, '_postThemeImageReview must be called after THEMES_LIST in panel.ts');
 });

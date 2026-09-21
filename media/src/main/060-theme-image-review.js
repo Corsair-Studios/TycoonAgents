@@ -1499,9 +1499,10 @@
       confirmThemePlanOverwrite(() => {
         renderThemePlan(planPayload);
         updateThemeDraftUi();
-        // p77-t1: an AI-filled plan needs full review — expand the "Edit
-        // plan details" disclosure that a fresh manual draft starts collapsed.
-        setThemePlanDetailsDisclosureOpen(true);
+        // p79-t1: THEME_PLAN_READY lands on the ai screen — the plan review
+        // is always fully shown there, never a skip option.
+        themeBuilderScreen = "ai";
+        renderThemeBuilderScreen();
       });
       if (themeBuildStatus) {
         themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
@@ -1524,18 +1525,18 @@
         draftThemeId = savedThemeId;
         updateThemeDraftUi();
         if (newThemeDraft) {
-          if (themeBuildStatus) {
-            themeBuildStatus.textContent = "Saved. Upload your own images below, or keep editing and Generate with AI.";
-            themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
-          }
+          // p79-t1: a saveThemePlan reply from the "start" screen (Build
+          // manually) lands on the manual screen — board grid directly, no
+          // AI-only elements. A reply while already on "ai" (its Save
+          // theme button) or "manual" (autosave after upload) keeps the
+          // current screen.
+          if (themeBuilderScreen === "start") themeBuilderScreen = "manual";
           // Reveal the board list (Upload button per board, empty
           // thumbnails) bound to draftThemeId — never reviewThemeId of a
-          // previously selected theme. p78-t1: keep the plan editor
-          // visible too (expanded, not the collapsed disclosure) so the
-          // user sees every sprite board's name/description/image slot
-          // alongside the plan fields they just saved.
-          setThemePlanDetailsDisclosureOpen(true);
-          showThemeImageReview(savedThemeId, { keepPlanEditor: true });
+          // previously selected theme. showThemeImageReview itself ends in
+          // renderThemeBuilderScreen (p79-t2 review fix), enforcing the
+          // current screen's final visibility.
+          showThemeImageReview(savedThemeId);
           return;
         }
       }
@@ -2363,6 +2364,12 @@
       if (stageEditEls && stageEditEls.status) {
         stageEditEls.status.textContent = cancelled ? "" : (ok ? "Background replaced ✓" : "Replace failed");
         stageEditEls.status.style.color = ok ? "#9fffa0" : "#ff9f9f";
+      }
+      // p79-t1: every successful per-board upload for the theme currently
+      // open in the builder (draftThemeId) autosaves the plan — debounced
+      // so one upload yields exactly one saveThemePlan post.
+      if (ok && draftThemeId && reviewThemeId === draftThemeId) {
+        scheduleThemeAutosave(draftThemeId);
       }
       // Reset a pending review-card Upload button. On success the host re-posts
       // THEME_IMAGE_REVIEW which rebuilds the card, so only the cancel/failure

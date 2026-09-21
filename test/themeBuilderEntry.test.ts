@@ -315,18 +315,21 @@ const SPRITE_BOARD_SLOTS: Array<{ containerId: string; count: number }> = [
 
 // ── Entry path: tab click renders the choice row ────────────────────────────
 
-test('clicking the Theme Builder tab renders the draft form with the Generate with AI / Build manually choice row', async () => {
+// p79-t3: rewritten for the approved Start screen — exactly the name field
+// and the Generate with AI / Build manually choice row are visible; the
+// plan editor (ai-only) stays hidden until an AI plan lands.
+test('clicking the Theme Builder tab renders the Start screen: name field plus Generate with AI / Build manually, plan editor hidden', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
   try {
     const { doc } = h;
 
-    const choiceRow = doc.getElementById('theme-build-choice-row');
-    assert.ok(choiceRow, 'expected #theme-build-choice-row to render');
-    assert.ok(doc.getElementById('theme-generate-with-ai-btn'), 'expected #theme-generate-with-ai-btn');
-    assert.ok(doc.getElementById('theme-build-manually-btn'), 'expected #theme-build-manually-btn');
+    assertVisible(doc.getElementById('theme-prompt-input'), '#theme-prompt-input');
+    assertVisible(doc.getElementById('theme-build-choice-row'), '#theme-build-choice-row');
+    assertVisible(doc.getElementById('theme-generate-with-ai-btn'), '#theme-generate-with-ai-btn');
+    assertVisible(doc.getElementById('theme-build-manually-btn'), '#theme-build-manually-btn');
 
     const planEditor = doc.getElementById('theme-plan-editor');
-    assert.ok(!planEditor.hasAttribute('hidden'), 'plan editor must render on entry');
+    assert.ok(planEditor.hasAttribute('hidden'), 'plan editor must stay hidden on the Start screen');
     assert.equal(doc.getElementById('theme-plan-name').value, '', 'draft name field must start empty');
   } finally {
     h.win.close();
@@ -353,7 +356,11 @@ test('the shell "Back to builder" button reaches the same draft entry point', as
     backToBuilderBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 0));
 
-    assert.ok(!doc.getElementById('theme-plan-editor').hasAttribute('hidden'), 'plan editor must render after Back to builder');
+    // p79-t3: the draft entry point is now the Start screen — name field
+    // plus the choice row, not the (ai-only) plan editor.
+    assertVisible(doc.getElementById('theme-prompt-input'), '#theme-prompt-input');
+    assertVisible(doc.getElementById('theme-build-choice-row'), '#theme-build-choice-row');
+    assert.ok(doc.getElementById('theme-plan-editor').hasAttribute('hidden'), 'plan editor must stay hidden on the Start screen reached via Back to builder');
   } finally {
     h.win.close();
   }
@@ -411,11 +418,12 @@ test('Build manually with a name posts saveThemePlan with that display_name and 
   }
 });
 
-// p78-t2: the real user path end-to-end — type into #theme-prompt-input
-// only, click #theme-build-manually-btn, follow through THEME_PLAN_SAVED
-// and THEME_IMAGE_REVIEW, asserting every user-facing element is actually
-// visible (no hidden ancestor) at each step.
-test('Build manually real user path: typed name posts, plan editor and every sprite-board slot become visible, then per-board Upload/Generate controls appear', async () => {
+// p79-t3: rewritten for the approved layout — the manual screen goes
+// straight to the board grid, never the plan editor (that's ai-only). Type
+// into #theme-prompt-input only, click #theme-build-manually-btn, follow
+// through THEME_PLAN_SAVED and THEME_IMAGE_REVIEW, asserting every
+// user-facing element is actually visible (no hidden ancestor) at each step.
+test('Build manually real user path: typed name posts, board grid becomes visible (never the plan editor), then per-board Upload/Generate controls appear', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
   try {
     const { doc } = h;
@@ -440,26 +448,10 @@ test('Build manually real user path: typed name posts, plan editor and every spr
     });
     await new Promise((r) => setTimeout(r, 0));
 
+    // p79-t3: the manual screen never shows the plan editor — the board
+    // grid is reached directly.
     const planEditor = doc.getElementById('theme-plan-editor');
-    assertVisible(planEditor, '#theme-plan-editor');
-
-    for (const { containerId, count } of SPRITE_BOARD_SLOTS) {
-      const container = doc.getElementById(containerId);
-      assertVisible(container, `#${containerId}`);
-      const rows = Array.from(container.querySelectorAll('.theme-plan-slot-row'));
-      assert.equal(rows.length, count, `expected ${count} slot rows in #${containerId}, got ${rows.length}`);
-      // Expressions render fixed, read-only labels (no editable name
-      // input) — every other slot group has an editable name + desc pair.
-      const isReadOnlyNameGroup = containerId === 'theme-plan-expressions-slots';
-      for (const row of rows as any[]) {
-        const descField = row.querySelector('[data-plan-field="desc"]');
-        assertVisible(descField, `${containerId} desc field`);
-        if (!isReadOnlyNameGroup) {
-          const nameField = row.querySelector('[data-plan-field="name"]');
-          assertVisible(nameField, `${containerId} name field`);
-        }
-      }
-    }
+    assert.ok(planEditor.hasAttribute('hidden'), 'plan editor must stay hidden on the manual screen');
 
     // Build a THEME_IMAGE_REVIEW item per sprite-board slot so the per-board
     // Upload/Generate controls can be asserted for real board coverage.
@@ -550,7 +542,11 @@ test('THEME_PLAN_SAVED with hasBoards:false keeps #theme-build-actions hidden an
   }
 });
 
-test('THEME_INITIALIZED for the current draft theme_id with hasBoards:true unhides #theme-build-actions', async () => {
+// p79-t3: "Review generated images" / #theme-build-actions is retired —
+// renderThemeBuilderScreen always keeps it hidden; the board grid is reached
+// directly on both the ai and manual screens (010-modals-badges-rebirth.js
+// ~1140-1141).
+test('#theme-build-actions stays permanently hidden even after THEME_INITIALIZED reports hasBoards:true for the current draft', async () => {
   const h = await openThemeBuilderOnEmptyDraft();
   try {
     const { doc } = h;
@@ -580,7 +576,7 @@ test('THEME_INITIALIZED for the current draft theme_id with hasBoards:true unhid
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    assert.ok(!doc.getElementById('theme-build-actions').hasAttribute('hidden'), '#theme-build-actions must unhide once the host confirms hasBoards:true');
+    assert.ok(doc.getElementById('theme-build-actions').hasAttribute('hidden'), '#theme-build-actions must stay hidden — the board grid is reached directly, not through this retired control');
   } finally {
     h.win.close();
   }
@@ -703,9 +699,12 @@ test('the "Edit plan details" disclosure is collapsed by default in a fresh draf
   try {
     const { doc } = h;
 
-    const toggle = doc.getElementById('theme-plan-details-toggle');
-    assert.ok(toggle, 'expected #theme-plan-details-toggle to exist');
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'must start collapsed on a fresh draft');
+    // p79-t1: the "Edit plan details" disclosure is retired — the plan
+    // review is always fully expanded on the ai screen (never collapsed
+    // behind a toggle), and the manual screen never shows plan fields at
+    // all. buildThemePlanDetailsDisclosure/setThemePlanDetailsDisclosureOpen
+    // are now no-ops, so the toggle element must never be created.
+    assert.equal(doc.getElementById('theme-plan-details-toggle'), null, '#theme-plan-details-toggle must no longer be created');
 
     h.dispatch({
       type: 'THEME_PLAN_READY',
@@ -713,7 +712,9 @@ test('the "Edit plan details" disclosure is collapsed by default in a fresh draf
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true', 'must expand once an AI-generated plan lands');
+    assert.equal(doc.getElementById('theme-plan-details-toggle'), null, '#theme-plan-details-toggle must still not exist after an AI plan lands');
+    // The ai screen shows the plan review fully expanded with no disclosure.
+    assertVisible(doc.getElementById('theme-plan-editor'), '#theme-plan-editor');
   } finally {
     h.win.close();
   }
