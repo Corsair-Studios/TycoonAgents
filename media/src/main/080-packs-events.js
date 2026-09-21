@@ -1353,12 +1353,12 @@
 
     if (!metrics || metrics.length === 0) {
       emptyEl.style.display = "";
-      tableEl.style.display = "none";
+      tableEl.hidden = true;
       return;
     }
 
     emptyEl.style.display = "none";
-    tableEl.style.display = "";
+    tableEl.hidden = false;
 
     // Highest completed-task count across agents. Used to scale the status
     // bar as a tasks-completed share, not tokens or cost — cost is carried

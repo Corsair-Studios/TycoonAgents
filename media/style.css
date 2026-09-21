@@ -8017,9 +8017,11 @@ button.theme-review-preview:focus-visible::after {
   position: absolute;
 }
 
-.metrics-table-hidden {
-  display: none;
-}
+/* metrics-table's initial/toggled hidden state now uses the plain `hidden`
+   attribute + the global [hidden] rule (see p82-t1) instead of a class, so
+   the JS toggle (renderMetricsTable) and the initial markup share one
+   mechanism. A class here would outlive style.display being cleared by JS
+   and hide the table permanently. */
 
 .theme-library-heading {
   margin: 0 0 16px;

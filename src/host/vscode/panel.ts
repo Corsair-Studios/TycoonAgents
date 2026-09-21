@@ -9963,7 +9963,7 @@ export class TycoonPanel {
         </div>
         <div id="metrics-scope-caption" class="delegation-stats-caption"></div>
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
-        <table id="metrics-table" class="metrics-table-hidden">
+        <table id="metrics-table" hidden>
           <thead>
             <tr>
               <th title="The agent doing the work. The orchestrator delegates; the specialists do the work.">Agent</th>

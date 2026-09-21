@@ -3786,7 +3786,7 @@ function buildHostHtml(token) {
       </div>
       <div id="metrics-body">
         <div id="metrics-empty">No agents yet &mdash; start a session to see activity.</div>
-        <table id="metrics-table" class="metrics-table-hidden">
+        <table id="metrics-table" hidden>
           <thead>
             <tr>
               <th>Agent</th>
