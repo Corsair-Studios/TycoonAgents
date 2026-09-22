@@ -584,8 +584,15 @@ test('generateBoardImage body contract: retryThemeImage with reference images ne
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   let validateGenerateBody: ((body: unknown) => { ok: boolean; code?: string }) | undefined;
   try {
+    // Path is relative to the COMPILED test file (out/test/*.js), which sits
+    // one directory deeper than the TycoonAgents repo root, which itself
+    // sits one directory below the sibling checkouts (D:\ACode\*) — three
+    // '..' segments, not two. The previous two-segment path silently
+    // resolved to a nonexistent TycoonAgents/corsair-theme-service, so the
+    // catch below always fired and this test never actually ran the real
+    // backend validator (p85-t5 finding).
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    ({ validateGenerateBody } = require('../../corsair-theme-service/src/validate.mjs'));
+    ({ validateGenerateBody } = require('../../../corsair-theme-service/src/validate.mjs'));
   } catch {
     // Sibling repo not present in this checkout — covered instead by the
     // unconditional userReferenceImages-key assertion below.
@@ -640,6 +647,70 @@ test('generateBoardImage body contract: retryThemeImage with reference images ne
 
   if (validateGenerateBody) {
     const result = validateGenerateBody(body);
+    assert.equal(result.ok, true, `real backend validator rejected the body: ${JSON.stringify(result)}`);
+  }
+});
+
+// p85-t5: planTheme's idempotencyKey (src/extension/translator.ts,
+// nextPlanIdempotencyKey) used to be `plan:${kind}:${suffix}`, which
+// contains colons the deployed backend's IDEMPOTENCY_KEY_RE
+// (`/^[A-Za-z0-9_-]{8,128}$/`, D:\ACode\corsair-theme-service
+// src/validate.mjs) rejects outright, so every "Generate with AI" POST
+// /api/plan came back 400 bad_request. This captures the REAL outgoing
+// body from planTheme's actual code path (not a hand-written copy) and
+// validates it against the real backend validator, imported by relative
+// path from the sibling corsair-theme-service checkout — skipped (not
+// failed) when that sibling checkout isn't present.
+test('planTheme body contract: the real POST /api/plan body passes the real backend validator', async () => {
+  let validatePlanBody: ((body: unknown) => { ok: boolean; code?: string }) | undefined;
+  try {
+    // See the three-'..' path note on the generateBoardImage body-contract
+    // test above — out/test/*.js is two directories below D:\ACode.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    ({ validatePlanBody } = require('../../../corsair-theme-service/src/validate.mjs'));
+  } catch {
+    // Sibling repo not present in this checkout.
+  }
+
+  const nowMs = 1_700_000_200_000;
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+
+  const capturedBodies: unknown[] = [];
+  const capturingFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('/api/plan') && init?.body) {
+      capturedBodies.push(JSON.parse(String(init.body)));
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  await withTempStore(async () => {
+    const tokenStore = memoryTokenStore();
+    const client = createThemeServiceClient({ fetch: capturingFetch, tokenStore, endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+    const email = 'plan-body-contract@example.com';
+    await client.requestMagicLink(email);
+    await client.verifyMagicLink(email, '123456');
+    const accountId = fake.state.accountsByEmail.get(email)!;
+    fake.helpers.grant(accountId, 1000);
+
+    setThemePlanRequester(createServicePlanRequester(client));
+    try {
+      await planTheme('Test G');
+    } finally {
+      setThemePlanRequester(undefined);
+    }
+  });
+
+  assert.equal(capturedBodies.length, 1, 'planTheme must make exactly one /api/plan call');
+  const body = capturedBodies[0] as Record<string, unknown>;
+  assert.match(
+    body.idempotencyKey as string,
+    /^[A-Za-z0-9_-]{8,128}$/,
+    `idempotencyKey must match the backend's IDEMPOTENCY_KEY_RE, got ${JSON.stringify(body.idempotencyKey)}`,
+  );
+
+  if (validatePlanBody) {
+    const result = validatePlanBody(body);
     assert.equal(result.ok, true, `real backend validator rejected the body: ${JSON.stringify(result)}`);
   }
 });

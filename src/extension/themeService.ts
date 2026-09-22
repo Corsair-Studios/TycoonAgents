@@ -238,11 +238,16 @@ function sizeForOptions(options: ThemeImageGenerationOptions | undefined): strin
 }
 
 let themeImageAttemptCounter = 0;
-/** `${themeId}:${itemId}:${attemptNumber}:${randomSuffix}` (p43-t1) — generated once per attempt; a caller that retries the same HTTP request (not a new user-initiated retry) must reuse the same key, which is why this is computed once per generateBoardImage call and threaded through, never regenerated mid-request. */
+/** Backend's IDEMPOTENCY_KEY_RE (corsair-theme-service/src/validate.mjs) only allows `[A-Za-z0-9_-]{8,128}` — no colons, so themeId/itemId (which may contain arbitrary chars) are sanitized before joining (p85-t5). */
+function sanitizeIdempotencyPart(part: string): string {
+  return part.replace(/[^A-Za-z0-9_-]/g, '-');
+}
+/** `${themeId}-${itemId}-${attemptNumber}-${randomSuffix}` (sanitized, capped to 128 chars) (p43-t1/p85-t5) — generated once per attempt; a caller that retries the same HTTP request (not a new user-initiated retry) must reuse the same key, which is why this is computed once per generateBoardImage call and threaded through, never regenerated mid-request. */
 function nextThemeImageIdempotencyKey(themeId: string, itemId: string, attemptNumber: number): string {
   themeImageAttemptCounter += 1;
   const suffix = `${Date.now().toString(36)}${themeImageAttemptCounter.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  return `${themeId}:${itemId}:${attemptNumber}:${suffix}`;
+  const key = `${sanitizeIdempotencyPart(themeId)}-${sanitizeIdempotencyPart(itemId)}-${attemptNumber}-${suffix}`;
+  return key.length > 128 ? key.slice(key.length - 128) : key;
 }
 
 /** Maps a review item to the Theme Service's boardType pricing key (docs/theme-service-api.md's `attemptCostByBoardType`). */

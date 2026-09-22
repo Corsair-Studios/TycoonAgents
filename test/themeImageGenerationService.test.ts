@@ -188,7 +188,11 @@ test('a full plan run debits the Theme Service exactly once per board, each with
       assert.equal(calls.length, review.entries.length, `expected one attempt per board, got calls: ${JSON.stringify(calls.map((c) => c.boardType))}`);
       const keys = new Set(calls.map((c) => c.idempotencyKey));
       assert.equal(keys.size, calls.length, 'every attempt must carry a distinct idempotency key');
-      for (const key of keys) assert.match(key, /^attempt_accounting_theme:[^:]+:\d+:.+$/);
+      // Sanitized-and-hyphenated format (p85-t5) — must also match the backend's IDEMPOTENCY_KEY_RE.
+      for (const key of keys) {
+        assert.match(key, /^attempt_accounting_theme-[^-]+-\d+-.+$/);
+        assert.match(key, /^[A-Za-z0-9_-]{8,128}$/);
+      }
 
       assert.equal(review.creditsSpent, calls.length, 'creditsSpent must sum every successful attemptCost');
       for (const entry of review.entries) {
