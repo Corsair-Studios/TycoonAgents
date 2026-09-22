@@ -152,6 +152,11 @@ function waitForThemeImageAcceptance(themeId, itemId, signal, options) {
 // ── PLAN_THEME -> THEME_PLAN_READY | THEME_PLAN_ERROR ──────────────────────
 // Mirrors panel.ts's MSG.PLAN_THEME branch.
 export async function handlePlanTheme(store, broadcast, payload) {
+  // p86: echoed back on THEME_PLAN_READY/THEME_PLAN_ERROR — mirrors
+  // panel.ts's PLAN_THEME branch — so the webview can drop a reply for a
+  // request it has since superseded (a new PLAN_THEME, or the draft being
+  // cleared) instead of overwriting the plan currently on screen.
+  const requestId = payload?.requestId;
   try {
     if (themeGenerationActive) {
       throw new Error('Wait for the current theme generation to finish before planning another theme.');
@@ -170,15 +175,26 @@ export async function handlePlanTheme(store, broadcast, payload) {
     console.log('[tycoonagents-standalone] PLAN_THEME request starting.');
     const plan = await genBridge.planTheme(prompt, {});
     console.log('[tycoonagents-standalone] PLAN_THEME request succeeded.');
-    broadcast('message', { type: MSG_WIRE.THEME_PLAN_READY, payload: { plan } });
+    broadcast('message', {
+      type: MSG_WIRE.THEME_PLAN_READY,
+      payload: { plan, ...(requestId !== undefined ? { requestId } : {}) },
+    });
   } catch (err) {
     // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
     // through, same as panel.ts's MSG.PLAN_THEME catch.
     const kind = err && typeof err === 'object' && typeof err.kind === 'string' ? err.kind : undefined;
+    // p86: surface refunded (provider failure / incomplete AI output),
+    // mirrors panel.ts's MSG.PLAN_THEME catch.
+    const refunded = err && typeof err === 'object' && typeof err.refunded === 'boolean' ? err.refunded : undefined;
     console.error('[tycoonagents-standalone] PLAN_THEME request failed.', { kind: kind ?? 'unknown' });
     broadcast('message', {
       type: MSG_WIRE.THEME_PLAN_ERROR,
-      payload: { message: String(err), ...(kind ? { kind } : {}) },
+      payload: {
+        message: String(err),
+        ...(kind ? { kind } : {}),
+        ...(refunded !== undefined ? { refunded } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      },
     });
   }
 }

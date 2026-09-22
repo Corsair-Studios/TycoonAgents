@@ -1826,16 +1826,73 @@
     vscode.postMessage({ type: "requestThemeServiceStatus" });
   }
 
+  /** p86: per-viewer convenience cache (never shared, never read back by
+   *  the host) so the credits chip has SOMETHING to show the instant the
+   *  Theme Builder tab opens, before the round trip to the host resolves —
+   *  wrapped in try/catch since a private window or blocked site data can
+   *  throw or come back empty. */
+  var THEME_SERVICE_STATUS_CACHE_KEY = "tycoonagents.themeServiceStatusCache";
+  function readCachedThemeServiceStatus() {
+    try {
+      var raw = window.localStorage.getItem(THEME_SERVICE_STATUS_CACHE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writeCachedThemeServiceStatus(status) {
+    try {
+      window.localStorage.setItem(THEME_SERVICE_STATUS_CACHE_KEY, JSON.stringify({
+        signedIn: Boolean(status.signedIn),
+        credits: typeof status.credits === "number" ? status.credits : undefined,
+      }));
+    } catch (e) {
+      // ignore — cache is a convenience only
+    }
+  }
+
   function updateThemeBuilderCreditsChip(status) {
     if (!themeBuilderCreditsChip) return;
-    if (status && status.signedIn && typeof status.credits === "number") {
-      themeBuilderCreditsChip.textContent = status.credits + " credits";
+    var s = status;
+    // p86: no status yet at all (host reply still in flight, or arrived as
+    // the { pending: true } stub) — fall back to the last cached status so
+    // the chip isn't blank on first open, and if there's no cache either,
+    // show "…" (loading) rather than hiding it outright.
+    if (!s || s.pending) {
+      var cached = readCachedThemeServiceStatus();
+      if (cached && cached.signedIn && typeof cached.credits === "number") {
+        themeBuilderCreditsChip.textContent = cached.credits + " credits";
+        themeBuilderCreditsChip.removeAttribute("hidden");
+        return;
+      }
+      if (s && s.pending) {
+        themeBuilderCreditsChip.textContent = "…";
+        themeBuilderCreditsChip.removeAttribute("hidden");
+        return;
+      }
+      themeBuilderCreditsChip.textContent = "";
+      themeBuilderCreditsChip.setAttribute("hidden", "");
+      return;
+    }
+    if (s.signedIn && typeof s.credits === "number") {
+      themeBuilderCreditsChip.textContent = s.credits + " credits";
       themeBuilderCreditsChip.removeAttribute("hidden");
+      writeCachedThemeServiceStatus(s);
     } else {
       themeBuilderCreditsChip.textContent = "";
       themeBuilderCreditsChip.setAttribute("hidden", "");
+      if (!s.signedIn) writeCachedThemeServiceStatus(s);
     }
   }
+
+  // p86: fire the status request as soon as this script runs — previously
+  // only "Retry" (renderThemeServiceUnreachable) and the Theme Builder tab
+  // click (via OPEN_THEME_BUILDER) ever asked for it, so the FIRST open of
+  // the Theme Builder in a session always raced the host's fetch and the
+  // credits chip sat blank until it resolved. Also paint the last cached
+  // status immediately so there's no visible gap at all when the tab opens.
+  updateThemeBuilderCreditsChip(null);
+  requestThemeServiceStatus();
 
   function tspClear(el) {
     while (el.firstChild) el.removeChild(el.firstChild);
@@ -2393,6 +2450,18 @@
   let themePlanRequestInFlight = false;
 
   /**
+   * p86: monotonic id for the current/last PLAN_THEME request. Echoed back
+   * by the host on THEME_PLAN_READY/THEME_PLAN_ERROR (panel.ts, standalone
+   * themeGenerationMessages.mjs) so a stale reply — e.g. a slow response for
+   * a previous theme's prompt that lands after the user has already started
+   * a NEW plan request or cleared the draft — never overwrites the plan
+   * currently on screen. Bumped by runThemeGeneratePlan (new request) and by
+   * clearThemeBuilderDraftState (draft cleared / different theme entered),
+   * which invalidates any reply still in flight for the old id.
+   */
+  let themePlanRequestId = 0;
+
+  /**
    * p84: single authority for the "Plan theme"/"Generate with AI" disabled
    * state. Bug fix: previously only runThemeGeneratePlan disabled
    * themeGenerateWithAiBtn, and only THEME_PLAN_READY re-enabled it (and
@@ -2455,9 +2524,12 @@
     }
     setThemePlanStartStatus("AI is filling the theme slots...", false);
 
+    // p86: a new request always gets a fresh id — the reply handler only
+    // applies a THEME_PLAN_READY/ERROR whose echoed requestId matches this.
+    const requestId = ++themePlanRequestId;
     vscode.postMessage({
       type: 'PLAN_THEME',
-      payload: { prompt, image_provider: imageProvider },
+      payload: { prompt, image_provider: imageProvider, requestId },
     });
   }
 
@@ -2970,6 +3042,10 @@
     // p84: a fresh/entering Start screen must never inherit a stale
     // disabled "Generate with AI" from an earlier attempt's request.
     setThemePlanRequestInFlight(false);
+    // p86: invalidate any PLAN_THEME reply still in flight for the draft
+    // just cleared — a THEME_PLAN_READY/ERROR that arrives after this point
+    // carries the OLD requestId and the message handler drops it.
+    themePlanRequestId += 1;
   }
 
   /**

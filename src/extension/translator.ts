@@ -187,6 +187,33 @@ export function buildThemePlanningPrompt(userPrompt: string): string {
  * Expand a short theme request into the complete, editable pre-generation
  * plan shown in the Theme Builder.
  */
+/**
+ * p86: true when the AI planner's raw output is too sparse to be a real
+ * plan (e.g. a backend/model hiccup that returns an empty or near-empty
+ * JSON shape) — creative_direction missing, or most of the named-slot
+ * arrays came back empty. normalizeThemePlan pads any missing slot with a
+ * silent "Character N" / generic-direction placeholder, which for an AI
+ * result would show the user a plan that looks real but wasn't actually
+ * generated. Manual/draft paths (buildEmptyThemePlan, hand-typed fields)
+ * never go through this check — only expandThemePlan's AI output does.
+ */
+function isIncompletePlannerOutput(model: PlannerModelOutput): boolean {
+  if (!cleanString(model.creative_direction)) return true;
+  const slotArrays: unknown[] = [
+    model.characters, model.objects, model.decor, model.enemies, model.achievements,
+  ];
+  let nonEmptyGroups = 0;
+  for (const arr of slotArrays) {
+    if (Array.isArray(arr) && arr.some((v) => cleanString(v))) nonEmptyGroups += 1;
+  }
+  // Fewer than half the core slot groups came back with any content at all.
+  return nonEmptyGroups < Math.ceil(slotArrays.length / 2);
+}
+
+function cleanString(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
 export async function expandThemePlan(
   rawUserInput: string,
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site compatibility; see ThemeImageGenerationOptions doc comment.
@@ -194,6 +221,17 @@ export async function expandThemePlan(
 ): Promise<ThemePlan> {
   const planningPrompt = buildThemePlanningPrompt(rawUserInput);
   const model = await requestPlan('plan', { prompt: planningPrompt }) as PlannerModelOutput;
+
+  // p86: an incomplete AI result must fail loudly (THEME_PLAN_ERROR), not
+  // silently fill in "Character N" / generic placeholders that look like a
+  // real plan.
+  if (isIncompletePlannerOutput(model)) {
+    throw new ThemePlanServiceError({
+      kind: 'invalid_response',
+      message: 'The AI plan came back incomplete. Any credit charged is refunded.',
+      refunded: true,
+    });
+  }
 
   return normalizeThemePlan({
     display_name: model.display_name,

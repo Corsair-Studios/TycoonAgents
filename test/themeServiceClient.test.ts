@@ -573,7 +573,21 @@ test("planRequest debits planCost and echoes the requester's kind/input as outpu
     assert.equal(res.value.credits, 4);
     assert.equal(res.value.attemptCost, 1);
     assert.equal(res.value.refunded, false);
-    assert.deepEqual(res.value.output, { kind: "plan", echo: { prompt: "a cozy noodle shop" } });
+    // p86: fakeThemeService's /api/plan echo for kind "plan" now also
+    // includes a plausible (non-sparse) plan body — see
+    // test/helpers/fakeThemeService.ts — so translator.ts's incomplete-AI-
+    // plan check doesn't trip on this fixture's bare echo.
+    assert.deepEqual(res.value.output, {
+      kind: "plan",
+      echo: { prompt: "a cozy noodle shop" },
+      display_name: "Fake Plan",
+      creative_direction: "fake plan direction",
+      characters: ["Fake Character"],
+      objects: ["Fake Object"],
+      decor: ["Fake Decor"],
+      enemies: ["Fake Enemy"],
+      achievements: ["Fake Achievement"],
+    });
   }
   const rows = fake.state.ledger.filter((r) => r.ref === "plan:plan-k1");
   assert.equal(rows.length, 1);

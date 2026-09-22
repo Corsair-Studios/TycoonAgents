@@ -2683,7 +2683,12 @@ export class TycoonPanel {
             });
           }
         } else if (message.type === MSG.PLAN_THEME) {
-          const payload = (message as any).payload as { prompt?: string; image_provider?: string } | undefined;
+          const payload = (message as any).payload as { prompt?: string; image_provider?: string; requestId?: number } | undefined;
+          // p86: echoed back on THEME_PLAN_READY/THEME_PLAN_ERROR so the
+          // webview can drop a reply for a request it has since superseded
+          // (a new PLAN_THEME, or the draft being cleared) instead of
+          // overwriting the plan currently on screen with a stale one.
+          const requestId = payload?.requestId;
           try {
             if (this._themeGenerationActive) throw new Error("Wait for the current theme generation to finish before planning another theme.");
             const prompt = payload?.prompt?.trim() ?? "";
@@ -2697,16 +2702,28 @@ export class TycoonPanel {
             console.log("TycoonAgents: PLAN_THEME request starting.");
             const plan = await planTheme(prompt, {});
             console.log("TycoonAgents: PLAN_THEME request succeeded.");
-            void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_PLAN_READY,
+              payload: { plan, ...(requestId !== undefined ? { requestId } : {}) },
+            });
           } catch (err) {
             // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
             // through so the webview can render a Sign in affordance instead
             // of raw error text — see ThemePlanServiceError in translator.ts.
             const kind = isThemePlanServiceError(err) ? err.kind : undefined;
+            // p86: surface refunded so the webview can say so instead of a
+            // bare "Error: ..." when the backend refunded a charged credit
+            // (provider failure / incomplete AI output).
+            const refunded = isThemePlanServiceError(err) ? err.refunded : undefined;
             console.error("TycoonAgents: PLAN_THEME request failed.", { kind: kind ?? "unknown" });
             void this._panel.webview.postMessage({
               type: MSG.THEME_PLAN_ERROR,
-              payload: { message: String(err), ...(kind ? { kind } : {}) },
+              payload: {
+                message: String(err),
+                ...(kind ? { kind } : {}),
+                ...(refunded !== undefined ? { refunded } : {}),
+                ...(requestId !== undefined ? { requestId } : {}),
+              },
             });
           }
         } else if (message.type === MSG.SET_THEME_PAUSE_FOR_REVIEW) {

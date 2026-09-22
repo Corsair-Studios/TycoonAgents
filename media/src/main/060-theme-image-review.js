@@ -1504,6 +1504,14 @@
     } else if (msg && msg.type === "THEME_HEALTH_CHECK_RESULT") {
       renderThemeHealthResult(msg.payload || {});
     } else if (msg && msg.type === "THEME_PLAN_READY") {
+      // p86: drop a reply for a superseded PLAN_THEME request (e.g. a slow
+      // response for a previous theme's prompt landing after a new request
+      // started, or after the draft was cleared) — never let it overwrite
+      // whatever plan is currently on screen. Replies missing requestId
+      // (shouldn't happen once host+webview ship together) are accepted.
+      if (msg.payload && typeof msg.payload.requestId === "number" && msg.payload.requestId !== themePlanRequestId) {
+        return;
+      }
       setThemePlanRequestInFlight(false);
       // p76-t2: confirm (inline, not window.confirm) before an AI autofill
       // clobbers anything the user already typed by hand.
@@ -1559,10 +1567,19 @@
       // THEMES_LIST re-post (host contract) refreshes the picker separately
       // via the existing THEMES_LIST handler — nothing to do here for it.
     } else if (msg && msg.type === "THEME_PLAN_ERROR") {
+      // p86: same staleness guard as THEME_PLAN_READY above — ignore a
+      // failure reply for a superseded PLAN_THEME request.
+      if (msg.payload && typeof msg.payload.requestId === "number" && msg.payload.requestId !== themePlanRequestId) {
+        return;
+      }
       setThemePlanRequestInFlight(false);
+      // p86: the backend refunds credits on a provider failure / incomplete
+      // AI output (bad_request, provider_failed) — say so rather than just
+      // "Error: ...".
+      const refundedSuffix = msg.payload?.refunded ? " Any credit charged is refunded." : "";
       const planErrorMessage = msg.payload?.kind === "not_signed_in"
         ? "Sign in to plan a theme with AI."
-        : "Error: " + (msg.payload?.message || "Theme planning failed.");
+        : "Error: " + (msg.payload?.message || "Theme planning failed.") + refundedSuffix;
       // p85: a PLAN_THEME failure happens while still on the Start screen —
       // renderThemeBuilderScreen keeps themeBuildStatus hidden there, so the
       // error must also be mirrored into the Start-screen-visible element
@@ -1584,7 +1601,7 @@
           signInBtn.addEventListener("click", () => openThemeBuilderFromReview());
           themeBuildStatus.appendChild(signInBtn);
         } else {
-          themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.");
+          themeBuildStatus.textContent = "Error: " + (msg.payload?.message || "Theme planning failed.") + refundedSuffix;
         }
         themeBuildStatus.style.color = "var(--vscode-errorForeground)";
       }

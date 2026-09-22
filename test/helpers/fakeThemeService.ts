@@ -544,8 +544,25 @@ export function createFakeThemeService(options: FakeThemeServiceOptions = {}): {
         // Fake "output": echoes back the kind/input it was given so tests can
         // assert on what the caller sent, without hardcoding a plan shape
         // here — real plan/description shapes are the caller's concern.
+        // p86: for kind "plan" this must also look like a real (non-sparse)
+        // planner result — translator.ts's expandThemePlan now rejects an
+        // output missing creative_direction or with most named-slot arrays
+        // empty as an incomplete AI plan (THEME_PLAN_ERROR instead of
+        // silent placeholders), which a bare echo-only body would trip.
         const respBody = {
-          output: { kind: body.kind, echo: body.input },
+          output: body.kind === "plan"
+            ? {
+              kind: body.kind,
+              echo: body.input,
+              display_name: "Fake Plan",
+              creative_direction: "fake plan direction",
+              characters: ["Fake Character"],
+              objects: ["Fake Object"],
+              decor: ["Fake Decor"],
+              enemies: ["Fake Enemy"],
+              achievements: ["Fake Achievement"],
+            }
+            : { kind: body.kind, echo: body.input },
           attemptCost: cost,
           credits: newBalance,
           refunded: false,

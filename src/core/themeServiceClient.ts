@@ -164,7 +164,10 @@ export interface ThemeServiceClientOptions {
   clientVersion?: string;
   /**
    * Bounds every Theme Service request with an AbortController so a hung
-   * connection can't stall the caller forever. Default 180_000ms (180s);
+   * connection can't stall the caller forever. Default 200_000ms (200s) —
+   * p86: kept above the server's own 170-180s /api/plan and /api/generate
+   * budgets so the server always answers (success, error, or refund) first
+   * instead of the client aborting and racing it;
    * override for tests or slower generation endpoints. Does not apply to
    * the Supabase auth requests.
    */
@@ -454,7 +457,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   const now = opts.now ?? (() => Date.now());
   const createCodeVerifier: () => string | null = opts.createCodeVerifier ?? defaultCreateCodeVerifier;
   const clientVersion = opts.clientVersion;
-  const requestTimeoutMs = opts.requestTimeoutMs ?? 180_000;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 200_000;
   const statusTimeoutMs = opts.statusTimeoutMs ?? 10_000;
   // Shorter than requestTimeoutMs on purpose — this is a small, cacheable
   // config GET the Theme Service should answer fast; it must not stall

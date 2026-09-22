@@ -281,7 +281,19 @@ test("plan debits planCost and echoes kind/input as output", async () => {
   });
   assert.equal(res.status, 200);
   const planBody = (await res.json()) as { output: unknown; attemptCost: number; credits: number; refunded: boolean };
-  assert.deepEqual(planBody.output, { kind: "plan", echo: { prompt: "a chair shop" } });
+  // p86: /api/plan's fake "plan" output also includes a plausible
+  // (non-sparse) plan body now — see test/helpers/fakeThemeService.ts.
+  assert.deepEqual(planBody.output, {
+    kind: "plan",
+    echo: { prompt: "a chair shop" },
+    display_name: "Fake Plan",
+    creative_direction: "fake plan direction",
+    characters: ["Fake Character"],
+    objects: ["Fake Object"],
+    decor: ["Fake Decor"],
+    enemies: ["Fake Enemy"],
+    achievements: ["Fake Achievement"],
+  });
   assert.equal(planBody.attemptCost, 1);
   assert.equal(planBody.credits, 4);
   assert.equal(planBody.refunded, false);
