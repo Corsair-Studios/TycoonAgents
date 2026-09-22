@@ -226,10 +226,13 @@ export async function expandThemePlan(
   // silently fill in "Character N" / generic placeholders that look like a
   // real plan.
   if (isIncompletePlannerOutput(model)) {
+    // p87: this rejection happens client-side, after the server already
+    // returned 200 (and billed the credit) — the server response carries no
+    // refund status, so the message must not claim one that didn't happen.
     throw new ThemePlanServiceError({
       kind: 'invalid_response',
-      message: 'The AI plan came back incomplete. Any credit charged is refunded.',
-      refunded: true,
+      message: 'The AI plan came back incomplete.',
+      refunded: false,
     });
   }
 

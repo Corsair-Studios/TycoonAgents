@@ -7,7 +7,9 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "declaration": true
+    "declaration": true,
+    "incremental": true,
+    "tsBuildInfoFile": "out/.tsbuildinfo"
   },
   "include": ["src/**/*", "test/**/*"],
   "exclude": ["media/**/*", "uefn-bridge/**/*"]

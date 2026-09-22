@@ -123,9 +123,21 @@ function buildPlan(themeId: string): ThemePlan {
   }, 'Attempt Accounting Theme');
 }
 
+// p87: encoding a fresh 400x200 PNG via Jimp on every call is real CPU work,
+// and a full theme generation calls this once per board item (roster
+// agents, rivals, objects, decor...). Tests that run generateTheme several
+// times in a loop (e.g. the error-kind matrix below) were repeating that
+// encode dozens of times per run, and on this machine enough of them back to
+// back reliably starved the event loop long enough to blow past any
+// per-test timeout. The encoded bytes are never asserted on here, so cache
+// and reuse one buffer instead of re-encoding it every call.
+let cachedMagentaAtlas: Buffer | undefined;
 async function magentaAtlas(): Promise<Buffer> {
-  const atlas = new Jimp(400, 200, 0xff00ffff);
-  return atlas.getBufferAsync(Jimp.MIME_PNG);
+  if (!cachedMagentaAtlas) {
+    const atlas = new Jimp(400, 200, 0xff00ffff);
+    cachedMagentaAtlas = await atlas.getBufferAsync(Jimp.MIME_PNG);
+  }
+  return cachedMagentaAtlas;
 }
 
 // p59-t4: v3.4 structured request — no free-text `prompt` field (see
@@ -338,9 +350,20 @@ test('each Theme Service error kind surfaces as its own distinct error_kind, nev
     { kind: 'invalid_response', expected: 'unavailable' }, // folded — no table entry of its own
   ];
 
-  for (const { kind, expected } of kinds) {
-    await withTempStore(async (globalStorageUri) => {
-      const themeId = 'error_kind_theme';
+  // p87: each iteration used to mkdtemp a brand-new tempdir and recursively
+  // `rm` it in withTempStore's finally, 8 times in a tight loop. On Windows
+  // that create/write/recursive-delete churn (compounded by AV real-time
+  // scanning of the freshly written review/manifest files) reliably wedged
+  // the process after ~6-7 iterations — the delete of one iteration's dir
+  // races the next iteration's writes to a same-named theme, and the run
+  // never returns. One shared tempdir + a distinct themeId per kind gives
+  // every iteration the same isolation (no on-disk state carries over
+  // between kinds) without the repeated mkdtemp/rm-recursive cycle.
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'tycoon-theme-svc-'));
+  try {
+    const globalStorageUri = FakeUri.file(root);
+    for (const { kind, expected } of kinds) {
+      const themeId = `error_kind_theme_${kind}`;
       const plan = buildPlan(themeId);
       plan.theme_id = themeId;
       const { generator } = makeCountingGenerator({
@@ -355,7 +378,9 @@ test('each Theme Service error kind surfaces as its own distinct error_kind, nev
       } finally {
         setThemeImageGenerator(undefined);
       }
-    });
+    }
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
   }
 });
 

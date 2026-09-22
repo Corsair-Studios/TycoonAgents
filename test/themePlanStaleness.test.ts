@@ -412,3 +412,63 @@ test('the credits chip is never left blank/hidden while THEME_SERVICE_STATUS is 
     h.win.close();
   }
 });
+
+// p87: opening the Tycoon Themes modal itself must (a) request fresh status
+// every time, and (b) never leave the credits chip fully hidden for a
+// signed-in user just because the status reply carried an error/no credits
+// (e.g. a Render cold-start timeout) instead of a clean signedIn+credits
+// payload. Must FAIL against the pre-p87 bundle, where updateThemeBuilderCreditsChip
+// hid the chip outright whenever status.credits wasn't a number, and the
+// menu-themes click handler never posted requestThemeServiceStatus.
+test('opening Tycoon Themes requests fresh status and the credits chip stays visible for a signed-in user with 48 credits', async () => {
+  const h = await bootThemePanelHarness();
+  try {
+    const { doc } = h;
+    const chip: any = doc.getElementById('theme-builder-credits-chip');
+
+    h.posted.length = 0;
+    h.click('menu-themes');
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.ok(
+      h.posted.some((m) => m.type === 'requestThemeServiceStatus'),
+      'BUG: opening the Tycoon Themes modal did not request fresh Theme Service status',
+    );
+
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 48 } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(chip.hasAttribute('hidden'), false, 'chip must be visible for a signed-in user with credits');
+    assert.equal(chip.textContent, '48 credits');
+  } finally {
+    h.win.close();
+  }
+});
+
+test('credits chip falls back to cached balance (never hides) when a later status errors out for a signed-in user', async () => {
+  const h = await bootThemePanelHarness();
+  try {
+    const { doc } = h;
+    const chip: any = doc.getElementById('theme-builder-credits-chip');
+
+    h.click('tab-theme-builder');
+    await new Promise((r) => setTimeout(r, 0));
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 48 } });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(chip.textContent, '48 credits');
+
+    // A later status reply errors (cold-start timeout) but is still for the
+    // signed-in user (signedIn carried true, credits omitted).
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, error: { kind: 'waking', message: 'Waking up…' } } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(
+      chip.hasAttribute('hidden'),
+      false,
+      'BUG: credits chip hid instead of falling back to the last cached balance on an error status',
+    );
+    assert.equal(chip.textContent, '48 credits', 'must show the last known cached balance');
+  } finally {
+    h.win.close();
+  }
+});

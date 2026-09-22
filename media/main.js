@@ -3255,6 +3255,14 @@ if (typeof module !== "undefined" && module.exports) {
       themeBuilderPanel.setAttribute("hidden", "");
       openModal(themesModalEl, themesModalCloseBtn);
       vscode.postMessage({ type: 'LIST_THEMES' });
+      // p87: the credits chip lives inside this modal (next to the Tycoon
+      // Theme Builder button) — request fresh status every time the modal
+      // opens, not only on the first script run, so a stale/errored status
+      // from earlier in the session doesn't leave the chip wrong or hidden.
+      // Paint a pending/cached indicator immediately so there's no visible
+      // gap before the host's reply lands.
+      updateThemeBuilderCreditsChip({ pending: true });
+      requestThemeServiceStatus();
     });
   }
 
@@ -3662,35 +3670,68 @@ if (typeof module !== "undefined" && module.exports) {
   function updateThemeBuilderCreditsChip(status) {
     if (!themeBuilderCreditsChip) return;
     var s = status;
-    // p86: no status yet at all (host reply still in flight, or arrived as
+    var cached = readCachedThemeServiceStatus();
+    // p87: no status yet at all (host reply still in flight, or arrived as
     // the { pending: true } stub) — fall back to the last cached status so
     // the chip isn't blank on first open, and if there's no cache either,
     // show "…" (loading) rather than hiding it outright.
     if (!s || s.pending) {
-      var cached = readCachedThemeServiceStatus();
       if (cached && cached.signedIn && typeof cached.credits === "number") {
         themeBuilderCreditsChip.textContent = cached.credits + " credits";
+        themeBuilderCreditsChip.title = "";
         themeBuilderCreditsChip.removeAttribute("hidden");
         return;
       }
+      // A genuine { pending: true } stub means a request is in flight —
+      // show the loading indicator. A bare null/undefined status (script
+      // just booted, nothing requested yet, e.g. the Theme Builder tab's
+      // Start screen before any THEME_SERVICE_STATUS round trip) stays
+      // hidden, matching the pre-p87 Start-screen contract.
       if (s && s.pending) {
         themeBuilderCreditsChip.textContent = "…";
+        themeBuilderCreditsChip.title = "";
         themeBuilderCreditsChip.removeAttribute("hidden");
         return;
       }
       themeBuilderCreditsChip.textContent = "";
+      themeBuilderCreditsChip.title = "";
       themeBuilderCreditsChip.setAttribute("hidden", "");
+      return;
+    }
+    // Definitively signed out — hide, and forget any stale cached balance.
+    if (s.signedIn === false) {
+      themeBuilderCreditsChip.textContent = "";
+      themeBuilderCreditsChip.title = "";
+      themeBuilderCreditsChip.setAttribute("hidden", "");
+      writeCachedThemeServiceStatus(s);
       return;
     }
     if (s.signedIn && typeof s.credits === "number") {
       themeBuilderCreditsChip.textContent = s.credits + " credits";
+      themeBuilderCreditsChip.title = "";
       themeBuilderCreditsChip.removeAttribute("hidden");
       writeCachedThemeServiceStatus(s);
-    } else {
-      themeBuilderCreditsChip.textContent = "";
-      themeBuilderCreditsChip.setAttribute("hidden", "");
-      if (!s.signedIn) writeCachedThemeServiceStatus(s);
+      return;
     }
+    // p87: signed in (or an in-flight error/timeout/waking status whose
+    // signedIn field wasn't carried, but the cache says we were signed in)
+    // with no fetchable balance — never hide outright; show the last known
+    // number, or an explicit placeholder with a title explaining why.
+    var signedInKnown = s.signedIn === true || (s.signedIn == null && Boolean(cached && cached.signedIn));
+    if (signedInKnown) {
+      if (cached && typeof cached.credits === "number") {
+        themeBuilderCreditsChip.textContent = cached.credits + " credits";
+        themeBuilderCreditsChip.title = "Showing your last known balance — could not refresh it just now.";
+      } else {
+        themeBuilderCreditsChip.textContent = "— credits";
+        themeBuilderCreditsChip.title = "Could not fetch your credit balance.";
+      }
+      themeBuilderCreditsChip.removeAttribute("hidden");
+      return;
+    }
+    themeBuilderCreditsChip.textContent = "";
+    themeBuilderCreditsChip.title = "";
+    themeBuilderCreditsChip.setAttribute("hidden", "");
   }
 
   // p86: fire the status request as soon as this script runs — previously

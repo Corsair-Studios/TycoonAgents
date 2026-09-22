@@ -464,8 +464,22 @@ test('#theme-builder-credits-chip is visible only when signed in with numeric cr
   assert.ok(!h.chip().hasAttribute('hidden'), 'chip should be visible when signed in with credits');
   assert.equal(h.chip().textContent, '17 credits');
 
+  // p87: an unfetchable balance while still signed in never hides the chip
+  // outright anymore — it falls back to the last cached balance (with an
+  // explanatory title) instead of disappearing.
   h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
-  assert.ok(h.chip().hasAttribute('hidden'), 'chip should hide again if credits is not a number');
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip should stay visible, showing the cached balance, when credits is unfetchable');
+  assert.equal(h.chip().textContent, '17 credits');
+  assert.match(h.chip().title, /last known balance/i);
+  h.win.close();
+});
+
+test('#theme-builder-credits-chip shows an explicit placeholder when signed in with no fetchable balance and no cache', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip should stay visible with a placeholder rather than hide');
+  assert.equal(h.chip().textContent, '— credits');
+  assert.match(h.chip().title, /could not fetch/i);
   h.win.close();
 });
 
