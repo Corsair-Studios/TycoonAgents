@@ -107,6 +107,7 @@ export type ThemeServiceErrorKind =
   | "unreachable"
   | "timeout"
   | "server_error"
+  | "bad_request"
   | "invalid_response";
 
 export interface ThemeServiceError {
@@ -115,6 +116,8 @@ export interface ThemeServiceError {
   message: string;
   refunded?: boolean;
   credits?: number;
+  /** p85: the backend's `code` field on a 400 bad_request body (e.g. "board_not_priced"), when present. */
+  code?: string;
 }
 
 export type ThemeServiceResult<T> = { ok: true; value: T } | { ok: false; error: ThemeServiceError };
@@ -843,7 +846,26 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       const errorField = typeof errBody.error === "string" ? errBody.error : undefined;
       const credits = typeof errBody.credits === "number" ? errBody.credits : undefined;
       const refunded = typeof errBody.refunded === "boolean" ? errBody.refunded : undefined;
+      const codeField = typeof errBody.code === "string" ? errBody.code : undefined;
       switch (res.status) {
+        case 400:
+          // p85: the backend sends { error: "bad_request", code?: "..." }
+          // (src/json.mjs sendError) for a malformed body — this previously
+          // fell into the `default` branch below as a generic "server_error",
+          // which the UI rendered as "Theme Service unavailable — no credits
+          // were charged" even though the request was simply rejected and no
+          // attempt (and no charge) was ever made.
+          return {
+            status: "error",
+            error: {
+              kind: "bad_request",
+              status: 400,
+              code: codeField,
+              message: codeField
+                ? `The Theme Service rejected this request (${codeField}). No credits were charged.`
+                : "The Theme Service rejected this request. No credits were charged.",
+            },
+          };
         case 402:
           return {
             status: "error",

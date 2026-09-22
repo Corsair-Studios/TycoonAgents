@@ -2690,13 +2690,20 @@ export class TycoonPanel {
             if (!prompt) throw new Error("Enter a theme name or description first.");
             // payload.image_provider is unused now — planning routes through
             // the Theme Service (p43-t7), not a user-chosen text provider.
+            // p85: log start + outcome (names/codes only, never prompt text,
+            // tokens, or emails) — previously a PLAN_THEME failure logged
+            // nothing at all on the host, making "Generate with AI does
+            // nothing" unreproducible from host output.
+            console.log("TycoonAgents: PLAN_THEME request starting.");
             const plan = await planTheme(prompt, {});
+            console.log("TycoonAgents: PLAN_THEME request succeeded.");
             void this._panel.webview.postMessage({ type: MSG.THEME_PLAN_READY, payload: { plan } });
           } catch (err) {
             // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
             // through so the webview can render a Sign in affordance instead
             // of raw error text — see ThemePlanServiceError in translator.ts.
             const kind = isThemePlanServiceError(err) ? err.kind : undefined;
+            console.error("TycoonAgents: PLAN_THEME request failed.", { kind: kind ?? "unknown" });
             void this._panel.webview.postMessage({
               type: MSG.THEME_PLAN_ERROR,
               payload: { message: String(err), ...(kind ? { kind } : {}) },

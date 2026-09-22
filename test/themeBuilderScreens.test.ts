@@ -392,6 +392,32 @@ test('Start screen shows exactly the name field and the two choice buttons; ever
   }
 });
 
+// p85: THEME_PLAN_ERROR arrives while still on the Start screen (a plan
+// request always starts there) — renderThemeBuilderScreen keeps
+// #theme-build-status hidden on every screen, so the error must be mirrored
+// into #theme-build-choice-validation (visible on Start) or it is
+// invisible to the user. Regression test for that bug.
+test('Start screen: a THEME_PLAN_ERROR is visible in #theme-build-choice-validation with readable text', async () => {
+  const h = await openThemeBuilderOnEmptyDraft();
+  try {
+    const { doc, dispatch } = h;
+    const validation = doc.getElementById('theme-build-choice-validation');
+    assertVisible(validation, '#theme-build-choice-validation');
+    assert.equal((validation.textContent || '').trim(), '', 'no stale error before any plan request');
+
+    dispatch({ type: 'THEME_PLAN_ERROR', payload: { message: 'Theme planning failed.' } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    assertVisible(validation, '#theme-build-choice-validation');
+    assert.ok(
+      (validation.textContent || '').includes('Theme planning failed'),
+      `expected visible error text, got: ${JSON.stringify(validation.textContent)}`,
+    );
+  } finally {
+    h.win.close();
+  }
+});
+
 // ── (b) Manual path: cards editable, per-board controls present ────────────
 
 test('Manual path: after Build manually + THEME_PLAN_SAVED + THEME_IMAGE_REVIEW, every board card shows visible name/description inputs and per-board controls; AI-only elements stay absent', async () => {

@@ -5146,6 +5146,19 @@ td.col-status {
   font-size: 11px;
 }
 
+/* p85: PLAN_THEME progress/error mirrored onto the Start-screen-visible
+   themeBuildChoiceValidation element (see setThemePlanStartStatus,
+   010-modals-badges-rebirth.js). tsp-status-error overrides
+   .theme-plan-validation's default error color when explicitly not an
+   error (in-flight progress text). */
+.tsp-status-info {
+  color: var(--vscode-descriptionForeground) !important;
+}
+
+.tsp-status-error {
+  color: var(--vscode-errorForeground, #f85149) !important;
+}
+
 .theme-generation-approval-toggle {
   display: flex;
   align-items: flex-start;

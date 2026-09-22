@@ -671,6 +671,60 @@ test("generateAttempt: 403 account_locked maps to kind account_locked", async ()
   if (!res.ok) assert.equal(res.error.kind, "account_locked");
 });
 
+// p85: a 400 bad_request response (deployed backend's src/json.mjs
+// sendError shape: { error: "bad_request", code?: "..." }) previously fell
+// through to the generic `default` branch and mapped to kind "server_error"
+// (message "unexpected status 400"), which the webview renders as "Theme
+// Service unavailable — no credits were charged" — misleading for a request
+// the client built wrong, not a service outage. Regression test for the
+// dedicated 400 -> "bad_request" mapping in src/core/themeServiceClient.ts.
+test("generateAttempt: 400 bad_request maps to kind bad_request, carries the backend's code, distinct from server_error", async () => {
+  const { fake } = setupClient();
+  const account = fake.helpers.createAccount("badreq@example.com");
+  fake.helpers.grant(account.id, 5);
+
+  const badRequestFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/generate")) {
+      return new Response(JSON.stringify({ error: "bad_request", code: "board_not_priced" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  const spiedClient = createThemeServiceClient({
+    fetch: badRequestFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  // Reuse the already-verified session by signing in fresh against this
+  // second client instance (fake service shares the same account store).
+  await spiedClient.requestMagicLink("badreq@example.com");
+  await spiedClient.verifyMagicLink("badreq@example.com", "123456");
+
+  const res = await spiedClient.generateAttempt({
+    idempotencyKey: "bad-request-key",
+    boardType: "objects_01",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "bad_request");
+    assert.notEqual(res.error.kind, "server_error");
+    assert.equal(res.error.code, "board_not_priced");
+    assert.match(res.error.message, /board_not_priced/);
+    assert.match(res.error.message, /No credits were charged/);
+  }
+});
+
 // p62-t3: applyReferralCode (REFERRAL_CODE_PATTERN, src/core/themeServiceClient.ts:189/810-820).
 test("applyReferralCode rejects invalid formats client-side without hitting fetch", async () => {
   const { fake, tokenStore, client } = setupClient();

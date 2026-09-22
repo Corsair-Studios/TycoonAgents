@@ -1520,6 +1520,9 @@
         themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
         themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
       }
+      // p85: plan succeeded and the screen just switched off Start (above),
+      // so the Start-only status mirror is no longer relevant — clear it.
+      setThemePlanStartStatus("", false);
     } else if (msg && msg.type === "THEME_PLAN_SAVED") {
       // p76-t2: host contract — flat saveThemePlan request, payload-wrapped
       // reply { theme_id, plan }. Only meaningful in new-theme draft mode;
@@ -1557,6 +1560,14 @@
       // via the existing THEMES_LIST handler — nothing to do here for it.
     } else if (msg && msg.type === "THEME_PLAN_ERROR") {
       setThemePlanRequestInFlight(false);
+      const planErrorMessage = msg.payload?.kind === "not_signed_in"
+        ? "Sign in to plan a theme with AI."
+        : "Error: " + (msg.payload?.message || "Theme planning failed.");
+      // p85: a PLAN_THEME failure happens while still on the Start screen —
+      // renderThemeBuilderScreen keeps themeBuildStatus hidden there, so the
+      // error must also be mirrored into the Start-screen-visible element
+      // or it silently vanishes (bug fix; see setThemePlanStartStatus doc).
+      setThemePlanStartStatus(planErrorMessage, true);
       if (themeBuildStatus) {
         themeBuildStatus.innerHTML = "";
         if (msg.payload?.kind === "not_signed_in") {

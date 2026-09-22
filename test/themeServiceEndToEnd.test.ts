@@ -566,3 +566,80 @@ test('generateAttempt debits the exact per-board-type cost against the fake ledg
   assert.ok(objectsRow);
   assert.equal(objectsRow?.delta, -2, 'an objects_01 attempt must debit exactly 2');
 });
+
+// p85: "Retry image" was sending `userReferenceImages` in the /api/generate
+// body (src/extension/themeService.ts generateBoardImage, before this fix),
+// which the deployed backend's validator (D:\ACode\corsair-theme-service
+// src/validate.mjs validateGenerateBody) rejects outright — any request
+// carrying that key at all is 400 bad_request, regardless of its value —
+// causing every "Retry image" on a character atlas to fail. This captures
+// the actual outgoing body from retryThemeImage (with referenceImages
+// supplied, the exact path that triggered the bug) and validates it against
+// the real backend validator, imported by relative path from the sibling
+// corsair-theme-service checkout. No runtime dependency is added: the
+// import is wrapped in try/catch and the test is skipped (not failed) if
+// that sibling checkout isn't present, e.g. in an environment that only has
+// this repo checked out.
+test('generateBoardImage body contract: retryThemeImage with reference images never sends userReferenceImages, and passes the real backend validator', async () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  let validateGenerateBody: ((body: unknown) => { ok: boolean; code?: string }) | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    ({ validateGenerateBody } = require('../../corsair-theme-service/src/validate.mjs'));
+  } catch {
+    // Sibling repo not present in this checkout — covered instead by the
+    // unconditional userReferenceImages-key assertion below.
+  }
+
+  const nowMs = 1_700_000_100_000;
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+  const atlas = new Jimp(400, 200, 0xff00ffff);
+  const pngDataUri = `data:image/png;base64,${(await atlas.getBufferAsync(Jimp.MIME_PNG)).toString('base64')}`;
+
+  const capturedBodies: unknown[] = [];
+  const capturingFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('/api/generate') && init?.body) {
+      capturedBodies.push(JSON.parse(String(init.body)));
+    }
+    return withRealImages(fake.fetch, pngDataUri)(input, init);
+  }) as typeof fetch;
+
+  await withTempStore(async (globalStorageUri) => {
+    const tokenStore = memoryTokenStore();
+    const client = createThemeServiceClient({ fetch: capturingFetch, tokenStore, endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+    const email = 'body-contract@example.com';
+    await client.requestMagicLink(email);
+    await client.verifyMagicLink(email, '123456');
+    const accountId = fake.state.accountsByEmail.get(email)!;
+    fake.helpers.grant(accountId, 1000);
+
+    setThemeImageGenerator(createServiceImageGenerator(client));
+    setThemePlanRequester(createServicePlanRequester(client));
+    try {
+      const plan = await planTheme('a small tycoon theme');
+      const themeId = 'body_contract_theme';
+      plan.theme_id = themeId;
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+      const review = await getThemeImageReview(globalStorageUri as unknown as import('vscode').Uri, themeId);
+      const firstItemId = review.entries[0].item.id;
+
+      capturedBodies.length = 0;
+      await retryThemeImage(globalStorageUri as unknown as import('vscode').Uri, themeId, firstItemId, 'retry with a reference image', 'retry', {
+        referenceImages: [{ data: Buffer.from('fake-png-bytes'), mimeType: 'image/png', filename: 'ref.png' }],
+      });
+    } finally {
+      setThemeImageGenerator(undefined);
+      setThemePlanRequester(undefined);
+    }
+  });
+
+  assert.equal(capturedBodies.length, 1, 'retryThemeImage must make exactly one /api/generate call');
+  const body = capturedBodies[0] as Record<string, unknown>;
+  assert.ok(!('userReferenceImages' in body), 'the /api/generate body must never carry userReferenceImages — the backend rejects the key outright');
+
+  if (validateGenerateBody) {
+    const result = validateGenerateBody(body);
+    assert.equal(result.ok, true, `real backend validator rejected the body: ${JSON.stringify(result)}`);
+  }
+});

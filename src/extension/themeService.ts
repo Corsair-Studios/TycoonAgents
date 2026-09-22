@@ -218,23 +218,19 @@ export class ThemeGenerationServiceError extends Error {
   readonly kind: ThemeServiceErrorKind;
   readonly refunded?: boolean;
   readonly credits?: number;
-  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number }) {
+  readonly code?: string;
+  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number; code?: string }) {
     super(error.message);
     this.name = 'ThemeGenerationServiceError';
     this.kind = error.kind;
     this.refunded = error.refunded;
     this.credits = error.credits;
+    this.code = error.code;
   }
 }
 
 export function isThemeGenerationServiceError(error: unknown): error is ThemeGenerationServiceError {
   return error instanceof ThemeGenerationServiceError;
-}
-
-function referenceImagesToDataUris(options: ThemeImageGenerationOptions | undefined): string[] | undefined {
-  const images = options?.referenceImages;
-  if (!images?.length) return undefined;
-  return images.map((image) => `data:${image.mimeType};base64,${image.data.toString('base64')}`);
 }
 
 function sizeForOptions(options: ThemeImageGenerationOptions | undefined): string {
@@ -373,10 +369,16 @@ async function generateBoardImage(
     throw new ThemeGenerationServiceError({ kind: 'unavailable', message: 'Theme Service is not configured.' });
   }
   const idempotencyKey = nextThemeImageIdempotencyKey(themeId, item.id, item.revision);
+  // p85: the deployed backend's /api/generate validator rejects any request
+  // body that even carries a `userReferenceImages` key (contract v3.4 "text
+  // only, no reference images" decision) with 400 bad_request — so this key
+  // must never be sent, not merely left undefined. Every retry ("Retry
+  // image") was failing 400 before this fix.
+  const { userReferenceImages: _droppedUserReferenceImages, ...structuredRequestWithoutReferenceImages } = structuredRequest;
+  void _droppedUserReferenceImages;
   const result = await currentThemeImageGenerator.generate({
-    ...structuredRequest,
+    ...structuredRequestWithoutReferenceImages,
     idempotencyKey,
-    userReferenceImages: referenceImagesToDataUris(options) ?? structuredRequest.userReferenceImages,
     size: sizeForOptions(options),
   });
   if (!result.ok) throw new ThemeGenerationServiceError(result.error);
@@ -3453,6 +3455,7 @@ function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeIma
     case 'unreachable':
     case 'provider_failed':
     case 'rate_limited':
+    case 'bad_request':
       return kind;
     default:
       return 'unavailable';
@@ -3478,11 +3481,13 @@ async function recordUserCorrectableGenerationError(
       mapToReviewErrorKind(error.kind),
       isBlockedOrLocked ? false : error.refunded,
       isBlockedOrLocked ? 0 : undefined,
+      error.code,
     );
     console.error('TycoonAgents: Theme Service generation attempt failed.', {
       themeId,
       itemId,
       kind: error.kind,
+      code: error.code,
       refunded: error.refunded,
       credits: error.credits,
     });

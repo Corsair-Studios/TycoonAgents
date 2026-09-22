@@ -1779,6 +1779,7 @@
     rate_limited: "Too many requests, try again shortly",
     content_blocked: "This prompt was blocked by content screening. No credit was spent.",
     account_locked: "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock.",
+    bad_request: "The Theme Service rejected this request. No credits were charged.",
   };
 
   function openThemeBuilderFromReview() {
@@ -1879,6 +1880,14 @@
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-accountlocked";
       notice.textContent = THEME_ATTEMPT_ERROR_TEXT.account_locked;
+      return notice;
+    }
+    if (item.error_kind === "bad_request") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-badrequest";
+      notice.textContent = item.error_code
+        ? `The Theme Service rejected this request (${item.error_code}). No credits were charged.`
+        : THEME_ATTEMPT_ERROR_TEXT.bad_request;
       return notice;
     }
     return null;

@@ -164,12 +164,18 @@ export async function handlePlanTheme(store, broadcast, payload) {
     // to configureThemeFileStore). payload.image_provider is unused now —
     // planning routes through the Theme Service, not a user-chosen text
     // provider (mirrors panel.ts's MSG.PLAN_THEME branch exactly).
+    // p85: log start + outcome (names/codes only, never prompt text, tokens,
+    // or emails) — mirrors panel.ts's PLAN_THEME logging (bug fix: a
+    // failure here previously logged nothing at all).
+    console.log('[tycoonagents-standalone] PLAN_THEME request starting.');
     const plan = await genBridge.planTheme(prompt, {});
+    console.log('[tycoonagents-standalone] PLAN_THEME request succeeded.');
     broadcast('message', { type: MSG_WIRE.THEME_PLAN_READY, payload: { plan } });
   } catch (err) {
     // p65-t3: carry the Theme Service error kind (e.g. "not_signed_in")
     // through, same as panel.ts's MSG.PLAN_THEME catch.
     const kind = err && typeof err === 'object' && typeof err.kind === 'string' ? err.kind : undefined;
+    console.error('[tycoonagents-standalone] PLAN_THEME request failed.', { kind: kind ?? 'unknown' });
     broadcast('message', {
       type: MSG_WIRE.THEME_PLAN_ERROR,
       payload: { message: String(err), ...(kind ? { kind } : {}) },

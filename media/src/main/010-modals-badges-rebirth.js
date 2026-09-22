@@ -2417,6 +2417,26 @@
   }
 
   /**
+   * p85: PLAN_THEME progress/error text previously only ever wrote to
+   * themeBuildStatus, which renderThemeBuilderScreen unconditionally hides
+   * on every screen (bug fix) — so on the Start screen, where "Generate
+   * with AI" lives, neither the "AI is filling the theme slots..." progress
+   * text nor a THEME_PLAN_ERROR ever became visible. themeBuildChoiceRow
+   * (and its child themeBuildChoiceValidation) is the one element shown on
+   * the Start screen, so status/error text for a plan request in flight
+   * from Start is mirrored there too. Uses classes, not inline style
+   * (CSP blocks inline style attributes).
+   * @param {string} text
+   * @param {boolean} isError
+   */
+  function setThemePlanStartStatus(text, isError) {
+    if (!themeBuildChoiceValidation) return;
+    themeBuildChoiceValidation.textContent = text;
+    themeBuildChoiceValidation.classList.toggle("tsp-status-info", Boolean(text) && !isError);
+    themeBuildChoiceValidation.classList.toggle("tsp-status-error", Boolean(text) && isError);
+  }
+
+  /**
    * p75-t2: the shared AI-autofill entry point (posts PLAN_THEME). Reused by
    * the original "Plan theme" button and by "Generate with AI" once the
    * caller has confirmed the user is signed in (or has just signed in via
@@ -2433,6 +2453,7 @@
       themeBuildStatus.textContent = "AI is filling the theme slots...";
       themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
     }
+    setThemePlanStartStatus("AI is filling the theme slots...", false);
 
     vscode.postMessage({
       type: 'PLAN_THEME',
