@@ -736,6 +736,83 @@ test("generateAttempt: 403 account_locked maps to kind account_locked", async ()
 // Service unavailable — no credits were charged" — misleading for a request
 // the client built wrong, not a service outage. Regression test for the
 // dedicated 400 -> "bad_request" mapping in src/core/themeServiceClient.ts.
+// p87: a 422 content_blocked response can carry `categories`/`fields`
+// (which category tripped screening and which request field) on top of the
+// bare `error: "content_blocked"` shape older backends send. Regression
+// test for threading those through ThemeServiceError.
+test("generateAttempt: 422 content_blocked carries categories/fields when the backend sends them", async () => {
+  const { fake } = setupClient();
+  const account = fake.helpers.createAccount("blockedfields@example.com");
+  fake.helpers.grant(account.id, 5);
+
+  const blockedFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/generate")) {
+      return new Response(
+        JSON.stringify({
+          error: "content_blocked",
+          reason: "moderation",
+          categories: ["illicit"],
+          fields: ["slot[2].visual_description", "theme.creativeDirection"],
+        }),
+        { status: 422, headers: { "content-type": "application/json" } },
+      );
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  const spiedClient = createThemeServiceClient({
+    fetch: blockedFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  await spiedClient.requestMagicLink("blockedfields@example.com");
+  await spiedClient.verifyMagicLink("blockedfields@example.com", "123456");
+
+  const res = await spiedClient.generateAttempt({
+    idempotencyKey: "blocked-fields-key",
+    boardType: "objects_01",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "content_blocked");
+    assert.deepEqual(res.error.categories, ["illicit"]);
+    assert.deepEqual(res.error.fields, ["slot[2].visual_description", "theme.creativeDirection"]);
+  }
+});
+
+test("generateAttempt: 422 content_blocked from an old backend (no categories/fields) leaves them undefined", async () => {
+  const { fake, client } = setupClient();
+  const account = fake.helpers.createAccount("blockedold@example.com");
+  fake.helpers.grant(account.id, 5);
+  await client.requestMagicLink("blockedold@example.com");
+  await client.verifyMagicLink("blockedold@example.com", "123456");
+
+  fake.helpers.blockNextPrompt();
+  const res = await client.generateAttempt({
+    idempotencyKey: "blocked-old-key",
+    boardType: "objects_01",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: { items: [{ display_name: "Chair" }] },
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "content_blocked");
+    assert.equal(res.error.categories, undefined);
+    assert.equal(res.error.fields, undefined);
+  }
+});
+
 test("generateAttempt: 400 bad_request maps to kind bad_request, carries the backend's code, distinct from server_error", async () => {
   const { fake } = setupClient();
   const account = fake.helpers.createAccount("badreq@example.com");

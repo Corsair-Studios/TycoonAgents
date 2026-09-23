@@ -1666,7 +1666,13 @@ export class TycoonPanel {
             console.error("TycoonAgents: copyPathDiagnostic payload rejected:", parsedCopyPathDiagnostic.error.message);
           }
         } else if (message.type === MSG.OPEN_HANDBOOK) {
-          void this._handleOpenHandbook();
+          const parsedOpenHandbook = MSG_SCHEMAS.OPEN_HANDBOOK.safeParse(message);
+          if (parsedOpenHandbook.success) {
+            void this._handleOpenHandbook(parsedOpenHandbook.data.page, parsedOpenHandbook.data.anchor);
+          } else {
+            console.error("TycoonAgents: openHandbook payload rejected:", parsedOpenHandbook.error.message);
+            void this._handleOpenHandbook();
+          }
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
         } else if (message.type === MSG.RUN_DOCTOR) {
@@ -2281,7 +2287,23 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.SET_THEME_ITEM_DESCRIPTIONS) {
           const parsedDescriptions = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse((message as any).payload);
-          if (!parsedDescriptions.success) return;
+          if (!parsedDescriptions.success) {
+            // Previously a silent drop (webview never learns the Apply failed —
+            // e.g. an over-length description, see the schema's per-kind max).
+            // Reply with a THEME_ITEM_DESCRIPTIONS_RESULT error instead so the
+            // Descriptions editor can surface a visible message.
+            const rawThemeId = (message as any).payload?.theme_id;
+            void this._panel.webview.postMessage({
+              type: MSG.THEME_ITEM_DESCRIPTIONS_RESULT,
+              payload: {
+                ok: false,
+                theme_id: typeof rawThemeId === "string" ? rawThemeId : "",
+                board_id: (message as any).payload?.board_id ?? "",
+                error: "One or more descriptions are invalid (e.g. too long) and were not saved.",
+              },
+            });
+            return;
+          }
           const payload = parsedDescriptions.data;
           const themeId = payload.theme_id;
           const boardId = payload.board_id ?? "";
@@ -5600,13 +5622,35 @@ export class TycoonPanel {
    * handbook (media/handbook/index.html, a static multi-page doc bundled
    * inside the extension) in the user's default OS browser via
    * `vscode.env.openExternal`. Resolved from `this._extensionUri` so it
-   * works from any install location; no payload. A failed/unsupported open
-   * is logged and swallowed rather than surfaced to the user, matching this
-   * file's other non-throwing handlers (e.g. `_handleAddGitignoreEntries`).
+   * works from any install location. `page` optionally names a chapter
+   * file (e.g. "ch-08.html") in place of the index, and `anchor` an
+   * in-page id (e.g. "content-screening") appended as a URL fragment so
+   * the browser scrolls straight to that section. Both are optional; with
+   * neither, this opens the index as before. Callers MUST validate `page`/
+   * `anchor` against MSG_SCHEMAS.OPEN_HANDBOOK before calling this (the
+   * message handler does); this method additionally re-checks the resolved
+   * path stays inside media/handbook before ever calling openExternal, and
+   * falls back to the plain index on anything unexpected. A
+   * failed/unsupported open is logged and swallowed rather than surfaced to
+   * the user, matching this file's other non-throwing handlers (e.g.
+   * `_handleAddGitignoreEntries`).
    */
-  private async _handleOpenHandbook(): Promise<void> {
+  private async _handleOpenHandbook(page?: string, anchor?: string): Promise<void> {
     try {
-      const handbookUri = vscode.Uri.joinPath(this._extensionUri, "media", "handbook", "index.html");
+      const handbookDirUri = vscode.Uri.joinPath(this._extensionUri, "media", "handbook");
+      let handbookUri = vscode.Uri.joinPath(handbookDirUri, page || "index.html");
+      // Defense in depth: MSG_SCHEMAS.OPEN_HANDBOOK already constrains `page`
+      // to the shipped filename shape, but re-check the RESOLVED path stays
+      // inside media/handbook before ever calling openExternal — belt and
+      // suspenders against joinPath normalizing something unexpected.
+      const dirPath = handbookDirUri.fsPath.replace(/[\\/]+$/, "");
+      const resolvedPath = handbookUri.fsPath;
+      if (handbookUri.scheme !== handbookDirUri.scheme || (resolvedPath !== dirPath && !resolvedPath.startsWith(dirPath + path.sep))) {
+        console.warn("TycoonAgents: openHandbook resolved outside media/handbook; opening the index instead.");
+        handbookUri = vscode.Uri.joinPath(handbookDirUri, "index.html");
+        anchor = undefined;
+      }
+      if (anchor) handbookUri = handbookUri.with({ fragment: anchor });
       await vscode.env.openExternal(handbookUri);
     } catch (err) {
       console.error("TycoonAgents: Could not open the handbook:", err);

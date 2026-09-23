@@ -58,6 +58,36 @@ test('themeDescriptionsStale: single-string description fields (crate/poof/proje
   assert.equal(themeDescriptionsStale(plan), true);
 });
 
+// themeDescriptionsStale keys entirely off creative_direction vs
+// descriptions_direction plus whether ANY *_descriptions array/single-string
+// field is populated (see themePlan.ts's hasAnyDescriptions check, which does
+// NOT include plan.environment). Editing plan.environment alone never
+// touches creative_direction or descriptions_direction, so it cannot flip
+// staleness by itself — this documents that as the current, apparently
+// intended behavior (the "stale" pill is about the CREATIVE DIRECTION going
+// out of sync with generated descriptions, not about the environment text
+// specifically).
+test('themeDescriptionsStale: editing plan.environment alone does not flip staleness when not already stale', () => {
+  const plan = basePlan({
+    descriptions_direction: 'gritty outpost',
+    character_descriptions: ['a red robot'],
+  });
+  assert.equal(themeDescriptionsStale(plan), false, 'matching direction should not be stale before the environment edit');
+  plan.environment = 'a completely different neon skyline';
+  assert.equal(themeDescriptionsStale(plan), false, 'editing plan.environment alone must not flip staleness');
+});
+
+test('themeDescriptionsStale: editing plan.environment alone does not clear an already-stale state either', () => {
+  const plan = basePlan({
+    creative_direction: 'a moody neon skyline',
+    descriptions_direction: 'gritty outpost',
+    character_descriptions: ['a red robot'],
+  });
+  assert.equal(themeDescriptionsStale(plan), true, 'test setup: direction mismatch should be stale');
+  plan.environment = 'yet another environment description';
+  assert.equal(themeDescriptionsStale(plan), true, 'editing plan.environment alone must not clear staleness either');
+});
+
 test('normalizeThemePlan carries descriptions_direction and previous_descriptions through unchanged', () => {
   const previous_descriptions = { character_descriptions: ['old spec'] };
   const plan = normalizeThemePlan({

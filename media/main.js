@@ -5766,6 +5766,13 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   function themeReviewDescriptionRows(item) {
+    if (item.kind === "environment") {
+      // Single field, not an indexed array — exactly one environment per
+      // theme (see plan.environment / THEME_REVIEW_SCALAR_FIELD_BY_KIND).
+      // Unlike crate/poof/projectile this one is REQUIRED and never blank —
+      // the host rejects an empty Apply for it (applyThemeItemDescriptionChanges).
+      return [{ rowId: "environment", itemKind: "environment", label: "Environment (required)", original: item.environment_description || "" }];
+    }
     if (item.kind === "character_atlas") {
       return [{
         rowId: item.id,
@@ -6113,6 +6120,11 @@ if (typeof module !== "undefined" && module.exports) {
     crate: "crate_description",
     poof: "poof_description",
     projectile: "projectile_description",
+    // Note: unlike the other scalar kinds, this writes straight into
+    // currentThemePlan.environment (the plan's own required field, not a
+    // "*_description" companion field) — see themeReviewDescriptionRows'
+    // environment case and applyThemeReviewFieldToPlan's scalar branch below.
+    environment: "environment",
   };
 
   function applyThemeReviewFieldToPlan(itemKind, rowId, field, value) {
@@ -6171,7 +6183,9 @@ if (typeof module !== "undefined" && module.exports) {
     });
     const hint = document.createElement("div");
     hint.className = "theme-review-names-descriptions-hint";
-    hint.textContent = "Descriptions are optional — leave blank to let the image generator work from the name alone.";
+    hint.textContent = item.kind === "environment"
+      ? "Describe the environment's look. This steers the Environment board on the next Retry."
+      : "Descriptions are optional — leave blank to let the image generator work from the name alone.";
     details.appendChild(hint);
     const grid = document.createElement("div");
     grid.className = "theme-review-names-descriptions-grid";
@@ -6220,10 +6234,18 @@ if (typeof module !== "undefined" && module.exports) {
         nameInputs.push(input);
       }
       if (row.descRow) {
+        // 'environment' gets a 900-char cap, not 400: plan.environment has no
+        // length limit of its own (themePlan.ts's cleanValue only trims
+        // whitespace) and an AI-derived plan can seed text over 400 chars —
+        // see the matching per-kind cap in messages.ts's
+        // SET_THEME_ITEM_DESCRIPTIONS schema (900 still leaves room in the
+        // 1000-char theme.creativeDirection wire cap; capCreativeDirection
+        // trims Theme/Creative direction first for the environment board).
+        const descMaxChars = row.descRow.itemKind === "environment" ? 900 : 400;
         const textarea = document.createElement("textarea");
         textarea.className = "theme-review-description-input theme-review-descriptions-input";
         textarea.rows = 2;
-        textarea.maxLength = 400;
+        textarea.maxLength = descMaxChars;
         textarea.placeholder = "Optional appearance description…";
         textarea.dataset.rowId = row.descRow.rowId;
         textarea.dataset.itemKind = row.descRow.itemKind;
@@ -6234,6 +6256,16 @@ if (typeof module !== "undefined" && module.exports) {
         textarea.value = draftValue;
         textarea.disabled = inputsDisabled;
         rowEl.appendChild(textarea);
+        // The seeded value can already exceed descMaxChars (maxLength only
+        // blocks further typing, it never truncates a programmatically-set
+        // .value) — show a visible note instead of letting the user hit a
+        // silent host rejection on Apply (see messages.ts's per-kind cap).
+        if (draftValue.length > descMaxChars) {
+          const overLengthNote = document.createElement("div");
+          overLengthNote.className = "theme-review-names-descriptions-hint theme-review-error";
+          overLengthNote.textContent = `This description is ${draftValue.length} characters, over the ${descMaxChars}-character limit — shorten it before Apply.`;
+          rowEl.appendChild(overLengthNote);
+        }
         descInputs.push(textarea);
 
         // p58-t2: character-only "Body" control — two-option toggle (two-
@@ -6376,7 +6408,7 @@ if (typeof module !== "undefined" && module.exports) {
     // value is blank — clearing a description is a legitimate change.
     const dirtyDescriptionChanges = () => descInputs
       .map((input) => ({ input, trimmed: input.value.trim() }))
-      .filter(({ input, trimmed }) => trimmed.length <= 400 && trimmed !== input.dataset.original);
+      .filter(({ input, trimmed }) => trimmed.length <= (input.dataset.itemKind === "environment" ? 900 : 400) && trimmed !== input.dataset.original);
     const dirtyBodyPlanControls = () => bodyPlanControls
       .filter((control) => control.dataset.value !== control.dataset.original);
     const updateApplyState = () => {
@@ -6417,8 +6449,9 @@ if (typeof module !== "undefined" && module.exports) {
       const descChangeByRowId = new Map();
       for (const input of descInputs) {
         const trimmed = input.value.trim();
-        if (trimmed.length > 400 || trimmed === input.dataset.original) {
-          if (trimmed.length > 400) input.value = input.dataset.original;
+        const descMax = input.dataset.itemKind === "environment" ? 900 : 400;
+        if (trimmed.length > descMax || trimmed === input.dataset.original) {
+          if (trimmed.length > descMax) input.value = input.dataset.original;
           continue;
         }
         const change = { item_kind: input.dataset.itemKind, id: input.dataset.rowId, description: trimmed };
@@ -6906,6 +6939,99 @@ if (typeof module !== "undefined" && module.exports) {
   // module state (shared IIFE scope, built before this file).
   let lastThemeImageReviewPayload = null;
 
+  // p87: human-readable names for the backend's moderation category strings
+  // (docs/theme-service-api.md "Content screening" — the underlying
+  // provider's moderation taxonomy, e.g. "self-harm/intent"). Unknown
+  // categories fall back to the raw string with slashes turned to spaces,
+  // never hidden — see themeAttemptCategoryLabel below.
+  const THEME_CONTENT_CATEGORY_LABELS = {
+    "self-harm": "self-harm",
+    "self-harm/intent": "self-harm",
+    "self-harm/instructions": "self-harm",
+    "sexual": "sexual content",
+    "sexual/minors": "sexual content involving minors",
+    "violence": "violence",
+    "violence/graphic": "graphic violence",
+    "hate": "hate",
+    "hate/threatening": "hate",
+    "harassment": "harassment",
+    "harassment/threatening": "harassment",
+    "illicit": "illicit content",
+    "illicit/violent": "illicit content",
+    "likeness": "a real person's likeness",
+  };
+
+  function themeAttemptCategoryLabel(category) {
+    if (typeof category !== "string" || category.length === 0) return null;
+    const known = THEME_CONTENT_CATEGORY_LABELS[category];
+    if (known) return known;
+    return category.replace(/\//g, " ").replace(/_/g, " ");
+  }
+
+  /**
+   * Maps one backend field path (corsair-theme-service's src/validate.mjs
+   * userTextFields) to a human label, using the review item's own row data
+   * to name the specific character/object/expression an indexed path
+   * points at — never inventing a name the server didn't imply. Known
+   * shapes: "theme.description", "theme.creativeDirection",
+   * "slot[i].display_name"/"slot[i].visual_description" (rival_group
+   * character rows), "slot.items[i].display_name"/"slot.items[i].visual_description"
+   * (item boards like objects_01), "slot.animated[i].motion_hint" (animated
+   * decor rows), "slot.expressions[i]", "options.retryNotes", and
+   * "input.prompt" (plan requests). An unrecognized path falls back to "a
+   * field in this request" rather than showing nothing or guessing.
+   * @param {string} field
+   * @param {any} item
+   */
+  function themeAttemptFieldLabel(field, item) {
+    if (typeof field !== "string" || field.length === 0) return null;
+    if (field === "theme.description") return "the theme description";
+    if (field === "theme.creativeDirection") return "the theme's creative direction";
+    if (field === "options.retryNotes") return "the retry notes";
+    if (field === "input.prompt") return "the request";
+
+    let match = /^slot\[(\d+)\]\./.exec(field);
+    if (match) {
+      const index = Number(match[1]);
+      const rows = item && item.rival_rows;
+      const name = Array.isArray(rows) && rows[index] && typeof rows[index].display_name === "string"
+        ? rows[index].display_name
+        : null;
+      return name ? `${name}'s description` : `row ${index + 1}'s description`;
+    }
+
+    match = /^slot\.items\[(\d+)\]\./.exec(field);
+    if (match) {
+      const index = Number(match[1]);
+      const rows = item && item.object_rows;
+      const name = Array.isArray(rows) && rows[index] && typeof rows[index].display_name === "string"
+        ? rows[index].display_name
+        : null;
+      return name ? `${name}'s description` : `item ${index + 1}'s description`;
+    }
+
+    match = /^slot\.animated\[(\d+)\]\./.exec(field);
+    if (match) {
+      const index = Number(match[1]);
+      const rows = item && item.decor_rows;
+      const name = Array.isArray(rows) && rows[index] && typeof rows[index].display_name === "string"
+        ? rows[index].display_name
+        : null;
+      return name ? `${name}'s description` : `animated item ${index + 1}'s description`;
+    }
+
+    match = /^slot\.expressions\[(\d+)\]/.exec(field);
+    if (match) {
+      const index = Number(match[1]);
+      const names = item && item.expression_names;
+      const name = Array.isArray(names) && typeof names[index] === "string" ? names[index] : null;
+      return name ? `${name}'s expression` : `expression ${index + 1}`;
+    }
+
+    // Unrecognized path shape: never guess a name, just say something was flagged.
+    return "a field in this request";
+  }
+
   const THEME_ATTEMPT_ERROR_TEXT = {
     not_signed_in: "Sign in from the Theme Builder to generate",
     insufficient_credits: "Not enough credits",
@@ -7001,13 +7127,30 @@ if (typeof module !== "undefined" && module.exports) {
     if (item.error_kind === "content_blocked") {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-contentblocked";
-      notice.appendChild(document.createTextNode(THEME_ATTEMPT_ERROR_TEXT.content_blocked + " "));
+      // p87: the backend may send WHAT was flagged (categories/fields) on
+      // top of the bare content_blocked kind — an older backend sends
+      // neither, so this falls back to today's generic copy rather than
+      // showing an incomplete sentence. Never display a category or field
+      // the server didn't actually send.
+      const categories = Array.isArray(item.error_categories) ? item.error_categories : [];
+      const fields = Array.isArray(item.error_fields) ? item.error_fields : [];
+      const categoryLabel = themeAttemptCategoryLabel(categories[0]);
+      const fieldLabel = themeAttemptFieldLabel(fields[0], item);
+      if (categoryLabel && fieldLabel) {
+        notice.appendChild(document.createTextNode(
+          `Blocked by content screening (${categoryLabel}): ${fieldLabel}. No credit was spent. Rephrase it and retry. `,
+        ));
+      } else {
+        notice.appendChild(document.createTextNode(THEME_ATTEMPT_ERROR_TEXT.content_blocked + " "));
+      }
       const link = document.createElement("a");
       link.className = "muted tsp-link";
-      link.href = "README.md#acceptable-use";
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      link.href = "#";
       link.textContent = "Acceptable use";
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        vscode.postMessage({ type: "OPEN_HANDBOOK", page: "ch-08.html", anchor: "content-screening" });
+      });
       notice.appendChild(link);
       return notice;
     }
@@ -15139,6 +15282,16 @@ if (typeof module !== "undefined" && module.exports) {
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+      // p74 first-open fix (2026-09-23): the multi-provider checkbox reads
+      // lastRoutingPayload, which previously only arrived once the Agents
+      // screen was opened. Request it here too, on Settings' own first
+      // "settings" push, so the checkbox's real visible/checked state
+      // lands without requiring a trip through Agents first. Guarded to
+      // fire once — handleRoutingPayload always leaves lastRoutingPayload
+      // non-null once a reply has arrived.
+      if (!lastRoutingPayload) {
+        vscode.postMessage({ type: ROUTING_MSG.GET });
+      }
       // p20-t2: a new settings payload can flip lastSettings.harness.effective
       // while the Agents screen is open — re-render it too so density
       // switches live. Guarded like
@@ -15150,6 +15303,12 @@ if (typeof module !== "undefined" && module.exports) {
       }
     } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
       handleRoutingPayload(msg.payload || null);
+      // p74 first-open fix (review follow-up 2026-09-23): update just the
+      // multi-provider checkbox row in place rather than calling
+      // renderSettings() — a full rebuild of #setup-config on every routing
+      // repush could steal focus from another field the user has open in
+      // Settings.
+      updateSettingsMultiProviderRow();
     } else if (msg && msg.type === KEYWORD_HEALTH_MSG.HEALTH) {
       // Flat envelope (findings/wildcardTasksThisSession/unmatchedWords are
       // top-level on the message, not nested under `payload` — see
@@ -20090,6 +20249,15 @@ if (typeof module !== "undefined" && module.exports) {
   // dispatchability warning — gates the Save button; a soft ok:true/reason
   // (e.g. opencode's "not knowable offline" note) never disables Save.
   var routingHasBlockingDispatchWarning = false;
+  // p74 first-open fix follow-up (2026-09-23): live refs to the Settings
+  // screen's "I use more than one AI provider" checkbox/help text, so a
+  // later routing reply can update just this row (see
+  // updateSettingsMultiProviderRow) instead of forcing a full
+  // renderSettings() rebuild that would steal focus elsewhere in Settings.
+  // Null when Settings hasn't rendered the row (not mounted, or hidden for
+  // the OpenCode harness).
+  var settingsMultiProviderCheckboxEl = null;
+  var settingsMultiProviderHelpEl = null;
 
   /** Amber footnote (reuses the theme-review-retry-warning accent token) for an undispatchable fallback target. Returns null when `check.ok`. */
   function buildFallbackDispatchWarning(check) {
@@ -23137,6 +23305,25 @@ if (typeof module !== "undefined" && module.exports) {
     });
   }
 
+  /**
+   * Update the Settings screen's "I use more than one AI provider"
+   * checkbox in place from a fresh lastRoutingPayload, without rebuilding
+   * the rest of #setup-config (review fix 2026-09-23: a full renderSettings()
+   * on every routing reply could steal focus from another field the user
+   * has open). No-op when the row isn't currently mounted (Settings not
+   * open yet, or hidden for the OpenCode harness) or when lastRoutingPayload
+   * is still null.
+   */
+  function updateSettingsMultiProviderRow() {
+    if (!settingsMultiProviderCheckboxEl || !lastRoutingPayload) return;
+    settingsMultiProviderCheckboxEl.checked = !!lastRoutingPayload.multiProviderSetting;
+    settingsMultiProviderCheckboxEl.disabled = false;
+    settingsMultiProviderCheckboxEl.title = "";
+    if (settingsMultiProviderHelpEl) {
+      settingsMultiProviderHelpEl.textContent = "Shows vendor and fallback controls for every agent.";
+    }
+  }
+
   /** Render all settings sections into #setup-config from lastSettings. */
   function renderSettings() {
     if (!setupConfigEl) return;
@@ -23276,14 +23463,35 @@ if (typeof module !== "undefined" && module.exports) {
       // fields live on the Agents-screen payload (lastRoutingPayload), not
       // lastSettings, per the interface contract — read them from there.
       const multiProviderPayload = lastRoutingPayload;
-      if (multiProviderPayload && multiProviderPayload.multiProviderCheckboxVisible) {
+      // p74 first-open fix (2026-09-23): lastRoutingPayload only arrives
+      // once the Agents screen has been opened (openRoutingModal sends
+      // ROUTING_MSG.GET). Settings is now given the same request on its
+      // own first "settings" push (see the ROUTING_MSG.GET postMessage
+      // below in the settings message handler), but until that reply
+      // lands, default to showing the checkbox for any non-OpenCode
+      // harness rather than hiding it — hiding-by-default is the bug.
+      const multiProviderHarnessEff = (lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      const showMultiProviderCheckbox = multiProviderPayload
+        ? !!multiProviderPayload.multiProviderCheckboxVisible
+        : multiProviderHarnessEff !== "opencode";
+      if (showMultiProviderCheckbox) {
         const multiProviderRow = document.createElement("label");
         multiProviderRow.className = "delegation-mode-option settings-multi-provider-row";
         const multiProviderCheckbox = document.createElement("input");
         multiProviderCheckbox.type = "checkbox";
         multiProviderCheckbox.className = "settings-multi-provider-checkbox";
-        multiProviderCheckbox.checked = !!multiProviderPayload.multiProviderSetting;
+        // Review fix (2026-09-23): while multiProviderPayload hasn't arrived
+        // yet, the checked state below is a placeholder (always false), not
+        // the real persisted value — disable the control so a stray click
+        // can't post setAgentsMultiProvider:false and clobber a saved true.
+        // updateSettingsMultiProviderRow() re-enables it (with the real
+        // checked value) once the routing reply lands, in place, without a
+        // full renderSettings() rebuild.
+        multiProviderCheckbox.checked = !!(multiProviderPayload && multiProviderPayload.multiProviderSetting);
+        multiProviderCheckbox.disabled = !multiProviderPayload;
+        multiProviderCheckbox.title = multiProviderPayload ? "" : "Loading…";
         multiProviderCheckbox.addEventListener("change", () => {
+          if (multiProviderCheckbox.disabled) return;
           vscode.postMessage({ type: "setAgentsMultiProvider", value: multiProviderCheckbox.checked });
         });
         const multiProviderBody = document.createElement("span");
@@ -23293,12 +23501,23 @@ if (typeof module !== "undefined" && module.exports) {
         multiProviderLabelSpan.textContent = "I use more than one AI provider";
         const multiProviderHelpSpan = document.createElement("span");
         multiProviderHelpSpan.className = "delegation-mode-option-help";
-        multiProviderHelpSpan.textContent = "Shows vendor and fallback controls for every agent.";
+        multiProviderHelpSpan.textContent = multiProviderPayload
+          ? "Shows vendor and fallback controls for every agent."
+          : "Shows vendor and fallback controls for every agent. Loading…";
         multiProviderBody.appendChild(multiProviderLabelSpan);
         multiProviderBody.appendChild(multiProviderHelpSpan);
         multiProviderRow.appendChild(multiProviderCheckbox);
         multiProviderRow.appendChild(multiProviderBody);
         harnessSection.appendChild(multiProviderRow);
+        // Kept live so a later routing reply can update this exact row in
+        // place (see updateSettingsMultiProviderRow) instead of forcing a
+        // full renderSettings() rebuild that would steal focus elsewhere
+        // in the Settings screen.
+        settingsMultiProviderCheckboxEl = multiProviderCheckbox;
+        settingsMultiProviderHelpEl = multiProviderHelpSpan;
+      } else {
+        settingsMultiProviderCheckboxEl = null;
+        settingsMultiProviderHelpEl = null;
       }
 
       // Exactly one "Open Agents" link in this section (2026-09-05 fix):

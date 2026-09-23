@@ -109,6 +109,30 @@ test('(b) a non-environment board keeps Theme and Creative direction, trims Envi
   );
 });
 
+test('(d) an edited plan.environment text flows into buildEnvironmentRequest\'s creativeDirection via the "Environment direction" line, staying <= 1000 chars', () => {
+  const plan = normalizeThemePlan(
+    {
+      display_name: 'Neon Foundry',
+      creative_direction: 'A gritty cyberpunk industrial aesthetic, volumetric fog, neon signage. '.repeat(8),
+      environment: 'original environment text',
+    },
+    'Neon Foundry',
+  );
+  // Simulate the applyThemeItemDescriptionChanges 'environment' branch edit.
+  plan.environment = 'a moody neon skyline over a rain-slick industrial rooftop. '.repeat(6);
+
+  const combined = themePlanCreativeDirection(plan);
+  assert.ok(combined.includes(`Environment direction: ${plan.environment}`));
+
+  const req = buildEnvironmentRequest(combined, plan.display_name);
+  const result = req.theme.creativeDirection!;
+  assert.ok(result.length <= BACKEND_CREATIVE_DIRECTION_MAX_CHARS, `expected <= 1000 chars, got ${result.length}`);
+  assert.ok(
+    result.includes(plan.environment),
+    'expected the edited environment text to survive in the environment board\'s capped creativeDirection',
+  );
+});
+
 test('(c) trimming never splits a surrogate pair, even when an emoji sits right at the cut boundary', () => {
   // Single-line input (no '\n'), so this exercises the flat trimToChars
   // fallback directly: 999 filler chars then a surrogate-pair emoji

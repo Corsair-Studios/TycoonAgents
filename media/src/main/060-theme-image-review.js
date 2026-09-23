@@ -2592,6 +2592,16 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+      // p74 first-open fix (2026-09-23): the multi-provider checkbox reads
+      // lastRoutingPayload, which previously only arrived once the Agents
+      // screen was opened. Request it here too, on Settings' own first
+      // "settings" push, so the checkbox's real visible/checked state
+      // lands without requiring a trip through Agents first. Guarded to
+      // fire once — handleRoutingPayload always leaves lastRoutingPayload
+      // non-null once a reply has arrived.
+      if (!lastRoutingPayload) {
+        vscode.postMessage({ type: ROUTING_MSG.GET });
+      }
       // p20-t2: a new settings payload can flip lastSettings.harness.effective
       // while the Agents screen is open — re-render it too so density
       // switches live. Guarded like
@@ -2603,6 +2613,12 @@
       }
     } else if (msg && msg.type === ROUTING_MSG.ROUTING) {
       handleRoutingPayload(msg.payload || null);
+      // p74 first-open fix (review follow-up 2026-09-23): update just the
+      // multi-provider checkbox row in place rather than calling
+      // renderSettings() — a full rebuild of #setup-config on every routing
+      // repush could steal focus from another field the user has open in
+      // Settings.
+      updateSettingsMultiProviderRow();
     } else if (msg && msg.type === KEYWORD_HEALTH_MSG.HEALTH) {
       // Flat envelope (findings/wildcardTasksThisSession/unmatchedWords are
       // top-level on the message, not nested under `payload` — see

@@ -97,6 +97,8 @@ export interface ThemeImageReviewItem {
   revision: number;
   frame_keys: string[];
   subject?: string;
+  /** Environment board only: current plan.environment text, for the review UI's Descriptions editor. Required (there is exactly one environment per theme, never removed), but this mirrors plan.environment verbatim so it is never actually blank. */
+  environment_description?: string;
   /** Character boards only: current plan.character_descriptions[slot_id] text, for the review UI's Descriptions editor. */
   character_description?: string;
   /**
@@ -136,6 +138,10 @@ export interface ThemeImageReviewItem {
   error_kind?: 'not_signed_in' | 'insufficient_credits' | 'content_blocked' | 'account_locked' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited' | 'bad_request';
   /** p85: the backend's `code` field on a bad_request failure (e.g. "board_not_priced"), surfaced alongside error_kind so the UI can show a specific message instead of a generic one. */
   error_code?: string;
+  /** content_blocked only: the moderation categories the backend flagged (e.g. "illicit"). Absent on an older backend. */
+  error_categories?: string[];
+  /** content_blocked only: the request field paths the backend flagged (e.g. "slot[2].visual_description"). Absent on an older backend or on the likeness/IP block shape. */
+  error_fields?: string[];
   /**
    * The Corsair Theme Service pricing key for this board (docs/theme-service-api.md's
    * `attemptCostByBoardType` — e.g. "roster_agent", "objects_01") — see
@@ -311,6 +317,8 @@ export async function setThemeImageReviewErrorKind(
   refunded?: boolean,
   attemptCost?: number,
   errorCode?: string,
+  errorCategories?: string[],
+  errorFields?: string[],
 ): Promise<ThemeImageReviewDocument | undefined> {
   return withThemeReviewDocumentLock(themeId, async () => {
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -320,6 +328,8 @@ export async function setThemeImageReviewErrorKind(
     item.status = 'pending';
     item.error_kind = errorKind;
     item.error_code = errorCode;
+    item.error_categories = errorCategories;
+    item.error_fields = errorFields;
     if (refunded !== undefined) item.lastAttemptRefunded = refunded;
     if (attemptCost !== undefined) item.attemptCost = attemptCost;
     item.updated_at = new Date().toISOString();

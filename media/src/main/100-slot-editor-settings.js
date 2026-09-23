@@ -50,6 +50,15 @@
   // dispatchability warning — gates the Save button; a soft ok:true/reason
   // (e.g. opencode's "not knowable offline" note) never disables Save.
   var routingHasBlockingDispatchWarning = false;
+  // p74 first-open fix follow-up (2026-09-23): live refs to the Settings
+  // screen's "I use more than one AI provider" checkbox/help text, so a
+  // later routing reply can update just this row (see
+  // updateSettingsMultiProviderRow) instead of forcing a full
+  // renderSettings() rebuild that would steal focus elsewhere in Settings.
+  // Null when Settings hasn't rendered the row (not mounted, or hidden for
+  // the OpenCode harness).
+  var settingsMultiProviderCheckboxEl = null;
+  var settingsMultiProviderHelpEl = null;
 
   /** Amber footnote (reuses the theme-review-retry-warning accent token) for an undispatchable fallback target. Returns null when `check.ok`. */
   function buildFallbackDispatchWarning(check) {
@@ -3097,6 +3106,25 @@
     });
   }
 
+  /**
+   * Update the Settings screen's "I use more than one AI provider"
+   * checkbox in place from a fresh lastRoutingPayload, without rebuilding
+   * the rest of #setup-config (review fix 2026-09-23: a full renderSettings()
+   * on every routing reply could steal focus from another field the user
+   * has open). No-op when the row isn't currently mounted (Settings not
+   * open yet, or hidden for the OpenCode harness) or when lastRoutingPayload
+   * is still null.
+   */
+  function updateSettingsMultiProviderRow() {
+    if (!settingsMultiProviderCheckboxEl || !lastRoutingPayload) return;
+    settingsMultiProviderCheckboxEl.checked = !!lastRoutingPayload.multiProviderSetting;
+    settingsMultiProviderCheckboxEl.disabled = false;
+    settingsMultiProviderCheckboxEl.title = "";
+    if (settingsMultiProviderHelpEl) {
+      settingsMultiProviderHelpEl.textContent = "Shows vendor and fallback controls for every agent.";
+    }
+  }
+
   /** Render all settings sections into #setup-config from lastSettings. */
   function renderSettings() {
     if (!setupConfigEl) return;
@@ -3236,14 +3264,35 @@
       // fields live on the Agents-screen payload (lastRoutingPayload), not
       // lastSettings, per the interface contract — read them from there.
       const multiProviderPayload = lastRoutingPayload;
-      if (multiProviderPayload && multiProviderPayload.multiProviderCheckboxVisible) {
+      // p74 first-open fix (2026-09-23): lastRoutingPayload only arrives
+      // once the Agents screen has been opened (openRoutingModal sends
+      // ROUTING_MSG.GET). Settings is now given the same request on its
+      // own first "settings" push (see the ROUTING_MSG.GET postMessage
+      // below in the settings message handler), but until that reply
+      // lands, default to showing the checkbox for any non-OpenCode
+      // harness rather than hiding it — hiding-by-default is the bug.
+      const multiProviderHarnessEff = (lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      const showMultiProviderCheckbox = multiProviderPayload
+        ? !!multiProviderPayload.multiProviderCheckboxVisible
+        : multiProviderHarnessEff !== "opencode";
+      if (showMultiProviderCheckbox) {
         const multiProviderRow = document.createElement("label");
         multiProviderRow.className = "delegation-mode-option settings-multi-provider-row";
         const multiProviderCheckbox = document.createElement("input");
         multiProviderCheckbox.type = "checkbox";
         multiProviderCheckbox.className = "settings-multi-provider-checkbox";
-        multiProviderCheckbox.checked = !!multiProviderPayload.multiProviderSetting;
+        // Review fix (2026-09-23): while multiProviderPayload hasn't arrived
+        // yet, the checked state below is a placeholder (always false), not
+        // the real persisted value — disable the control so a stray click
+        // can't post setAgentsMultiProvider:false and clobber a saved true.
+        // updateSettingsMultiProviderRow() re-enables it (with the real
+        // checked value) once the routing reply lands, in place, without a
+        // full renderSettings() rebuild.
+        multiProviderCheckbox.checked = !!(multiProviderPayload && multiProviderPayload.multiProviderSetting);
+        multiProviderCheckbox.disabled = !multiProviderPayload;
+        multiProviderCheckbox.title = multiProviderPayload ? "" : "Loading…";
         multiProviderCheckbox.addEventListener("change", () => {
+          if (multiProviderCheckbox.disabled) return;
           vscode.postMessage({ type: "setAgentsMultiProvider", value: multiProviderCheckbox.checked });
         });
         const multiProviderBody = document.createElement("span");
@@ -3253,12 +3302,23 @@
         multiProviderLabelSpan.textContent = "I use more than one AI provider";
         const multiProviderHelpSpan = document.createElement("span");
         multiProviderHelpSpan.className = "delegation-mode-option-help";
-        multiProviderHelpSpan.textContent = "Shows vendor and fallback controls for every agent.";
+        multiProviderHelpSpan.textContent = multiProviderPayload
+          ? "Shows vendor and fallback controls for every agent."
+          : "Shows vendor and fallback controls for every agent. Loading…";
         multiProviderBody.appendChild(multiProviderLabelSpan);
         multiProviderBody.appendChild(multiProviderHelpSpan);
         multiProviderRow.appendChild(multiProviderCheckbox);
         multiProviderRow.appendChild(multiProviderBody);
         harnessSection.appendChild(multiProviderRow);
+        // Kept live so a later routing reply can update this exact row in
+        // place (see updateSettingsMultiProviderRow) instead of forcing a
+        // full renderSettings() rebuild that would steal focus elsewhere
+        // in the Settings screen.
+        settingsMultiProviderCheckboxEl = multiProviderCheckbox;
+        settingsMultiProviderHelpEl = multiProviderHelpSpan;
+      } else {
+        settingsMultiProviderCheckboxEl = null;
+        settingsMultiProviderHelpEl = null;
       }
 
       // Exactly one "Open Agents" link in this section (2026-09-05 fix):

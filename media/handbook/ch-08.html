@@ -42,8 +42,34 @@
   <p class="intro">Generation runs a lot of image requests back to back, and every so often one of them comes back wrong — blocked, rate-limited, clipped, or just off-style. None of this means the run failed. Each item on a theme board can be retried on its own, so a bad frame costs you a redo, not a restart.</p>
 </div>
 
+<div class="section-head" id="content-screening">
+  <span class="s-title">§ 8.1 · Content screening</span>
+  <span class="cap">caught before a credit is spent</span>
+</div>
+<p>Before any AI plan or image generation runs, the Theme Service screens the text you're about to send: your theme description, your Creative Direction, and each board's names and visual descriptions — never the service's own prompt template underneath them. This check happens <strong>before</strong> anything is charged, so a block never costs a credit.</p>
+<p>A block is scoped to the field that tripped it, but the field can cover more than one item — flag one character's description on a roster sheet and the whole sheet's request is blocked, not just that character. The message names both the category and the field, for example:</p>
+<pre>Blocked by content screening (illicit): Sana Qi's description. No credit was spent. Rephrase it and retry.</pre>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p><strong>Rephrase the named field.</strong> Describe the function or look you're after instead of the word that tripped it — "syringe" reads cleaner as "injector" or "medical tools," for instance.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p><strong>Retry.</strong> Nothing else on the sheet needs to change — only the flagged field caused the block.</p></div>
+  </div>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>Uploaded reference images are also checked for likeness — a real person's face in a reference will block the upload. Use a stylized or original reference instead.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Content screening is separate from the image provider's own moderation, covered next in § 8.2 — a screening block never reaches the image provider at all, so it never counts toward the provider's own refusal lockout.</p>
+</div>
+
 <div class="section-head">
-  <span class="s-title">§ 8.1 · Moderation blocks</span>
+  <span class="s-title">§ 8.2 · Moderation blocks</span>
   <span class="cap">the provider says no</span>
 </div>
 <p>If an item comes back with the message below, the image provider's safety filter rejected the request outright — no image was produced and no retry will fix it without a change.</p>
@@ -66,9 +92,13 @@
   <p class="callout-label">Tip</p>
   <p>Moderation is judged per-request, not per-theme. A vivid description on one object rarely means the rest of the board is at risk.</p>
 </div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>These are refusals from the image provider itself, not the pre-charge content screening in § 8.1 — the attempt is refunded automatically, same as a provider outage. But it also counts as a strike: 3 of them within a trailing 24 hours locks the account, and unlocking it takes reaching out through Submit Feedback (§ 14.6) — it doesn't clear on its own.</p>
+</div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.2 · Rate limits &amp; server errors</span>
+  <span class="s-title">§ 8.3 · Rate limits &amp; server errors</span>
   <span class="cap">HTTP 429 / 5xx</span>
 </div>
 <p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote.</p>
@@ -78,7 +108,7 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.3 · Bottom-row clipping on character boards</span>
+  <span class="s-title">§ 8.4 · Bottom-row clipping on character boards</span>
   <span class="cap">the last row of an atlas</span>
 </div>
 <p>Character sprite boards are sliced into rows and columns after the image comes back. Poses with raised arms or mid-jump silhouettes on the <strong>last row</strong> of the board can get their tops clipped by the slice line — this is a constraint of how the sheet is cut, not something you can toggle off.</p>
@@ -98,7 +128,7 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.4 · Objects bleeding into neighbors</span>
+  <span class="s-title">§ 8.5 · Objects bleeding into neighbors</span>
   <span class="cap">wide objects encroach adjacent cells</span>
 </div>
 <p>Object boards are also sliced into a fixed grid. An object described as unusually wide or sprawling can visually bleed past its own cell into the one next to it.</p>
@@ -108,7 +138,7 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.5 · Environment issues</span>
+  <span class="s-title">§ 8.6 · Environment issues</span>
   <span class="cap">stray outlines, cluttered floor</span>
 </div>
 <p>The environment is one background image generated from a stage guide. Two recurring issues: a stray outline color surviving into the final art, or clutter placed on the floor area characters actually walk on.</p>
@@ -124,7 +154,7 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.6 · "Roadblock" placeholders &amp; missing frames</span>
+  <span class="s-title">§ 8.7 · "Roadblock" placeholders &amp; missing frames</span>
   <span class="cap">the theme health check</span>
 </div>
 <p>Every theme is checked for entities whose frames are missing, empty, or orphaned — across agents, rivals, buildable objects, decor, expressions, badge icons, projectile FX, and poof FX. An entity that fails this check shows as a roadblock placeholder in the panel instead of its art.</p>
@@ -148,7 +178,7 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.7 · Style drift across boards</span>
+  <span class="s-title">§ 8.8 · Style drift across boards</span>
   <span class="cap">keeping a theme visually consistent</span>
 </div>
 <p>If later boards start looking off relative to earlier ones, don't rewrite each item's description by hand. Use the review screen's <strong>Creative Direction</strong> editor instead.</p>

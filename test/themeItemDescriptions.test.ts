@@ -480,6 +480,81 @@ test('resyncDescriptionReviewItems is a no-op when no board carries any of the a
   assert.deepEqual(refreshed, []);
 });
 
+// --- environment: single required, description-only plan field --------------
+// Unlike crate/poof/projectile (optional appearance specs), plan.environment
+// is REQUIRED — applyThemeItemDescriptionChanges rejects a blank/whitespace
+// edit instead of clearing it (see themeService.ts's 'environment' branch).
+
+test('applyThemeItemDescriptionChanges writes plan.environment for the environment kind', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  assert.equal(plan.environment, 'a dusty outpost');
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'environment', id: 'environment', description: 'a moody neon skyline' },
+  ]);
+
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.rejected.length, 0);
+  assert.equal(plan.environment, 'a moody neon skyline');
+});
+
+test('applyThemeItemDescriptionChanges trims surrounding whitespace on the environment description', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'environment', id: 'environment', description: '   a rain-slick alley   ' },
+  ]);
+
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.applied[0].description, 'a rain-slick alley');
+  assert.equal(plan.environment, 'a rain-slick alley');
+});
+
+test('applyThemeItemDescriptionChanges rejects a blank or whitespace-only environment description, leaving plan.environment untouched', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+
+  const blank = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'environment', id: 'environment', description: '' },
+  ]);
+  assert.equal(blank.applied.length, 0);
+  assert.equal(blank.rejected.length, 1);
+  assert.equal(blank.rejected[0].item_kind, 'environment');
+  assert.equal(plan.environment, 'a dusty outpost');
+
+  const whitespace = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'environment', id: 'environment', description: '    ' },
+  ]);
+  assert.equal(whitespace.applied.length, 0);
+  assert.equal(whitespace.rejected.length, 1);
+  assert.equal(plan.environment, 'a dusty outpost');
+});
+
+test('resyncDescriptionReviewItems rebuilds the environment board when plan.environment changes, with the new text baked into its prompt', () => {
+  const manifest = testManifest();
+  const plan = testPlan();
+  const savedItems = savedReviewDocumentItems(manifest, plan);
+  const savedBoard = savedItems.find((item) => item.id === 'environment')!;
+  assert.doesNotMatch(savedBoard.prompt, /moody neon skyline/);
+
+  const result = applyThemeItemDescriptionChanges(manifest, plan, [
+    { item_kind: 'environment', id: 'environment', description: 'a moody neon skyline' },
+  ]);
+  assert.equal(result.applied.length, 1);
+
+  const refreshed = resyncDescriptionReviewItems({ items: savedItems }, manifest, plan, result.applied);
+  assert.deepEqual(refreshed.map((item) => item.id), ['environment']);
+  assert.match(refreshed[0].prompt, /moody neon skyline/);
+  assert.equal(refreshed[0].environment_description, 'a moody neon skyline');
+
+  // Review progress survives the resync untouched.
+  assert.equal(refreshed[0].status, savedBoard.status);
+  assert.equal(refreshed[0].revision, savedBoard.revision);
+  assert.equal(refreshed[0].updated_at, savedBoard.updated_at);
+});
+
 // --- badge: POSITIONAL appearance descriptions (index === badge slot) --------
 // Unlike object/decor/rival (roster-id matched), a badge change carries id
 // `achievement_<index>` and writes plan.achievement_descriptions[index] — the

@@ -211,7 +211,9 @@ export const MSG = {
   COPY_PROMPT: "copyPrompt",
   // Bottom-left "book" icon — opens the shipped static handbook
   // (media/handbook/index.html) in the user's default OS browser via
-  // vscode.env.openExternal. No payload.
+  // vscode.env.openExternal. Optional `page` (e.g. "ch-08.html") opens a
+  // chapter directly instead of the index, and optional `anchor` (an
+  // in-page id) is appended as a URL fragment to jump to that section.
   OPEN_HANDBOOK: "OPEN_HANDBOOK",
   DESIGN_DOC_ACTION: "designDocAction",
   DESIGN_DOC_DONE: "designDocDone",
@@ -740,15 +742,28 @@ export const MSG_SCHEMAS = {
         .array(
           z
             .object({
-              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'projectile', 'badge', 'expression']),
+              item_kind: z.enum(['object', 'decor', 'character', 'rival', 'crate', 'poof', 'projectile', 'badge', 'expression', 'environment']),
               id: z.string().min(1),
-              description: z.string().max(400),
+              // 900, not 400, for 'environment': plan.environment has no length
+              // cap of its own (themePlan.ts's normalizeThemePlan only trims
+              // whitespace via cleanValue) and an AI-derived plan can seed text
+              // over 400 chars — the old flat 400 cap silently rejected the
+              // whole SET_THEME_ITEM_DESCRIPTIONS message on an untouched Apply.
+              // 900 still leaves room in the 1000-char theme.creativeDirection
+              // wire cap (capCreativeDirection in themeAssetPrompts.ts trims
+              // Theme/Creative direction first for the environment board, so
+              // the Environment direction line is protected up to that budget).
+              description: z.string().max(900),
               // p58-t2: 'character' rows only — explicit roster slot body plan
               // from the Descriptions editor's body-plan control. undefined
               // leaves the stored value untouched.
               body_plan: z.enum(['biped', 'quadruped']).optional(),
             })
-            .passthrough(),
+            .passthrough()
+            .refine(
+              (change) => change.item_kind === 'environment' || change.description.length <= 400,
+              { message: 'Description is longer than 400 characters.', path: ['description'] },
+            ),
         )
         .min(1),
     })
@@ -852,6 +867,26 @@ export const MSG_SCHEMAS = {
   // true; `.optional().default(true)` gives exactly that: undefined input ->
   // true, `false` input -> false, `true` input -> true.
   APPLY_DOCTOR_FIX: z.object({ removeForeign: z.boolean().optional().default(true) }).passthrough(),
+
+  // Bottom-left "book" icon. `page` must be exactly one of the shipped
+  // media/handbook/*.html filenames ("index.html" or "ch-NN.html", NN
+  // zero-padded 01-14) and `anchor` a plain lowercase-kebab id — both
+  // optional. This is the ONLY thing standing between webview input and
+  // vscode.Uri.joinPath + openExternal in _handleOpenHandbook, so it must
+  // reject path traversal ("../../package.json"), absolute paths, and
+  // alternate schemes (file:///...) rather than merely type-check them.
+  OPEN_HANDBOOK: z
+    .object({
+      page: z
+        .string()
+        .regex(/^(index|ch-\d{2})\.html$/)
+        .optional(),
+      anchor: z
+        .string()
+        .regex(/^[a-z0-9-]{1,64}$/)
+        .optional(),
+    })
+    .passthrough(),
 
   // ---- Feedback pipeline ----------------------------------------------------
   // Preview-only build request — see MSG.SUBMIT_FEEDBACK above. No network

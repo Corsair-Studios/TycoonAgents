@@ -200,6 +200,38 @@ test('SET_THEME_ITEM_DESCRIPTIONS schema: unknown item_kind still fails', () => 
   assert.equal(result.success, false);
 });
 
+// ── Per-kind description length cap: 'environment' gets 900, everything else
+// keeps 400 (plan.environment has no length limit of its own — themePlan.ts's
+// cleanValue only trims whitespace — and an AI-derived plan can seed text
+// over 400 chars; the old flat 400 cap silently rejected the whole message).
+
+test('SET_THEME_ITEM_DESCRIPTIONS schema: an 850-char environment description is accepted', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'environment',
+    changes: [{ item_kind: 'environment', id: 'environment', description: 'x'.repeat(850) }],
+  });
+  assert.equal(result.success, true);
+});
+
+test('SET_THEME_ITEM_DESCRIPTIONS schema: a 950-char environment description is rejected', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'environment',
+    changes: [{ item_kind: 'environment', id: 'environment', description: 'x'.repeat(950) }],
+  });
+  assert.equal(result.success, false);
+});
+
+test('SET_THEME_ITEM_DESCRIPTIONS schema: a 450-char character description is still rejected (400 cap unchanged for non-environment kinds)', () => {
+  const result = MSG_SCHEMAS.SET_THEME_ITEM_DESCRIPTIONS.safeParse({
+    theme_id: 'cobra_command',
+    board_id: 'agent_1',
+    changes: [{ item_kind: 'character', id: 'agent_1', description: 'x'.repeat(450) }],
+  });
+  assert.equal(result.success, false);
+});
+
 test('RESET_THEME_BADGE_NAMES schema: valid payload passes, missing theme_id fails', () => {
   assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({ theme_id: 'cobra_command' }).success, true);
   assert.equal(MSG_SCHEMAS.RESET_THEME_BADGE_NAMES.safeParse({}).success, false);
@@ -312,6 +344,32 @@ test('APPLY_DOCTOR_FIX schema: unknown keys are tolerated (passthrough)', () => 
   if (result.success) {
     assert.equal((result.data as Record<string, unknown>)['futureField'], 'ignored-by-older-hosts');
   }
+});
+
+// --- OPEN_HANDBOOK -----------------------------------------------------------
+// panel.ts's _handleOpenHandbook resolves `page` through vscode.Uri.joinPath
+// and opens it via openExternal — this schema is the only thing rejecting
+// path traversal / absolute paths / alternate schemes before that happens.
+
+test('OPEN_HANDBOOK schema: no payload, and a known chapter + anchor, both pass', () => {
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({}).success, true);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: 'ch-08.html', anchor: 'content-screening' }).success, true);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: 'index.html' }).success, true);
+});
+
+test('OPEN_HANDBOOK schema: rejects path traversal, absolute paths, and alternate schemes in `page`', () => {
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: '../../package.json' }).success, false);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: '..\\x.html' }).success, false);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: '/etc/passwd' }).success, false);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: 'file:///etc/passwd' }).success, false);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ page: 'ch-08.html/../../x' }).success, false);
+});
+
+test('OPEN_HANDBOOK schema: rejects a malformed anchor', () => {
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ anchor: 'Content Screening' }).success, false, 'spaces/uppercase must be rejected');
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ anchor: '../x' }).success, false);
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ anchor: '' }).success, false, 'an empty anchor must be rejected, not treated as no anchor');
+  assert.equal(MSG_SCHEMAS.OPEN_HANDBOOK.safeParse({ anchor: 'a'.repeat(65) }).success, false, 'over-length anchors must be rejected');
 });
 
 // --- LEGACY_ARTIFACTS_DETECTED ----------------------------------------------

@@ -118,6 +118,10 @@ export interface ThemeServiceError {
   credits?: number;
   /** p85: the backend's `code` field on a 400 bad_request body (e.g. "board_not_priced"), when present. */
   code?: string;
+  /** content_blocked only: the moderation categories the backend flagged (e.g. "illicit", "self-harm/intent"). Absent on an older backend that only sends `error: "content_blocked"`. */
+  categories?: string[];
+  /** content_blocked only: the request field paths the backend flagged (corsair-theme-service's userTextFields, e.g. "slot[2].visual_description", "theme.creativeDirection"). Absent on an older backend, and absent on the separate likeness/IP block shape ({ error: "content_blocked", category: "likeness" | "ip" }). */
+  fields?: string[];
 }
 
 export type ThemeServiceResult<T> = { ok: true; value: T } | { ok: false; error: ThemeServiceError };
@@ -894,11 +898,24 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
             status: "error",
             error: { kind: "account_locked", status: 403, message: errorField ?? "account locked" },
           };
-        case 422:
+        case 422: {
+          const categories = Array.isArray(errBody.categories)
+            ? errBody.categories.filter((c): c is string => typeof c === "string")
+            : undefined;
+          const fields = Array.isArray(errBody.fields)
+            ? errBody.fields.filter((f): f is string => typeof f === "string")
+            : undefined;
           return {
             status: "error",
-            error: { kind: "content_blocked", status: 422, message: errorField ?? "content blocked" },
+            error: {
+              kind: "content_blocked",
+              status: 422,
+              message: errorField ?? "content blocked",
+              categories: categories && categories.length > 0 ? categories : undefined,
+              fields: fields && fields.length > 0 ? fields : undefined,
+            },
           };
+        }
         case 429:
           return { status: "error", error: { kind: "rate_limited", status: 429, message: errorField ?? "rate limited" } };
         case 502:

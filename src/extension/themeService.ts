@@ -220,7 +220,9 @@ export class ThemeGenerationServiceError extends Error {
   readonly credits?: number;
   readonly code?: string;
   readonly status?: number;
-  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number; code?: string; status?: number }) {
+  readonly categories?: string[];
+  readonly fields?: string[];
+  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number; code?: string; status?: number; categories?: string[]; fields?: string[] }) {
     super(error.message);
     this.name = 'ThemeGenerationServiceError';
     this.kind = error.kind;
@@ -228,6 +230,8 @@ export class ThemeGenerationServiceError extends Error {
     this.credits = error.credits;
     this.code = error.code;
     this.status = error.status;
+    this.categories = error.categories;
+    this.fields = error.fields;
   }
 }
 
@@ -1782,7 +1786,7 @@ export async function resetThemeBadgeNames(
  * (positional, id `achievement_<index>`) — the badge's appearance field, kept
  * separate from its display-name/title. */
 export interface ThemeItemDescriptionChange {
-  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'projectile' | 'badge' | 'expression';
+  item_kind: 'object' | 'decor' | 'character' | 'rival' | 'crate' | 'poof' | 'projectile' | 'badge' | 'expression' | 'environment';
   id: string;
   description: string;
   /**
@@ -1942,6 +1946,18 @@ export function applyThemeItemDescriptionChanges(
       // per theme (background decor board, row 4 — see ThemeDecorBoardRow's
       // `projectile` kind, which carries no decor_id).
       plan.projectile_description = description;
+    } else if (change.item_kind === 'environment') {
+      // Single field, not an indexed array — exactly one environment per theme.
+      // Unlike crate/poof/projectile (optional appearance specs), plan.environment
+      // is REQUIRED (themePlan.ts's normalizeThemePlan falls back to a generated
+      // default when blank, and themePlanCreativeDirection embeds it into every
+      // board's "Environment direction" line) — so a blank edit here is rejected
+      // rather than silently clearing it, unlike the other scalar description kinds.
+      if (!description) {
+        rejected.push({ item_kind: change.item_kind, id: change.id, reason: 'Environment description cannot be blank.' });
+        continue;
+      }
+      plan.environment = description;
     } else {
       const unknownKind = (change as { item_kind: string }).item_kind;
       rejected.push({ item_kind: unknownKind, id: change.id, reason: `Unknown item kind "${unknownKind}".` });
@@ -1985,8 +2001,12 @@ export function resyncDescriptionReviewItems(
   // any expression change affects the single fixed 'expressions' board rather
   // than a roster-matched row id (mirrors the badge/achievements case).
   const expressionChanged = applied.some((change) => change.item_kind === 'expression');
+  // Environment description is a single plan field (plan.environment), not a
+  // row-indexed one — mirrors crateOrPoofChanged/projectileChanged/badgeChanged.
+  const environmentChanged = applied.some((change) => change.item_kind === 'environment');
 
   const affectedBoardIds = new Set<string>();
+  if (environmentChanged) affectedBoardIds.add('environment');
   for (const item of document.items) {
     if (item.kind === 'object_atlas' && (item.object_rows?.some(
       (row) => (row.kind === 'object_static' || row.kind === 'object_anim') && affectedIds.has(row.object_id),
@@ -3489,6 +3509,8 @@ async function recordUserCorrectableGenerationError(
       isBlockedOrLocked ? false : error.refunded,
       isBlockedOrLocked ? 0 : undefined,
       error.code,
+      error.categories,
+      error.fields,
     );
     console.error('TycoonAgents: Theme Service generation attempt failed.', {
       themeId,
@@ -3927,6 +3949,7 @@ export function createReviewItems(
       prompt: buildEnvironmentPrompt(creativeDirection, plan.display_name),
       revision: 0,
       frame_keys: ['environment_background'],
+      environment_description: (plan.environment ?? '').trim() || undefined,
     },
     ...characterItems,
     ...enemyItems,

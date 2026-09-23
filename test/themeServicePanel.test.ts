@@ -855,7 +855,7 @@ test('not_signed_in notice button (openThemeBuilderFromReview) opens the plan ed
 
 // ── content_blocked / account_locked notices (p46-t3) ──
 
-test('content_blocked renders the blocked notice with an Acceptable use link, and keeps Retry enabled', async () => {
+test('content_blocked with no categories/fields (old backend) renders the generic notice, and the Acceptable use link opens the handbook', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeImageReview({
     theme_id: 't1',
@@ -871,9 +871,113 @@ test('content_blocked renders the blocked notice with an Acceptable use link, an
   const link = notice.querySelector('a');
   assert.ok(link, 'expected an Acceptable use link');
   assert.equal(link.textContent, 'Acceptable use');
-  assert.match(link.getAttribute('href'), /README\.md#acceptable-use/);
+  link.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.ok(
+    h.posted.some((p: any) => p.type === 'OPEN_HANDBOOK' && p.page === 'ch-08.html' && p.anchor === 'content-screening'),
+    'clicking Acceptable use should post OPEN_HANDBOOK for the content-screening section',
+  );
   const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
   assert.ok(retryBtn && !retryBtn.disabled, 'Retry must stay enabled so the user can edit the prompt');
+  h.win.close();
+});
+
+test('content_blocked with categories/fields names what was flagged, mapping a slot[i] path to its rival row name', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      error_categories: ['illicit'],
+      error_fields: ['slot[0].visual_description'],
+      rival_rows: [{ kind: 'rival', rival_id: 'r1', display_name: 'Sana Qi' }],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (illicit content): Sana Qi's description. No credit was spent. Rephrase it and retry.",
+  );
+  h.win.close();
+});
+
+test('content_blocked maps a slot.items[i] path to its object row name', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      error_categories: ['violence'],
+      error_fields: ['slot.items[1].display_name'],
+      object_rows: [{ display_name: 'Chair' }, { display_name: 'Crate' }],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (violence): Crate's description. No credit was spent. Rephrase it and retry.",
+  );
+  h.win.close();
+});
+
+test('content_blocked falls back to a generic field label for an unrecognized path', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      error_categories: ['hate'],
+      error_fields: ['input.prompt'],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    'Blocked by content screening (hate): the request. No credit was spent. Rephrase it and retry.',
+  );
+  h.win.close();
+});
+
+test('content_blocked with a likeness category (no reason/fields, per the backend contract) renders the generic notice', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    // The likeness path returns only { error: "content_blocked", category: "likeness" } —
+    // no `categories` array and no `fields` — so this must not be mistaken
+    // for the categories/fields shape.
+    items: [baseReviewItem({ error_kind: 'content_blocked', attemptCost: 0 })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(
+    notice.textContent.startsWith('This prompt was blocked by content screening. No credit was spent.'),
+    `unexpected notice text: ${notice.textContent}`,
+  );
+  h.win.close();
+});
+
+test('content_blocked names theme.creativeDirection with a fixed label', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      error_categories: ['self-harm/intent'],
+      error_fields: ['theme.creativeDirection'],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (self-harm): the theme's creative direction. No credit was spent. Rephrase it and retry.",
+  );
   h.win.close();
 });
 
@@ -1600,5 +1704,104 @@ test('leaving the theme builder tab posts THEME_BUILDER_CLOSED exactly once', as
   // Leaving again without re-opening the builder must not post a second time.
   h.doc.getElementById('tab-theme-picker').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
   assert.equal(h.posted.filter((p: any) => p.type === 'THEME_BUILDER_CLOSED').length, 1, 'a second leave without reopening must not double-post');
+  h.win.close();
+});
+
+// ── Environment board description editor (environment_description) ──
+
+test('the Environment card renders a description textarea seeded from environment_description', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ environment_description: 'a dusty neon outpost' })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  assert.ok(card, 'expected the environment board card');
+  const textarea = card.querySelector('.theme-review-description-input[data-row-id="environment"]');
+  assert.ok(textarea, 'expected the environment description textarea');
+  assert.equal(textarea.value, 'a dusty neon outpost');
+  assert.equal(textarea.dataset.itemKind, 'environment');
+  h.win.close();
+});
+
+test('editing the Environment description and clicking Apply posts SET_THEME_ITEM_DESCRIPTIONS with item_kind environment', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ environment_description: 'a dusty outpost' })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const textarea = card.querySelector('.theme-review-description-input[data-row-id="environment"]');
+  textarea.value = 'a moody neon skyline';
+  textarea.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+  const applyBtn = card.querySelector('.theme-review-names-descriptions-apply');
+  assert.ok(applyBtn, 'expected the shared Apply button');
+  assert.equal(applyBtn.disabled, false, 'Apply should be enabled once the description is dirty');
+  applyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  const sent = h.posted.find((p: any) => p.type === 'SET_THEME_ITEM_DESCRIPTIONS');
+  assert.ok(sent, 'expected a SET_THEME_ITEM_DESCRIPTIONS message');
+  assert.equal(sent.payload.theme_id, 't1');
+  const change = sent.payload.changes.find((c: any) => c.item_kind === 'environment');
+  assert.ok(change, 'expected an environment change entry');
+  assert.equal(change.id, 'environment');
+  assert.equal(change.description, 'a moody neon skyline');
+  h.win.close();
+});
+
+// ── Per-kind description length cap: 'environment' gets 900, others keep 400 ──
+
+test('an 850-char environment description has no over-limit note and posts on Apply', async () => {
+  const h = await bootThemePanelHarness();
+  const longDesc = 'x'.repeat(850);
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ environment_description: longDesc })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const textarea = card.querySelector('.theme-review-description-input[data-row-id="environment"]');
+  assert.equal(textarea.maxLength, 900, 'environment textarea should cap at 900, not 400');
+  assert.equal(textarea.value, longDesc);
+  const overLengthNote = Array.from(card.querySelectorAll('.theme-review-error'))
+    .find((el: any) => /over the .*-character limit/.test(el.textContent || ''));
+  assert.ok(!overLengthNote, '850 chars is under the 900 cap — no over-limit note expected');
+  h.win.close();
+});
+
+test('a 950-char seeded environment description shows a visible over-limit note instead of a silent drop', async () => {
+  const h = await bootThemePanelHarness();
+  const tooLong = 'x'.repeat(950);
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ environment_description: tooLong })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const overLengthNote = Array.from(card.querySelectorAll('.theme-review-error'))
+    .find((el: any) => /over the 900-character limit/.test(el.textContent || ''));
+  assert.ok(overLengthNote, 'expected a visible over-limit note for a 950-char seeded environment description');
+  h.win.close();
+});
+
+test('a schema-rejected SET_THEME_ITEM_DESCRIPTIONS reply (error) surfaces a visible "Save failed" status, not a silent drop', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ environment_description: 'a dusty outpost' })],
+  }));
+  h.dispatch({
+    type: 'THEME_ITEM_DESCRIPTIONS_RESULT',
+    payload: { ok: false, theme_id: 't1', board_id: 'env1', error: 'One or more descriptions are invalid (e.g. too long) and were not saved.' },
+  });
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const statusEl = card.querySelector('.theme-review-names-descriptions-status');
+  assert.ok(statusEl, 'expected the names/descriptions status element');
+  assert.match(statusEl.textContent, /Save failed/);
+  assert.ok(statusEl.classList.contains('theme-review-error'));
   h.win.close();
 });

@@ -400,3 +400,131 @@ test('Settings screen: the multi-provider checkbox is absent when multiProviderC
     win.close();
   }
 });
+
+test('Settings screen (first open, no Agents visit): the multi-provider checkbox shows by default for a non-OpenCode harness, then reflects the real payload once it arrives', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    // No "routing" push at all yet -- this is the bug scenario: Settings
+    // opens first, before the Agents screen has ever requested routing
+    // state. renderSettings() must still show the checkbox (default-show
+    // for non-OpenCode harnesses while lastRoutingPayload is null), and
+    // the "settings" handler must proactively request the routing payload.
+    (doc.getElementById('menu-settings') as any).click();
+    await flush();
+    // Mirrors the real open sequence: menu-settings posts "checkInstall",
+    // whose "installState" reply (installed, opened via Settings) is what
+    // actually removes #setup-config's `hidden` attribute.
+    dispatch({ type: 'installState', installed: true });
+    await flush();
+    dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' }, agents: [] } });
+    await flush();
+    assertNoErrors('settings render (first open, no prior routing payload)');
+
+    let checkbox = doc.querySelector('.settings-multi-provider-checkbox') as any;
+    assert.ok(checkbox, 'expected the multi-provider checkbox to be visible by default on first Settings open for a non-OpenCode harness');
+    assert.equal(checkbox.checked, false, 'defaults unchecked before the real persisted value arrives');
+    assert.equal(checkbox.disabled, true, 'checkbox must be disabled while the real persisted value is unknown, so a stray click cannot clobber a saved true');
+
+    const getMsg = posted.filter((m) => m && m.type === 'getRouting').pop();
+    assert.ok(getMsg, 'expected Settings to proactively request the routing payload on its first "settings" push');
+
+    // The host's reply arrives (as it would for the real getRouting
+    // request above) carrying the persisted setting -- Settings must
+    // reflect the correct checked state without a visit to Agents.
+    dispatch({ type: 'routing', payload: buildRoutingPayload({ multiProviderCheckboxVisible: true, multiProviderSetting: true }) });
+    await flush();
+    assertNoErrors('settings render (routing reply arrives while Settings is open)');
+
+    checkbox = doc.querySelector('.settings-multi-provider-checkbox') as any;
+    assert.ok(checkbox, 'checkbox should still be present after the routing reply');
+    assert.equal(checkbox.checked, true, 'checkbox should now reflect the persisted multiProviderSetting');
+    assert.equal(checkbox.disabled, false, 'checkbox should be enabled once the real persisted value has arrived');
+  } finally {
+    win.close();
+  }
+});
+
+test('Settings screen: a click on the checkbox while disabled (loading) posts nothing', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    (doc.getElementById('menu-settings') as any).click();
+    await flush();
+    dispatch({ type: 'installState', installed: true });
+    await flush();
+    dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' }, agents: [] } });
+    await flush();
+    assertNoErrors('settings render (loading state, no routing payload yet)');
+
+    const checkbox = doc.querySelector('.settings-multi-provider-checkbox') as any;
+    assert.ok(checkbox, 'expected the checkbox to render (default-shown) while loading');
+    assert.equal(checkbox.disabled, true);
+
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+
+    const toggleMsg = posted.find((m) => m && m.type === 'setAgentsMultiProvider');
+    assert.equal(toggleMsg, undefined, 'a click while disabled must not post setAgentsMultiProvider (would clobber a saved true with false)');
+  } finally {
+    win.close();
+  }
+});
+
+test('Settings screen: a routing reply updates the checkbox in place without rebuilding #setup-config (another field keeps focus/identity)', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    (doc.getElementById('menu-settings') as any).click();
+    await flush();
+    dispatch({ type: 'installState', installed: true });
+    await flush();
+    dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' }, agents: [] } });
+    await flush();
+    assertNoErrors('settings render (loading state)');
+
+    // Grab a stable identity for some other element rendered inside
+    // #setup-config by this same renderSettings() pass, and give it focus
+    // the way a user editing another field would.
+    const hookStatusBefore = doc.querySelector('.hook-status');
+    assert.ok(hookStatusBefore, 'expected a hook-status element from the initial render');
+    // settings-harness-select (buildHarnessControl, idPrefix "settings") is
+    // an ordinary enabled <select>, unlike the disabled Troubleshoot & Fix
+    // button -- usable as a real focus target in jsdom.
+    const harnessSelect = doc.getElementById('settings-harness-select') as any;
+    assert.ok(harnessSelect, 'expected the harness select from the initial render');
+    harnessSelect.focus();
+    assert.equal(doc.activeElement, harnessSelect, 'precondition: the select has focus before the routing reply');
+
+    dispatch({ type: 'routing', payload: buildRoutingPayload({ multiProviderCheckboxVisible: true, multiProviderSetting: true }) });
+    await flush();
+    assertNoErrors('settings render (routing reply arrives)');
+
+    const hookStatusAfter = doc.querySelector('.hook-status');
+    assert.equal(hookStatusAfter, hookStatusBefore, 'the routing reply must not rebuild #setup-config -- unrelated elements must keep their identity');
+    assert.equal(doc.activeElement, harnessSelect, 'focus on an unrelated Settings field must survive a routing reply');
+
+    const checkbox = doc.querySelector('.settings-multi-provider-checkbox') as any;
+    assert.equal(checkbox.checked, true, 'checkbox should still pick up the real value via in-place update');
+    assert.equal(checkbox.disabled, false);
+  } finally {
+    win.close();
+  }
+});
+
+test('Settings screen (first open, no Agents visit): the multi-provider checkbox is hidden by default for the OpenCode harness', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    (doc.getElementById('menu-settings') as any).click();
+    await flush();
+    dispatch({ type: 'settings', payload: { harness: { effective: 'opencode' }, agents: [] } });
+    await flush();
+    assertNoErrors('settings render (first open, opencode, no prior routing payload)');
+
+    assert.equal(
+      doc.querySelectorAll('.settings-multi-provider-checkbox').length,
+      0,
+      'checkbox should stay hidden by default for the OpenCode harness even before a routing payload arrives',
+    );
+  } finally {
+    win.close();
+  }
+});
