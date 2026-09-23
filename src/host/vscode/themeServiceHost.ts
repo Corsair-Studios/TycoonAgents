@@ -34,7 +34,15 @@ import {
 import { createVsCodeThemeServiceTokenStore } from "./themeServiceToken";
 
 export interface ThemeServiceHostStatus {
-  signedIn: boolean;
+  /**
+   * p91-t2 fix: optional, not just boolean — a definitive `false` tells the
+   * webview the account is signed out (hides the credits chip, wipes its
+   * cached balance). A transient failure (buildStatus's catch,
+   * refreshStatusInBackground/scheduleStatusRetry's safety nets) must never
+   * claim that; it omits signedIn so the webview's signedInKnown/cache
+   * fallback applies instead of a false sign-out.
+   */
+  signedIn?: boolean;
   email?: string;
   provider?: string;
   credits?: number;
@@ -394,49 +402,77 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   }
 
   async function buildStatus(): Promise<ThemeServiceHostStatus> {
-    const res = await client.getStatus();
-    if (!res.ok) {
-      return { signedIn: false, pendingCheckout, error: toErrorPayload(res.error) };
-    }
-    const status: ThemeServiceStatus = res.value;
-    // Refetch pricing on every status build (it can change server-side);
-    // the cached copy is kept only as a fallback when the refetch fails.
-    const pricingRes = await client.getPricing();
-    if (pricingRes.ok) lastCachedPricing = pricingRes.value;
-    let showReferralField = false;
-    if (!status.signedIn && deviceState) {
-      try {
-        showReferralField = !(await deviceState.hasEverSignedIn());
-      } catch {
-        showReferralField = false;
+    // p91 fix: this whole body used to be un-caught — a thrown exception
+    // anywhere in here (client.getStatus()/getPricing(), a rejected
+    // deviceState call slipping past its own try, etc.) meant the caller's
+    // await never resolved, so a pending:true stub the webview already
+    // showed ("…") never got a follow-up post and stayed there forever. This
+    // is the single point every status-producing path (postFreshStatus,
+    // buildSnapshotForOpen, refreshStatusInBackground, scheduleStatusRetry)
+    // goes through, so catching here guarantees ALL of them always resolve
+    // to a terminal status instead of throwing.
+    try {
+      const res = await client.getStatus();
+      if (!res.ok) {
+        return { signedIn: false, pendingCheckout, error: toErrorPayload(res.error) };
       }
+      const status: ThemeServiceStatus = res.value;
+      // Refetch pricing on every status build (it can change server-side);
+      // the cached copy is kept only as a fallback when the refetch fails.
+      const pricingRes = await client.getPricing();
+      if (pricingRes.ok) lastCachedPricing = pricingRes.value;
+      let showReferralField = false;
+      if (!status.signedIn && deviceState) {
+        try {
+          showReferralField = !(await deviceState.hasEverSignedIn());
+        } catch {
+          showReferralField = false;
+        }
+      }
+      const referralMessage = pendingReferralMessage;
+      pendingReferralMessage = undefined;
+      // p89: a signed-in status must always carry a numeric credits balance —
+      // client.getStatus() only ever returns ok:true+signedIn:true alongside a
+      // validated numeric credits field, so this should be unreachable, but a
+      // future backend/client change could silently drop it (e.g. a renamed
+      // field) and leave the webview chip stuck with nothing to show. Log once
+      // per occurrence (names/kinds only, no account values) so a regression
+      // here can't hide behind a status log line that always says "ok".
+      if (status.signedIn && typeof status.credits !== "number") {
+        log("themeServiceHost.buildStatus: signedIn=true but credits is not a number");
+      }
+      return {
+        signedIn: status.signedIn,
+        email: status.email,
+        provider: status.role,
+        credits: status.credits,
+        locked: status.locked,
+        strikes: status.strikes,
+        pricing: lastCachedPricing,
+        pendingCheckout,
+        showReferralField,
+        referralMessage,
+        referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
+        endpointHost: effectiveEndpointHost,
+      };
+    } catch (err) {
+      const ctor = err instanceof Error ? err.constructor.name : typeof err;
+      log(`themeServiceHost.buildStatus: threw ${ctor}`);
+      // signedIn deliberately omitted (not false) — a hardcoded false told
+      // the webview this account is definitively signed out, which hides
+      // the chip and wipes its cached balance on a transient throw even for
+      // a signed-in user. Leaving it undefined lets the webview's
+      // signedInKnown/cache fallback apply instead.
+      //
+      // kind "internal" (not "unavailable"): an unhandled exception is a bug
+      // in this process, not a cold Theme Service backend. buildSnapshotForOpen
+      // only remaps "unavailable"/"timeout" to "waking", and only THOSE kinds
+      // arm the 10/20/30s retry chain in refreshStatusInBackground/
+      // scheduleStatusRetry — using "unavailable" here would silently retry a
+      // local exception for up to STATUS_RETRY_MAX_TOTAL_MS instead of
+      // surfacing it once.
+      return { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE } };
     }
-    const referralMessage = pendingReferralMessage;
-    pendingReferralMessage = undefined;
-    // p89: a signed-in status must always carry a numeric credits balance —
-    // client.getStatus() only ever returns ok:true+signedIn:true alongside a
-    // validated numeric credits field, so this should be unreachable, but a
-    // future backend/client change could silently drop it (e.g. a renamed
-    // field) and leave the webview chip stuck with nothing to show. Log once
-    // per occurrence (names/kinds only, no account values) so a regression
-    // here can't hide behind a status log line that always says "ok".
-    if (status.signedIn && typeof status.credits !== "number") {
-      log("themeServiceHost.buildStatus: signedIn=true but credits is not a number");
-    }
-    return {
-      signedIn: status.signedIn,
-      email: status.email,
-      provider: status.role,
-      credits: status.credits,
-      locked: status.locked,
-      strikes: status.strikes,
-      pricing: lastCachedPricing,
-      pendingCheckout,
-      showReferralField,
-      referralMessage,
-      referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
-      endpointHost: effectiveEndpointHost,
-    };
   }
 
   async function postFreshStatus(): Promise<void> {
@@ -480,14 +516,36 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     const delay = STATUS_RETRY_BACKOFF_MS[Math.min(attemptIndex, STATUS_RETRY_BACKOFF_MS.length - 1)];
     if (elapsedMs + delay > STATUS_RETRY_MAX_TOTAL_MS) {
       if (disposed || generation !== statusRetryGeneration) return;
-      lastSnapshot = { signedIn: false, pendingCheckout, error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE } };
+      // p91-t2 fix: signedIn omitted, not false — retries exhausting after
+      // ~3 minutes of "waking" is a transient unavailability, not a known
+      // sign-out; a hardcoded false here hid the credits chip and wiped its
+      // cached balance for a signed-in user who was simply waiting on a slow
+      // wake-up.
+      lastSnapshot = { pendingCheckout, error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE } };
       opts.postStatus(lastSnapshot);
       return;
     }
     statusRetryHandle = setTimeoutImpl(() => {
       void (async () => {
         if (disposed || generation !== statusRetryGeneration) return;
-        const status = await buildSnapshotForOpen();
+        let status: ThemeServiceHostStatus;
+        try {
+          status = await buildSnapshotForOpen();
+        } catch (err) {
+          // p91 fix: buildStatus already catches internally, but this is a
+          // second safety net — nothing between here and a terminal post may
+          // ever throw without one, or a "waking" retry chain could die
+          // silently and leave the last-posted stub/"waking" status stuck.
+          // signedIn omitted, not false — same reasoning as buildStatus's
+          // own catch (p91-t2).
+          // kind "internal" (not "unavailable") — see buildStatus's catch;
+          // "waking" never matches below so this correctly stops the retry
+          // chain instead of continuing to treat a local exception as a cold
+          // start.
+          const ctor = err instanceof Error ? err.constructor.name : typeof err;
+          log(`themeServiceHost.scheduleStatusRetry: unexpected throw ${ctor}`);
+          status = { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE } };
+        }
         if (disposed || generation !== statusRetryGeneration) return;
         lastSnapshot = status;
         opts.postStatus(status);
@@ -659,7 +717,23 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       const generation = statusRetryGeneration;
       void (async () => {
         if (disposed || generation !== statusRetryGeneration) return;
-        const status = await buildSnapshotForOpen();
+        let status: ThemeServiceHostStatus;
+        try {
+          status = await buildSnapshotForOpen();
+        } catch (err) {
+          // p91 fix: this is the path that follows OPEN_THEME_BUILDER's
+          // pending:true stub — without this catch, a throw here left that
+          // stub with no follow-up post, so the webview's "…" chip never
+          // resolved.
+          // signedIn omitted, not false — same reasoning as buildStatus's
+          // own catch (p91-t2).
+          // kind "internal" (not "unavailable") — see buildStatus's catch;
+          // never matches "waking" below, so no retry chain starts for a
+          // local exception.
+          const ctor = err instanceof Error ? err.constructor.name : typeof err;
+          log(`themeServiceHost.refreshStatusInBackground: unexpected throw ${ctor}`);
+          status = { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE } };
+        }
         if (disposed || generation !== statusRetryGeneration) return;
         lastSnapshot = status;
         opts.postStatus(status);

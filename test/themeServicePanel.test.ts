@@ -529,6 +529,157 @@ test('p89 fix: a signed-in-no-credits status does not wipe a previously cached n
   h.win.close();
 });
 
+// ── Chip pending-timeout fallback (testing-specialist addition) ────────────
+// Installs a controllable fake setTimeout/clearTimeout on the JSDOM window
+// AFTER boot (armThemeCreditsChipPendingTimeout calls window.setTimeout at
+// invocation time, not at parse time, so a post-boot override is picked up).
+// This avoids any real waiting for the 15000ms fallback.
+function installFakeChipTimer(h: any) {
+  const scheduled: Array<{ id: number; fn: () => void; ms: number }> = [];
+  let nextId = 1;
+  h.win.setTimeout = (fn: () => void, ms: number) => {
+    const id = nextId++;
+    scheduled.push({ id, fn, ms });
+    return id;
+  };
+  h.win.clearTimeout = (id: number) => {
+    const idx = scheduled.findIndex((s) => s.id === id);
+    if (idx >= 0) scheduled.splice(idx, 1);
+  };
+  return {
+    pendingCount: () => scheduled.length,
+    fire: () => {
+      const s = scheduled.shift();
+      assert.ok(s, 'expected a scheduled timer to fire');
+      assert.equal(s!.ms, 15000, 'chip fallback timer should be armed for 15000ms');
+      s!.fn();
+    },
+  };
+}
+
+test('chip: a pending stub with no follow-up falls back after 15000ms to "— credits" with a retry title when nothing is cached', async () => {
+  const h = await bootThemePanelHarness();
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  assert.equal(h.chip().textContent, '…');
+  assert.equal(ft.pendingCount(), 1, 'the pending timeout should be armed once');
+  ft.fire();
+  assert.equal(h.chip().textContent, '— credits');
+  assert.match(h.chip().title, /couldn't load your balance.*retry/i);
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must never be hidden in the fallback state');
+  h.win.close();
+});
+
+test('chip: a pending stub shows the cached numeric balance immediately when one is cached (no "…" flash, no fallback timer armed)', async () => {
+  const h = await bootThemePanelHarness();
+  // Prime the cache with a real signed-in status carrying credits.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 500 })));
+  assert.equal(h.chip().textContent, '500 credits');
+
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  // updateThemeBuilderCreditsChip's pending branch returns the cached balance
+  // immediately when one exists (before the "…"/armThemeCreditsChipPendingTimeout
+  // path), so no fallback timer is armed in this case.
+  assert.equal(h.chip().textContent, '500 credits');
+  assert.equal(ft.pendingCount(), 0, 'no fallback timer should be armed when a cached balance is shown immediately');
+  assert.ok(!h.chip().hasAttribute('hidden'));
+  h.win.close();
+});
+
+test('chip: a real status arriving before 15s cancels the pending fallback timer', async () => {
+  const h = await bootThemePanelHarness();
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  assert.equal(ft.pendingCount(), 1);
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 42 })));
+  assert.equal(ft.pendingCount(), 0, 'a terminal status must clear the armed fallback timer');
+  assert.equal(h.chip().textContent, '42 credits');
+  h.win.close();
+});
+
+test('chip: clicking it in the fallback state posts requestThemeServiceStatus', async () => {
+  const h = await bootThemePanelHarness();
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  ft.fire();
+  assert.equal(h.chip().textContent, '— credits');
+  const countBefore = h.posted.filter((p: any) => p.type === 'requestThemeServiceStatus').length;
+  h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const countAfter = h.posted.filter((p: any) => p.type === 'requestThemeServiceStatus').length;
+  assert.equal(countAfter, countBefore + 1, 'clicking the fallback chip should post requestThemeServiceStatus');
+  h.win.close();
+});
+
+// p91-t3: while a chip-triggered refresh is still in flight, further clicks
+// must not fire another requestThemeServiceStatus — only the next terminal
+// status (or the pending-timeout fallback itself) re-arms the click.
+test('chip: a second click while a retry is still in flight is ignored, until the next status arrives', async () => {
+  const h = await bootThemePanelHarness();
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  ft.fire();
+  assert.equal(h.chip().textContent, '— credits');
+
+  function requestCount(): number {
+    return h.posted.filter((p: any) => p.type === 'requestThemeServiceStatus').length;
+  }
+
+  // main.js also fires one requestThemeServiceStatus() at boot, so compare
+  // deltas from here rather than an absolute count.
+  const countBeforeClick = requestCount();
+  h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(requestCount(), countBeforeClick + 1, 'the first click should post a request');
+
+  // Clicking again before any response lands must not post a second request.
+  h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(requestCount(), countBeforeClick + 1, 'clicks while a retry is in flight must be ignored');
+
+  // A real status arriving clears the in-flight flag — clicking works again.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 9 })));
+  h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.equal(requestCount(), countBeforeClick + 2, 'a click after a terminal status must post again');
+  h.win.close();
+});
+
+// p91-t3: closing the sign-in shell modal must cancel the 15s pending-fallback
+// clock so it can't fire against a chip nobody is looking at (or a later
+// dialog open that re-arms it while the old timer is still ticking).
+test('closing the theme-builder sign-in shell clears the pending-fallback timer', async () => {
+  const h = await bootThemePanelHarness();
+  const ft = installFakeChipTimer(h);
+  h.dispatch(themeBuilderOpened(signedOutStatus({ pending: true })));
+  assert.equal(ft.pendingCount(), 1, 'the pending timeout should be armed');
+
+  const closeBtn = h.doc.getElementById('theme-builder-shell-close');
+  assert.ok(closeBtn, 'expected #theme-builder-shell-close to exist');
+  closeBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.equal(ft.pendingCount(), 0, 'closing the shell modal must clear the armed fallback timer');
+  h.win.close();
+});
+
+// #2 concern (fixed, p91-t2): the host's buildStatus catch now omits
+// signedIn (see test/themeServiceHost.test.ts "p2 concern") instead of
+// hardcoding false on a throw, so the webview must keep showing the cached
+// balance rather than treating this as a confirmed sign-out.
+test('p2 concern: signed-in credits:500 then a host throw (signedIn:undefined) keeps the cached 500, not signed-out', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 500 })));
+  assert.equal(h.chip().textContent, '500 credits');
+
+  // Mirrors the host's actual buildStatus catch payload after the review fix:
+  // { pendingCheckout, error: { kind: "internal", ... } } — signedIn omitted,
+  // kind "internal" (not "unavailable") so it's never mistaken for a cold
+  // Theme Service backend.
+  h.dispatch(themeServiceStatus({ signedIn: undefined, error: { kind: 'internal', message: 'Theme Service unavailable.' } }));
+
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must stay visible, not hide as signed-out');
+  assert.equal(h.chip().textContent, '500 credits', 'chip must keep showing the cached balance, not wipe it');
+  h.win.close();
+});
+
 // ── No innerHTML for status text (source guard) ─────────────────────────────
 
 test('renderThemeServicePanel and its helpers never use innerHTML for status text', () => {

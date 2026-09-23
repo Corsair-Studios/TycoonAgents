@@ -43,6 +43,29 @@ function fakeTimers() {
   };
 }
 
+// p91-t2 review fix: any test that can reach buildSnapshotForOpen (via
+// refreshStatusInBackground/scheduleStatusRetry/getStatusSnapshot) must
+// inject a fake setTimeout/clearTimeout too, not just setInterval — a real
+// "waking" retry chain arms real 5-30s timers that keep the test process
+// alive well past the test's own assertions, hanging the whole suite.
+function fakeDelayTimers() {
+  const scheduled = new Map<number, { fn: () => void; ms: number }>();
+  let nextId = 1;
+  return {
+    setTimeout(fn: () => void, ms: number): number {
+      const id = nextId++;
+      scheduled.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout(id: unknown): void {
+      scheduled.delete(id as number);
+    },
+    pendingCount(): number {
+      return scheduled.size;
+    },
+  };
+}
+
 function setup(nowFn?: () => number, openExternalOverride?: (url: string) => void | boolean | Promise<void | boolean>) {
   const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: nowFn });
   const tokenStore = createMemoryTokenStore();
@@ -864,6 +887,150 @@ test("p83-t2: authorize URL uses code_challenge_method=S256", async () => {
   const { host, opened } = setupWithLog();
   await host.handleGoogleStart();
   assert.ok(opened[0].includes("code_challenge_method=S256"), `authorize URL should carry S256: ${opened[0]}`);
+});
+
+// Testing-specialist addition: buildStatus's catch (~397-453) and the safety
+// nets in refreshStatusInBackground (~657-680) and scheduleStatusRetry
+// (~487-511) must always resolve to a terminal status and fire postStatus,
+// never leave the caller hanging.
+test("buildStatus catch: client.getStatus() throwing still resolves a terminal signedIn:undefined status via handleGetStatus", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const delays = fakeDelayTimers();
+  const throwingClient: any = {
+    getStatus: async () => {
+      throw new Error("network exploded");
+    },
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: throwingClient,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    setTimeout: delays.setTimeout,
+    clearTimeout: delays.clearTimeout,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, undefined);
+  // p91-t2 review fix: an unhandled exception is kind "internal", not
+  // "unavailable" — "unavailable" gets remapped to "waking" by
+  // buildSnapshotForOpen and arms a real 10/20/30s retry chain, which is
+  // wrong for a local bug and was what hung this suite.
+  assert.equal(posted[0].error?.kind, "internal");
+  assert.equal(delays.pendingCount(), 0, "a plain handleGetStatus throw must never arm a retry timer");
+});
+
+test("buildStatus catch: client.getPricing() throwing still resolves a terminal status", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const delays = fakeDelayTimers();
+  const throwingClient: any = {
+    getStatus: async () => ({ ok: true, value: { signedIn: true, email: "x@example.com", role: "user", credits: 5 } }),
+    getPricing: async () => {
+      throw new Error("pricing exploded");
+    },
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: throwingClient,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    setTimeout: delays.setTimeout,
+    clearTimeout: delays.clearTimeout,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, undefined);
+  assert.equal(posted[0].error?.kind, "internal");
+  assert.equal(delays.pendingCount(), 0);
+});
+
+test("refreshStatusInBackground: a throwing client still posts a terminal status (not left hanging)", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const delays = fakeDelayTimers();
+  const throwingClient: any = {
+    getStatus: async () => {
+      throw new Error("boom");
+    },
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: throwingClient,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    setTimeout: delays.setTimeout,
+    clearTimeout: delays.clearTimeout,
+  });
+  host.start();
+  host.refreshStatusInBackground();
+  // refreshStatusInBackground fires the async fetch without awaiting it internally;
+  // flush microtasks so its promise chain settles.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(posted.length > 0, "refreshStatusInBackground must post a terminal status even when the client throws");
+  assert.equal(posted[posted.length - 1].signedIn, undefined);
+  // p91-t2 review fix: buildStatus's catch reports kind "internal", which
+  // buildSnapshotForOpen must NOT remap to "waking" — a real exception must
+  // never arm the 10/20/30s retry chain.
+  assert.equal(posted[posted.length - 1].error?.kind, "internal");
+  assert.equal(delays.pendingCount(), 0, "a thrown exception must never arm a retry timer");
+});
+
+// #2 concern (fixed, p91-t2): the host's catch (buildStatus) now omits
+// signedIn rather than hardcoding false on a throw. Sequence: signed-in
+// status with credits 500, then the host throws on the next refresh — the
+// resulting posted status must leave signedIn undefined/unknown so the
+// webview's signedInKnown/cache-preserving branch keeps showing the cached
+// 500, instead of a false definitive sign-out wiping it.
+test("p2 concern: after a signed-in credits:500 status, a subsequent throw posts signedIn:undefined (not false)", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  let shouldThrow = false;
+  const flakyClient: any = {
+    getStatus: async () => {
+      if (shouldThrow) throw new Error("refresh failed");
+      return { ok: true, value: { signedIn: true, email: "x@example.com", role: "user", credits: 500 } };
+    },
+    getPricing: async () => ({ ok: true, value: { typicalTheme: { min: 8, max: 20 }, packs: [] } }),
+  };
+  const delays = fakeDelayTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: flakyClient,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    setTimeout: delays.setTimeout,
+    clearTimeout: delays.clearTimeout,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted[posted.length - 1].signedIn, true);
+  assert.equal(posted[posted.length - 1].credits, 500);
+
+  shouldThrow = true;
+  await host.handleGetStatus();
+  const last = posted[posted.length - 1];
+  assert.equal(last.signedIn, undefined, "buildStatus's catch must not claim a known sign-out on a transient throw");
+  assert.equal(last.error?.kind, "internal");
+  assert.equal(delays.pendingCount(), 0);
 });
 
 test("diagnosticReport: includes 'URI scheme' line with the injected scheme", () => {

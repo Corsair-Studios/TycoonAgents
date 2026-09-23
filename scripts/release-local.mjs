@@ -25,6 +25,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 
+// Node's spawnSync default stdout/stderr cap is 1 MB, which `npm run
+// package` blows past (full test suite output + VSIX listing), throwing
+// ENOBUFS after the release commit has already landed. Every spawnSync call
+// whose output we parse or may need to print in full uses this instead.
+const MAX_BUFFER = 256 * 1024 * 1024;
+
 /**
  * Quotes a single argv token for safe inclusion in a Windows `cmd.exe`
  * command line (wraps in double quotes and doubles embedded quotes when the
@@ -224,7 +230,7 @@ function readVsixInfo(vsixPath) {
     fileCount = countZipEntriesFromBuffer(buf);
   } catch (err) {
     console.warn(`[release] Pure-node zip listing failed (${err.message}); trying \`unzip -l\`.`);
-    const result = spawnSync("unzip", ["-l", vsixPath], { encoding: "utf8" });
+    const result = spawnSync("unzip", ["-l", vsixPath], { encoding: "utf8", maxBuffer: MAX_BUFFER });
     if (result.status === 0) {
       const lines = result.stdout.trim().split("\n");
       const lastLine = lines[lines.length - 1];
@@ -300,6 +306,7 @@ function main() {
     shell: false,
     cwd: root,
     encoding: "utf8",
+    maxBuffer: MAX_BUFFER,
   });
   process.stdout.write(versionResult.stdout || "");
   process.stderr.write(versionResult.stderr || "");
@@ -342,15 +349,22 @@ function main() {
 
   console.log("[release] Running `npm run package`...");
   const packageCmd = buildCommand("npm", ["run", "package"]);
-  const packageResult = spawnSync(packageCmd.file, packageCmd.args, { stdio: "pipe", shell: false, cwd: root, encoding: "utf8" });
+  const packageResult = spawnSync(packageCmd.file, packageCmd.args, {
+    stdio: "pipe",
+    shell: false,
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: MAX_BUFFER,
+  });
   process.stdout.write(packageResult.stdout || "");
   process.stderr.write(packageResult.stderr || "");
 
-  if (packageResult.status !== 0) {
+  if (packageResult.status !== 0 || packageResult.error) {
+    const errCode = packageResult.error && packageResult.error.code;
     console.error(
       "\n[release] PACKAGING FAILED after the release commit already landed.\n" +
       `[release]   status: ${packageResult.status}\n` +
-      (packageResult.error ? `[release]   error: ${packageResult.error.message}\n` : "") +
+      (packageResult.error ? `[release]   error: ${packageResult.error.message}${errCode ? ` (${errCode})` : ""}\n` : "") +
       (packageResult.stderr ? `[release]   stderr (tail): ${packageResult.stderr.trim().slice(-2000)}\n` : "") +
       (packageResult.stdout ? `[release]   stdout (tail): ${packageResult.stdout.trim().slice(-2000)}\n` : "") +
       "[release] The bump is committed but the VSIX was not produced. To undo the commit " +

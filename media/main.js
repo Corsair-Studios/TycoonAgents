@@ -3585,6 +3585,10 @@ if (typeof module !== "undefined" && module.exports) {
 
   function closeThemeBuilderShellModal() {
     if (themeBuilderShellModal) closeModal(themeBuilderShellModal);
+    // p91-t3 fix: don't let the pending-fallback clock keep running (and
+    // later mutate a chip nobody's looking at, or worse land right as a
+    // fresh open re-arms it) once the sign-in shell is dismissed.
+    clearThemeCreditsChipPendingTimeout();
   }
 
   if (themeBuilderShellClose) themeBuilderShellClose.addEventListener("click", closeThemeBuilderShellModal);
@@ -3614,6 +3618,22 @@ if (typeof module !== "undefined" && module.exports) {
   // transient view state here and cleared once a real signedIn status
   // arrives (see renderThemeServicePanel below).
   const themeBuilderCreditsChip = /** @type {HTMLElement} */ (document.getElementById("theme-builder-credits-chip"));
+  // p91-t3: while a refresh we asked for is still in flight, ignore further
+  // clicks rather than firing a new requestThemeServiceStatus() on every one
+  // — cleared by the next real (non-pending) status this function receives,
+  // or by the pending-timeout fallback below, whichever comes first.
+  let themeCreditsChipRetryInFlight = false;
+  if (themeBuilderCreditsChip) {
+    // p91 fix: retry affordance for the pending-timeout/error fallback below
+    // — harmless (and cheap) to fire on any click, including the normal
+    // "N credits" state, since requestThemeServiceStatus() is idempotent.
+    themeBuilderCreditsChip.style.cursor = "pointer";
+    themeBuilderCreditsChip.addEventListener("click", () => {
+      if (themeCreditsChipRetryInFlight) return;
+      themeCreditsChipRetryInFlight = true;
+      requestThemeServiceStatus();
+    });
+  }
   const themeServicePanelBody   = /** @type {HTMLElement} */ (document.getElementById("theme-service-panel-body"));
 
   let themeServiceStatus = null;
@@ -3673,10 +3693,60 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
+  // p91 fix: the chip must never show "…" forever — the host is supposed to
+  // always follow a pending:true stub with a terminal THEME_SERVICE_STATUS,
+  // but this is the webview-side safety net for when it doesn't (a dropped
+  // response, a host-side throw, a hung fetch). Bound is the host's
+  // statusTimeoutMs default (10s — see createThemeServiceClient in
+  // src/core/themeServiceClient.ts) plus margin for the host's own
+  // retry/post overhead around that fetch; no shared constant exists to
+  // import into this plain-JS bundle, so it's kept here with that source
+  // named for whoever changes the host default next.
+  var THEME_SERVICE_STATUS_PENDING_TIMEOUT_MS = 15000;
+  var themeCreditsChipPendingTimer = 0;
+
+  function clearThemeCreditsChipPendingTimeout() {
+    if (themeCreditsChipPendingTimer) {
+      clearTimeout(themeCreditsChipPendingTimer);
+      themeCreditsChipPendingTimer = 0;
+    }
+  }
+
+  function armThemeCreditsChipPendingTimeout() {
+    if (themeCreditsChipPendingTimer) return; // already armed — don't restart the clock
+    themeCreditsChipPendingTimer = setTimeout(function () {
+      themeCreditsChipPendingTimer = 0;
+      if (!themeBuilderCreditsChip) return;
+      // Still on "…" with nothing having followed up — fall back to the
+      // cached balance if there is one, else an explicit retry placeholder.
+      // Never hide the chip here (it may well still be signed in).
+      var cached = readCachedThemeServiceStatus();
+      if (cached && cached.signedIn && typeof cached.credits === "number") {
+        themeBuilderCreditsChip.textContent = cached.credits + " credits";
+        themeBuilderCreditsChip.title = "Showing your last known balance — could not refresh it just now.";
+      } else {
+        themeBuilderCreditsChip.textContent = "— credits";
+        themeBuilderCreditsChip.title = "Couldn't load your balance — click to retry";
+      }
+      themeBuilderCreditsChip.removeAttribute("hidden");
+      // p91-t3: the retry click is what we were waiting on — done waiting,
+      // clicking again (e.g. the "click to retry" placeholder just shown)
+      // must work.
+      themeCreditsChipRetryInFlight = false;
+    }, THEME_SERVICE_STATUS_PENDING_TIMEOUT_MS);
+  }
+
   function updateThemeBuilderCreditsChip(status) {
     if (!themeBuilderCreditsChip) return;
     var s = status;
     var cached = readCachedThemeServiceStatus();
+    // Any status that isn't the genuine in-flight stub is terminal — cancel
+    // the fallback clock so it can't fire after a real answer arrives late,
+    // and (p91-t3) let a click ask for another refresh again.
+    if (s && !s.pending) {
+      clearThemeCreditsChipPendingTimeout();
+      themeCreditsChipRetryInFlight = false;
+    }
     // p87: no status yet at all (host reply still in flight, or arrived as
     // the { pending: true } stub) — fall back to the last cached status so
     // the chip isn't blank on first open, and if there's no cache either,
@@ -3697,6 +3767,7 @@ if (typeof module !== "undefined" && module.exports) {
         themeBuilderCreditsChip.textContent = "…";
         themeBuilderCreditsChip.title = "";
         themeBuilderCreditsChip.removeAttribute("hidden");
+        armThemeCreditsChipPendingTimeout();
         return;
       }
       themeBuilderCreditsChip.textContent = "";
@@ -4210,7 +4281,7 @@ if (typeof module !== "undefined" && module.exports) {
       renderThemeServicePendingCheckout(themeServicePanelBody);
       return;
     }
-    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable" || s.error.kind === "waking")) {
+    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable" || s.error.kind === "waking" || s.error.kind === "internal")) {
       renderThemeServiceUnreachable(themeServicePanelBody, s);
       return;
     }
@@ -4628,7 +4699,7 @@ if (typeof module !== "undefined" && module.exports) {
       themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
       return;
     }
-    if (kind === "unavailable" || kind === "unreachable") {
+    if (kind === "unavailable" || kind === "unreachable" || kind === "internal") {
       themeBuilderStatusChip.classList.add("tsp-status-chip-error");
       themeBuilderStatusChip.appendChild(document.createTextNode("Service unavailable — no credits charged"));
       themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
