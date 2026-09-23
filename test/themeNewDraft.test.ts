@@ -406,7 +406,12 @@ test('THEME_PLAN_READY with typed content shows an inline confirm and does not o
 
     // Not yet overwritten.
     assert.equal(doc.getElementById('theme-plan-name').value, 'Typed By Hand');
-    const validation = doc.getElementById('theme-plan-validation');
+    // a5a337b: the confirm renders into whichever validation element is
+    // actually visible for the current screen — openThemeBuilderOnEmptyDraft
+    // lands on the Start screen (see the sibling test above), so that's the
+    // dynamically-created #theme-build-choice-validation, not the (hidden
+    // while on Start) #theme-plan-validation inside #theme-plan-editor.
+    const validation = doc.getElementById('theme-build-choice-validation');
     assert.ok(validation && (validation.textContent || '').length > 0, 'expected an inline confirm message');
     const overwriteBtn = Array.from(validation.querySelectorAll('button')).find((b: any) => (b.textContent || '').trim() === 'Overwrite') as any;
     assert.ok(overwriteBtn, 'expected an Overwrite button in the inline confirm');
@@ -414,6 +419,45 @@ test('THEME_PLAN_READY with typed content shows an inline confirm and does not o
     overwriteBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 0));
     assert.equal(doc.getElementById('theme-plan-name').value, 'AI Generated Name', 'confirming Overwrite must apply the AI plan');
+  } finally {
+    h.win.close();
+  }
+});
+
+// v0.0.658 review fix: a seed synced from a PREVIOUS draft's Start-screen
+// typing must not survive into a later draft and mask a hand-typed name
+// that happens to match it (clearThemeBuilderDraftState/enterNewThemeDraftMode
+// both reset themePlanNameSyncedSeed to null).
+test('a seed from a cleared draft does not suppress the confirm when the next draft hand-types the same text', async () => {
+  const h = await openThemeBuilderOnEmptyDraft();
+  try {
+    const { doc } = h;
+
+    // Seed "X" on the Start screen of the first draft.
+    const promptInput = doc.getElementById('theme-prompt-input');
+    promptInput.value = 'X';
+    promptInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    // Re-click the builder tab: forceStart clears the draft and re-enters a
+    // fresh Start screen (clearThemeBuilderDraftState + enterNewThemeDraftMode).
+    h.click('tab-theme-builder');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Hand-type "X" directly into the plan-editor name field of the NEW
+    // draft — never synced through #theme-prompt-input this time.
+    const nameInput = doc.getElementById('theme-plan-name');
+    nameInput.value = 'X';
+    nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+    h.dispatch({
+      type: 'THEME_PLAN_READY',
+      payload: { plan: { display_name: 'AI Generated Name', characters: new Array(16).fill('AI Char') } },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.equal(doc.getElementById('theme-plan-name').value, 'X', 'a stale seed must not have let the AI plan overwrite the hand-typed name');
+    const validation = doc.getElementById('theme-build-choice-validation');
+    assert.ok(validation && (validation.textContent || '').length > 0, 'expected an inline confirm message');
   } finally {
     h.win.close();
   }

@@ -2835,6 +2835,12 @@ if (typeof module !== "undefined" && module.exports) {
   const themeGenerateBtn    = /** @type {HTMLElement} */ (document.getElementById("theme-generate-btn"));
   const themePlanEditor     = /** @type {HTMLElement} */ (document.getElementById("theme-plan-editor"));
   const themePlanName       = /** @type {HTMLInputElement} */ (document.getElementById("theme-plan-name"));
+  // v0.0.658 bug fix: the last value the Start-screen -> #theme-plan-name
+  // sync listener wrote (see the themePromptInput "input" listener below).
+  // themePlanFieldsHaveContent's excludeSeedName option compares against
+  // this to tell "still just the typed-on-Start seed" apart from a name the
+  // user went on to edit inside the plan editor itself.
+  let themePlanNameSyncedSeed = null;
   const themePlanDirection  = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-direction"));
   const themePlanCharacters = /** @type {HTMLElement} */ (document.getElementById("theme-plan-characters"));
   const themePlanEnvironment = /** @type {HTMLTextAreaElement} */ (document.getElementById("theme-plan-environment"));
@@ -4505,6 +4511,7 @@ if (typeof module !== "undefined" && module.exports) {
     if (themePromptInput && themePlanName) {
       themePromptInput.addEventListener("input", () => {
         themePlanName.value = themePromptInput.value;
+        themePlanNameSyncedSeed = themePromptInput.value;
         if (themeBuildChoiceValidation) themeBuildChoiceValidation.textContent = "";
       });
       themePlanName.addEventListener("input", () => {
@@ -4855,23 +4862,37 @@ if (typeof module !== "undefined" && module.exports) {
    * description, plus the three fixed-object descriptions). Used to decide
    * whether a THEME_PLAN_READY autofill needs to confirm before overwriting
    * — see confirmThemePlanOverwrite.
-   * @param {{includeName?: boolean}} [opts] v0.0.657 bug fix: pass
-   *  `includeName: false` for the overwrite-confirm decision specifically —
-   *  the Start screen's name field is what the user just typed to SEED the
-   *  AI request itself (synced into themePlanName by the input listener
+   * @param {{excludeSeedName?: boolean}} [opts] v0.0.658 bug fix: pass
+   *  `excludeSeedName: true` for the overwrite-confirm decision specifically
+   *  — the Start screen's name field is what the user just typed to SEED
+   *  the AI request itself (synced into themePlanName by the input listener
    *  below), never a sign of hand-edited plan content to protect. Counting
    *  it made every "type a name, click Generate with AI" attempt trip the
    *  inline confirm, which renders into #theme-plan-validation — hidden
    *  while still on the Start screen (see confirmThemePlanOverwrite) — so
    *  the user saw the loading screen silently revert to an empty Start
    *  screen with no confirm and no error, credit already charged.
+   *  v0.0.657 fixed this by dropping the name from the check entirely, but
+   *  that also hid the confirm when the user went on to EDIT the name
+   *  inside the plan editor itself (themePlanName no longer equal to the
+   *  seed) — so `excludeSeedName` only skips the name when its current
+   *  value still matches themePlanNameSyncedSeed, the last value the sync
+   *  listener wrote; anything else (a hand edit) still counts.
    *  updateThemeDraftUi's Save-button-styling use keeps the default (name
-   *  counts there — an unsaved typed name is real content to flag).
+   *  always counts there — an unsaved typed name is real content to flag).
    * @returns {boolean}
    */
   function themePlanFieldsHaveContent(opts) {
-    const includeName = !opts || opts.includeName !== false;
-    if (includeName && themePlanName && (themePlanName.value || "").trim()) return true;
+    const excludeSeedName = !!(opts && opts.excludeSeedName);
+    if (themePlanName) {
+      const nameVal = (themePlanName.value || "").trim();
+      if (nameVal) {
+        const isJustSeed = excludeSeedName
+          && themePlanNameSyncedSeed != null
+          && nameVal === themePlanNameSyncedSeed.trim();
+        if (!isJustSeed) return true;
+      }
+    }
     if (themePlanDirection && (themePlanDirection.value || "").trim()) return true;
     if (themePlanEnvironment && (themePlanEnvironment.value || "").trim()) return true;
     if (themePlanCrateDesc && (themePlanCrateDesc.value || "").trim()) return true;
@@ -4896,8 +4917,9 @@ if (typeof module !== "undefined" && module.exports) {
    * editor's own validation status line) shown before an AI autofill
    * overwrites fields the user already typed into. Calls `applyFn`
    * immediately, with no prompt, when there's nothing to lose.
-   * v0.0.657 bug fix: the name field never counts here (see
-   * themePlanFieldsHaveContent's includeName doc), and the prompt itself is
+   * v0.0.658 bug fix: the name field counts here unless it's still just the
+   * Start-screen seed value (see themePlanFieldsHaveContent's excludeSeedName
+   * doc), and the prompt itself is
    * written into whichever validation element is actually visible for the
    * CURRENT screen — #theme-plan-validation lives inside #theme-plan-editor,
    * which stays hidden on the Start screen (THEME_PLAN_READY always arrives
@@ -4908,7 +4930,7 @@ if (typeof module !== "undefined" && module.exports) {
    */
   function confirmThemePlanOverwrite(applyFn) {
     const validationEl = themeBuilderScreen === "start" ? themeBuildChoiceValidation : themePlanValidation;
-    if (!themePlanFieldsHaveContent({ includeName: false }) || !validationEl) {
+    if (!themePlanFieldsHaveContent({ excludeSeedName: true }) || !validationEl) {
       applyFn();
       return;
     }
@@ -4980,6 +5002,9 @@ if (typeof module !== "undefined" && module.exports) {
     // just cleared — a THEME_PLAN_READY/ERROR that arrives after this point
     // carries the OLD requestId and the message handler drops it.
     themePlanRequestId += 1;
+    // v0.0.658 review fix: a seed from the PREVIOUS draft must never hide a
+    // hand-typed name that happens to match it in a later draft.
+    themePlanNameSyncedSeed = null;
   }
 
   /**
@@ -4997,6 +5022,9 @@ if (typeof module !== "undefined" && module.exports) {
     themeBuilderScreen = "start";
     if (themePromptInput) themePromptInput.value = "";
     if (themeBuildChoiceValidation) themeBuildChoiceValidation.textContent = "";
+    // v0.0.658 review fix: same as clearThemeBuilderDraftState — a stale
+    // seed from a previous draft can't hide a later hand-typed name.
+    themePlanNameSyncedSeed = null;
     renderThemePlan(buildEmptyThemePlan(), { forceClearName: true });
     updateThemeDraftUi();
     renderThemeBuilderScreen();
