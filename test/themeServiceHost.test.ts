@@ -117,6 +117,49 @@ test("Google start opens browser URL, complete via code yields signedIn", async 
   assertNoTokenLeak(posted);
 });
 
+// p89: a signed-in status posted to the webview must always carry a
+// numeric credits balance — the credits chip has nothing to fall back to
+// otherwise. This guards against a future client/backend regression (e.g. a
+// renamed field) that would otherwise hide behind a status log line that
+// always says "ok".
+test("p89: signedIn statuses from real sign-in flows always carry numeric credits", async () => {
+  const { host, posted } = setup();
+  await host.handleRequestMagicLink("me2@example.com");
+  await host.handleVerify("me2@example.com", "123456");
+  const signedIn = posted.filter((p) => p.signedIn === true);
+  assert.ok(signedIn.length > 0);
+  for (const p of signedIn) assert.equal(typeof p.credits, "number");
+});
+
+test("p89: signedIn without numeric credits from client.getStatus is logged and still passed through", async () => {
+  const logs: string[] = [];
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const brokenClient: any = {
+    getStatus: async () => ({ ok: true, value: { signedIn: true, email: "x@example.com", role: "user" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: brokenClient,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    log: (msg: string) => logs.push(msg),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, true);
+  assert.equal(posted[0].credits, undefined);
+  assert.ok(
+    logs.some((l) => l.includes("signedIn=true but credits is not a number")),
+    "expected a diagnostic log line for signedIn-without-credits",
+  );
+});
+
 test("Google pasted-code fallback completes sign-in the same way", async () => {
   const { fake, host, posted, opened } = setup();
   await host.handleGoogleStart();

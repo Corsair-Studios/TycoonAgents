@@ -483,6 +483,52 @@ test('#theme-builder-credits-chip shows an explicit placeholder when signed in w
   h.win.close();
 });
 
+test('p89: signed-in-no-credits placeholder caches signedIn so a later error status keeps the chip visible', async () => {
+  const h = await bootThemePanelHarness();
+
+  // First: signed in but no numeric credits yet (e.g. account refetch still
+  // resolving) — chip shows the "— credits" placeholder.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip should be visible with the placeholder');
+  assert.equal(h.chip().textContent, '— credits');
+
+  // Then: an error/unknown status arrives with signedIn not carried (timeout
+  // style). Without the p89 fix writing the cache above, this status has
+  // nothing to fall back to and the chip would hide outright.
+  h.dispatch(
+    themeServiceStatus(
+      signedInStatus({ signedIn: undefined, credits: undefined, error: { kind: 'timeout', message: 'timed out' } }),
+    ),
+  );
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must stay visible on a later error status, not disappear');
+  h.win.close();
+});
+
+test('p89 fix: a signed-in-no-credits status does not wipe a previously cached numeric balance', async () => {
+  const h = await bootThemePanelHarness();
+
+  // First: a numeric balance arrives and is cached.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 500 })));
+  assert.equal(h.chip().textContent, '500 credits');
+
+  // Then: signed in but credits is unfetchable — without preserving the
+  // cached numeric credits, writeCachedThemeServiceStatus would overwrite
+  // the cache's 500 with undefined here.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
+  assert.equal(h.chip().textContent, '500 credits', 'should still show the last known balance');
+
+  // Finally: an error status with signedIn not carried falls back to the
+  // cache — it must still find the 500, not the wiped-out placeholder.
+  h.dispatch(
+    themeServiceStatus(
+      signedInStatus({ signedIn: undefined, credits: undefined, error: { kind: 'timeout', message: 'timed out' } }),
+    ),
+  );
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must stay visible on the later error status');
+  assert.equal(h.chip().textContent, '500 credits', 'must still show 500, not the placeholder');
+  h.win.close();
+});
+
 // ── No innerHTML for status text (source guard) ─────────────────────────────
 
 test('renderThemeServicePanel and its helpers never use innerHTML for status text', () => {

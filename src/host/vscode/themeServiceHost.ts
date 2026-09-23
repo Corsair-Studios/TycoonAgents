@@ -413,6 +413,16 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     }
     const referralMessage = pendingReferralMessage;
     pendingReferralMessage = undefined;
+    // p89: a signed-in status must always carry a numeric credits balance —
+    // client.getStatus() only ever returns ok:true+signedIn:true alongside a
+    // validated numeric credits field, so this should be unreachable, but a
+    // future backend/client change could silently drop it (e.g. a renamed
+    // field) and leave the webview chip stuck with nothing to show. Log once
+    // per occurrence (names/kinds only, no account values) so a regression
+    // here can't hide behind a status log line that always says "ok".
+    if (status.signedIn && typeof status.credits !== "number") {
+      log("themeServiceHost.buildStatus: signedIn=true but credits is not a number");
+    }
     return {
       signedIn: status.signedIn,
       email: status.email,

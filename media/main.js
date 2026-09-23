@@ -3727,6 +3727,21 @@ if (typeof module !== "undefined" && module.exports) {
         themeBuilderCreditsChip.title = "Could not fetch your credit balance.";
       }
       themeBuilderCreditsChip.removeAttribute("hidden");
+      // p89 fix: this branch previously never wrote the cache, so a signed-in
+      // status that arrived without a numeric balance (e.g. the account
+      // refetch failing) left nothing for a LATER error to fall back to —
+      // the chip could go straight from this placeholder to fully hidden.
+      // Cache signedIn:true even without a credits number now, so a future
+      // update at least knows to stay in this branch instead of falling
+      // through to "hide". When s itself carries no numeric credits, merge
+      // in any numeric credits already cached so this write doesn't wipe a
+      // previously known balance (e.g. a stale signed-in-but-creditless
+      // status overwriting a cached 500 with undefined).
+      writeCachedThemeServiceStatus(
+        typeof s.credits === "number" || !(cached && typeof cached.credits === "number")
+          ? s
+          : { signedIn: s.signedIn, credits: cached.credits }
+      );
       return;
     }
     themeBuilderCreditsChip.textContent = "";
