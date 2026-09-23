@@ -180,6 +180,20 @@ export interface ThemeServiceClientOptions {
    * minutes. Default 10_000ms (10s).
    */
   statusTimeoutMs?: number;
+  /**
+   * Bounds POST /api/plan specifically (planRequest) — longer than
+   * {@link requestTimeoutMs} on purpose. Plan generation now runs the model
+   * in strict json_schema mode (v3.5+), which produces a much larger,
+   * fully-populated response (20+ keys, hundreds of array entries) and can
+   * take several minutes; the UI's own "AI is filling the theme slots"
+   * loading copy already says so. requestTimeoutMs's 200s default assumed a
+   * server-side /api/plan budget of 170-180s that predates strict
+   * json_schema — a bug (v0.0.656) showed the server completing and
+   * charging the credit well after the client had already aborted and
+   * silently reverted the UI, so /api/plan gets its own, much larger
+   * budget instead of racing the server. Default 600_000ms (10 minutes).
+   */
+  planTimeoutMs?: number;
 }
 
 interface StoredSession {
@@ -459,6 +473,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   const clientVersion = opts.clientVersion;
   const requestTimeoutMs = opts.requestTimeoutMs ?? 200_000;
   const statusTimeoutMs = opts.statusTimeoutMs ?? 10_000;
+  const planTimeoutMs = opts.planTimeoutMs ?? 600_000;
   // Shorter than requestTimeoutMs on purpose — this is a small, cacheable
   // config GET the Theme Service should answer fast; it must not stall
   // sign-in as long as the 180s generation-request budget.
@@ -1172,7 +1187,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     },
 
     async planRequest(req) {
-      const res = await serviceRequest("/api/plan", { method: "POST", body: req, auth: true });
+      const res = await serviceRequest("/api/plan", { method: "POST", body: req, auth: true, timeoutMs: planTimeoutMs });
       if (!res.ok) return res;
       const json = res.value;
       if (

@@ -4855,10 +4855,23 @@ if (typeof module !== "undefined" && module.exports) {
    * description, plus the three fixed-object descriptions). Used to decide
    * whether a THEME_PLAN_READY autofill needs to confirm before overwriting
    * — see confirmThemePlanOverwrite.
+   * @param {{includeName?: boolean}} [opts] v0.0.657 bug fix: pass
+   *  `includeName: false` for the overwrite-confirm decision specifically —
+   *  the Start screen's name field is what the user just typed to SEED the
+   *  AI request itself (synced into themePlanName by the input listener
+   *  below), never a sign of hand-edited plan content to protect. Counting
+   *  it made every "type a name, click Generate with AI" attempt trip the
+   *  inline confirm, which renders into #theme-plan-validation — hidden
+   *  while still on the Start screen (see confirmThemePlanOverwrite) — so
+   *  the user saw the loading screen silently revert to an empty Start
+   *  screen with no confirm and no error, credit already charged.
+   *  updateThemeDraftUi's Save-button-styling use keeps the default (name
+   *  counts there — an unsaved typed name is real content to flag).
    * @returns {boolean}
    */
-  function themePlanFieldsHaveContent() {
-    if (themePlanName && (themePlanName.value || "").trim()) return true;
+  function themePlanFieldsHaveContent(opts) {
+    const includeName = !opts || opts.includeName !== false;
+    if (includeName && themePlanName && (themePlanName.value || "").trim()) return true;
     if (themePlanDirection && (themePlanDirection.value || "").trim()) return true;
     if (themePlanEnvironment && (themePlanEnvironment.value || "").trim()) return true;
     if (themePlanCrateDesc && (themePlanCrateDesc.value || "").trim()) return true;
@@ -4883,15 +4896,24 @@ if (typeof module !== "undefined" && module.exports) {
    * editor's own validation status line) shown before an AI autofill
    * overwrites fields the user already typed into. Calls `applyFn`
    * immediately, with no prompt, when there's nothing to lose.
+   * v0.0.657 bug fix: the name field never counts here (see
+   * themePlanFieldsHaveContent's includeName doc), and the prompt itself is
+   * written into whichever validation element is actually visible for the
+   * CURRENT screen — #theme-plan-validation lives inside #theme-plan-editor,
+   * which stays hidden on the Start screen (THEME_PLAN_READY always arrives
+   * while still on Start, before the screen switches to "ai"), so writing
+   * into it unconditionally rendered an invisible confirm prompt: no plan,
+   * no error, no confirm the user could ever see or act on.
    * @param {() => void} applyFn
    */
   function confirmThemePlanOverwrite(applyFn) {
-    if (!themePlanFieldsHaveContent() || !themePlanValidation) {
+    const validationEl = themeBuilderScreen === "start" ? themeBuildChoiceValidation : themePlanValidation;
+    if (!themePlanFieldsHaveContent({ includeName: false }) || !validationEl) {
       applyFn();
       return;
     }
-    themePlanValidation.innerHTML = "";
-    themePlanValidation.appendChild(document.createTextNode(
+    validationEl.innerHTML = "";
+    validationEl.appendChild(document.createTextNode(
       "Generate with AI will overwrite what you've typed. ",
     ));
     const overwriteBtn = document.createElement("button");
@@ -4899,7 +4921,7 @@ if (typeof module !== "undefined" && module.exports) {
     overwriteBtn.className = "skill-btn theme-plan-inline-confirm-btn";
     overwriteBtn.textContent = "Overwrite";
     overwriteBtn.addEventListener("click", () => {
-      themePlanValidation.textContent = "";
+      validationEl.textContent = "";
       applyFn();
     });
     const keepBtn = document.createElement("button");
@@ -4907,10 +4929,13 @@ if (typeof module !== "undefined" && module.exports) {
     keepBtn.className = "skill-btn secondary theme-plan-inline-confirm-btn";
     keepBtn.textContent = "Keep mine";
     keepBtn.addEventListener("click", () => {
-      themePlanValidation.textContent = "";
+      // Review fix (v0.0.657): the AI plan reply already charged a credit —
+      // discarding it via "Keep mine" must say so, not clear the status
+      // line silently as if nothing happened.
+      validationEl.textContent = "Kept your edits; the AI plan was discarded (the credit was used).";
     });
-    themePlanValidation.appendChild(overwriteBtn);
-    themePlanValidation.appendChild(keepBtn);
+    validationEl.appendChild(overwriteBtn);
+    validationEl.appendChild(keepBtn);
   }
 
   /**
@@ -14010,21 +14035,53 @@ if (typeof module !== "undefined" && module.exports) {
       // p76-t2: confirm (inline, not window.confirm) before an AI autofill
       // clobbers anything the user already typed by hand.
       const planPayload = msg.payload?.plan || {};
-      confirmThemePlanOverwrite(() => {
-        renderThemePlan(planPayload);
-        updateThemeDraftUi();
-        // p79-t1: THEME_PLAN_READY lands on the ai screen — the plan review
-        // is always fully shown there, never a skip option.
-        themeBuilderScreen = "ai";
-        renderThemeBuilderScreen();
-      });
-      if (themeBuildStatus) {
-        themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
-        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      // Safety net (v0.0.657 bug fix): a THEME_PLAN_READY reply already
+      // charged the credit and MUST end in a visible outcome — either the
+      // plan review screen, or a visible error. Previously an exception
+      // anywhere in this apply path (render bug, unexpected plan shape)
+      // aborted silently mid-handler: setThemePlanRequestInFlight(false)
+      // above had already un-hidden the Start-screen body, so the user saw
+      // the loading screen vanish back to the empty first-flow screen with
+      // no error text and no way to know the request had actually
+      // succeeded server-side. Wrapping the apply path means any such
+      // failure now surfaces the same way a THEME_PLAN_ERROR would.
+      try {
+        // Review fix (v0.0.657): the "Review and edit..." status text and
+        // the Start-status clear below must run ONLY when the plan was
+        // actually applied — confirmThemePlanOverwrite calls applyFn
+        // synchronously and immediately when there's nothing to confirm,
+        // but when a confirm IS needed it defers applyFn until the user
+        // clicks "Overwrite" and returns without calling it. Running these
+        // unconditionally right after confirmThemePlanOverwrite wiped
+        // themeBuildChoiceValidation (setThemePlanStartStatus("", false))
+        // in the same tick the Overwrite/Keep-mine buttons were written
+        // into it, erasing the confirm prompt the user needed to act on.
+        confirmThemePlanOverwrite(() => {
+          renderThemePlan(planPayload);
+          updateThemeDraftUi();
+          // p79-t1: THEME_PLAN_READY lands on the ai screen — the plan review
+          // is always fully shown there, never a skip option.
+          themeBuilderScreen = "ai";
+          renderThemeBuilderScreen();
+          if (themeBuildStatus) {
+            themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
+            themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+          }
+          // p85: plan succeeded and the screen just switched off Start (above),
+          // so the Start-only status mirror is no longer relevant — clear it.
+          setThemePlanStartStatus("", false);
+        });
+      } catch (applyErr) {
+        console.error("TycoonAgents: failed to apply the AI plan reply.", applyErr);
+        const applyErrorMessage = "Error: the AI plan came back but couldn't be shown ("
+          + (applyErr && applyErr.message ? applyErr.message : String(applyErr))
+          + "). Any credit charged was not refunded — try again.";
+        setThemePlanStartStatus(applyErrorMessage, true);
+        if (themeBuildStatus) {
+          themeBuildStatus.textContent = applyErrorMessage;
+          themeBuildStatus.style.color = "var(--vscode-errorForeground)";
+        }
       }
-      // p85: plan succeeded and the screen just switched off Start (above),
-      // so the Start-only status mirror is no longer relevant — clear it.
-      setThemePlanStartStatus("", false);
     } else if (msg && msg.type === "THEME_PLAN_SAVED") {
       // p76-t2: host contract — flat saveThemePlan request, payload-wrapped
       // reply { theme_id, plan }. Only meaningful in new-theme draft mode;

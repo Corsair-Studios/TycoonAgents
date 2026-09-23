@@ -3047,10 +3047,23 @@
    * description, plus the three fixed-object descriptions). Used to decide
    * whether a THEME_PLAN_READY autofill needs to confirm before overwriting
    * — see confirmThemePlanOverwrite.
+   * @param {{includeName?: boolean}} [opts] v0.0.657 bug fix: pass
+   *  `includeName: false` for the overwrite-confirm decision specifically —
+   *  the Start screen's name field is what the user just typed to SEED the
+   *  AI request itself (synced into themePlanName by the input listener
+   *  below), never a sign of hand-edited plan content to protect. Counting
+   *  it made every "type a name, click Generate with AI" attempt trip the
+   *  inline confirm, which renders into #theme-plan-validation — hidden
+   *  while still on the Start screen (see confirmThemePlanOverwrite) — so
+   *  the user saw the loading screen silently revert to an empty Start
+   *  screen with no confirm and no error, credit already charged.
+   *  updateThemeDraftUi's Save-button-styling use keeps the default (name
+   *  counts there — an unsaved typed name is real content to flag).
    * @returns {boolean}
    */
-  function themePlanFieldsHaveContent() {
-    if (themePlanName && (themePlanName.value || "").trim()) return true;
+  function themePlanFieldsHaveContent(opts) {
+    const includeName = !opts || opts.includeName !== false;
+    if (includeName && themePlanName && (themePlanName.value || "").trim()) return true;
     if (themePlanDirection && (themePlanDirection.value || "").trim()) return true;
     if (themePlanEnvironment && (themePlanEnvironment.value || "").trim()) return true;
     if (themePlanCrateDesc && (themePlanCrateDesc.value || "").trim()) return true;
@@ -3075,15 +3088,24 @@
    * editor's own validation status line) shown before an AI autofill
    * overwrites fields the user already typed into. Calls `applyFn`
    * immediately, with no prompt, when there's nothing to lose.
+   * v0.0.657 bug fix: the name field never counts here (see
+   * themePlanFieldsHaveContent's includeName doc), and the prompt itself is
+   * written into whichever validation element is actually visible for the
+   * CURRENT screen — #theme-plan-validation lives inside #theme-plan-editor,
+   * which stays hidden on the Start screen (THEME_PLAN_READY always arrives
+   * while still on Start, before the screen switches to "ai"), so writing
+   * into it unconditionally rendered an invisible confirm prompt: no plan,
+   * no error, no confirm the user could ever see or act on.
    * @param {() => void} applyFn
    */
   function confirmThemePlanOverwrite(applyFn) {
-    if (!themePlanFieldsHaveContent() || !themePlanValidation) {
+    const validationEl = themeBuilderScreen === "start" ? themeBuildChoiceValidation : themePlanValidation;
+    if (!themePlanFieldsHaveContent({ includeName: false }) || !validationEl) {
       applyFn();
       return;
     }
-    themePlanValidation.innerHTML = "";
-    themePlanValidation.appendChild(document.createTextNode(
+    validationEl.innerHTML = "";
+    validationEl.appendChild(document.createTextNode(
       "Generate with AI will overwrite what you've typed. ",
     ));
     const overwriteBtn = document.createElement("button");
@@ -3091,7 +3113,7 @@
     overwriteBtn.className = "skill-btn theme-plan-inline-confirm-btn";
     overwriteBtn.textContent = "Overwrite";
     overwriteBtn.addEventListener("click", () => {
-      themePlanValidation.textContent = "";
+      validationEl.textContent = "";
       applyFn();
     });
     const keepBtn = document.createElement("button");
@@ -3099,10 +3121,13 @@
     keepBtn.className = "skill-btn secondary theme-plan-inline-confirm-btn";
     keepBtn.textContent = "Keep mine";
     keepBtn.addEventListener("click", () => {
-      themePlanValidation.textContent = "";
+      // Review fix (v0.0.657): the AI plan reply already charged a credit —
+      // discarding it via "Keep mine" must say so, not clear the status
+      // line silently as if nothing happened.
+      validationEl.textContent = "Kept your edits; the AI plan was discarded (the credit was used).";
     });
-    themePlanValidation.appendChild(overwriteBtn);
-    themePlanValidation.appendChild(keepBtn);
+    validationEl.appendChild(overwriteBtn);
+    validationEl.appendChild(keepBtn);
   }
 
   /**

@@ -35,6 +35,58 @@ test('theme plan normalizes every editable slot to the required count', () => {
   assert.equal(plan.achievements.length, 25);
 });
 
+// v0.0.657 bug fix regression: strict json_schema plan responses (backend
+// ac82350) return optional fields as explicit `null` (present key, null
+// value) instead of omitting them. normalizeThemePlan must not throw and
+// must produce a plan with no lingering nulls.
+test('theme plan normalizes cleanly when every optional field is explicitly null (strict json_schema shape)', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Neon Harbor',
+    creative_direction: undefined,
+    characters: ['Dockmaster'],
+    character_descriptions: null as unknown as undefined,
+    environment: null as unknown as undefined,
+    objects: ['Console'],
+    object_motion_hints: null as unknown as undefined,
+    object_descriptions: null as unknown as undefined,
+    crate_description: null as unknown as undefined,
+    poof_description: null as unknown as undefined,
+    projectile_description: null as unknown as undefined,
+    decor: ['Seat'],
+    decor_descriptions: null as unknown as undefined,
+    enemies: ['Data Pirate'],
+    enemy_attack_styles: null as unknown as undefined,
+    enemy_descriptions: null as unknown as undefined,
+    expressions: ['Delighted'],
+    expression_descriptions: null as unknown as undefined,
+    achievements: ['First Light'],
+    achievement_descriptions: null as unknown as undefined,
+  });
+  assert.equal(plan.characters.length, 16);
+  assert.equal(plan.objects.length, 21);
+  assert.equal(plan.decor.length, 9);
+  assert.equal(plan.enemies.length, 4);
+  assert.equal(plan.achievements.length, 25);
+  assert.equal(typeof plan.environment, 'string');
+  assert.equal(plan.crate_description, undefined);
+});
+
+test('normalizeThemePlan does not throw on the exact production counts (objects=22, one over the 21-slot contract)', () => {
+  const objects = Array.from({ length: 22 }, (_, i) => `Object ${i + 1}`);
+  const plan = normalizeThemePlan({
+    display_name: 'Cozy Forest',
+    characters: Array.from({ length: 16 }, (_, i) => `Character ${i + 1}`),
+    objects,
+    object_descriptions: objects.map((_, i) => `Object ${i + 1} desc`),
+    decor: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1}`),
+    enemies: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1}`),
+    expressions: Array.from({ length: 8 }, (_, i) => `Expression ${i + 1}`),
+    achievements: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1}`),
+  });
+  assert.equal(plan.objects.length, 21);
+  assert.equal(plan.object_descriptions?.length, 21);
+});
+
 test('FIXED_EXPRESSION_LABELS carries the 8-icon expression contract, ending in "Dazed / hit"', () => {
   assert.equal(FIXED_EXPRESSION_LABELS.length, 8);
   assert.deepEqual(FIXED_EXPRESSION_LABELS, [

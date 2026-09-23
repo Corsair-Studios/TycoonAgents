@@ -1516,21 +1516,53 @@
       // p76-t2: confirm (inline, not window.confirm) before an AI autofill
       // clobbers anything the user already typed by hand.
       const planPayload = msg.payload?.plan || {};
-      confirmThemePlanOverwrite(() => {
-        renderThemePlan(planPayload);
-        updateThemeDraftUi();
-        // p79-t1: THEME_PLAN_READY lands on the ai screen — the plan review
-        // is always fully shown there, never a skip option.
-        themeBuilderScreen = "ai";
-        renderThemeBuilderScreen();
-      });
-      if (themeBuildStatus) {
-        themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
-        themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+      // Safety net (v0.0.657 bug fix): a THEME_PLAN_READY reply already
+      // charged the credit and MUST end in a visible outcome — either the
+      // plan review screen, or a visible error. Previously an exception
+      // anywhere in this apply path (render bug, unexpected plan shape)
+      // aborted silently mid-handler: setThemePlanRequestInFlight(false)
+      // above had already un-hidden the Start-screen body, so the user saw
+      // the loading screen vanish back to the empty first-flow screen with
+      // no error text and no way to know the request had actually
+      // succeeded server-side. Wrapping the apply path means any such
+      // failure now surfaces the same way a THEME_PLAN_ERROR would.
+      try {
+        // Review fix (v0.0.657): the "Review and edit..." status text and
+        // the Start-status clear below must run ONLY when the plan was
+        // actually applied — confirmThemePlanOverwrite calls applyFn
+        // synchronously and immediately when there's nothing to confirm,
+        // but when a confirm IS needed it defers applyFn until the user
+        // clicks "Overwrite" and returns without calling it. Running these
+        // unconditionally right after confirmThemePlanOverwrite wiped
+        // themeBuildChoiceValidation (setThemePlanStartStatus("", false))
+        // in the same tick the Overwrite/Keep-mine buttons were written
+        // into it, erasing the confirm prompt the user needed to act on.
+        confirmThemePlanOverwrite(() => {
+          renderThemePlan(planPayload);
+          updateThemeDraftUi();
+          // p79-t1: THEME_PLAN_READY lands on the ai screen — the plan review
+          // is always fully shown there, never a skip option.
+          themeBuilderScreen = "ai";
+          renderThemeBuilderScreen();
+          if (themeBuildStatus) {
+            themeBuildStatus.textContent = "Review and edit the AI-filled slots, then generate the images.";
+            themeBuildStatus.style.color = "var(--vscode-descriptionForeground)";
+          }
+          // p85: plan succeeded and the screen just switched off Start (above),
+          // so the Start-only status mirror is no longer relevant — clear it.
+          setThemePlanStartStatus("", false);
+        });
+      } catch (applyErr) {
+        console.error("TycoonAgents: failed to apply the AI plan reply.", applyErr);
+        const applyErrorMessage = "Error: the AI plan came back but couldn't be shown ("
+          + (applyErr && applyErr.message ? applyErr.message : String(applyErr))
+          + "). Any credit charged was not refunded — try again.";
+        setThemePlanStartStatus(applyErrorMessage, true);
+        if (themeBuildStatus) {
+          themeBuildStatus.textContent = applyErrorMessage;
+          themeBuildStatus.style.color = "var(--vscode-errorForeground)";
+        }
       }
-      // p85: plan succeeded and the screen just switched off Start (above),
-      // so the Start-only status mirror is no longer relevant — clear it.
-      setThemePlanStartStatus("", false);
     } else if (msg && msg.type === "THEME_PLAN_SAVED") {
       // p76-t2: host contract — flat saveThemePlan request, payload-wrapped
       // reply { theme_id, plan }. Only meaningful in new-theme draft mode;

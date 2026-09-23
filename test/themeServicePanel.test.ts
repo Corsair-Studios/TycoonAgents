@@ -1221,6 +1221,341 @@ test('Generate with AI loading state clears on THEME_PLAN_ERROR and returns to t
   h.win.close();
 });
 
+// v0.0.657 bug fix trace: a client-side planTimeoutMs abort (src/core/
+// themeServiceClient.ts serviceRequest) surfaces as kind: 'timeout' with no
+// `refunded` field (panel.ts only sends `refunded` when
+// isThemePlanServiceError(err).refunded is defined, and a bare
+// ThemeServiceError from a timeout never sets it) — this is exactly the
+// THEME_PLAN_ERROR shape panel.ts posts for it. The backend may have kept
+// running and charged the credit after the client gave up, so the wording
+// must say the request timed out WITHOUT claiming a refund happened.
+test('Generate with AI: a client-side plan timeout (kind timeout, no refunded field) shows visible "timed out" error text, never a silent revert, and never claims a refund', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(!loading.hasAttribute('hidden'));
+
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({
+    type: 'THEME_PLAN_ERROR',
+    payload: {
+      requestId: plan.payload.requestId,
+      kind: 'timeout',
+      message: 'ThemePlanServiceError: request timed out after 600000ms',
+      // no `refunded` field — a client-side abort has no server refund status.
+    },
+  });
+
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear on a timeout THEME_PLAN_ERROR');
+  const validation = h.doc.getElementById('theme-build-choice-validation');
+  assert.ok(validation && validation.textContent.trim().length > 0, 'a timeout must show visible error text, not silence');
+  assert.match(validation.textContent, /timed out/i, 'error text must say the request timed out');
+  assert.ok(!/refunded/i.test(validation.textContent), 'must not claim a refund that a client-side timeout has no way to confirm');
+  const status = h.doc.getElementById('theme-build-status');
+  assert.match(status.textContent, /timed out/i);
+  assert.ok(!/refunded/i.test(status.textContent));
+  h.win.close();
+});
+
+// v0.0.657 bug fix: the real user flow — type a theme name on the Start
+// screen (which syncs into the hidden #theme-plan-name duplicate — see the
+// themePromptInput/themePlanName sync listener), click Generate with AI,
+// then the plan arrives. themePlanFieldsHaveContent() previously counted
+// that just-typed name as "hand-edited content", tripping
+// confirmThemePlanOverwrite's inline confirm — which rendered into
+// #theme-plan-validation, inside #theme-plan-editor, still hidden while on
+// the Start screen. Net effect: loading clears, no plan, no confirm, no
+// error — exactly the reported silent revert.
+test('Generate with AI: typing a theme name before clicking Generate with AI does not swallow the READY plan (typed name alone must not trigger the overwrite confirm)', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  // Open the builder tab first (real flow: the user is on the Start screen,
+  // #theme-plan-editor already hidden by openThemeBuilderPlanEditorTab's
+  // renderThemeBuilderScreen, before they ever click Generate with AI) — a
+  // bare THEME_BUILDER_OPENED dispatch alone never calls
+  // renderThemeBuilderScreen, so skipping this step would leave
+  // #theme-plan-editor's hidden state undetermined and mask the bug.
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const nameInput: any = h.doc.getElementById('theme-prompt-input');
+  nameInput.value = 'Roman Empire';
+  // Real typing fires 'input', which is what syncs #theme-prompt-input into
+  // the hidden #theme-plan-name duplicate — setPrompt() alone (used by the
+  // other tests) sets .value without an event and would silently mask this
+  // bug, since themePlanName would stay empty.
+  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: { display_name: 'Roman Empire' } } });
+
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear');
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  const planEditorVisible = planEditor && !planEditor.hasAttribute('hidden');
+  const choiceValidation = h.doc.getElementById('theme-build-choice-validation');
+  const visibleConfirmOnScreen = choiceValidation && choiceValidation.textContent.trim().length > 0
+    && !h.doc.getElementById('theme-build-choice-row').hasAttribute('hidden');
+  assert.ok(
+    planEditorVisible || visibleConfirmOnScreen,
+    'the plan review must render, or a visible confirm prompt must be on the current (Start) screen — neither may be silently dropped',
+  );
+  // A bare typed name (no other hand-edited content) must not require
+  // confirmation at all — the plan review should render directly.
+  assert.ok(planEditorVisible, 'a typed name alone must not trigger the overwrite confirm — the plan should render directly');
+  h.win.close();
+});
+
+// Review fix (v0.0.657): a genuinely hand-edited plan slot (not just the
+// name) must trip the inline confirm, and the confirm's Overwrite/Keep-mine
+// buttons must survive on screen — a prior bug had the handler clear
+// #theme-build-choice-validation in the same tick right after writing them.
+test('Generate with AI: a hand-edited plan slot triggers a visible Overwrite/Keep-mine confirm on the Start screen; Overwrite applies the plan, Keep mine shows the discard note', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  // Hand-edit a plan-editor slot (the empty draft template is already
+  // rendered on tab entry) so themePlanFieldsHaveContent has real content
+  // to protect, beyond the name field.
+  const direction: any = h.doc.getElementById('theme-plan-direction');
+  assert.ok(direction, 'expected the empty draft plan template to be rendered on tab entry');
+  direction.value = 'My own hand-typed art direction';
+  direction.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+  const nameInput: any = h.doc.getElementById('theme-prompt-input');
+  nameInput.value = 'Roman Empire';
+  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: { display_name: 'Roman Empire' } } });
+
+  const choiceValidation = h.doc.getElementById('theme-build-choice-validation');
+  const choiceRow = h.doc.getElementById('theme-build-choice-row');
+  assert.ok(!choiceRow.hasAttribute('hidden'), 'the confirm must be on the visible Start screen');
+  const overwriteBtn = (Array.from(choiceValidation.querySelectorAll('button')) as any[]).find((b: any) => (b.textContent || '').trim() === 'Overwrite');
+  const keepBtn = (Array.from(choiceValidation.querySelectorAll('button')) as any[]).find((b: any) => (b.textContent || '').trim() === 'Keep mine');
+  assert.ok(overwriteBtn, 'expected a visible Overwrite button');
+  assert.ok(keepBtn, 'expected a visible Keep mine button');
+
+  overwriteBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  assert.ok(!planEditor.hasAttribute('hidden'), 'Overwrite must render the plan review');
+  h.win.close();
+});
+
+test('Generate with AI: "Keep mine" on the overwrite confirm shows a visible discard note naming the used credit', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  h.doc.getElementById('tab-theme-builder').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  const direction: any = h.doc.getElementById('theme-plan-direction');
+  direction.value = 'My own hand-typed art direction';
+  direction.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+
+  const nameInput: any = h.doc.getElementById('theme-prompt-input');
+  nameInput.value = 'Roman Empire';
+  nameInput.dispatchEvent(new h.win.Event('input', { bubbles: true }));
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: { display_name: 'Roman Empire' } } });
+
+  const choiceValidation = h.doc.getElementById('theme-build-choice-validation');
+  const keepBtn = (Array.from(choiceValidation.querySelectorAll('button')) as any[]).find((b: any) => (b.textContent || '').trim() === 'Keep mine');
+  keepBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.match(choiceValidation.textContent, /Kept your edits; the AI plan was discarded \(the credit was used\)\./);
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  assert.ok(planEditor.hasAttribute('hidden'), 'Keep mine must not apply the AI plan');
+  h.win.close();
+});
+
+// v0.0.657 bug fix: exercise the try/catch safety net itself — force the
+// apply path (confirmThemePlanOverwrite -> renderThemePlan) to throw and
+// confirm the handler surfaces it instead of silently reverting.
+test('Generate with AI: an apply-path exception on THEME_PLAN_READY shows a visible error, clears loading, re-enables Generate with AI, and promises no refund', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(!loading.hasAttribute('hidden'));
+
+  // A plan whose display_name getter throws mid-render — renderThemePlan
+  // reads plan.display_name first, so this reliably fires inside the try.
+  const throwingPlan = new Proxy(
+    {},
+    {
+      get(target: any, prop: string) {
+        if (prop === 'display_name') throw new Error('boom-from-test');
+        return target[prop];
+      },
+    },
+  );
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: throwingPlan } });
+
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear even when the apply path throws');
+  const genBtn = h.doc.getElementById('theme-generate-with-ai-btn');
+  assert.ok(!genBtn.hasAttribute('disabled'), 'Generate with AI must be re-enabled');
+  assert.ok(!h.doc.getElementById('theme-build-choice-row').hasAttribute('hidden'), 'must return to the Start screen, not stay stuck');
+  const validation = h.doc.getElementById('theme-build-choice-validation');
+  assert.ok(validation && validation.textContent.trim().length > 0, 'must show visible error text, not silence');
+  assert.match(validation.textContent, /couldn't be shown/i);
+  assert.match(validation.textContent, /boom-from-test/);
+  assert.ok(!/was refunded|has been refunded/i.test(validation.textContent), 'must not promise a refund it cannot confirm');
+  const status = h.doc.getElementById('theme-build-status');
+  assert.match(status.textContent, /couldn't be shown/i);
+  h.win.close();
+});
+
+// v0.0.657 bug fix probe: the actual production plan's exact slot counts —
+// objects=22 (one over THEME_OBJECT_COUNT's 21), achievements=25,
+// expressions=8, characters=16, decor=9, enemies=4 — with every optional
+// *_descriptions/attack-style/hint/environment/crate/poof/projectile field
+// populated (non-null) to matching lengths. Run through the webview
+// THEME_PLAN_READY path to check for a throw on a name array longer than
+// its fixed slot count, or a descriptions array the same (mismatched)
+// length as its name array.
+test('Generate with AI: exact production slot counts (objects=22, one over the 21-slot contract) render without throwing', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+
+  const objects = Array.from({ length: 22 }, (_, i) => `Object ${i + 1}`);
+  const exactCountsPlan = {
+    display_name: 'Cozy Forest',
+    creative_direction: 'Warm, hand-painted forest palette.',
+    environment: 'A dense, glowing forest clearing.',
+    characters: Array.from({ length: 16 }, (_, i) => `Character ${i + 1}`),
+    character_descriptions: Array.from({ length: 16 }, (_, i) => `Character ${i + 1} desc`),
+    objects,
+    object_motion_hints: objects.map((_, i) => `hint ${i + 1}`),
+    object_descriptions: objects.map((_, i) => `Object ${i + 1} desc`),
+    crate_description: 'A wooden crate.',
+    poof_description: 'A leafy poof.',
+    projectile_description: 'A glowing seed.',
+    decor: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1}`),
+    decor_descriptions: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1} desc`),
+    enemies: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1}`),
+    enemy_attack_styles: ['melee', 'ranged', 'melee', 'ranged'],
+    enemy_descriptions: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1} desc`),
+    expressions: ['Love', 'Idea', 'Anger', 'Team', 'Thumbs up', 'Music', 'Sleep', 'Dazed'],
+    expression_descriptions: Array.from({ length: 8 }, (_, i) => `Expression ${i + 1} desc`),
+    achievements: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1}`),
+    achievement_descriptions: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1} desc`),
+  };
+
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: exactCountsPlan } });
+
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear');
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  assert.ok(planEditor && !planEditor.hasAttribute('hidden'), 'the AI plan review must render — nothing threw on these exact production counts');
+  h.win.close();
+});
+
+// v0.0.657 bug fix trace: the host pushes a THEME_SERVICE_STATUS with the
+// decremented credit balance once /api/plan debits (before the plan itself
+// finishes generating) — reproduce that exact mid-flight sequence and
+// confirm it does not reset the in-flight request or drop the eventual
+// THEME_PLAN_READY.
+test('Generate with AI: a THEME_SERVICE_STATUS credit-debit push arriving mid-request does not reset the builder or drop the eventual THEME_PLAN_READY', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ credits: 48 })));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(!loading.hasAttribute('hidden'), 'loading state should be visible while PLAN_THEME is in flight');
+
+  // The credit-debit status push — same requestId's request is still in flight.
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 47 })));
+
+  assert.ok(!loading.hasAttribute('hidden'), 'a mid-flight status push must not clear the loading state or reset the builder to Start');
+  assert.equal(h.lastPosted('PLAN_THEME'), plan, 'a mid-flight status push must not fire a second PLAN_THEME request');
+
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: { display_name: 'Cozy Forest' } } });
+
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear once the original request\'s READY arrives');
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  assert.ok(planEditor && !planEditor.hasAttribute('hidden'), 'the AI plan review must render — the READY reply must not have been dropped as stale');
+  h.win.close();
+});
+
+// v0.0.657 bug fix regression: strict json_schema plan responses (backend
+// ac82350) return every optional field as an explicit `null` instead of
+// omitting it — *_descriptions arrays, enemy_attack_styles,
+// object_motion_hints, environment, crate/poof/projectile_description. The
+// plan review (confirmThemePlanOverwrite -> renderThemePlan) must still
+// render instead of throwing and silently reverting to the Start screen.
+test('Generate with AI: a plan payload with populated name arrays but every optional field null renders the plan review, not a silent revert', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const plan = h.lastPosted('PLAN_THEME');
+
+  const nullOptionalPlan = {
+    display_name: 'Cozy Forest',
+    creative_direction: 'Warm, hand-painted forest palette.',
+    characters: Array.from({ length: 16 }, (_, i) => `Character ${i + 1}`),
+    character_descriptions: null,
+    environment: null,
+    objects: Array.from({ length: 21 }, (_, i) => `Object ${i + 1}`),
+    object_motion_hints: null,
+    object_descriptions: null,
+    crate_description: null,
+    poof_description: null,
+    projectile_description: null,
+    decor: Array.from({ length: 9 }, (_, i) => `Decor ${i + 1}`),
+    decor_descriptions: null,
+    enemies: Array.from({ length: 4 }, (_, i) => `Enemy ${i + 1}`),
+    enemy_attack_styles: null,
+    enemy_descriptions: null,
+    expressions: ['Love', 'Idea', 'Anger', 'Team', 'Thumbs up', 'Music', 'Sleep', 'Dazed'],
+    expression_descriptions: null,
+    achievements: Array.from({ length: 25 }, (_, i) => `Achievement ${i + 1}`),
+    achievement_descriptions: null,
+  };
+
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: nullOptionalPlan } });
+
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear');
+  const planEditor = h.doc.getElementById('theme-plan-editor');
+  assert.ok(planEditor && !planEditor.hasAttribute('hidden'), 'the AI plan review must render, not silently revert to Start');
+  const validation = h.doc.getElementById('theme-build-choice-validation');
+  assert.ok(!validation || !/couldn't be shown/.test(validation.textContent || ''), 'must not have hit the apply-path safety-net error');
+  h.win.close();
+});
+
 test('#theme-generate-btn carries class tsp-hidden-retired', async () => {
   const h = await bootThemePanelHarness();
   assert.ok(h.doc.getElementById('theme-generate-btn').classList.contains('tsp-hidden-retired'));

@@ -641,6 +641,50 @@ test("planRequest requires auth (401 -> not_signed_in when no session)", async (
   if (!res.ok) assert.equal(res.error.kind, "not_signed_in");
 });
 
+// v0.0.657 bug fix regression: strict json_schema plan generation can now
+// legitimately run past requestTimeoutMs's 200s default (the UI's own "can
+// take several minutes" loading copy already said so) — planRequest must be
+// bound by its own, much larger planTimeoutMs instead of racing the server
+// and aborting a request that goes on to succeed and charge a credit.
+test("planRequest: aborts at planTimeoutMs (not the shorter default requestTimeoutMs) under fake timers", async (t) => {
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = fake.helpers.createAccount("plantimeout@example.com");
+  fake.helpers.grant(account.id, 5);
+  const tokenStore = createMemoryTokenStore();
+  const hangingFetch = hangingFetchFor("/api/plan", fake);
+  const client = createThemeServiceClient({
+    fetch: hangingFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+    requestTimeoutMs: 200_000,
+    planTimeoutMs: 600_000,
+  });
+  await client.requestMagicLink("plantimeout@example.com");
+  await client.verifyMagicLink("plantimeout@example.com", "123456");
+
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let res: Awaited<ReturnType<typeof client.planRequest>>;
+  try {
+    const p = client.planRequest({ idempotencyKey: "plan-timeout-k1", kind: "plan", input: { prompt: "x" } });
+    // loadSession()/proactive-refresh checks await before the
+    // AbortController's setTimeout is registered — flush a few microtask
+    // hops first, mirroring the getStatus statusTimeoutMs test above.
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    // A short 200_000ms (the old requestTimeoutMs default) must NOT abort
+    // the request — planTimeoutMs (600_000ms) governs /api/plan instead.
+    await t.mock.timers.tick(200_000);
+    // The remaining budget up to planTimeoutMs is what actually fires the abort.
+    await t.mock.timers.tick(400_000);
+    res = await p;
+  } finally {
+    t.mock.timers.reset();
+  }
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.error.kind, "timeout");
+});
+
 test("generateAttempt: 422 content_blocked maps to kind content_blocked, no debit", async () => {
   const { fake, client } = setupClient();
   const account = fake.helpers.createAccount("blocked@example.com");
