@@ -1168,6 +1168,59 @@ test('Generate with AI signed in posts PLAN_THEME directly, no modal', async () 
   h.win.close();
 });
 
+// ── Generate with AI loading state (p90) ────────────────────────────────
+
+test('Generate with AI shows the dedicated loading state and hides the choice row/name field/Back, clearing on THEME_PLAN_READY', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(loading, 'expected a #theme-plan-loading element');
+  assert.ok(!loading.hasAttribute('hidden'), 'loading state should be visible while PLAN_THEME is in flight');
+  assert.ok(loading.textContent.includes('AI is filling the theme slots'));
+  assert.ok(loading.textContent.includes('Please stand by. This can take several minutes to finish.'));
+  assert.ok(h.doc.getElementById('theme-build-choice-row').hasAttribute('hidden'), 'choice buttons must be hidden while loading');
+  assert.ok(h.doc.getElementById('theme-prompt-container').hasAttribute('hidden'), 'name field must be hidden while loading');
+  assert.ok(h.doc.getElementById('tab-theme-picker').hasAttribute('hidden'), 'Back to themes must be hidden while loading');
+
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({ type: 'THEME_PLAN_READY', payload: { requestId: plan.payload.requestId, plan: { name: 'a cozy forest theme' } } });
+
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear on THEME_PLAN_READY');
+  h.win.close();
+});
+
+test('Generate with AI loading state clears on THEME_PLAN_ERROR and returns to the Start screen with the error shown', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  setPrompt(h, 'a cozy forest theme');
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+
+  h.doc.getElementById('theme-generate-with-ai-btn').dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const loading = h.doc.getElementById('theme-plan-loading');
+  assert.ok(!loading.hasAttribute('hidden'));
+
+  const plan = h.lastPosted('PLAN_THEME');
+  h.dispatch({
+    type: 'THEME_PLAN_ERROR',
+    payload: { requestId: plan.payload.requestId, kind: 'provider_failed', message: 'provider_failed', refunded: true },
+  });
+
+  assert.ok(loading.hasAttribute('hidden'), 'loading state must clear on THEME_PLAN_ERROR');
+  assert.ok(!h.doc.getElementById('theme-build-choice-row').hasAttribute('hidden'), 'choice buttons must return on error');
+  assert.ok(!h.doc.getElementById('theme-prompt-container').hasAttribute('hidden'), 'name field must return on error');
+  assert.ok(!h.doc.getElementById('tab-theme-picker').hasAttribute('hidden'), 'Back to themes must return on error');
+  const validation = h.doc.getElementById('theme-build-choice-validation');
+  assert.ok(validation.textContent.includes('Any credit charged is refunded.'));
+  h.win.close();
+});
+
 test('#theme-generate-btn carries class tsp-hidden-retired', async () => {
   const h = await bootThemePanelHarness();
   assert.ok(h.doc.getElementById('theme-generate-btn').classList.contains('tsp-hidden-retired'));

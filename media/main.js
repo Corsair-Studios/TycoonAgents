@@ -4347,6 +4347,25 @@ if (typeof module !== "undefined" && module.exports) {
       if (inFlight) themeGenerateWithAiBtn.setAttribute("disabled", "");
       else themeGenerateWithAiBtn.removeAttribute("disabled");
     }
+    // p90: while a PLAN_THEME request is in flight from the Start screen,
+    // replace the whole modal body (name field, Back to themes, both choice
+    // buttons) with a dedicated loading state so nothing can re-trigger the
+    // request or navigate away mid-flight. Only applies on the Start
+    // screen — a request kicked off elsewhere (legacy themeGenerateBtn path)
+    // leaves the ai screen's own elements alone. Close/X stays reachable:
+    // closing the modal only hides it (see leaveThemeBuilderPlanEditorIfOpen)
+    // and does not abort the host's in-flight request — THEME_PLAN_READY/
+    // ERROR still lands and updates state whenever the modal is reopened.
+    const showLoading = inFlight && themeBuilderScreen === "start";
+    themeBuilderSetHidden(themePlanLoadingEl, !showLoading);
+    if (tabThemePicker) themeBuilderSetHidden(tabThemePicker, showLoading);
+    if (showLoading) {
+      themeBuilderSetHidden(themePromptContainer, true);
+      themeBuilderSetHidden(themeBuildChoiceRow, true);
+    } else if (themeBuilderScreen === "start") {
+      themeBuilderSetHidden(themePromptContainer, false);
+      themeBuilderSetHidden(themeBuildChoiceRow, false);
+    }
   }
 
   /**
@@ -4420,6 +4439,10 @@ if (typeof module !== "undefined" && module.exports) {
   let themeGenerateWithAiBtn = null;
   let themeBuildManuallyBtn = null;
   let themeBuilderStatusChip = null;
+  /** p90: dedicated loading state shown in place of the whole Start-screen
+   *  body while a "Generate with AI" PLAN_THEME request is in flight — see
+   *  setThemePlanRequestInFlight. */
+  let themePlanLoadingEl = null;
   /** p78-t1: visible validation message for the choice row, outside the
    *  hidden #theme-plan-editor — see buildChoiceRow below. */
   let themeBuildChoiceValidation = null;
@@ -4497,6 +4520,28 @@ if (typeof module !== "undefined" && module.exports) {
 
     themePromptContainer.insertAdjacentElement("beforebegin", themeBuilderStatusChip);
     themePromptContainer.insertAdjacentElement("afterend", buildChoiceRow);
+
+    // p90: loading state for "Generate with AI" — hidden by default, shown
+    // (and the Start-screen body hidden) by setThemePlanRequestInFlight.
+    themePlanLoadingEl = document.createElement("div");
+    themePlanLoadingEl.id = "theme-plan-loading";
+    themePlanLoadingEl.className = "tsp-plan-loading";
+    themePlanLoadingEl.setAttribute("role", "status");
+    themePlanLoadingEl.setAttribute("aria-live", "polite");
+    themePlanLoadingEl.setAttribute("hidden", "");
+    const planLoadingSpinner = document.createElement("span");
+    planLoadingSpinner.className = "tsp-plan-loading-spinner";
+    planLoadingSpinner.setAttribute("aria-hidden", "true");
+    const planLoadingHeading = document.createElement("p");
+    planLoadingHeading.className = "tsp-plan-loading-heading";
+    planLoadingHeading.textContent = "AI is filling the theme slots";
+    const planLoadingBody = document.createElement("p");
+    planLoadingBody.className = "tsp-plan-loading-body";
+    planLoadingBody.textContent = "Please stand by. This can take several minutes to finish.";
+    themePlanLoadingEl.appendChild(planLoadingSpinner);
+    themePlanLoadingEl.appendChild(planLoadingHeading);
+    themePlanLoadingEl.appendChild(planLoadingBody);
+    buildChoiceRow.insertAdjacentElement("afterend", themePlanLoadingEl);
 
     // p79-t1: header bar shown on the ai/manual screens only — Save theme
     // plus the authoritative name as a read-only title (see
