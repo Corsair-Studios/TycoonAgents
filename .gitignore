@@ -13,6 +13,13 @@ build/
 # Only the built .mjs is ignored — vendored files like uefn_bridge.py are tracked.
 media/uefn-bridge/uefn-server.mjs
 
+# Generated Codex hooks config with per-machine absolute paths (TycoonAgents writes it per machine)
+.codex/
+# Test-runner output cache
+.vitest/
+# Stray PowerShell ModuleAnalysisCache
+Microsoft/
+
 # Bundled design-doc CLI (built artifact; source is design-doc/design-doc-cli.ts).
 # Only the built .mjs is ignored — SKILL.md in media/skills/design-doc/ is tracked.
 media/skills/design-doc/design-doc-cli.mjs
