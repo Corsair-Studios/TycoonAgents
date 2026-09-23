@@ -91,6 +91,7 @@ import {
   exportThemeArchive,
   getThemeImageReview,
   importThemeArchive,
+  isThemeGenerationServiceError,
   listThemes,
   acceptedFrameKeysForHealthCheck,
   loadCurrentThemePlan,
@@ -2620,6 +2621,16 @@ export class TycoonPanel {
               });
             }
           } catch (err) {
+            // Rejections from the Theme Service (kind/status/backend code)
+            // previously left no host-side trace — this is a bare 400 the
+            // backend rejects before its own attempt log line, so this was
+            // the only place the reason could ever surface. No user content
+            // (prompt/theme text) is included, only the error's own fields.
+            if (isThemeGenerationServiceError(err)) {
+              log(`theme image generate/retry rejected: kind=${err.kind} status=${err.status ?? "unknown"} code=${err.code ?? "none"}`);
+            } else {
+              log(`theme image generate/retry failed: ${err instanceof Error ? err.constructor.name : typeof err}`);
+            }
             await this._postThemeImageReview(themeId);
             void this._panel.webview.postMessage({
               type: MSG.THEME_IMAGE_RETRY_STATE,

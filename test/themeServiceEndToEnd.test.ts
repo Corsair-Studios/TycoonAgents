@@ -651,6 +651,86 @@ test('generateBoardImage body contract: retryThemeImage with reference images ne
   }
 });
 
+// Environment board bug: themePlanCreativeDirection() (src/extension/themePlan.ts)
+// joins "Theme: <name>", "Creative direction: <creative_direction>" and
+// "Environment direction: <environment>" and every board EXCEPT
+// character_atlas (which overrides with a shorter string, see
+// structuredRequestForItem in src/extension/themeService.ts) sends that
+// combined string as-is as theme.creativeDirection. The backend
+// (D:\ACode\corsair-theme-service src/validate.mjs) caps theme.creativeDirection
+// at 1000 chars (contract/theme-service-api.md v3.5) and rejects the whole
+// request with a bare 400 bad_request — no code, nothing logged server-side
+// — when a detailed plan's joined direction exceeds it. This reproduces that
+// exact environment-board request (long creative_direction + environment
+// text) through the real generateTheme path and validates the captured
+// /api/generate body against the real backend validator, imported by
+// relative path from the sibling corsair-theme-service checkout — skipped
+// (not failed) when that sibling checkout isn't present.
+test('environment board body contract: a long plan creative_direction + environment stays under the backend theme.creativeDirection cap and passes the real backend validator', async () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  let validateGenerateBody: ((body: unknown) => { ok: boolean; code?: string; reason?: string }) | undefined;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    ({ validateGenerateBody } = require('../../../corsair-theme-service/src/validate.mjs'));
+  } catch {
+    // Sibling repo not present in this checkout — covered instead by the
+    // unconditional length assertion below.
+  }
+
+  const nowMs = 1_700_000_150_000;
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+  const atlas = new Jimp(400, 200, 0xff00ffff);
+  const pngDataUri = `data:image/png;base64,${(await atlas.getBufferAsync(Jimp.MIME_PNG)).toString('base64')}`;
+
+  const capturedBodies: Array<Record<string, unknown>> = [];
+  const capturingFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('/api/generate') && init?.body) {
+      capturedBodies.push(JSON.parse(String(init.body)));
+    }
+    return withRealImages(fake.fetch, pngDataUri)(input, init);
+  }) as typeof fetch;
+
+  await withTempStore(async (globalStorageUri) => {
+    const tokenStore = memoryTokenStore();
+    const client = createThemeServiceClient({ fetch: capturingFetch, tokenStore, endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: () => nowMs });
+    const email = 'environment-body-contract@example.com';
+    await client.requestMagicLink(email);
+    await client.verifyMagicLink(email, '123456');
+    const accountId = fake.state.accountsByEmail.get(email)!;
+    fake.helpers.grant(accountId, 1000);
+
+    setThemeImageGenerator(createServiceImageGenerator(client));
+    setThemePlanRequester(createServicePlanRequester(client));
+    try {
+      const plan = await planTheme('a small tycoon theme');
+      plan.theme_id = 'env_body_contract_theme';
+      // A detailed, AI-plausible plan: long enough that the three-line join
+      // (Theme + Creative direction + Environment direction) exceeds the
+      // backend's 1000-char theme.creativeDirection cap pre-fix.
+      plan.creative_direction = 'A gritty cyberpunk industrial aesthetic, volumetric fog, neon signage. '.repeat(8);
+      plan.environment = 'A sprawling isometric factory floor with catwalks, conveyor belts, and glowing reactor cores. '.repeat(8);
+      await generateTheme(globalStorageUri as unknown as import('vscode').Uri, plan, () => {});
+    } finally {
+      setThemeImageGenerator(undefined);
+      setThemePlanRequester(undefined);
+    }
+  });
+
+  const environmentBody = capturedBodies.find((body) => body.boardType === 'environment');
+  assert.ok(environmentBody, 'generateTheme must make one /api/generate call for the environment board');
+  const creativeDirection = (environmentBody!.theme as Record<string, unknown>).creativeDirection as string;
+  assert.ok(
+    creativeDirection.length <= 1000,
+    `expected theme.creativeDirection <= 1000 chars, got ${creativeDirection.length}`,
+  );
+
+  if (validateGenerateBody) {
+    const result = validateGenerateBody(environmentBody);
+    assert.equal(result.ok, true, `real backend validator rejected the environment body: ${JSON.stringify(result)}`);
+  }
+});
+
 // p85-t5: planTheme's idempotencyKey (src/extension/translator.ts,
 // nextPlanIdempotencyKey) used to be `plan:${kind}:${suffix}`, which
 // contains colons the deployed backend's IDEMPOTENCY_KEY_RE

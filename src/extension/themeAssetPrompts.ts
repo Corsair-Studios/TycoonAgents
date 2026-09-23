@@ -32,11 +32,140 @@ export function boardBackgroundPaddingAdjective(background: BoardBackgroundMode)
   return coreBoardBackgroundPaddingAdjective(background);
 }
 
+/**
+ * Wire cap for `theme.creativeDirection` (contract/theme-service-api.md v3.5,
+ * "POST /api/generate" and "Backend input handling": max 1000 chars).
+ * `themePlanCreativeDirection()` (themePlan.ts) joins three labeled lines —
+ * "Theme: <name>", "Creative direction: <creative_direction>", "Environment
+ * direction: <environment>" — and every board except character_atlas (which
+ * overrides with a shorter string) sends that joined string as-is. A
+ * detailed plan easily exceeds 1000 chars once joined; the backend then
+ * rejects the whole request with a bare 400 bad_request before logging
+ * anything, surfaced to the user as "The Theme Service rejected this
+ * request." Truncating here (the single place every StructuredGenerateRequest
+ * is built) keeps the locally assembled preview prompt (assembleThemePrompt,
+ * used for the assembledPromptSha256 drift check) in sync with what actually
+ * goes over the wire, instead of truncating only at the request-sending
+ * boundary.
+ *
+ * A flat character-count slice previously cut from the END of the joined
+ * string, which for the environment board silently amputated the
+ * "Environment direction" line first — exactly the content that board's
+ * image most needs. capCreativeDirection is segment-aware instead: when the
+ * input matches themePlanCreativeDirection()'s three-labeled-line shape, each
+ * line is trimmed independently, in a priority order that depends on which
+ * board is asking (the environment board protects its own "Environment
+ * direction" line longest; every other board protects "Theme" longest and
+ * sacrifices "Environment direction" first, since it's least relevant to a
+ * non-environment image). Anything that doesn't match that shape (e.g.
+ * character_atlas's single-line override, or a 'replace'-mode retry's
+ * freeform user notes) falls back to a plain trim, unchanged from before.
+ */
+const CREATIVE_DIRECTION_MAX_CHARS = 1000;
+
+const THEME_LABEL = 'Theme: ';
+const CREATIVE_LABEL = 'Creative direction: ';
+const ENVIRONMENT_LABEL = 'Environment direction: ';
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
+ * Trims `text` to at most `maxChars` (JS `.length`, i.e. UTF-16 code units —
+ * matching validate.mjs's `.length` check), never splitting a surrogate
+ * pair, and preferring a trailing word boundary when one is reasonably close
+ * to the cut point (so a mid-word cut is a last resort, not the default).
+ */
+function trimToChars(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text;
+  let cut = maxChars;
+  // A high surrogate at the very end of the slice with no matching low
+  // surrogate would produce a lone/broken surrogate — back off one unit.
+  if (isHighSurrogate(text.charCodeAt(cut - 1)) && isLowSurrogate(text.charCodeAt(cut))) {
+    cut -= 1;
+  }
+  let sliced = text.slice(0, cut);
+  const lastSpace = sliced.lastIndexOf(' ');
+  // Only snap back to the word boundary when doing so doesn't throw away a
+  // large chunk of the remaining budget (e.g. one very long unbroken word).
+  if (lastSpace >= 0 && lastSpace >= cut * 0.6) {
+    sliced = sliced.slice(0, lastSpace);
+  }
+  return sliced;
+}
+
+interface CreativeDirectionSegments {
+  theme: string;
+  creative: string;
+  environment: string;
+}
+
+/**
+ * Recognizes themePlanCreativeDirection()'s exact three-line shape
+ * ("Theme: …\nCreative direction: …\nEnvironment direction: …") so it can be
+ * trimmed segment-by-segment. Returns undefined for anything else (a
+ * single-line override, freeform retry notes, etc.), which callers then
+ * trim as one flat block, same as before this fix.
+ */
+function parseCreativeDirectionSegments(input: string): CreativeDirectionSegments | undefined {
+  const lines = input.split('\n');
+  if (lines.length !== 3) return undefined;
+  const [theme, creative, environment] = lines;
+  if (!theme.startsWith(THEME_LABEL) || !creative.startsWith(CREATIVE_LABEL) || !environment.startsWith(ENVIRONMENT_LABEL)) {
+    return undefined;
+  }
+  return { theme, creative, environment };
+}
+
+type SegmentKey = keyof CreativeDirectionSegments;
+
+/** Trim-first-to-trim-last order, per boardType (see capCreativeDirection's doc comment). */
+function segmentTrimOrder(boardType: string): SegmentKey[] {
+  return boardType === 'environment'
+    ? ['creative', 'theme', 'environment'] // keep Environment direction intact as long as possible
+    : ['environment', 'creative', 'theme']; // Environment direction is least relevant off-board; keep Theme longest
+}
+
+function capSegments(segments: CreativeDirectionSegments, boardType: string): string {
+  const JOIN_OVERHEAD = 2; // two '\n' separators between the three lines
+  const parts: CreativeDirectionSegments = { ...segments };
+  const currentLength = () => parts.theme.length + parts.creative.length + parts.environment.length + JOIN_OVERHEAD;
+
+  for (const key of segmentTrimOrder(boardType)) {
+    const over = currentLength() - CREATIVE_DIRECTION_MAX_CHARS;
+    if (over <= 0) break;
+    const target = Math.max(0, parts[key].length - over);
+    parts[key] = trimToChars(parts[key], target);
+  }
+
+  let joined = [parts.theme, parts.creative, parts.environment].join('\n');
+  // Guard only: label overhead / rounding could theoretically leave it a
+  // hair over budget even after every segment above has been visited.
+  if (joined.length > CREATIVE_DIRECTION_MAX_CHARS) {
+    joined = trimToChars(joined, CREATIVE_DIRECTION_MAX_CHARS);
+  }
+  return joined;
+}
+
+function capCreativeDirection(creativeDirection: string, boardType: string): string {
+  if (creativeDirection.length <= CREATIVE_DIRECTION_MAX_CHARS) return creativeDirection;
+  const segments = parseCreativeDirectionSegments(creativeDirection);
+  return segments
+    ? capSegments(segments, boardType)
+    : trimToChars(creativeDirection, CREATIVE_DIRECTION_MAX_CHARS);
+}
+
 /** Base fields shared by every StructuredGenerateRequest built here (p59-t2 adapters). */
-function baseRequest(creativeDirection: string, themeName: string, background: BoardBackgroundMode) {
+function baseRequest(creativeDirection: string, themeName: string, background: BoardBackgroundMode, boardType: string) {
   return {
     promptTemplateVersion: PROMPT_TEMPLATE_VERSION,
-    theme: { description: themeName, creativeDirection },
+    theme: { description: themeName, creativeDirection: capCreativeDirection(creativeDirection, boardType) },
     themeName,
     options: { backgroundMode: background },
   } as const;
@@ -262,7 +391,7 @@ export function buildRivalAtlasRequest(
     throw new Error('Rival boards carry one to four enemy rows.');
   }
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'rival_group'),
     boardType: 'rival_group',
     slot: rows.map(toRowSpec),
   };
@@ -302,7 +431,7 @@ export function buildCharacterAtlasRequest(
   options?: CharacterAtlasPromptOptions,
 ): StructuredGenerateRequest {
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'roster_agent'),
     boardType: 'roster_agent',
     slot: {
       name: characterName,
@@ -322,7 +451,7 @@ export function buildEnvironmentPrompt(
 /** p59-t3: the StructuredGenerateRequest for the environment board. */
 export function buildEnvironmentRequest(creativeDirection: string, themeName: string): StructuredGenerateRequest {
   return {
-    ...baseRequest(creativeDirection, themeName, 'magenta'),
+    ...baseRequest(creativeDirection, themeName, 'magenta', 'environment'),
     boardType: 'environment',
   };
 }
@@ -388,7 +517,7 @@ export function buildObjectBoard1Request(
     return toRowSpec(row);
   });
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'objects_01'),
     boardType: 'objects_01',
     slot: { items },
   };
@@ -428,7 +557,7 @@ export function buildObjectBoard2Request(
     throw new Error('Object board 2 requires exactly two animated objects, one poof entry, three static objects, and one crate entry.');
   }
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'objects_02'),
     boardType: 'objects_02',
     slot: {
       animated: [toRowSpec(rowA), toRowSpec(rowB)],
@@ -476,7 +605,7 @@ export function buildBackgroundDecorRequest(
   }
   const animDecor = animRow3[0];
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'background_decor'),
     boardType: 'background_decor',
     slot: {
       seats: seatRow.map((row) => toRowSpec(row as Extract<ThemeDecorBoardRow, { display_name: string }>)) as [PromptRowSpec, PromptRowSpec, PromptRowSpec, PromptRowSpec],
@@ -508,7 +637,7 @@ export function buildExpressionAtlasRequest(
   descriptions?: string[],
 ): StructuredGenerateRequest {
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'expressions'),
     boardType: 'expressions',
     slot: { expressions, ...(descriptions ? { descriptions } : {}) },
   };
@@ -535,7 +664,7 @@ export function buildAchievementAtlasRequest(
   descriptions?: string[],
 ): StructuredGenerateRequest {
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'achievements'),
     boardType: 'achievements',
     slot: { achievements, ...(descriptions ? { descriptions } : {}) },
   };
@@ -557,7 +686,7 @@ export function buildEmoteAtlasRequest(
   background: BoardBackgroundMode = 'magenta',
 ): StructuredGenerateRequest {
   return {
-    ...baseRequest(creativeDirection, themeName, background),
+    ...baseRequest(creativeDirection, themeName, background, 'emotes'),
     boardType: 'emotes',
   };
 }

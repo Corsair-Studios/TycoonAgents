@@ -219,13 +219,15 @@ export class ThemeGenerationServiceError extends Error {
   readonly refunded?: boolean;
   readonly credits?: number;
   readonly code?: string;
-  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number; code?: string }) {
+  readonly status?: number;
+  constructor(error: { kind: ThemeServiceErrorKind; message: string; refunded?: boolean; credits?: number; code?: string; status?: number }) {
     super(error.message);
     this.name = 'ThemeGenerationServiceError';
     this.kind = error.kind;
     this.refunded = error.refunded;
     this.credits = error.credits;
     this.code = error.code;
+    this.status = error.status;
   }
 }
 
