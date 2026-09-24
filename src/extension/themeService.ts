@@ -46,6 +46,7 @@ import type { BoardBackgroundMode, ThemeObjectPromptSpec, ThemeRivalPromptSpec }
 import type { StructuredGenerateRequest } from '../core/themePromptTemplates';
 import { assembleThemePrompt } from '../core/themePromptTemplates';
 import { createHash } from 'node:crypto';
+import { THEME_SERVICE_HOST_SESSION_ID } from './themeServiceHostSession';
 import {
   isUserCorrectableImageGenerationError,
   type ImageGenerationApiError,
@@ -68,6 +69,7 @@ import { inferBodyPlan } from '../core/bodyPlan';
 import type { BodyPlan } from '../core/bodyPlan';
 import {
   acceptAllThemeImageReviewItems,
+  clearThemeImageReviewItemError,
   inferLegacyReviewItem,
   initializeThemeImageReviewDocument,
   loadThemeImageReviewDocument,
@@ -3076,6 +3078,22 @@ export async function retryThemeImage(
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   const item = document?.items.find((candidate) => candidate.id === itemId);
   if (!document || !item) throw new Error('Review image metadata was not found.');
+  // Follow-up fix: clear this item's PREVIOUS error the moment a new
+  // attempt starts (persisted, not just in the in-memory `item` used below)
+  // — otherwise a reload mid-generation, or the webview's next
+  // THEME_IMAGE_REVIEW before this attempt resolves, could still show the
+  // old failure notice. Mirrors the in-memory clear on `item` itself so the
+  // rest of this function (and its own success write further down) never
+  // reads the stale fields either.
+  if (item.generation_error || item.error_kind) {
+    await clearThemeImageReviewItemError(globalStorageUri, themeId, itemId);
+    item.generation_error = undefined;
+    item.error_kind = undefined;
+    item.error_code = undefined;
+    item.error_categories = undefined;
+    item.error_fields = undefined;
+    item.error_session = undefined;
+  }
   const loadedTheme = await loadTheme(globalStorageUri, themeId);
   if (!loadedTheme) throw new Error('The saved theme is incomplete and cannot be retried yet.');
   const notes = feedback.trim();
@@ -3511,6 +3529,12 @@ async function recordUserCorrectableGenerationError(
       error.code,
       error.categories,
       error.fields,
+      // Review fix: stamps this run's session id so panel.ts's
+      // _postThemeImageReview can tell this LIVE failure (covers both a
+      // fresh first-time generation failure — generateAndReviewThemeItem,
+      // no prior THEME_IMAGE_REVIEW post to gate on — and a retry failure)
+      // from one merely loaded from disk after a reload/restart.
+      THEME_SERVICE_HOST_SESSION_ID,
     );
     console.error('TycoonAgents: Theme Service generation attempt failed.', {
       themeId,

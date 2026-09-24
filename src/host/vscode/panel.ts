@@ -71,6 +71,7 @@ import { detectUefnProject } from "./uefnDetect";
 import { describeFsError } from "./fsErrors";
 import { createThemeServiceHost, type ThemeServiceHost, type ThemeServiceHostStatus } from "./themeServiceHost";
 import { createVsCodeThemeServiceDeviceState } from "./themeServiceDeviceState";
+import { createVsCodeThemeServiceCreditsCache } from "./themeServiceCreditsCache";
 import {
   probePathHealth,
   detectVerseExtensionState,
@@ -125,6 +126,8 @@ import {
   setThemeGenerationStatus,
 } from "../../extension/themeService";
 import { sanitizeRetryNotes } from "../../extension/themeImageRetry";
+import { isTransientThemeImageReviewErrorKind } from "../../extension/themeImageReviewState";
+import { THEME_SERVICE_HOST_SESSION_ID } from "../../extension/themeServiceHostSession";
 import type { ThemeImageRetryMode } from "../../extension/themeImageRetry";
 import { themePlanCreativeDirection, themeDescriptionsStale } from "../../extension/themePlan";
 import type { ThemePlan } from "../../extension/themePlan";
@@ -1119,6 +1122,11 @@ export class TycoonPanel {
       // globalState — the host then simply never shows the referral field
       // rather than risking a wrong per-device "first sign-in" guess.
       deviceState: globalState ? createVsCodeThemeServiceDeviceState(globalState) : undefined,
+      // Follow-up fix: durable last-known-balance cache backed by
+      // globalState — survives a webview reload/private window/restart,
+      // unlike the webview's own localStorage. Omitted (no fallback) when
+      // globalState itself isn't available, same posture as deviceState.
+      creditsCache: globalState ? createVsCodeThemeServiceCreditsCache(globalState) : undefined,
     });
     this._themeServiceHost.start();
     // Route every board-image generation attempt through this panel's
@@ -3679,9 +3687,28 @@ export class TycoonPanel {
           // definitively signed-in cached status means it is stale, so it
           // must not reach the webview and reintroduce a "Sign in" card the
           // user has already resolved.
+          // Review fix (session-stamp, replacing the earlier per-instance
+          // Set gate — that gate missed a fresh first-time generation
+          // failure: generateAndReviewThemeItem posts no THEME_IMAGE_REVIEW
+          // before its own failure, so that failure's FIRST post already
+          // carried a live error and the Set wrongly dropped it): a
+          // TRANSIENT error_kind (unavailable/unreachable/rate_limited/
+          // provider_failed — see isTransientThemeImageReviewErrorKind's
+          // doc comment) is dropped only when its item.error_session is
+          // MISSING or differs from THEME_SERVICE_HOST_SESSION_ID (this
+          // run's id, set once at module load — src/extension/themeServiceHostSession.ts).
+          // Every transient error_kind write (setThemeImageReviewErrorKind,
+          // called from recordUserCorrectableGenerationError — covers both
+          // a fresh generation failure and a retry failure) stamps the
+          // CURRENT id, so a failure recorded THIS run always matches and is
+          // shown with its real message; one left over from an earlier
+          // process (a genuine reload/restart, new id each activation)
+          // never matches and is dropped. Durable kinds are unaffected.
           error_kind: item.error_kind === "not_signed_in" && this._themeServiceHost.getCachedOrPendingStatus().signedIn === true
             ? undefined
-            : item.error_kind,
+            : (isTransientThemeImageReviewErrorKind(item.error_kind) && item.error_session !== THEME_SERVICE_HOST_SESSION_ID)
+              ? undefined
+              : item.error_kind,
           currentPrompt,
           generated,
           // Only sliced atlas boards can be re-sliced; environment boards normalize a

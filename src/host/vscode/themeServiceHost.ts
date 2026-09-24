@@ -92,6 +92,20 @@ export interface ThemeServiceHostStatus {
    * can't be confirmed true — the latter must never show Sign in.
    */
   hasStoredSession?: boolean;
+  /**
+   * Follow-up fix: the last credits balance persisted in
+   * {@link ThemeServiceCreditsCache} (VS Code: `ExtensionContext.globalState`,
+   * keyed by user id — survives across sessions/restarts, unlike the
+   * webview's own localStorage, which is a per-viewer convenience only and
+   * can be empty on a private window or cleared site data). Set on every
+   * status this host builds, including the very first synchronous reply at
+   * panel open (getCachedOrPendingStatus), BEFORE any network call. Additive
+   * only — a host/build that never wires a creditsCache simply omits it, and
+   * older webview code that doesn't know this field behaves exactly as
+   * before. The webview prefers the live `credits` field first, then this
+   * field, then its own localStorage cache.
+   */
+  cachedCredits?: number;
 }
 
 /**
@@ -106,6 +120,31 @@ export interface ThemeServiceHostStatus {
 export interface ThemeServiceDeviceState {
   hasEverSignedIn(): Promise<boolean>;
   markSignedIn(): Promise<void>;
+}
+
+/**
+ * Follow-up fix: durable, cross-session last-known-balance cache — stores
+ * ONLY a user id and a credits number, never a token/secret. VS Code backs
+ * this with `context.globalState` (see createVsCodeThemeServiceCreditsCache
+ * in themeServiceCreditsCache.ts), a per-device Memento that survives a
+ * window/VS Code restart, unlike the webview's own localStorage (which this
+ * host cache backs up, not replaces — the webview still prefers a live
+ * value first).
+ *
+ * Review fix: `get()`'s record is keyed by user id precisely because a
+ * caller MUST validate it against the currently-known signed-in user id
+ * before surfacing its `credits` as `cachedCredits` — a stale record from a
+ * DIFFERENT account (an account switch on the same device) must never be
+ * shown under the newly-signed-in user just because it happens to be the
+ * only thing in the cache. createThemeServiceHost's cachedCreditsField()
+ * does this check (against its own in-memory `currentUserId`, updated on
+ * every definitive signed-in status) and omits `cachedCredits` entirely
+ * when the current account isn't known yet or doesn't match.
+ */
+export interface ThemeServiceCreditsCache {
+  get(): { userId: string; credits: number } | undefined;
+  set(userId: string, credits: number): void | Promise<void>;
+  clear(): void | Promise<void>;
 }
 
 /**
@@ -172,6 +211,12 @@ export interface ThemeServiceHostOptions {
    * referral prompt entirely (showReferralField stays false) rather than
    * risking a false "first sign-in" on every call. */
   deviceState?: ThemeServiceDeviceState;
+  /**
+   * Follow-up fix: durable per-device last-known-balance cache, backed by
+   * ExtensionContext.globalState. Omitting it (older callers, tests) simply
+   * means `cachedCredits` is never set on any status — no behavior change.
+   */
+  creditsCache?: ThemeServiceCreditsCache;
   now?: () => number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -200,6 +245,12 @@ const CHECKOUT_POLL_INTERVAL_MS = 5_000;
 const CHECKOUT_POLL_MAX_MS = 10 * 60_000;
 
 function toErrorPayload(error: ThemeServiceError): { kind: string; message: string } {
+  // Follow-up fix: the rate_limited message text (minute/day/provider,
+  // built from scope/limit/retryAfterSeconds) is constructed once in
+  // themeServiceClient.ts's 429 handling — the single place both this
+  // status/sign-in path AND per-item image-generation errors (see
+  // themeService.ts, which uses the same ThemeServiceClient) get their
+  // ThemeServiceError from. Nothing to build here; just pass it through.
   return { kind: error.kind, message: error.message };
 }
 
@@ -359,6 +410,72 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   const setTimeoutImpl = opts.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimeoutImpl = opts.clearTimeout ?? ((handle: unknown) => clearTimeout(handle as NodeJS.Timeout));
 
+  // Follow-up fix: durable cachedCredits field, read/written through
+  // opts.creditsCache (ExtensionContext.globalState-backed; see
+  // ThemeServiceCreditsCache's doc comment). Every helper here swallows its
+  // own errors — a broken/throwing cache must never take down a status
+  // build or a sign-out.
+  //
+  // Review fix: `currentUserId` is this host's own in-memory record of the
+  // last account it definitively confirmed signed in (set only from a
+  // successful buildStatus fetch — see below). cachedCreditsField() gates
+  // its read on this matching the cache's own userId, so a stale balance
+  // from a DIFFERENT account (an account switch, or simply a fresh host
+  // process that hasn't confirmed anyone yet) is never surfaced as
+  // `cachedCredits`. When currentUserId isn't known yet, cachedCredits is
+  // omitted entirely — never a guess.
+  let currentUserId: string | undefined;
+  /**
+   * Follow-up fix: after a full VS Code restart, currentUserId starts
+   * unknown and stayed that way until the first live status fetch
+   * succeeded — so cachedCredits was never offered at panel open right
+   * after a restart, exactly when a Render cold start makes it matter most
+   * (the user saw "…" again). Seed it here from the STORED session alone
+   * (client.getStoredIdentity — SecretStorage + an unverified JWT claim
+   * read, no network call — see its doc comment), started fire-and-forget
+   * from start() so it's normally done well before the webview's first
+   * status request even without being awaited anywhere. Never overwrites an
+   * already-confirmed currentUserId (a live fetch's result always wins).
+   */
+  async function seedCurrentUserIdFromStoredSession(): Promise<void> {
+    if (currentUserId) return;
+    try {
+      const identity = await client.getStoredIdentity();
+      if (identity && !currentUserId) currentUserId = identity;
+    } catch {
+      // best-effort only — an unseeded currentUserId just means
+      // cachedCredits stays omitted until the first live fetch, same as
+      // before this fix.
+    }
+  }
+  function cachedCreditsField(): { cachedCredits?: number } {
+    try {
+      if (!currentUserId) return {};
+      const v = opts.creditsCache?.get();
+      return v && v.userId === currentUserId && typeof v.credits === "number"
+        ? { cachedCredits: v.credits }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  function persistCredits(userId: string | undefined, credits: number | undefined): void {
+    if (!opts.creditsCache || !userId || typeof credits !== "number") return;
+    try {
+      void Promise.resolve(opts.creditsCache.set(userId, credits)).catch(() => {});
+    } catch {
+      // ignore — the durable cache is a convenience, not a requirement
+    }
+  }
+  function clearPersistedCredits(): void {
+    if (!opts.creditsCache) return;
+    try {
+      void Promise.resolve(opts.creditsCache.clear()).catch(() => {});
+    } catch {
+      // ignore
+    }
+  }
+
   // p75-t1: fixed, never server text — see OPEN_THEME_BUILDER contract.
   const WAKING_MESSAGE = "The theme service is starting up. This can take about a minute.";
   const UNAVAILABLE_MESSAGE = "Theme Service unavailable. No credits were charged.";
@@ -475,11 +592,19 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         // and leaving no way back to a signed-in view once the network
         // recovers.
         const definitiveSignOut = res.error.kind === "not_signed_in";
+        if (definitiveSignOut) {
+          clearPersistedCredits();
+          currentUserId = undefined;
+        }
         return {
           ...(definitiveSignOut ? { signedIn: false as const } : {}),
           pendingCheckout,
           error: toErrorPayload(res.error),
           ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
+          // A definitive sign-out never carries a stale cachedCredits; every
+          // other (transient) kind still offers it so the webview has
+          // something to show during the hiccup.
+          ...(definitiveSignOut ? {} : cachedCreditsField()),
         };
       }
       const status: ThemeServiceStatus = res.value;
@@ -507,6 +632,29 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       if (status.signedIn && typeof status.credits !== "number") {
         log("themeServiceHost.buildStatus: signedIn=true but credits is not a number");
       }
+      // Follow-up fix: persist the durable cache on every genuine signed-in
+      // fetch that carries a numeric balance, and clear it on a definitive
+      // sign-out — mirrors the webview's own localStorage write/clear, but
+      // survives a VS Code restart and a private-window/cleared-storage
+      // webview.
+      //
+      // Review fix: also track currentUserId here (the only place a
+      // definitive signedIn status is ever built) and, if this confirmed
+      // account differs from the cache's own userId, clear the stale
+      // record FIRST — an account switch must never leave the previous
+      // user's balance sitting under the new user's id. persistCredits
+      // right after (when this fetch also has a numeric balance) then
+      // writes the fresh one, so net effect is "overwrite".
+      if (status.signedIn === false) {
+        clearPersistedCredits();
+        currentUserId = undefined;
+      } else if (status.signedIn) {
+        if (status.email && currentUserId && status.email !== currentUserId) {
+          clearPersistedCredits();
+        }
+        if (status.email) currentUserId = status.email;
+        if (typeof status.credits === "number") persistCredits(status.email, status.credits);
+      }
       return {
         signedIn: status.signedIn,
         email: status.email,
@@ -521,6 +669,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
         endpointHost: effectiveEndpointHost,
         ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
+        ...(status.signedIn === false ? {} : cachedCreditsField()),
       };
     } catch (err) {
       const ctor = err instanceof Error ? err.constructor.name : typeof err;
@@ -542,6 +691,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         pendingCheckout,
         error: { kind: "internal", message: UNAVAILABLE_MESSAGE },
         ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
+        ...cachedCreditsField(),
       };
     }
   }
@@ -604,6 +754,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         pendingCheckout,
         error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE },
         hasStoredSession: false,
+        ...cachedCreditsField(),
       };
       opts.postStatus(lastSnapshot);
       return;
@@ -792,11 +943,21 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     getCachedOrPendingStatus() {
-      return lastSnapshot ?? {
-        signedIn: false,
-        pending: true,
-        ...(typeof cachedHasStoredSession === "boolean" ? { hasStoredSession: cachedHasStoredSession } : {}),
-      };
+      // Follow-up fix: this is the FIRST status the webview ever sees at
+      // panel open — returned synchronously, before any network call — so
+      // it's where cachedCredits matters most: the webview's own
+      // localStorage cache can be empty (private window, cleared site data,
+      // or simply a fresh webview origin), but the durable host-side cache
+      // (ExtensionContext.globalState, keyed by user id) survives across
+      // sessions and even a VS Code restart.
+      return lastSnapshot
+        ? { ...lastSnapshot, ...cachedCreditsField() }
+        : {
+            signedIn: false,
+            pending: true,
+            ...(typeof cachedHasStoredSession === "boolean" ? { hasStoredSession: cachedHasStoredSession } : {}),
+            ...cachedCreditsField(),
+          };
     },
 
     refreshStatusInBackground() {
@@ -1006,6 +1167,8 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       await client.signOut();
       stopPoll();
       lastKnownCredits = undefined;
+      clearPersistedCredits();
+      currentUserId = undefined;
       await postFreshStatus();
     },
 
@@ -1029,6 +1192,14 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
 
     start() {
       disposed = false;
+      // Fire-and-forget: see seedCurrentUserIdFromStoredSession's doc
+      // comment. Not awaited — start() itself must stay synchronous (panel.ts
+      // calls it from its constructor) — but SecretStorage + a JWT decode is
+      // fast enough to reliably finish before the webview's first status
+      // request in practice, and every read path that consults
+      // currentUserId already degrades gracefully (omits cachedCredits) if
+      // it hasn't.
+      void seedCurrentUserIdFromStoredSession();
     },
 
     dispose() {

@@ -102,7 +102,7 @@ function makeFakeImage(win: any) {
   };
 }
 
-async function bootThemePanelHarness() {
+async function bootThemePanelHarness(preSeed?: (win: any) => void) {
   const src = readFileSync(MAIN_JS_PATH, 'utf8');
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {
     runScripts: 'outside-only',
@@ -161,6 +161,7 @@ async function bootThemePanelHarness() {
   });
   win.onerror = (msg: any, _s: any, _l: any, _c: any, err: any) => errors.push(err || msg);
 
+  if (preSeed) preSeed(win);
   vm.runInContext(src, dom.getInternalVMContext(), { filename: 'media/main.js' });
   // Flush any microtasks main.js's boot schedules.
   for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
@@ -934,6 +935,142 @@ test('p2 concern: signed-in credits:500 then a host throw (signedIn:undefined) k
   h.win.close();
 });
 
+// ── Root-cause regression: shared themeServiceStatus must never regress to
+// "unknown" while a background refresh is in flight (media/src/main/
+// 010-modals-badges-rebirth.js renderThemeServicePanel/mergeThemeServiceStatus) ──
+
+test('a genuine {pending:true} stub (no signedIn field, as the host actually sends it) does not wipe the cached balance', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 500 })));
+  assert.equal(h.chip().textContent, '500 credits');
+
+  // Real host pending stub carries only {pending:true} — no signedIn field.
+  h.dispatch(themeServiceStatus({ pending: true }));
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must stay visible during an in-flight refresh');
+  assert.equal(h.chip().textContent, '500 credits', 'chip must keep the last-known balance, not blank/hide');
+  h.win.close();
+});
+
+test('cached balance is sent to the review page before the fetch resolves: THEME_SERVICE_STATUS then a pending stub then THEME_IMAGE_REVIEW still shows Balance', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 77 })));
+  // A background refresh kicks off (e.g. Theme Builder reopened) — the
+  // host's transient stub arrives before the slow /me call resolves.
+  h.dispatch(themeServiceStatus({ pending: true }));
+
+  h.dispatch({
+    type: 'THEME_IMAGE_REVIEW',
+    payload: {
+      theme_id: 'smoke_theme',
+      display_name: 'Smoke Theme',
+      creditsSpent: 3,
+      items: [
+        {
+          id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+          status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+        },
+      ],
+      creative_direction: '',
+    },
+  });
+
+  const costLine = h.doc.querySelector('.theme-attempt-cost');
+  assert.ok(costLine, 'the AI plan review page should render a .theme-attempt-cost line');
+  assert.match(costLine!.textContent, /Balance 77 credits/, 'the review page must keep showing the last-known balance while a refresh is in flight');
+  h.win.close();
+});
+
+test('a last-known balance cached in localStorage from a prior session is visible on the review page immediately at boot, before any THEME_SERVICE_STATUS arrives', async () => {
+  const h = await bootThemePanelHarness((win) => {
+    win.localStorage.setItem(
+      'tycoonagents.themeServiceStatusCache',
+      JSON.stringify({ signedIn: true, credits: 250 }),
+    );
+  });
+
+  // No THEME_SERVICE_STATUS/THEME_BUILDER_OPENED dispatched yet — only the
+  // cache-seeded state and the review payload.
+  h.dispatch({
+    type: 'THEME_IMAGE_REVIEW',
+    payload: {
+      theme_id: 'smoke_theme',
+      display_name: 'Smoke Theme',
+      creditsSpent: 0,
+      items: [
+        {
+          id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+          status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+        },
+      ],
+      creative_direction: '',
+    },
+  });
+
+  assert.equal(h.chip().textContent, '250 credits', 'header chip should show the cached balance immediately at boot');
+  const costLine = h.doc.querySelector('.theme-attempt-cost');
+  assert.ok(costLine, 'the AI plan review page should render a .theme-attempt-cost line');
+  assert.match(costLine!.textContent, /Balance 250 credits/, 'the review page should show the cached balance immediately at boot, before any fetch resolves');
+  h.win.close();
+});
+
+// ── Follow-up fix: header chip must never go HIDDEN except on a definitive
+// sign-out, and must prefer the host's durable cachedCredits field when the
+// per-viewer localStorage cache has nothing (empty/cleared storage) ────────
+
+test('follow-up: a transient error status with no signedIn and no cache of any kind never hides the chip (shows "…" instead)', async () => {
+  const h = await bootThemePanelHarness();
+  // No prior signed-in status, no localStorage cache seeded — this is the
+  // exact combination that used to hide the chip outright.
+  h.dispatch(themeServiceStatus({ error: { kind: 'timeout', message: 'timed out' } }));
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must never hide on a transient status, even with nothing cached');
+  assert.equal(h.chip().textContent, '…');
+  h.win.close();
+});
+
+test('follow-up: a transient error status carrying the host\'s cachedCredits shows that balance instead of hiding, with no localStorage cache present', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus({ error: { kind: 'waking', message: 'Checking your Theme Service status…' }, cachedCredits: 88 }));
+  assert.ok(!h.chip().hasAttribute('hidden'), 'chip must show the host-cached balance, not hide');
+  assert.equal(h.chip().textContent, '88 credits');
+  h.win.close();
+});
+
+test('follow-up: getCachedOrPendingStatus-shaped stub (pending:true, cachedCredits from host) shows the balance immediately, no "…" flash', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened({ pending: true, cachedCredits: 310 }));
+  assert.ok(!h.chip().hasAttribute('hidden'));
+  assert.equal(h.chip().textContent, '310 credits');
+  h.win.close();
+});
+
+test('follow-up: review page balance line falls back to the host\'s cachedCredits when localStorage has nothing cached', async () => {
+  const h = await bootThemePanelHarness();
+  // Only the host-side cachedCredits field is available — no prior
+  // THEME_SERVICE_STATUS with a live number, no localStorage cache.
+  h.dispatch(themeServiceStatus({ pending: true, cachedCredits: 61 }));
+
+  h.dispatch({
+    type: 'THEME_IMAGE_REVIEW',
+    payload: {
+      theme_id: 'smoke_theme',
+      display_name: 'Smoke Theme',
+      creditsSpent: 0,
+      items: [
+        {
+          id: 'environment', filename: 'environment.png', label: 'Environment', kind: 'environment',
+          status: 'pending', prompt: 'A base environment prompt.', revision: 0, frame_keys: [], updated_at: '',
+        },
+      ],
+      creative_direction: '',
+    },
+  });
+
+  const costLine = h.doc.querySelector('.theme-attempt-cost');
+  assert.ok(costLine, 'the AI plan review page should render a .theme-attempt-cost line');
+  assert.match(costLine!.textContent, /Balance 61 credits/, 'the review page should fall back to the host cachedCredits field');
+  h.win.close();
+});
+
 // ── No innerHTML for status text (source guard) ─────────────────────────────
 
 test('renderThemeServicePanel and its helpers never use innerHTML for status text', () => {
@@ -1232,6 +1369,28 @@ for (const [errorKind, cls, expectedText] of ERROR_KIND_CASES) {
     h.win.close();
   });
 }
+
+// Follow-up fix: the stale attempt-status notice must never stay visible
+// once a new attempt starts — clicking Retry clears it immediately (no
+// waiting on the host's RETRY_THEME_IMAGE round trip), so "Generating..."
+// never shows alongside a previous attempt's error.
+test('follow-up: clicking Retry immediately clears a stale error notice, before any host response', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'unavailable', image_src: undefined, generated: false })],
+  }));
+  assert.ok(attemptNotice(h), 'expected the unavailable notice to render first');
+
+  const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
+  assert.ok(retryBtn, 'expected a Retry button');
+  retryBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+
+  assert.equal(retryBtn.textContent, 'Generating...');
+  assert.equal(attemptNotice(h), null, 'the stale notice must be gone the instant Retry is clicked, not left showing next to "Generating..."');
+  h.win.close();
+});
 
 test('not_signed_in notice button (openThemeBuilderFromReview) opens the plan editor tab and posts OPEN_THEME_BUILDER without opening the shell modal (p75)', async () => {
   const h = await bootThemePanelHarness();

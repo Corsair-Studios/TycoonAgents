@@ -458,8 +458,123 @@ test("service unavailable (503) surfaces the fixed message, never a raw 'unavail
   const res = await client.getPricing();
   assert.equal(res.ok, false);
   if (!res.ok) {
-    assert.equal(res.error.message, "Theme Service unavailable (503). No credits were charged.");
+    assert.equal(
+      res.error.message,
+      "Theme Service unavailable (503). No credits were charged. If you started several generations at once, try fewer at a time.",
+    );
     assert.notEqual(res.error.message, "unavailable");
+  }
+});
+
+// ── Follow-up: rate_limited (429) scope/limit/retryAfterSeconds parsing ────
+
+// Only ever invoked for /api/account by signedInClientAgainst below (that
+// wrapper routes every other path straight to the real fake service).
+function rateLimitedFetch(body: unknown, headers?: Record<string, string>): typeof fetch {
+  return (async () => {
+    return new Response(JSON.stringify(body), {
+      status: 429,
+      headers: { "content-type": "application/json", ...(headers || {}) },
+    });
+  }) as typeof fetch;
+}
+
+async function signedInClientAgainst(fetchImpl: typeof fetch) {
+  // A separate, already-signed-in client (against the real fake service)
+  // supplies a valid session; requests are then routed through fetchImpl,
+  // which intercepts only /api/account.
+  const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL });
+  const account = fake.helpers.createAccount("ratelimit@example.com");
+  fake.helpers.grant(account.id, 10);
+  const tokenStore = createMemoryTokenStore();
+  const signInClient = createThemeServiceClient({
+    fetch: fake.fetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  await signInClient.requestMagicLink("ratelimit@example.com");
+  await signInClient.verifyMagicLink("ratelimit@example.com", "123456");
+
+  const wrapped: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/account")) return fetchImpl(input, init);
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  return createThemeServiceClient({
+    fetch: wrapped,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+}
+
+test("429 with full body (scope, limit, retryAfterSeconds) parses all fields and builds the minute message", async () => {
+  const client = await signedInClientAgainst(
+    rateLimitedFetch({ error: "rate_limited", scope: "minute", limit: 5, retryAfterSeconds: 12 }),
+  );
+  const res = await client.getStatus();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "rate_limited");
+    assert.equal(res.error.scope, "minute");
+    assert.equal(res.error.limit, 5);
+    assert.equal(res.error.retryAfterSeconds, 12);
+    assert.equal(
+      res.error.message,
+      "Too many requests — the Theme Service allows up to 5 generations per minute. Try again in 12s. No credits were charged.",
+    );
+  }
+});
+
+test("429 day scope renders the wait in hours/minutes, not raw seconds", async () => {
+  const client = await signedInClientAgainst(
+    rateLimitedFetch({ error: "rate_limited", scope: "day", limit: 50, retryAfterSeconds: 7200 }),
+  );
+  const res = await client.getStatus();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.message, "Too many requests — the Theme Service allows up to 50 generations per day. Try again in 2 hours. No credits were charged.");
+  }
+});
+
+test("429 provider scope renders the busy-image-service message", async () => {
+  const client = await signedInClientAgainst(
+    rateLimitedFetch({ error: "rate_limited", scope: "provider", retryAfterSeconds: 8 }),
+  );
+  const res = await client.getStatus();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.message, "The image service is busy right now. Try again in 8s, or generate fewer at once. No credits were charged.");
+  }
+});
+
+test("429 with no body fields falls back to the Retry-After header for the wait", async () => {
+  const client = await signedInClientAgainst(
+    rateLimitedFetch({ error: "rate_limited", scope: "minute" }, { "Retry-After": "30" }),
+  );
+  const res = await client.getStatus();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.retryAfterSeconds, 30, "retryAfterSeconds should fall back to the Retry-After header");
+    // No `limit` field in the body — the message must never invent one.
+    assert.equal(res.error.message, "Too many requests. Try again in 30s. No credits were charged.");
+    assert.doesNotMatch(res.error.message, /allows up to/);
+  }
+});
+
+test("429 with no scope/limit/retryAfterSeconds and no header falls back to the generic message, no invented numbers", async () => {
+  const client = await signedInClientAgainst(rateLimitedFetch({ error: "rate_limited" }));
+  const res = await client.getStatus();
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.scope, undefined);
+    assert.equal(res.error.limit, undefined);
+    assert.equal(res.error.retryAfterSeconds, undefined);
+    assert.equal(res.error.message, "Too many requests, try again shortly. No credits were charged.");
   }
 });
 

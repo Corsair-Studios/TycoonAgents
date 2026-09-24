@@ -2,7 +2,29 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createThemeServiceClient, ThemeServiceTokenStore, REFERRAL_CODE_PATTERN } from "../src/core/themeServiceClient";
 import { createFakeThemeService } from "./helpers/fakeThemeService";
-import { createThemeServiceHost, type ThemeServiceHostStatus } from "../src/host/vscode/themeServiceHost";
+import { createThemeServiceHost, type ThemeServiceHostStatus, type ThemeServiceCreditsCache } from "../src/host/vscode/themeServiceHost";
+
+// Follow-up fix: in-memory double for ThemeServiceCreditsCache (the real one
+// is backed by VS Code's ExtensionContext.globalState — see
+// src/host/vscode/themeServiceCreditsCache.ts) so these tests can assert
+// what the host persists/clears without a real vscode.Memento.
+function fakeCreditsCache(): ThemeServiceCreditsCache & { raw: () => { userId: string; credits: number } | undefined } {
+  let stored: { userId: string; credits: number } | undefined;
+  return {
+    get() {
+      return stored;
+    },
+    set(userId: string, credits: number) {
+      stored = { userId, credits };
+    },
+    clear() {
+      stored = undefined;
+    },
+    raw() {
+      return stored;
+    },
+  };
+}
 
 const ENDPOINT = "https://theme-service.example";
 const SUPABASE_URL = "https://fake-project.supabase.co";
@@ -66,7 +88,11 @@ function fakeDelayTimers() {
   };
 }
 
-function setup(nowFn?: () => number, openExternalOverride?: (url: string) => void | boolean | Promise<void | boolean>) {
+function setup(
+  nowFn?: () => number,
+  openExternalOverride?: (url: string) => void | boolean | Promise<void | boolean>,
+  creditsCache?: ThemeServiceCreditsCache,
+) {
   const fake = createFakeThemeService({ endpoint: ENDPOINT, supabaseUrl: SUPABASE_URL, now: nowFn });
   const tokenStore = createMemoryTokenStore();
   const client = createThemeServiceClient({
@@ -94,6 +120,7 @@ function setup(nowFn?: () => number, openExternalOverride?: (url: string) => voi
     now: () => now,
     setInterval: timers.setInterval,
     clearInterval: timers.clearInterval,
+    creditsCache,
   });
   host.start();
   return { fake, client, posted, opened, timers, host, advanceTime: (ms: number) => (now += ms) };
@@ -1372,4 +1399,215 @@ test("p92 review fix: after the waking-retry budget is exhausted, hasStoredSessi
   assert.equal(last.error?.kind, "unavailable", "expected the final post-exhaustion status");
   assert.equal(last.hasStoredSession, false, "the escape hatch must deliberately force hasStoredSession:false so the webview offers Sign in");
   assert.equal(last.signedIn, undefined, "still never a definitive sign-out");
+});
+
+// ── Follow-up fix: durable per-device credits cache (ThemeServiceCreditsCache) ──
+
+test("follow-up: a signed-in status with numeric credits persists to the credits cache, keyed by email", async () => {
+  const cache = fakeCreditsCache();
+  const { host } = setup(undefined, undefined, cache);
+  await host.handleRequestMagicLink("cache-me@example.com");
+  await host.handleVerify("cache-me@example.com", "123456");
+  const raw = cache.raw();
+  assert.ok(raw, "expected the credits cache to hold a record after sign-in");
+  assert.equal(raw!.userId, "cache-me@example.com");
+  assert.equal(typeof raw!.credits, "number");
+});
+
+// Review fix: cachedCredits is now gated on this host having CONFIRMED the
+// current signed-in user (currentUserId) — a cache record from a prior
+// process/session, with no confirmation yet in THIS host, must never be
+// assumed to belong to whoever ends up signed in here (see the "no
+// cachedCredits surfaced" test further below). So the pre-network snapshot
+// only carries cachedCredits once a live fetch on this SAME host has
+// already confirmed the account — e.g. reopening the panel later in the
+// same VS Code session, with no new network call in between.
+test("follow-up: getCachedOrPendingStatus surfaces cachedCredits, with no new network call, once this host has confirmed the signed-in user", async () => {
+  const cache = fakeCreditsCache();
+  const { host, posted } = setup(undefined, undefined, cache);
+  await host.handleRequestMagicLink("me@example.com");
+  await host.handleVerify("me@example.com", "123456");
+  const liveCredits = posted[posted.length - 1].credits;
+  assert.equal(typeof liveCredits, "number");
+
+  const postedCountBeforeSnapshot = posted.length;
+  const snapshot = host.getCachedOrPendingStatus();
+  assert.equal(posted.length, postedCountBeforeSnapshot, "getCachedOrPendingStatus must not itself trigger any additional status post/network call");
+  assert.equal(snapshot.cachedCredits, liveCredits, "a later synchronous snapshot should surface the confirmed user's cached balance");
+});
+
+test("follow-up: a transient (non-definitive) error status still carries cachedCredits once this host has confirmed the signed-in user", async () => {
+  const cache = fakeCreditsCache();
+  let call = 0;
+  const flakyClient: any = {
+    hasStoredSession: async () => true,
+    getStatus: async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          value: { signedIn: true, email: "flaky@example.com", credits: 33, role: "email", locked: false, strikes: 0 },
+        };
+      }
+      throw new Error("boom");
+    },
+    getPricing: async () => ({ ok: true, value: { typicalTheme: { min: 8, max: 20, typical: 14 }, packs: [] } }),
+  };
+  const posted2: ThemeServiceHostStatus[] = [];
+  const timers2 = fakeTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client: flakyClient,
+    openExternal: () => {},
+    postStatus: (status) => posted2.push(status),
+    setInterval: timers2.setInterval,
+    clearInterval: timers2.clearInterval,
+    creditsCache: cache,
+  });
+  host.start();
+
+  await host.handleGetStatus(); // call 1 — succeeds, confirms flaky@example.com, credits 33
+  assert.equal(posted2[posted2.length - 1].credits, 33);
+  assert.equal(cache.raw()?.userId, "flaky@example.com");
+
+  await host.handleGetStatus(); // call 2 — throws (transient)
+  const last = posted2[posted2.length - 1];
+  assert.equal(last.signedIn, undefined, "a thrown/transient failure must never claim a definitive sign-out");
+  assert.equal(last.cachedCredits, 33, "the durable cache should still surface the last known balance during a transient failure, once the user is confirmed");
+});
+
+test("follow-up: a definitive sign-out clears the credits cache, and the next snapshot carries no cachedCredits", async () => {
+  const cache = fakeCreditsCache();
+  const { host } = setup(undefined, undefined, cache);
+  await host.handleRequestMagicLink("me@example.com");
+  await host.handleVerify("me@example.com", "123456");
+  assert.ok(cache.raw(), "expected a cached balance after sign-in");
+
+  await host.handleSignOut();
+  assert.equal(cache.raw(), undefined, "sign-out should clear the durable credits cache");
+
+  const snapshot = host.getCachedOrPendingStatus();
+  assert.equal(snapshot.cachedCredits, undefined, "no cachedCredits should be offered right after a definitive sign-out");
+});
+
+test("review fix: a signed-in status for a different user overwrites the credits cache", async () => {
+  const cache = fakeCreditsCache();
+  const { host } = setup(undefined, undefined, cache);
+  await host.handleRequestMagicLink("a@example.com");
+  await host.handleVerify("a@example.com", "123456");
+  assert.equal(cache.raw()?.userId, "a@example.com");
+
+  await host.handleRequestMagicLink("b@example.com");
+  await host.handleVerify("b@example.com", "123456");
+  assert.equal(cache.raw()?.userId, "b@example.com", "the cache should be overwritten to the newly signed-in user");
+});
+
+test("review fix: cachedCredits is never surfaced for an unconfirmed/different session (account switch + transient failure)", async () => {
+  const cache = fakeCreditsCache();
+  // A signs in and is cached.
+  const { host: hostA } = setup(undefined, undefined, cache);
+  await hostA.handleRequestMagicLink("a@example.com");
+  await hostA.handleVerify("a@example.com", "123456");
+  assert.equal(cache.raw()?.userId, "a@example.com");
+
+  // The session switches to B on a fresh host instance sharing the same
+  // durable cache (a new panel/session after an account switch), whose very
+  // first status fetch fails transiently — this host has not yet confirmed
+  // WHO is signed in, so it must never assume the stale cached balance (A's)
+  // belongs to the current session.
+  const throwingClient: any = {
+    hasStoredSession: async () => true,
+    getStatus: async () => {
+      throw new Error("boom");
+    },
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const posted2: ThemeServiceHostStatus[] = [];
+  const timers2 = fakeTimers();
+  const hostB = createThemeServiceHost({
+    secrets: {} as any,
+    client: throwingClient,
+    openExternal: () => {},
+    postStatus: (status) => posted2.push(status),
+    setInterval: timers2.setInterval,
+    clearInterval: timers2.clearInterval,
+    creditsCache: cache,
+  });
+  hostB.start();
+
+  // Pre-network snapshot: no signed-in user confirmed yet on this host.
+  const snapBeforeNetwork = hostB.getCachedOrPendingStatus();
+  assert.equal(snapBeforeNetwork.cachedCredits, undefined, "an unconfirmed session must never surface a stale cross-account balance");
+
+  await hostB.handleGetStatus();
+  const last = posted2[posted2.length - 1];
+  assert.equal(last.cachedCredits, undefined, "a transient failure on an unconfirmed session must never surface A's cached balance");
+});
+
+// ── Follow-up fix: seed currentUserId from the STORED session (no network) so
+// cachedCredits survives a full VS Code restart, not just a reused process ──
+
+function fakeJwtWithEmail(email: string): string {
+  const b64url = (s: string) => Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const header = b64url(JSON.stringify({ alg: "none", typ: "JWT" }));
+  const payload = b64url(JSON.stringify({ email }));
+  return `${header}.${payload}.unsigned`;
+}
+
+async function hostWithStoredSession(email: string | undefined, creditsCache: ThemeServiceCreditsCache) {
+  const tokenStore = createMemoryTokenStore();
+  if (email) {
+    await tokenStore.set(JSON.stringify({
+      accessToken: fakeJwtWithEmail(email),
+      refreshToken: "r",
+      expiresAt: Date.now() + 3600_000,
+    }));
+  }
+  const client = createThemeServiceClient({
+    fetch: (async () => new Response(null, { status: 500 })) as any,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: () => {},
+    creditsCache,
+  });
+  host.start();
+  // Let seedCurrentUserIdFromStoredSession's fire-and-forget awaits (an
+  // in-memory tokenStore.get(), then a synchronous JWT decode) settle —
+  // simulates the real-world gap between panel construction and the
+  // webview's first status request, without actually needing one here.
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  return host;
+}
+
+test("follow-up: a restarted host (new process) with a stored session for A, plus A's cache, surfaces cachedCredits before any fetch resolves", async () => {
+  const cache = fakeCreditsCache();
+  cache.set("a@example.com", 88);
+  const host = await hostWithStoredSession("a@example.com", cache);
+  const snapshot = host.getCachedOrPendingStatus();
+  assert.equal(snapshot.cachedCredits, 88, "a stored session's identity should seed currentUserId with no network call, surfacing the matching cache entry");
+});
+
+test("follow-up: a restarted host with a stored session for B, but the cache holds A's balance, never surfaces it", async () => {
+  const cache = fakeCreditsCache();
+  cache.set("a@example.com", 88);
+  const host = await hostWithStoredSession("b@example.com", cache);
+  const snapshot = host.getCachedOrPendingStatus();
+  assert.equal(snapshot.cachedCredits, undefined, "B's session must never surface A's cached balance");
+});
+
+test("follow-up: a restarted host with NO stored session omits cachedCredits even when the durable cache holds a value", async () => {
+  const cache = fakeCreditsCache();
+  cache.set("a@example.com", 88);
+  const host = await hostWithStoredSession(undefined, cache);
+  const snapshot = host.getCachedOrPendingStatus();
+  assert.equal(snapshot.cachedCredits, undefined, "with no persisted identity to confirm against, cachedCredits stays omitted, same as before this fix");
 });

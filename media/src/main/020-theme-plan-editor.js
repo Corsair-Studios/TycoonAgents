@@ -1931,7 +1931,9 @@
   function buildThemeAttemptCostLine(item, payload) {
     const line = document.createElement("div");
     line.className = "theme-attempt-cost";
-    const status = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
+    const status = typeof themeServiceStatusWithCachedBalance !== "undefined"
+      ? themeServiceStatusWithCachedBalance()
+      : (typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null);
     const pricing = status && status.pricing;
     const byBoard = pricing && pricing.attemptCostByBoardType;
     const knownCost = byBoard && typeof byBoard[item.boardType] === "number" ? byBoard[item.boardType] : undefined;
@@ -2000,7 +2002,19 @@
     if (item.error_kind === "rate_limited") {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-ratelimited";
-      notice.textContent = THEME_ATTEMPT_ERROR_TEXT.rate_limited;
+      // Follow-up fix: the backend's actual message (built server-side from
+      // scope/limit/retryAfterSeconds — see buildRateLimitedMessage in
+      // src/core/themeServiceClient.ts) names the real per-minute/per-day
+      // limit and wait time; showing only the generic static copy here
+      // discarded that detail. Fall back to the generic copy only when the
+      // server didn't send usable free text (older backend, or the bare
+      // "rate_limited" kind string echoed back as the message).
+      var serverMessage = item.generation_error && typeof item.generation_error.message === "string"
+        ? item.generation_error.message
+        : "";
+      notice.textContent = (serverMessage && serverMessage !== "rate_limited")
+        ? serverMessage
+        : THEME_ATTEMPT_ERROR_TEXT.rate_limited;
       return notice;
     }
     if (item.error_kind === "content_blocked") {
@@ -2542,6 +2556,24 @@
         themeReviewRetryWarnings.delete(item.id);
         retryWarning.textContent = "";
         retryWarning.hidden = true;
+        // Follow-up fix: the stale attempt-status notice ("Theme Service
+        // unavailable — no credits were charged", etc. — buildThemeAttemptStatusNotice
+        // above) used to stay visible right alongside "Generating..." until
+        // the host's full round trip resolved and sent a fresh
+        // THEME_IMAGE_REVIEW. Clear it optimistically the instant a new
+        // attempt starts, both in the DOM (no waiting on the host) and on
+        // the item object itself (so an unrelated re-render — e.g. a
+        // THEME_SERVICE_STATUS push arriving mid-request — can't resurrect
+        // it from stale local state before the real result arrives).
+        if (attemptStatusNotice && attemptStatusNotice.parentNode) {
+          attemptStatusNotice.remove();
+        }
+        item.error_kind = undefined;
+        item.error_code = undefined;
+        item.error_categories = undefined;
+        item.error_fields = undefined;
+        item.generation_error = undefined;
+        item.lastAttemptRefunded = undefined;
         // Per-frame regeneration (feedback #18): forward whichever frame_keys
         // indices are currently selected in the picker above. Empty/absent
         // when nothing is selected — the host then does an ordinary

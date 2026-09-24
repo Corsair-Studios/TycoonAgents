@@ -3882,6 +3882,65 @@ if (typeof module !== "undefined" && module.exports) {
     }
   }
 
+  /**
+   * Root cause of the AI plan review page's "balance missing mid-refresh"
+   * bug: buildThemeAttemptCostLine (020-theme-plan-editor.js) read the
+   * shared `themeServiceStatus` module state directly and only printed a
+   * Balance line when it carried signedIn:true plus a numeric credits — both
+   * of which the host's transient `{pending:true}` stub and any terminal
+   * error/"waking" status (see buildStatus/scheduleStatusRetry in
+   * themeServiceHost.ts) omit while a background refresh is in flight, even
+   * though the account is still signed in the whole time. Unlike the
+   * sticky-header chip (updateThemeBuilderCreditsChip below), the review
+   * page had no fallback of its own, so its Balance line simply vanished.
+   *
+   * This returns `themeServiceStatus` unchanged whenever it already answers
+   * the question (a numeric balance, or a definitive sign-out), and
+   * otherwise fills in the last cached signed-in balance — the same
+   * per-viewer localStorage cache the chip already falls back to — without
+   * mutating the shared `themeServiceStatus` itself, so the panel's own
+   * waking/unreachable routing (which depends on the real, un-merged status)
+   * is unaffected.
+   */
+  function themeServiceStatusWithCachedBalance() {
+    var s = themeServiceStatus;
+    if (s && s.signedIn === true && typeof s.credits === "number") return s;
+    if (s && s.signedIn === false) return s; // definitive sign-out: never show a stale balance
+    // Prefer this viewer's own localStorage cache, then the host's durable
+    // per-device cache (cachedCredits, carried on the status itself — see
+    // ThemeServiceCreditsCache in src/host/vscode/themeServiceHost.ts), so
+    // the balance line survives even when localStorage is empty/cleared.
+    var cached = readCachedThemeServiceStatus();
+    var bestCredits = (cached && cached.signedIn && typeof cached.credits === "number")
+      ? cached.credits
+      : (s && typeof s.cachedCredits === "number" ? s.cachedCredits : undefined);
+    if (typeof bestCredits === "number") {
+      return Object.assign({}, s, { signedIn: true, credits: bestCredits });
+    }
+    return s;
+  }
+
+  /**
+   * Follow-up root cause (header chip going fully HIDDEN, not just stuck on
+   * "…", during a cold-start refresh): the old final fallback here hid the
+   * chip outright whenever a status's `signedIn` field was omitted (every
+   * transient error/timeout/"waking" status — see buildStatus/
+   * scheduleStatusRetry in themeServiceHost.ts — carries no signedIn on
+   * purpose) AND the per-viewer localStorage cache had nothing to say
+   * either (empty on a private window, cleared site data, or simply a fresh
+   * webview origin — VS Code webview localStorage is not a guaranteed
+   * durable store). That combination is exactly what a slow Theme Service
+   * cold start produces: the host posts a transient/"waking" status while
+   * the slow fetch is in flight, and if this webview instance never wrote a
+   * local cache entry (or it was cleared), the chip vanished.
+   *
+   * Fix: hide the chip ONLY on a definitive sign-out (`signedIn === false`).
+   * Every other status shows the best last-known balance — preferring the
+   * live value, then the localStorage cache, then the host's durable
+   * `cachedCredits` (ExtensionContext.globalState, survives a restart/
+   * cleared storage) — or "…" when nothing is known yet.
+   * @param {any} status
+   */
   function updateThemeBuilderCreditsChip(status) {
     if (!themeBuilderCreditsChip && !themeBuilderCreditsPill) return;
     var s = status;
@@ -3893,13 +3952,24 @@ if (typeof module !== "undefined" && module.exports) {
       clearThemeCreditsChipPendingTimeout();
       themeCreditsChipRetryInFlight = false;
     }
+
+    // Best known balance across all three sources, live value aside:
+    // localStorage first (this viewer's own last render), then the host's
+    // durable per-device cache carried on the status itself. Never trusted
+    // when the localStorage cache explicitly recorded a sign-out (its
+    // credits is already undefined in that case, so this naturally yields
+    // nothing).
+    var bestCachedCredits = (cached && typeof cached.credits === "number")
+      ? cached.credits
+      : (s && typeof s.cachedCredits === "number" ? s.cachedCredits : undefined);
+
     // p87: no status yet at all (host reply still in flight, or arrived as
-    // the { pending: true } stub) — fall back to the last cached status so
-    // the chip isn't blank on first open, and if there's no cache either,
+    // the { pending: true } stub) — fall back to the last known balance so
+    // the chip isn't blank on first open, and if nothing is known either,
     // show "…" (loading) rather than hiding it outright.
     if (!s || s.pending) {
-      if (cached && cached.signedIn && typeof cached.credits === "number") {
-        setThemeCreditsDisplay(cached.credits + " credits", "", false);
+      if (typeof bestCachedCredits === "number") {
+        setThemeCreditsDisplay(bestCachedCredits + " credits", "", false);
         return;
       }
       // A genuine { pending: true } stub means a request is in flight —
@@ -3926,35 +3996,31 @@ if (typeof module !== "undefined" && module.exports) {
       writeCachedThemeServiceStatus(s);
       return;
     }
-    // p87: signed in (or an in-flight error/timeout/waking status whose
-    // signedIn field wasn't carried, but the cache says we were signed in)
-    // with no fetchable balance — never hide outright; show the last known
-    // number, or an explicit placeholder with a title explaining why.
-    var signedInKnown = s.signedIn === true || (s.signedIn == null && Boolean(cached && cached.signedIn));
-    if (signedInKnown) {
-      if (cached && typeof cached.credits === "number") {
-        setThemeCreditsDisplay(cached.credits + " credits", "Showing your last known balance — could not refresh it just now.", false);
-      } else {
-        setThemeCreditsDisplay("— credits", "Could not fetch your credit balance.", false);
-      }
-      // p89 fix: this branch previously never wrote the cache, so a signed-in
-      // status that arrived without a numeric balance (e.g. the account
-      // refetch failing) left nothing for a LATER error to fall back to —
-      // the chip could go straight from this placeholder to fully hidden.
-      // Cache signedIn:true even without a credits number now, so a future
-      // update at least knows to stay in this branch instead of falling
-      // through to "hide". When s itself carries no numeric credits, merge
-      // in any numeric credits already cached so this write doesn't wipe a
-      // previously known balance (e.g. a stale signed-in-but-creditless
-      // status overwriting a cached 500 with undefined).
+    // Root-cause fix: every other terminal state — signed in with no
+    // fetchable balance, OR a transient error/timeout/"waking" status whose
+    // signedIn field wasn't carried at all — must never hide the chip. Show
+    // the best known balance when there is one (from either cache).
+    if (typeof bestCachedCredits === "number") {
+      setThemeCreditsDisplay(bestCachedCredits + " credits", "Showing your last known balance — could not refresh it just now.", false);
+      // p89 fix: write the cache here too, so a THEN later error status still
+      // has something to fall back to (never let a placeholder overwrite a
+      // previously known number with undefined).
       writeCachedThemeServiceStatus(
         typeof s.credits === "number" || !(cached && typeof cached.credits === "number")
           ? s
-          : { signedIn: s.signedIn, credits: cached.credits }
+          : { signedIn: true, credits: bestCachedCredits }
       );
       return;
     }
-    setThemeCreditsDisplay("", "", true);
+    if (s.signedIn === true) {
+      setThemeCreditsDisplay("— credits", "Could not fetch your credit balance.", false);
+      writeCachedThemeServiceStatus(s);
+      return;
+    }
+    // Nothing known at all (no live number, no cache of any kind) and
+    // signedIn wasn't even carried — still never hide; show the loading
+    // indicator rather than claim a sign-out this status never asserted.
+    setThemeCreditsDisplay("…", "Still checking your account status…", false);
   }
 
   // p86: fire the status request as soon as this script runs — previously
@@ -3963,7 +4029,20 @@ if (typeof module !== "undefined" && module.exports) {
   // the Theme Builder in a session always raced the host's fetch and the
   // credits chip sat blank until it resolved. Also paint the last cached
   // status immediately so there's no visible gap at all when the tab opens.
-  updateThemeBuilderCreditsChip(null);
+  //
+  // Also seed the shared `themeServiceStatus` module state itself (not just
+  // the chip's own display) from the cache, marked pending:true — this is
+  // what the AI plan review page's balance line (buildThemeAttemptCostLine,
+  // 020-theme-plan-editor.js) reads directly, so it shows the last-known
+  // balance immediately too instead of waiting on the first real
+  // THEME_SERVICE_STATUS round trip.
+  (function seedThemeServiceStatusFromCache() {
+    var cachedSeed = readCachedThemeServiceStatus();
+    if (cachedSeed && cachedSeed.signedIn && typeof cachedSeed.credits === "number") {
+      themeServiceStatus = { signedIn: true, credits: cachedSeed.credits, pending: true };
+    }
+  })();
+  updateThemeBuilderCreditsChip(themeServiceStatus);
   requestThemeServiceStatus();
 
   function tspClear(el) {
@@ -7467,7 +7546,9 @@ if (typeof module !== "undefined" && module.exports) {
   function buildThemeAttemptCostLine(item, payload) {
     const line = document.createElement("div");
     line.className = "theme-attempt-cost";
-    const status = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
+    const status = typeof themeServiceStatusWithCachedBalance !== "undefined"
+      ? themeServiceStatusWithCachedBalance()
+      : (typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null);
     const pricing = status && status.pricing;
     const byBoard = pricing && pricing.attemptCostByBoardType;
     const knownCost = byBoard && typeof byBoard[item.boardType] === "number" ? byBoard[item.boardType] : undefined;
@@ -7536,7 +7617,19 @@ if (typeof module !== "undefined" && module.exports) {
     if (item.error_kind === "rate_limited") {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-ratelimited";
-      notice.textContent = THEME_ATTEMPT_ERROR_TEXT.rate_limited;
+      // Follow-up fix: the backend's actual message (built server-side from
+      // scope/limit/retryAfterSeconds — see buildRateLimitedMessage in
+      // src/core/themeServiceClient.ts) names the real per-minute/per-day
+      // limit and wait time; showing only the generic static copy here
+      // discarded that detail. Fall back to the generic copy only when the
+      // server didn't send usable free text (older backend, or the bare
+      // "rate_limited" kind string echoed back as the message).
+      var serverMessage = item.generation_error && typeof item.generation_error.message === "string"
+        ? item.generation_error.message
+        : "";
+      notice.textContent = (serverMessage && serverMessage !== "rate_limited")
+        ? serverMessage
+        : THEME_ATTEMPT_ERROR_TEXT.rate_limited;
       return notice;
     }
     if (item.error_kind === "content_blocked") {
@@ -8078,6 +8171,24 @@ if (typeof module !== "undefined" && module.exports) {
         themeReviewRetryWarnings.delete(item.id);
         retryWarning.textContent = "";
         retryWarning.hidden = true;
+        // Follow-up fix: the stale attempt-status notice ("Theme Service
+        // unavailable — no credits were charged", etc. — buildThemeAttemptStatusNotice
+        // above) used to stay visible right alongside "Generating..." until
+        // the host's full round trip resolved and sent a fresh
+        // THEME_IMAGE_REVIEW. Clear it optimistically the instant a new
+        // attempt starts, both in the DOM (no waiting on the host) and on
+        // the item object itself (so an unrelated re-render — e.g. a
+        // THEME_SERVICE_STATUS push arriving mid-request — can't resurrect
+        // it from stale local state before the real result arrives).
+        if (attemptStatusNotice && attemptStatusNotice.parentNode) {
+          attemptStatusNotice.remove();
+        }
+        item.error_kind = undefined;
+        item.error_code = undefined;
+        item.error_categories = undefined;
+        item.error_fields = undefined;
+        item.generation_error = undefined;
+        item.lastAttemptRefunded = undefined;
         // Per-frame regeneration (feedback #18): forward whichever frame_keys
         // indices are currently selected in the picker above. Empty/absent
         // when nothing is selected — the host then does an ordinary

@@ -133,6 +133,72 @@ export interface ThemeServiceError {
   categories?: string[];
   /** content_blocked only: the request field paths the backend flagged (corsair-theme-service's userTextFields, e.g. "slot[2].visual_description", "theme.creativeDirection"). Absent on an older backend, and absent on the likeness/IP precheck block (that shape has no `fields`). */
   fields?: string[];
+  /**
+   * rate_limited only: which limit was hit — "minute"/"day" (this account's
+   * own request rate) or "provider" (the underlying image provider is
+   * rate-limiting the whole service). Absent on an older backend that only
+   * sends the bare `{ error: "rate_limited" }` shape.
+   */
+  scope?: "minute" | "day" | "provider";
+  /** rate_limited only: the numeric limit the backend enforced (e.g. 5 generations/minute), when it sent one. Never guessed/hard-coded by the client. */
+  limit?: number;
+  /** rate_limited only: how long to wait before retrying, in whole seconds — from the response body's `retryAfterSeconds` field, falling back to the `Retry-After` header (seconds form) when the body omits it. Undefined when neither is present/parseable. */
+  retryAfterSeconds?: number;
+}
+
+/** Whole, non-negative seconds, rendered compactly (e.g. "12s"). */
+function formatWaitSeconds(seconds: number): string {
+  return `${Math.max(0, Math.round(seconds))}s`;
+}
+
+/** A day-scope wait rendered in hours (>= 1h) or minutes, whichever reads naturally — never seconds, per the rate-limit message contract. */
+function formatDayWait(seconds: number): string {
+  if (seconds >= 3600) {
+    const hours = Math.max(1, Math.round(seconds / 3600));
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/**
+ * Builds the rate_limited message text shown to the user, from whatever the
+ * backend's 429 body/Retry-After header actually carried. This is the
+ * single place this text is built — both the sign-in/status path
+ * (themeServiceHost.ts's toErrorPayload just passes it through) and
+ * per-item image-generation errors (themeService.ts, which shares this same
+ * ThemeServiceClient) get their ThemeServiceError from here, so both surface
+ * the same wording. Every number in the result comes from the response; a
+ * field the backend omitted (an older backend, or this particular limit
+ * having no numeric value) is simply left out of the sentence rather than
+ * guessed/hard-coded.
+ */
+function buildRateLimitedMessage(
+  scope: "minute" | "day" | "provider" | undefined,
+  limit: number | undefined,
+  retryAfterSeconds: number | undefined,
+): string {
+  if (scope === "provider") {
+    const wait = retryAfterSeconds !== undefined
+      ? ` Try again in ${formatWaitSeconds(retryAfterSeconds)}, or generate fewer at once.`
+      : " Try again shortly, or generate fewer at once.";
+    return `The image service is busy right now.${wait} No credits were charged.`;
+  }
+
+  if (scope === "minute" || scope === "day") {
+    let message = "Too many requests";
+    if (limit !== undefined) message += ` — the Theme Service allows up to ${limit} generations per ${scope}`;
+    message += ".";
+    if (retryAfterSeconds !== undefined) {
+      const wait = scope === "day" ? formatDayWait(retryAfterSeconds) : formatWaitSeconds(retryAfterSeconds);
+      message += ` Try again in ${wait}.`;
+    }
+    return `${message} No credits were charged.`;
+  }
+
+  // Older backend (no scope on the response at all) — the original generic
+  // text, never inventing numbers it doesn't have.
+  return "Too many requests, try again shortly. No credits were charged.";
 }
 
 export type ThemeServiceResult<T> = { ok: true; value: T } | { ok: false; error: ThemeServiceError };
@@ -348,6 +414,17 @@ export interface ThemeServiceClient {
    * Sign in) when a definitive signedIn can't be determined.
    */
   hasStoredSession(): Promise<boolean>;
+  /**
+   * Follow-up fix: a display-only, best-effort user id for the stored
+   * session, decoded from the JWT access token's payload — NO signature
+   * verification (this is never trusted for anything security-sensitive,
+   * only to seed which account's cached balance may be shown before the
+   * first status fetch resolves). Same no-network posture as
+   * {@link hasStoredSession}. Returns undefined when there's no stored
+   * session, the token doesn't parse, or it carries neither an `email` nor
+   * a `sub` claim. Never logs the token itself.
+   */
+  getStoredIdentity(): Promise<string | undefined>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -356,6 +433,30 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function invalidResponse(message: string): ThemeServiceError {
   return { kind: "invalid_response", message };
+}
+
+/**
+ * Follow-up fix: decodes a JWT's payload segment WITHOUT verifying its
+ * signature, purely to read a display-only identity claim (email, falling
+ * back to sub) — see {@link ThemeServiceClient.getStoredIdentity}'s doc
+ * comment for why unverified is acceptable here. Never throws; any
+ * malformed/unexpected shape yields undefined. Never logs the token.
+ */
+function decodeJwtIdentityUnsafe(token: string): string | undefined {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return undefined;
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4 !== 0) b64 += "=";
+    const jsonStr = typeof atob === "function" ? atob(b64) : Buffer.from(b64, "base64").toString("utf8");
+    const payload: unknown = JSON.parse(jsonStr);
+    if (!isRecord(payload)) return undefined;
+    if (typeof payload.email === "string" && payload.email.length > 0) return payload.email;
+    if (typeof payload.sub === "string" && payload.sub.length > 0) return payload.sub;
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---- base64url + PKCE (no node:crypto — Web Crypto only, with a pure-TS
@@ -980,8 +1081,36 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
             },
           };
         }
-        case 429:
-          return { status: "error", error: { kind: "rate_limited", status: 429, message: errorField ?? "rate limited" } };
+        case 429: {
+          // v3.6 backend (not yet deployed everywhere): { error: "rate_limited",
+          // scope: "minute"|"day"|"provider", limit?, retryAfterSeconds? } plus
+          // a Retry-After header. All fields are parsed defensively — an
+          // older backend's bare { error: "rate_limited" } (no scope/limit/
+          // retryAfterSeconds, no header) still works exactly as before.
+          const scope = errBody.scope === "minute" || errBody.scope === "day" || errBody.scope === "provider"
+            ? errBody.scope
+            : undefined;
+          const limit = typeof errBody.limit === "number" && Number.isFinite(errBody.limit) ? errBody.limit : undefined;
+          let retryAfterSeconds = typeof errBody.retryAfterSeconds === "number" && Number.isFinite(errBody.retryAfterSeconds) && errBody.retryAfterSeconds >= 0
+            ? errBody.retryAfterSeconds
+            : undefined;
+          if (retryAfterSeconds === undefined) {
+            const headerVal = res.headers.get("Retry-After");
+            const parsedHeader = headerVal !== null ? Number(headerVal) : NaN;
+            if (Number.isFinite(parsedHeader) && parsedHeader >= 0) retryAfterSeconds = parsedHeader;
+          }
+          return {
+            status: "error",
+            error: {
+              kind: "rate_limited",
+              status: 429,
+              message: buildRateLimitedMessage(scope, limit, retryAfterSeconds),
+              scope,
+              limit,
+              retryAfterSeconds,
+            },
+          };
+        }
         case 502:
           return {
             status: "error",
@@ -994,7 +1123,14 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
           // use a fixed, readable message here instead of trusting
           // `errorField`; nothing about the raw field is lost since callers
           // only ever consult `kind` for behavior.
-          return { status: "error", error: { kind: "unavailable", status: 503, message: "Theme Service unavailable (503). No credits were charged." } };
+          return {
+            status: "error",
+            error: {
+              kind: "unavailable",
+              status: 503,
+              message: "Theme Service unavailable (503). No credits were charged. If you started several generations at once, try fewer at a time.",
+            },
+          };
         default:
           return {
             status: "error",
@@ -1047,6 +1183,12 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   return {
     async hasStoredSession() {
       return (await loadSession()) !== null;
+    },
+
+    async getStoredIdentity() {
+      const session = await loadSession();
+      if (!session) return undefined;
+      return decodeJwtIdentityUnsafe(session.accessToken);
     },
 
     async requestMagicLink(email) {

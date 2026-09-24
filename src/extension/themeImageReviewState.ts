@@ -143,6 +143,17 @@ export interface ThemeImageReviewItem {
   /** content_blocked only: the request field paths the backend flagged (e.g. "slot[2].visual_description"). Absent on an older backend or on the likeness/IP block shape. */
   error_fields?: string[];
   /**
+   * Review fix: THEME_SERVICE_HOST_SESSION_ID (src/extension/themeServiceHostSession.ts)
+   * at the moment this error_kind was recorded — one random id per
+   * extension-host activation. panel.ts's _postThemeImageReview compares
+   * this against the CURRENT session id to tell a live failure (this run)
+   * from one persisted by an earlier process (a genuine reload/restart):
+   * only a TRANSIENT error_kind whose error_session is missing or differs
+   * from the current id is dropped from the outgoing payload. Set on every
+   * write from setThemeImageReviewErrorKind; cleared alongside error_kind.
+   */
+  error_session?: string;
+  /**
    * The Corsair Theme Service pricing key for this board (docs/theme-service-api.md's
    * `attemptCostByBoardType` — e.g. "roster_agent", "objects_01") — see
    * themeService.ts's boardTypeForItem, the single source of truth for this
@@ -308,6 +319,67 @@ export async function setThemeImageGenerationError(
   });
 }
 
+/**
+ * Follow-up fix: which persisted {@link ThemeImageReviewItem.error_kind}
+ * values describe a TRANSIENT failure of the status/generation fetch itself
+ * (a cold Theme Service backend, a rate limit, the underlying image
+ * provider briefly failing) rather than something durably true about this
+ * item's request. A transient kind must never be shown again after a
+ * reload/VS Code restart just because nothing retried it in the meantime —
+ * see panel.ts's _postThemeImageReview, which sanitizes these out of every
+ * outgoing THEME_IMAGE_REVIEW payload the same way it already does for a
+ * stale "not_signed_in". Kinds left OUT of this set (content_blocked,
+ * account_locked, not_signed_in, insufficient_credits, bad_request) are
+ * durable: they describe something the user needs to actually act on
+ * (revise the description, sign in, buy credits, fix a validation error),
+ * so they persist until a real retry or edit resolves them.
+ */
+const TRANSIENT_IMAGE_REVIEW_ERROR_KINDS: ReadonlySet<string> = new Set([
+  'unavailable',
+  'unreachable',
+  'rate_limited',
+  'provider_failed',
+]);
+
+export function isTransientThemeImageReviewErrorKind(kind: string | undefined): boolean {
+  return typeof kind === 'string' && TRANSIENT_IMAGE_REVIEW_ERROR_KINDS.has(kind);
+}
+
+/**
+ * Follow-up fix: clears a slot's persisted error state (error_kind and its
+ * detail fields, plus the separate OpenAI-moderation-shaped
+ * generation_error) the moment a NEW attempt starts — called from
+ * retryThemeImage/generateOrResumeThemeItem in themeService.ts, right
+ * before doing any actual generation work, so a reload mid-attempt never
+ * shows the PREVIOUS attempt's error while a fresh one is in flight. A
+ * no-op (no extra write) when the item already carries no error. Success
+ * clears these same fields again via its own upsertThemeImageReviewItem
+ * write (belt-and-suspenders, and the only place attemptCost/
+ * lastAttemptRefunded get their real values).
+ */
+export async function clearThemeImageReviewItemError(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  itemId: string,
+): Promise<ThemeImageReviewDocument | undefined> {
+  return withThemeReviewDocumentLock(themeId, async () => {
+    const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+    if (!document) return undefined;
+    const item = document.items.find((candidate) => candidate.id === itemId);
+    if (!item) return undefined;
+    if (!item.generation_error && !item.error_kind) return document;
+    item.generation_error = undefined;
+    item.error_kind = undefined;
+    item.error_code = undefined;
+    item.error_categories = undefined;
+    item.error_fields = undefined;
+    item.error_session = undefined;
+    item.updated_at = new Date().toISOString();
+    await writeReviewDocument(globalStorageUri, document);
+    return document;
+  });
+}
+
 /** Records a Corsair Theme Service attempt failure's distinct error kind (p43-t1) — sibling of setThemeImageGenerationError, for THEME_SERVICE-originated failures rather than OpenAI moderation blocks. */
 export async function setThemeImageReviewErrorKind(
   globalStorageUri: ThemeStorageRoot,
@@ -319,6 +391,16 @@ export async function setThemeImageReviewErrorKind(
   errorCode?: string,
   errorCategories?: string[],
   errorFields?: string[],
+  /**
+   * Review fix: the current THEME_SERVICE_HOST_SESSION_ID (caller-supplied
+   * — this module stays vscode-free and doesn't import it itself), stamped
+   * onto the item so _postThemeImageReview can tell "recorded THIS run" from
+   * "left over from an earlier process". Omitted by an older/test caller —
+   * that item then reads as "no session", which a transient kind treats the
+   * same as a mismatched one (dropped), never worse than before this field
+   * existed.
+   */
+  errorSession?: string,
 ): Promise<ThemeImageReviewDocument | undefined> {
   return withThemeReviewDocumentLock(themeId, async () => {
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -330,6 +412,7 @@ export async function setThemeImageReviewErrorKind(
     item.error_code = errorCode;
     item.error_categories = errorCategories;
     item.error_fields = errorFields;
+    item.error_session = errorSession;
     if (refunded !== undefined) item.lastAttemptRefunded = refunded;
     if (attemptCost !== undefined) item.attemptCost = attemptCost;
     item.updated_at = new Date().toISOString();
