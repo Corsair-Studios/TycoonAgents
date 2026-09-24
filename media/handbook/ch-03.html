@@ -138,6 +138,36 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
       only so far, not yet wired into the hook's dispatch path.
     </p>
   </div>
+  <div class="callout note">
+    <span class="callout-label">Grok (xAI) via OpenCode</span>
+    <p>
+      OpenCode ships a built-in <code>xai</code> provider, so an agent can be
+      routed to a Grok model (<code>xai/&lt;model&gt;</code>) under the
+      OpenCode host directly, no bridge involved. Authenticate with an API
+      key stored under <code>XAI_API_KEY</code> in the Routing screen (names
+      only; the value never leaves your machine). OpenCode's docs also
+      mention a SuperGrok/X&nbsp;Premium subscription login via
+      <code>/connect</code> as an alternative &mdash; that path is
+      unverified here, sourced from a third-party guide rather than a live
+      OpenCode install.
+    </p>
+  </div>
+  <div class="callout note">
+    <span class="callout-label">Grok (xAI) via Claude Code</span>
+    <p>
+      Claude Code itself has no native Grok support, but the optional
+      "Multi-LLM agents" pack's <strong>Grok Reviewer</strong> agent reaches
+      it through the same <code>openai-compatible</code> MCP bridge Kimi
+      Reviewer uses &mdash; a Claude subagent relays each call to xAI's
+      OpenAI-compatible endpoint (<code>https://api.x.ai/v1</code>), so a
+      few Claude tokens are spent per call on top of Grok's own usage, and
+      Grok only ever sees what that agent passes it, never this
+      conversation's full context. Set <code>XAI_API_KEY</code> as an
+      environment variable; the bridge picks it up automatically for any
+      <code>xai/&hellip;</code> model id without further configuration. See
+      <code>docs/AGENT-BACKENDS.md</code> for the full wiring.
+    </p>
+  </div>
 
   <div class="section-head">
     <div class="s-title">&sect; 3.5 &middot; What differs on screen</div>

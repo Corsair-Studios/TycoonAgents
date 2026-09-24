@@ -118,6 +118,13 @@
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
     "alibaba/qwen3": { perMtok: 1.5, weight: 1 },
+    // xAI Grok, via OpenCode's built-in xai provider (no native Claude/Codex
+    // host) — source https://docs.x.ai/developers/models, fetched 2026-09-23,
+    // <200k-token pricing tier. grok-4.7 (flagship reasoning): $2 in / $6 out
+    // -> blended (3*2+6)/4 = 3. grok-build-0.1 (cheap/fast): $1 in / $2 out
+    // -> blended (3*1+2)/4 = 1.25. Refresh via the update-pricing skill.
+    "xai/grok-4.7": { perMtok: 3, weight: 4 },
+    "xai/grok-build-0.1": { perMtok: 1.25, weight: 1 },
   };
 
   /** Legacy alias, kept for any external readers: opus/sonnet/haiku/fable -> perMtok only. */
@@ -704,6 +711,11 @@
     // codex-* collides with an Anthropic family substring above.
     if (s.includes("gpt") || s.includes("codex")) {
       return "subscription";
+    }
+    // xAI Grok, via OpenCode's built-in xai provider (see PRICE_TABLE above)
+    // — API-key metered, like the Anthropic families, not a CLI subscription.
+    if (s.includes("xai") || s.includes("grok")) {
+      return "metered";
     }
     // FORWARD-LOOKING, NOT YET VERIFIED: no local provider (Ollama/LM
     // Studio) is live yet per docs/provider-contract.md section 4 ("this

@@ -158,6 +158,7 @@
     "check:webview-sync": "node scripts/check-webview-sync.mjs",
     "check:webview": "node scripts/check-webview-sync.mjs && node scripts/check-webview.mjs",
     "test:python": "node scripts/test-python.mjs",
+    "smoke-test:grok": "node scripts/smoke-test-grok-bridge.mjs",
     "test:standalone": "npm --prefix standalone test",
     "lint": "eslint .",
     "build": "npm run build:webview && tsc -p . && npm run copy:hookruntime",

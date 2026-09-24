@@ -134,6 +134,19 @@ test("a genuinely unrecognized bare model id also falls back to DEFAULT_PRICE_KE
   assert.ok(typeof price === "number" && Number.isFinite(price) && price > 0);
 });
 
+test("'xai/grok-4.7' (flagship reasoning Grok, OpenCode-only) resolves to a non-zero, metered price", () => {
+  const key = mod.resolvePriceKey("xai/grok-4.7");
+  assert.equal(key, "xai/grok-4.7");
+  assert.equal(mod.costModelClass("xai/grok-4.7"), "metered");
+  assert.equal(mod.modelPricePerMtok("xai/grok-4.7"), 3);
+});
+
+test("'xai/grok-build-0.1' (fast/cheap Grok) resolves to a non-zero, metered price", () => {
+  const key = mod.resolvePriceKey("xai/grok-build-0.1");
+  assert.equal(key, "xai/grok-build-0.1");
+  assert.equal(mod.modelPricePerMtok("xai/grok-build-0.1"), 1.25);
+});
+
 // ---------------------------------------------------------------------------
 // subscription / local cost classes: null price, distinct label.
 // ---------------------------------------------------------------------------

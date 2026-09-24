@@ -363,6 +363,46 @@ test('generate-opencode-config: full contract', { skip: !scriptExists() && 'scri
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  await t.test('routing.json: an xai vendor/model (OpenCode-only Grok) resolves to a valid provider/model agent config', () => {
+    const root = setupFixtureRoot();
+    fs.writeFileSync(
+      path.join(root, '.claude', 'tycoon', 'routing.json'),
+      JSON.stringify({
+        version: 1,
+        agents: {
+          'ccc-overridden': {
+            vendor: 'xai',
+            transport: 'claude-native',
+            model: 'xai/grok-4.7',
+            costModelClass: 'metered',
+            credentialEnv: 'XAI_API_KEY',
+          },
+        },
+      }, null, 2),
+      'utf8',
+    );
+
+    const result = runGenerator(root);
+    assert.equal(result.status, 0, `generator should exit 0; stderr: ${result.stderr}`);
+
+    const { frontmatter } = parseFrontmatter(readGenerated(root, 'ccc-overridden'));
+    assert.match(frontmatter, /model:\s*xai\/grok-4\.7/);
+
+    const generatedRoutingPath = path.join(root, '.opencode', 'tycoon-routing.generated.json');
+    const generatedRouting = JSON.parse(fs.readFileSync(generatedRoutingPath, 'utf8'));
+    assert.equal(generatedRouting.agents['ccc-overridden'].model, 'xai/grok-4.7');
+
+    // xai is a native OpenCode provider (no openai-compatible bridge), so no
+    // opencode.json provider entry should be created for it.
+    const opencodeJsonPath = path.join(root, 'opencode.json');
+    if (fs.existsSync(opencodeJsonPath)) {
+      const opencodeJson = JSON.parse(fs.readFileSync(opencodeJsonPath, 'utf8'));
+      assert.ok(!opencodeJson.provider || !opencodeJson.provider.xai, 'no managed opencode.json provider entry for the native xai vendor');
+    }
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   await t.test('routing.json: invalid profile exits 2 with error text and writes nothing', () => {
     const root = setupFixtureRoot();
     fs.writeFileSync(

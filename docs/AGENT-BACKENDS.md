@@ -141,11 +141,138 @@ backend:
 ...
 ```
 
+### claude-native, foreign vendor — Grok (xAI) via OpenCode (native, no bridge)
+
+OpenCode ships a built-in `xai` provider (https://opencode.ai/docs/providers/,
+model ids in `xai/<model>` form), so under the OpenCode host this vendor runs
+natively — no MCP bridge, no relaying agent, and no per-call Claude-token
+overhead (`transport: claude-native` — this project's generic "handled
+natively by the host, no bridge required" value, same as the `opencode`
+vendor's own presets in `src/core/routingHostOps.ts`). Auth is `XAI_API_KEY`
+(names only — the value is never stored in this repo; see
+`src/core/localEnvStore.ts`). OpenCode's docs also describe a SuperGrok/
+X Premium `/connect` OAuth login as an alternative to an API key; that path
+is unverified here (sourced from a third-party guide, not confirmed against
+a live OpenCode install).
+
+```yaml
+---
+model: sonnet
+backend:
+  vendor: xai
+  transport: claude-native
+  model: xai/grok-4.7
+  costModelClass: metered
+  apiKeyEnv: XAI_API_KEY
+---
+
+# some-agent
+...
+```
+
+Reasoning-effort control for Grok under OpenCode is not documented anywhere
+this project has checked — `backend.reasoningEffort` (see above) is left
+unset for this vendor rather than guessed at.
+
+### openai-compatible, foreign vendor — Grok (xAI) via Claude Code (bridged)
+
+Claude Code has no native Grok host. Under Claude Code, xAI's Grok is reached
+the same way Kimi is (see the Kimi example above): a Claude subagent —
+`grok-reviewer`, shipped in the optional "Multi-LLM agents" pack alongside
+`kimi-reviewer` (`src/host/vscode/packCatalog.ts`'s `FOREIGN_LLM_AGENTS`,
+`media/packs/catalog.json` id `multi-llm`) — relays the call through the same
+`openai-compatible` MCP server (`hooks/openai-compatible-mcp.cjs`). This
+wrapper spends a few Claude tokens per call on top of Grok's own token usage
+(the relaying subagent's own turn), and Grok only ever sees what that agent
+passes it in `prompt`/`messages`/`system` — never this conversation's wider
+context.
+
+xAI's API is itself OpenAI-compatible (base URL `https://api.x.ai/v1`, bearer
+auth, `/v1/chat/completions` — verified against https://docs.x.ai), so rather
+than requiring a second global MCP server process, `hooks/openai-compatible-
+mcp.cjs` carries a small `VENDOR_DEFAULTS` table keyed by model-id prefix.
+For a `xai/`-prefixed model, this bridge uses a **dedicated** endpoint/key
+pair, completely separate from the generic `OPENAI_COMPAT_BASE_URL`/
+`OPENAI_COMPAT_API_KEY` a Kimi/Qwen/local-endpoint user configures — the two
+are never mixed, so a Kimi user's Grok calls can never leak to the Kimi host
+under the Kimi key (or vice versa):
+
+- **Base URL:** `XAI_BASE_URL` if set, else `https://api.x.ai/v1`.
+- **API key:** `XAI_API_KEY` only — there is no fallback to
+  `OPENAI_COMPAT_API_KEY` for a prefixed model. If `XAI_API_KEY` is unset,
+  the bridge returns `isError:true` naming `XAI_API_KEY` (never a silent
+  fallback, never a leaked value).
+- **Model id:** the `xai/` prefix is stripped before the request reaches
+  xAI (its API rejects the prefixed id) — pricing/metrics elsewhere in this
+  project (`media/src/main/080-packs-events.js`'s `PRICE_TABLE`) still key
+  off the prefixed id (`xai/grok-build-0.1`); the bridge is the only place
+  that ever sees the stripped form, on the outgoing HTTP request only.
+
+An unprefixed model (e.g. `moonshot/kimi-k2`) keeps today's
+`OPENAI_COMPAT_BASE_URL`/`OPENAI_COMPAT_API_KEY` behavior unchanged. Set
+`XAI_API_KEY` as an environment variable (`XAI_BASE_URL` only if you need to
+override the default host) and no other configuration is required for the
+bridge, per this repo's
+[Path & Environment Discovery](../CLAUDE.md#path--environment-discovery-core-principle)
+principle.
+
+```yaml
+---
+model: sonnet
+backend:
+  vendor: xai
+  transport: openai-compatible
+  mcpServer: openai-compatible
+  tools: [chat]
+  model: xai/grok-build-0.1
+  costModelClass: metered
+  endpointEnv: XAI_BASE_URL
+  apiKeyEnv: XAI_API_KEY
+---
+
+# grok-reviewer
+...
+```
+
+`xai/grok-build-0.1` (fast/cheap, $1 in / $2 out per MTok) is the default
+model for routine review calls; `xai/grok-4.7` (flagship reasoning, $2 in /
+$6 out per MTok) is available on the same bridge for reviews that need it.
+Both model ids are shared with the OpenCode-native preset above, so pricing
+lookups (`media/src/main/080-packs-events.js`'s `PRICE_TABLE`) resolve
+identically regardless of which path (native or bridged) produced the usage.
+
 At runtime, a caller resolves `endpointEnv`/`apiKeyEnv` by reading
-`process.env.OPENAI_COMPAT_BASE_URL` / `process.env.OPENAI_COMPAT_API_KEY` —
-this schema only names which env vars to read, per this repo's
+`process.env.OPENAI_COMPAT_BASE_URL` / `process.env.OPENAI_COMPAT_API_KEY` for
+an unprefixed model, or `process.env.XAI_API_KEY` (and optionally
+`process.env.XAI_BASE_URL`) for a `xai/`-prefixed one — this schema only
+names which env vars to read, per this repo's
 [Path & Environment Discovery](../CLAUDE.md#path--environment-discovery-core-principle)
 principle of never baking a machine-specific URL or secret into a file.
+
+#### Smoke-testing the bridge
+
+`scripts/smoke-test-grok-bridge.mjs` (`npm run smoke-test:grok`) spawns the
+real `hooks/openai-compatible-mcp.cjs` server and sends one tiny `chat` call
+against `xai/grok-build-0.1`, printing only the model's reply and token
+usage — never the key. The key is always read from the environment, never
+passed as an argument. Run it with `XAI_API_KEY` set in the environment:
+
+```
+# bash/zsh
+XAI_API_KEY=... npm run smoke-test:grok
+```
+
+```powershell
+# PowerShell — if XAI_API_KEY is already set as a user/session env var,
+# just run the script; otherwise set it for the session first:
+$env:XAI_API_KEY = "..."
+npm run smoke-test:grok
+```
+
+This makes a real call to `https://api.x.ai/v1` and spends a small amount of
+real xAI credit; it is a manual, deliberate check, not part of the
+automated test suite (`test/`, `standalone/test/`), which covers the bridge
+with fakes/mocks only, no network.
 
 ## API
 
@@ -220,8 +347,10 @@ holding any credential themselves.
 
 ### Getting these agents on a fresh install
 
-A fresh install obtains these four agents via the optional **Multi-LLM
+A fresh install obtains these agents — Codex Reviewer, Gemini Reviewer, Kimi
+Reviewer, Grok Reviewer, and Claude Worker — via the optional **Multi-LLM
 agents** pack (`media/packs/catalog.json`, id `multi-llm`) from the panel's
 Packs view. Install it only after configuring the matching MCP server
-(codex, gemini, openai-compatible, or claude-cli); the pack has no single
-MCP dependency, so the panel does not show a needs-MCP badge for it.
+(codex, gemini, openai-compatible — shared by Kimi Reviewer and Grok
+Reviewer — or claude-cli); the pack has no single MCP dependency, so the
+panel does not show a needs-MCP badge for it.

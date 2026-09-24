@@ -16,12 +16,13 @@ const EXPECTED_BACKEND: Record<string, { vendor: string; transport: string; mode
   "codex-reviewer": { vendor: "openai", transport: "mcp", model: "openai/gpt-5.6-sol", costModelClass: "subscription" },
   "gemini-reviewer": { vendor: "google", transport: "mcp", model: "google/gemini-2.5-pro", costModelClass: "metered" },
   "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2", costModelClass: "local" },
+  "grok-reviewer": { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },
   "claude-worker": { vendor: "anthropic", transport: "mcp", model: "anthropic/claude-sonnet-4-6", costModelClass: "subscription" },
 };
 
-test("FOREIGN_LLM_AGENTS has exactly the 4 expected ids", () => {
+test("FOREIGN_LLM_AGENTS has exactly the 5 expected ids", () => {
   const ids = FOREIGN_LLM_AGENTS.map((a) => a.id).sort();
-  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "kimi-reviewer"]);
+  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer"]);
 });
 
 for (const agent of FOREIGN_LLM_AGENTS) {
@@ -85,7 +86,7 @@ test("media/packs/catalog.json ships a multi-llm pack with the 4 foreign-LLM age
   const pack = catalog.find((p) => p.id === "multi-llm");
   assert.ok(pack, "multi-llm pack must exist in the catalog");
   const ids = pack.agents.map((a: any) => a.id).sort();
-  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "kimi-reviewer"]);
+  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer"]);
   for (const a of pack.agents) {
     const md = buildAgentMarkdown(a, pack.id);
     const backend = parseAgentBackend(readAgentFrontmatter(md));

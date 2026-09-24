@@ -298,6 +298,31 @@ function buildPresets(): RoutingPresets {
     label: "opencode/big-pickle (Zen, free)",
   });
 
+  // xAI Grok, via OpenCode's built-in xai provider (https://opencode.ai/docs/providers/,
+  // model ids in "xai/<model>" form) — no native Claude Code or Codex host,
+  // OpenCode-only. Like the opencode/big-pickle entry above, this is handled
+  // natively by the OpenCode host itself (no MCP bridge, no openai-compatible
+  // endpoint config), so "claude-native" (this project's generic "no bridge
+  // required" transport value) applies once a slot picks this vendor — see
+  // buildSlotEditorFields' vendor-change handler in
+  // media/src/main/100-slot-editor-settings.js. Auth is XAI_API_KEY (an API
+  // key from https://console.x.ai/); OpenCode's docs also mention a SuperGrok/
+  // X Premium `/connect` OAuth login, unverified from a third-party guide —
+  // see docs/AGENT-BACKENDS.md's xAI example for the apiKeyEnv wiring.
+  vendors.add("xai");
+  modelsById.set("xai/grok-4.7", {
+    id: "xai/grok-4.7",
+    vendor: "xai",
+    costModelClass: "metered",
+    label: "xai/grok-4.7 (flagship reasoning)",
+  });
+  modelsById.set("xai/grok-build-0.1", {
+    id: "xai/grok-build-0.1",
+    vendor: "xai",
+    costModelClass: "metered",
+    label: "xai/grok-build-0.1 (fast, cheap)",
+  });
+
   return { vendors: Array.from(vendors), models: Array.from(modelsById.values()) };
 }
 

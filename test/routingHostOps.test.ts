@@ -159,6 +159,33 @@ test("buildRoutingView: envProbe reflects only names actually referenced by a re
   });
 });
 
+test("buildRoutingView: presets include xai vendor and its Grok models", () => {
+  const root = tmpRoot();
+  const view = buildRoutingView({ root, env: {} });
+  assert.ok(view.presets.vendors.includes("xai"));
+  const xaiModels = view.presets.models.filter((m) => m.vendor === "xai");
+  assert.ok(xaiModels.some((m) => m.id === "xai/grok-4.7"));
+  assert.ok(xaiModels.some((m) => m.id === "xai/grok-build-0.1"));
+  xaiModels.forEach((m) => assert.equal(m.costModelClass, "metered"));
+});
+
+test("buildRoutingView: envProbe surfaces XAI_API_KEY when a resolved backend references it", () => {
+  const root = tmpRoot();
+  writeAgent(root, "grok-agent.md", [
+    "name: grok-agent",
+    "backend:",
+    "  vendor: xai",
+    "  transport: claude-native",
+    "  model: xai/grok-4.7",
+    "  costModelClass: metered",
+    "  apiKeyEnv: XAI_API_KEY",
+  ]);
+  const view = buildRoutingView({ root, env: { XAI_API_KEY: "set" } });
+  assert.deepEqual(view.envProbe, {
+    XAI_API_KEY: { env: true, stored: false },
+  });
+});
+
 // ---------------------------------------------------------------------------
 // probeEnv / setLocalEnvValue / clearLocalEnvValue
 //

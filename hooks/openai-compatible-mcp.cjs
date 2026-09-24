@@ -240,18 +240,63 @@ function postJson(urlString, body, apiKey) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Vendor-prefixed models — a known vendor's model id (e.g. "xai/grok-4.7")
+// is routed to a DEDICATED endpoint/key pair, completely separate from the
+// generic OPENAI_COMPAT_BASE_URL/OPENAI_COMPAT_API_KEY pair a Kimi/Qwen/
+// local-endpoint user configures — the two must never mix: a request for a
+// prefixed model must not silently go to whatever host/key the generic
+// pair happens to point at (and vice versa), or a Kimi user's Grok calls
+// would leak to the Kimi host under the Kimi key, or a Grok user's Kimi
+// calls would go to xAI. `baseUrlEnv` is an explicit override (checked
+// first); `defaultBaseUrl` is used only when that override is unset.
+// `apiKeyEnv` is the ONLY key source for a prefixed model — no fallback to
+// OPENAI_COMPAT_API_KEY. The vendor's own prefix is stripped before the
+// model id is sent upstream (the vendor's API doesn't know this project's
+// "xai/" disambiguation prefix); pricing/metrics lookups elsewhere in this
+// project key off the PREFIXED id (e.g. "xai/grok-build-0.1"), which this
+// server never sees or touches — only the outgoing HTTP request strips it.
+// ---------------------------------------------------------------------------
+const VENDOR_DEFAULTS = [
+  { prefix: "xai/", baseUrlEnv: "XAI_BASE_URL", defaultBaseUrl: "https://api.x.ai/v1", apiKeyEnv: "XAI_API_KEY" },
+];
+
+function vendorDefaultsFor(model) {
+  if (typeof model !== "string") return undefined;
+  return VENDOR_DEFAULTS.find((v) => model.startsWith(v.prefix));
+}
+
 async function handleChatTool(args) {
-  const baseUrl = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
-  if (!baseUrl) {
-    return {
-      isError: true,
-      content: [{ type: "text", text: "OPENAI_COMPAT_BASE_URL is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama, or your vLLM/LM Studio/hosted API base)." }],
-    };
-  }
   const model = args && typeof args.model === "string" ? args.model : undefined;
   if (!model) {
     return { isError: true, content: [{ type: "text", text: "Missing required argument: model" }] };
   }
+  const vendorDefault = vendorDefaultsFor(model);
+
+  let baseUrl;
+  let apiKey;
+  if (vendorDefault) {
+    // Prefixed model: dedicated endpoint/key only, never the generic
+    // OPENAI_COMPAT_* pair — see the comment above this table.
+    baseUrl = resolveEnvOrLocal(vendorDefault.baseUrlEnv) || vendorDefault.defaultBaseUrl;
+    apiKey = resolveEnvOrLocal(vendorDefault.apiKeyEnv);
+    if (!apiKey) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: `${vendorDefault.apiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).` }],
+      };
+    }
+  } else {
+    baseUrl = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
+    if (!baseUrl) {
+      return {
+        isError: true,
+        content: [{ type: "text", text: "OPENAI_COMPAT_BASE_URL is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama, or your vLLM/LM Studio/hosted API base)." }],
+      };
+    }
+    apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
+  }
+
   let messages;
   if (Array.isArray(args.messages) && args.messages.length > 0) {
     messages = args.messages;
@@ -263,11 +308,13 @@ async function handleChatTool(args) {
     return { isError: true, content: [{ type: "text", text: "Provide either `prompt` (+ optional `system`) or `messages`." }] };
   }
 
-  const requestBody = { model, messages };
+  // Strip this project's disambiguation prefix (e.g. "xai/") before sending
+  // upstream — the vendor's own API only knows its own model id form.
+  const upstreamModel = vendorDefault ? model.slice(vendorDefault.prefix.length) : model;
+  const requestBody = { model: upstreamModel, messages };
   if (typeof args.max_tokens === "number") requestBody.max_tokens = args.max_tokens;
 
   const url = buildChatUrl(baseUrl);
-  const apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
 
   let res;
   try {

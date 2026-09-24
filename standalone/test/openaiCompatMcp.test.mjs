@@ -178,3 +178,141 @@ test('missing OPENAI_COMPAT_BASE_URL returns isError with the env var name, no H
     child.kill();
   }
 });
+
+// ---------------------------------------------------------------------------
+// xAI Grok, via this same bridge (grok-reviewer agent), on a DEDICATED
+// endpoint/key pair separate from the generic OPENAI_COMPAT_*. No real
+// network call to api.x.ai is ever made here: XAI_BASE_URL (the explicit
+// override for the xai/ vendor default) is set to the local mock endpoint,
+// so this exercises the request shape (upstream model id with the "xai/"
+// prefix stripped, Authorization header from XAI_API_KEY only) without
+// touching a real host. The https://api.x.ai/v1 default itself is checked
+// separately below by reading the source, not by executing it.
+// ---------------------------------------------------------------------------
+
+test('xai/ model: prefix is stripped for the upstream request, Authorization header built from XAI_API_KEY, key never logged', async () => {
+  let capturedRequest = null;
+  let capturedAuthHeader = null;
+  const { server, baseUrl } = await startMockEndpoint((req, res, body) => {
+    capturedAuthHeader = req.headers['authorization'] || null;
+    capturedRequest = JSON.parse(body);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'grok says hi' } }] }));
+  });
+
+  const env = { ...process.env, XAI_BASE_URL: baseUrl, XAI_API_KEY: 'fake-xai-test-key-not-real' };
+  delete env.OPENAI_COMPAT_BASE_URL;
+  delete env.OPENAI_COMPAT_API_KEY;
+  const { child, getStderr } = spawnMcpServer(env);
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+
+    send(child, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'chat', arguments: { model: 'xai/grok-build-0.1', prompt: 'smoke test' } },
+    });
+
+    // Mock response carries no `usage`, so no trailing NDJSON usage line is
+    // emitted (see the server's contract) — exactly one line comes back.
+    const callLine = JSON.parse(await nextLine());
+    assert.equal(callLine.id, 3);
+    assert.equal(callLine.result.isError, undefined, `expected no error, got: ${JSON.stringify(callLine.result)}`);
+    assert.equal(callLine.result.content[0].text, 'grok says hi');
+
+    assert.ok(capturedRequest, 'mock endpoint should have received the chat completion request');
+    // The project's "xai/" disambiguation prefix must be stripped before
+    // the model id reaches the upstream API — xAI rejects the prefixed id.
+    assert.equal(capturedRequest.model, 'grok-build-0.1');
+    assert.equal(capturedAuthHeader, 'Bearer fake-xai-test-key-not-real');
+
+    const stderr = getStderr();
+    assert.equal(stderr, '', 'server must not write anything to stderr on a clean run');
+    assert.doesNotMatch(stderr, /fake-xai-test-key-not-real/, 'the API key must never be logged');
+  } finally {
+    child.kill();
+    await closeServer(server);
+  }
+});
+
+test('xai/ model with no XAI_API_KEY: fails with a clear error naming XAI_API_KEY, no HTTP call made, never falls back to OPENAI_COMPAT_API_KEY', async () => {
+  const env = { ...process.env, XAI_BASE_URL: 'http://127.0.0.1:1', OPENAI_COMPAT_API_KEY: 'kimi-key-must-not-be-used' };
+  delete env.OPENAI_COMPAT_BASE_URL;
+  delete env.XAI_API_KEY;
+  const { child } = spawnMcpServer(env);
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    send(child, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'chat', arguments: { model: 'xai/grok-build-0.1', prompt: 'hi' } },
+    });
+    const callLine = JSON.parse(await nextLine());
+    assert.equal(callLine.result.isError, true);
+    assert.match(callLine.result.content[0].text, /XAI_API_KEY/);
+    assert.doesNotMatch(callLine.result.content[0].text, /kimi-key-must-not-be-used/);
+  } finally {
+    child.kill();
+  }
+});
+
+test('xai/ request and a Kimi request stay on separate endpoints/keys even when both OPENAI_COMPAT_* and XAI_API_KEY are set', async () => {
+  let kimiCapturedAuth = null;
+  let kimiCapturedModel = null;
+  const { server: kimiServer, baseUrl: kimiBaseUrl } = await startMockEndpoint((req, res, body) => {
+    kimiCapturedAuth = req.headers['authorization'] || null;
+    kimiCapturedModel = JSON.parse(body).model;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'kimi reply' } }] }));
+  });
+  let grokCapturedAuth = null;
+  let grokCapturedModel = null;
+  const { server: grokServer, baseUrl: grokBaseUrl } = await startMockEndpoint((req, res, body) => {
+    grokCapturedAuth = req.headers['authorization'] || null;
+    grokCapturedModel = JSON.parse(body).model;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'grok reply' } }] }));
+  });
+
+  const env = {
+    ...process.env,
+    OPENAI_COMPAT_BASE_URL: kimiBaseUrl,
+    OPENAI_COMPAT_API_KEY: 'kimi-key',
+    XAI_BASE_URL: grokBaseUrl,
+    XAI_API_KEY: 'xai-key',
+  };
+  const { child } = spawnMcpServer(env);
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+
+    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2', prompt: 'hi' } } });
+    const kimiLine = JSON.parse(await nextLine());
+    assert.equal(kimiLine.result.content[0].text, 'kimi reply');
+    assert.equal(kimiCapturedAuth, 'Bearer kimi-key');
+    assert.equal(kimiCapturedModel, 'moonshot/kimi-k2');
+
+    send(child, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'chat', arguments: { model: 'xai/grok-build-0.1', prompt: 'hi' } } });
+    const grokLine = JSON.parse(await nextLine());
+    assert.equal(grokLine.result.content[0].text, 'grok reply');
+    assert.equal(grokCapturedAuth, 'Bearer xai-key');
+    assert.equal(grokCapturedModel, 'grok-build-0.1');
+  } finally {
+    child.kill();
+    await closeServer(kimiServer);
+    await closeServer(grokServer);
+  }
+});
+
+test('VENDOR_DEFAULTS (source, not executed against the network) points xai/ models at XAI_BASE_URL / https://api.x.ai/v1 and XAI_API_KEY', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(HOOK_PATH, 'utf8');
+  assert.match(src, /prefix:\s*"xai\/"/);
+  assert.match(src, /baseUrlEnv:\s*"XAI_BASE_URL"/);
+  assert.match(src, /defaultBaseUrl:\s*"https:\/\/api\.x\.ai\/v1"/);
+  assert.match(src, /apiKeyEnv:\s*"XAI_API_KEY"/);
+});
