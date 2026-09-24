@@ -34,6 +34,34 @@ function stripBom(s) {
   return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
 }
 
+/**
+ * Fallback project-root resolver used only when CLAUDE_PROJECT_DIR is unset
+ * (Claude Code normally sets it in the hook's environment, but a foreign
+ * runner or a stripped-down env might not). Walks up from this script's own
+ * location looking for a `.claude/tycoon/` directory containing this file,
+ * so it is correct regardless of how deep the installed copy sits (today:
+ * `<root>/.claude/tycoon/tycoon-claude-hook.cjs`, two levels down — a fixed
+ * `path.resolve(__dirname, "..")` would land one level short, at `.claude`
+ * instead of the project root). Falls back to `path.resolve(__dirname, "..", "..")`
+ * (today's actual installed depth) if no `.claude/tycoon` marker is found
+ * within a bounded number of hops, so a still-unexpected layout never turns
+ * into an infinite/unbounded upward walk.
+ * @returns {string}
+ */
+function findProjectRootFallback() {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    const marker = path.join(dir, ".claude", "tycoon");
+    try {
+      if (fs.existsSync(marker) && fs.statSync(marker).isDirectory()) return dir;
+    } catch { /* keep walking */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+  return path.resolve(__dirname, "..", "..");
+}
+
 function readJsonSafe(filePath) {
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -1554,7 +1582,7 @@ function captureOrchestratorTokens(payload, tycoonDir) {
 // ---------------------------------------------------------------------------
 function main(raw) {
   const projectRoot =
-    process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..");
+    process.env.CLAUDE_PROJECT_DIR || findProjectRootFallback();
 
   const tycoonDir = path.join(projectRoot, ".claude", "tycoon");
   try { fs.mkdirSync(tycoonDir, { recursive: true }); } catch { process.exit(0); }

@@ -86,6 +86,32 @@ export function findForeignHooks(
   return Array.from(foreign);
 }
 
+/**
+ * True for the pre-0.0.665 project-relative hook command form
+ * (`node .claude/tycoon/tycoon-claude-hook.cjs`, no quotes, no absolute
+ * path) — the form that silently stops firing once a session's cwd leaves
+ * the project root mid-session (see panel.ts's `_buildHookCommand`). Used
+ * only to give that specific case a clearer diagnostic than generic
+ * staleness; `countStaleInSettings`/`repairSettings` already catch and fix
+ * it regardless, via the plain `cmd !== currentHookCommand` comparison.
+ */
+function isRelativeHookCommand(cmd: string): boolean {
+  return isTycoonCommand(cmd) && /^node\s+\.claude[\\/]tycoon[\\/]tycoon-claude-hook\.cjs\s*$/.test(cmd.trim());
+}
+
+function countRelativeInSettings(settings: any | null): number {
+  let count = 0;
+  const hooks = getHooksSection(settings);
+  for (const event of TYCOON_EVENTS) {
+    for (const entry of getEntriesForEvent(hooks, event)) {
+      for (const cmd of getCommandsFromEntry(entry)) {
+        if (isRelativeHookCommand(cmd)) count++;
+      }
+    }
+  }
+  return count;
+}
+
 function isTycoonCommand(cmd: string): boolean {
   return cmd.includes(TYCOON_MARKER);
 }
@@ -186,6 +212,21 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       severity: "warn",
       title: "Stale hook paths",
       detail: `${staleCount} hook command(s) point to an outdated path.`,
+      fixable: true,
+      destructive: false,
+    });
+  }
+
+  const relativeCount =
+    countRelativeInSettings(input.localSettings) + countRelativeInSettings(input.sharedSettings);
+  if (relativeCount > 0) {
+    findings.push({
+      id: "hooks-relative-command",
+      severity: "warn",
+      title: "Hook command is project-relative",
+      detail:
+        `${relativeCount} hook command(s) use the old "node .claude/tycoon/tycoon-claude-hook.cjs" form, which stops firing (silently — no error, activity just stops) as soon as the session's working directory leaves the project root, e.g. an agent cd's into a subfolder. ` +
+        "Fixing rewrites it to an absolute path.",
       fixable: true,
       destructive: false,
     });

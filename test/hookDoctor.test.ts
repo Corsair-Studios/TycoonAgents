@@ -602,3 +602,70 @@ test("repairSettings: stale Tycoon command -> replaced with currentHookCommand, 
     assert.equal(tycoonHooks[0].command, CMD, "stale command must be replaced with currentHookCommand");
   }
 });
+
+// ---------------------------------------------------------------------------
+// hook-cwd-relative-command incident: relative-command detection + migration
+// ---------------------------------------------------------------------------
+
+const RELATIVE_CMD = "node .claude/tycoon/tycoon-claude-hook.cjs";
+const RELATIVE_CMD_BACKSLASH = "node .claude\\tycoon\\tycoon-claude-hook.cjs";
+
+test("diagnose: a project-relative hook command raises hooks-relative-command (and generic hooks-stale)", () => {
+  const settings = buildFullSettings(RELATIVE_CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+  });
+  const relFinding = findings.find((x: DoctorFinding) => x.id === "hooks-relative-command");
+  assert.ok(relFinding, "hooks-relative-command finding must be present");
+  assert.equal(relFinding!.fixable, true);
+  assert.ok(findings.some((x: DoctorFinding) => x.id === "hooks-stale"), "generic staleness must also fire");
+});
+
+test("diagnose: a Windows-backslash relative hook command also raises hooks-relative-command", () => {
+  const settings = buildFullSettings(RELATIVE_CMD_BACKSLASH);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+  });
+  assert.ok(findings.some((x: DoctorFinding) => x.id === "hooks-relative-command"));
+});
+
+test("diagnose: today's absolute quoted command form never raises hooks-relative-command", () => {
+  const settings = buildFullSettings(CMD);
+  const findings = diagnose({
+    localSettings: settings,
+    sharedSettings: null,
+    currentHookCommand: CMD,
+    hookScriptExists: true,
+  });
+  assert.ok(!findings.some((x: DoctorFinding) => x.id === "hooks-relative-command"));
+});
+
+test("repairSettings: migrates a relative hook command to the absolute currentHookCommand, every other slot/value untouched", () => {
+  const input = {
+    ...buildFullSettings(RELATIVE_CMD),
+    env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1", SOME_USER_VAR: "keep-me" },
+    someOtherTopLevelKey: { nested: "preserve-me" },
+  };
+  const { settings, changes } = repairSettings(input, CMD, { removeForeign: false });
+
+  // Every slot's Tycoon command is now the absolute currentHookCommand.
+  for (const slot of TYCOON_HOOK_SLOTS) {
+    const list: Array<{ matcher: string; hooks: Array<{ command: string }> }> =
+      settings.hooks?.[slot.event] ?? [];
+    const entry = list.find((e) => e.matcher === slot.matcher);
+    assert.ok(entry, `slot ${slot.event}/${slot.matcher} must exist after migration`);
+    const tycoonCmd = entry!.hooks.find((h) => h.command.includes("tycoon-claude-hook.cjs"));
+    assert.equal(tycoonCmd?.command, CMD, "relative command must be migrated to the absolute form");
+  }
+  assert.ok(changes.length > 0, "repair must report at least one change");
+
+  // Unrelated top-level content is preserved byte-for-byte in structure.
+  assert.deepEqual(settings.env, { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1", SOME_USER_VAR: "keep-me" });
+  assert.deepEqual(settings.someOtherTopLevelKey, { nested: "preserve-me" });
+});

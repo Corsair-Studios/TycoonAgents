@@ -23,6 +23,8 @@ import {
   RUNTIME_HOOK_FILES,
   enableMcpJsonServerInSettings,
   MCP_BRIDGE_HOOK_FILES,
+  buildAbsoluteHookCommand,
+  migrateRelativeHookCommand,
 } from "../src/host/vscode/hookInstall";
 import { mergeEnabledMcpJsonServer } from "../src/host/vscode/mcpCatalog";
 
@@ -925,4 +927,114 @@ test('mergeEnabledMcpJsonServer: non-array enabledMcpjsonServers field becomes [
   const existing = { enabledMcpjsonServers: "not-an-array" as unknown } as Record<string, unknown>;
   const result = mergeEnabledMcpJsonServer(existing, "codex");
   assert.deepEqual(result.enabledMcpjsonServers, ["codex"]);
+});
+
+// ---------------------------------------------------------------------------
+// buildAbsoluteHookCommand (hook-cwd-relative-command incident fix): the
+// command must be an ABSOLUTE, quoted path so it keeps resolving even after
+// the session's cwd leaves the project root mid-session (a relative
+// "node .claude/tycoon/tycoon-claude-hook.cjs" silently stops firing then).
+// ---------------------------------------------------------------------------
+
+test("buildAbsoluteHookCommand: posix-style root produces a quoted absolute node command", () => {
+  const cmd2 = buildAbsoluteHookCommand("/home/user/my-project");
+  assert.equal(cmd2, `node "${path.join("/home/user/my-project", ".claude", "tycoon", "tycoon-claude-hook.cjs")}"`);
+  assert.ok(cmd2.startsWith('node "'), "must be quoted");
+  assert.ok(cmd2.includes("tycoon-claude-hook.cjs"));
+});
+
+test("buildAbsoluteHookCommand: Windows-style root produces a quoted absolute node command", () => {
+  const cmd2 = buildAbsoluteHookCommand("D:\\ACode\\MyProject");
+  assert.ok(cmd2.startsWith('node "'), "must be quoted");
+  assert.ok(cmd2.includes("tycoon-claude-hook.cjs"));
+  assert.ok(cmd2.endsWith('"'), "must end with a closing quote");
+});
+
+test("buildAbsoluteHookCommand: a project path containing spaces stays inside one quoted argument", () => {
+  const root = path.join(os.tmpdir(), "My Test Project " + Date.now());
+  const cmd2 = buildAbsoluteHookCommand(root);
+  // The whole path (spaces and all) must sit between exactly one pair of
+  // double quotes — otherwise a shell would split it into multiple argv
+  // entries and `node` would fail to find the script.
+  const match = cmd2.match(/^node "(.+)"$/);
+  assert.ok(match, `command must be exactly node "<path>", got: ${cmd2}`);
+  assert.equal(match![1], path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs"));
+});
+
+test("buildAbsoluteHookCommand: never produces the old bare project-relative form", () => {
+  const cmd2 = buildAbsoluteHookCommand("/some/project");
+  assert.notEqual(cmd2, "node .claude/tycoon/tycoon-claude-hook.cjs");
+});
+
+// ---------------------------------------------------------------------------
+// migrateRelativeHookCommand (auto-migration on activation/panel-open)
+// ---------------------------------------------------------------------------
+
+test("migrateRelativeHookCommand: rewrites a relative Tycoon command to the absolute form, marks changed", () => {
+  const abs = buildAbsoluteHookCommand("/proj");
+  const existing = {
+    hooks: {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: "node .claude/tycoon/tycoon-claude-hook.cjs" }] }],
+    },
+  };
+  const { settings, changed } = migrateRelativeHookCommand(existing, abs);
+  assert.equal(changed, true);
+  assert.equal((settings.hooks as any).Stop[0].hooks[0].command, abs);
+});
+
+test("migrateRelativeHookCommand: an already-absolute command is left alone, changed:false, same object reference", () => {
+  const abs = buildAbsoluteHookCommand("/proj");
+  const existing = {
+    hooks: {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: abs }] }],
+    },
+  };
+  const { settings, changed } = migrateRelativeHookCommand(existing, abs);
+  assert.equal(changed, false);
+  assert.equal(settings, existing, "must return the SAME object reference on a no-op");
+});
+
+test("migrateRelativeHookCommand: preserves every unrelated entry and top-level key untouched", () => {
+  const abs = buildAbsoluteHookCommand("/proj");
+  const existing = {
+    hooks: {
+      Stop: [
+        { matcher: "", hooks: [{ type: "command", command: "node .claude/tycoon/tycoon-claude-hook.cjs" }] },
+        { matcher: "foo", hooks: [{ type: "command", command: "node /some/other/foreign-hook.cjs" }] },
+      ],
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: abs }] }],
+    },
+    env: { SOME_USER_VAR: "keep-me" },
+    someOtherTopLevelKey: { nested: "preserve-me" },
+  };
+  const { settings } = migrateRelativeHookCommand(existing, abs);
+  assert.equal((settings.hooks as any).Stop[0].hooks[0].command, abs, "relative command migrated");
+  assert.equal(
+    (settings.hooks as any).Stop[1].hooks[0].command,
+    "node /some/other/foreign-hook.cjs",
+    "foreign hook command must be untouched",
+  );
+  assert.equal((settings.hooks as any).PreToolUse[0].hooks[0].command, abs, "already-absolute entry untouched");
+  assert.deepEqual(settings.env, { SOME_USER_VAR: "keep-me" });
+  assert.deepEqual(settings.someOtherTopLevelKey, { nested: "preserve-me" });
+});
+
+test("migrateRelativeHookCommand: also matches the Windows-backslash relative form", () => {
+  const abs = buildAbsoluteHookCommand("D:\\proj");
+  const existing = {
+    hooks: {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: "node .claude\\tycoon\\tycoon-claude-hook.cjs" }] }],
+    },
+  };
+  const { settings, changed } = migrateRelativeHookCommand(existing, abs);
+  assert.equal(changed, true);
+  assert.equal((settings.hooks as any).Stop[0].hooks[0].command, abs);
+});
+
+test("migrateRelativeHookCommand: no hooks section -> no-op, changed:false", () => {
+  const abs = buildAbsoluteHookCommand("/proj");
+  const existing = { someKey: "value" };
+  const { settings, changed } = migrateRelativeHookCommand(existing, abs);
+  assert.equal(changed, false);
+  assert.equal(settings, existing);
 });

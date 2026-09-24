@@ -69,6 +69,7 @@ import {
   cleanupForeignHookArtifacts,
   RUNTIME_HOOK_FILES,
   MCP_BRIDGE_HOOK_FILES,
+  buildAbsoluteHookCommand,
 } from "./hookInstall";
 
 export interface ExportTeamSetupOptions {
@@ -405,7 +406,10 @@ function installPortableHooks(root: string, hookSourceDir: string, delegationMod
       }
     }
 
-    const hookCommand = "node .claude/tycoon/tycoon-claude-hook.cjs";
+    // Absolute path, not project-relative — see buildAbsoluteHookCommand's
+    // doc comment (hookInstall.ts): a relative command breaks silently once
+    // the session's cwd leaves the project root mid-session.
+    const hookCommand = buildAbsoluteHookCommand(path.dirname(claudeDir));
     const settingsPath = path.join(claudeDir, "settings.local.json");
     let existing: Record<string, unknown> = {};
     try {

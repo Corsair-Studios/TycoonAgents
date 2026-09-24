@@ -250,6 +250,8 @@ import {
   syncRuntimeFile,
   MCP_BRIDGE_HOOK_FILES,
   enableMcpJsonServerInSettings,
+  buildAbsoluteHookCommand,
+  migrateRelativeHookCommand,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
@@ -1195,6 +1197,7 @@ export class TycoonPanel {
     // old matcher forever unless the user clicked "Install hooks"/"Repair"
     // again.
     this._ensureHookMatchersFresh();
+    this._ensureHookCommandAbsolute();
 
     // Detect (never auto-fix) leftover foreign/legacy agent-hook artifacts
     // once per panel open — cheap read-only scan (see
@@ -6102,6 +6105,70 @@ export class TycoonPanel {
   }
 
   /**
+   * Auto-heal: rewrite a project's `.claude/settings.local.json` Tycoon
+   * hook command(s) from the old project-relative form
+   * (`node .claude/tycoon/tycoon-claude-hook.cjs`, either slash style) to
+   * the current absolute form, once per panel open.
+   *
+   * WHY: the relative command silently stops firing the moment a session's
+   * cwd leaves the project root (see buildAbsoluteHookCommand's doc
+   * comment) — a real-world incident traced activity.jsonl going dead
+   * partway through a session to exactly this. Every already-installed
+   * project needs this rewrite without the user having to know to run
+   * "Troubleshoot & Fix"; mirrors `_ensureHookMatchersFresh` above.
+   *
+   * Delegates the actual rewrite to `migrateRelativeHookCommand` (pure,
+   * unit-tested in hookInstall.test.ts): it touches ONLY entries whose
+   * command is exactly the old relative form — every other entry, and
+   * every non-hooks top-level key, is left byte-for-byte untouched.
+   *
+   * Rules mirror `_ensureHookMatchersFresh`:
+   * - Only settings.local.json (never settings.json — shared/team file,
+   *   never auto-rewritten).
+   * - Never creates the file — nothing installed means nothing to heal.
+   * - Backs up to `settings.local.json.bak` before writing, but never
+   *   overwrites an existing backup (matches `_handleApplyDoctorFix`'s
+   *   backup-before-repair convention).
+   * - Only writes back / logs when something actually changed.
+   * - Logs one line via `log()` with no paths (matches this file's other
+   *   auto-heal logging).
+   * - Wrapped in try/catch so a failure here can never break panel
+   *   construction/rendering.
+   */
+  private _ensureHookCommandAbsolute(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+
+      const settingsPath = path.join(root, ".claude", "settings.local.json");
+      if (!fs.existsSync(settingsPath)) return; // nothing installed -> nothing to heal
+
+      const raw = fs.readFileSync(settingsPath, "utf8").trim();
+      if (raw === "") return;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed !== "object") return;
+
+      const absoluteHookCommand = this._buildHookCommand(root);
+      const { settings, changed } = migrateRelativeHookCommand(parsed as Record<string, unknown>, absoluteHookCommand);
+      if (!changed) return; // already absolute (or nothing to migrate) -> no write, no mtime churn
+
+      const backupPath = `${settingsPath}.bak`;
+      try {
+        if (!fs.existsSync(backupPath)) {
+          fs.writeFileSync(backupPath, fs.readFileSync(settingsPath));
+        }
+      } catch {
+        /* best-effort backup; never block the migration itself */
+      }
+
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      log("panel: migrated relative Tycoon hook command(s) to absolute form");
+    } catch {
+      // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
    * Auto-heal a stale `.claude/skills/project-plan` directory once per panel
    * open, but ONLY when the opt-in `projectPlanEnabled` flag is already set
    * — mirrors `_ensureHookScriptFresh`'s "never auto-create, only refresh
@@ -6651,8 +6718,9 @@ export class TycoonPanel {
         /* best-effort; MCP bridge entries simply won't resolve if absent */
       }
 
-      // 3. Relative hook command (Claude Code runs hooks with cwd = project root).
-      const hookCommand = this._buildHookCommand();
+      // 3. Absolute hook command — see _buildHookCommand's doc comment for why
+      // a project-relative command is unsafe (a mid-session cwd change breaks it).
+      const hookCommand = this._buildHookCommand(root);
 
       // 4. Read existing settings.local.json (default {} if missing/empty/invalid).
       const settingsPath = path.join(root, ".claude", "settings.local.json");
@@ -8876,15 +8944,47 @@ export class TycoonPanel {
     }
   }
 
-  private _buildHookCommand(): string {
-    // Portable, project-relative command — Claude Code runs hooks with
-    // cwd = project root, so this resolves correctly regardless of which
-    // machine or user account cloned the project. Forward slashes work on
-    // both Windows and POSIX; no quoting needed since the path has no
-    // spaces. isOurHookCommand() still matches this (and any legacy
-    // absolute-path form) by filename substring, so an existing
-    // absolute-path entry is replaced in place, not duplicated.
-    return `node .claude/tycoon/tycoon-claude-hook.cjs`;
+  /**
+   * Builds the hook command as an ABSOLUTE, quoted path, e.g.
+   * `node "D:\...\.claude\tycoon\tycoon-claude-hook.cjs"`.
+   *
+   * A project-relative command (`node .claude/tycoon/tycoon-claude-hook.cjs`)
+   * was used through 0.0.664 on the assumption that Claude Code always runs
+   * hooks with cwd = project root. Field evidence
+   * (docs: hook-cwd-relative-command-incident) showed that assumption is
+   * false: once the SESSION's cwd changes — e.g. an agent `cd`s into a
+   * subfolder mid-session — Claude Code launches the hook with that new cwd,
+   * `node` can no longer resolve the relative script path, and the hook
+   * fails to even start, silently, for the rest of the session (no error
+   * surfaces anywhere the user would see it; activity.jsonl just stops
+   * growing). An absolute path removes the dependency on cwd entirely, and
+   * matches the pattern the standalone installer already uses
+   * (`standalone/src/installHook.mjs`'s `node "${hookScriptPath}"`).
+   *
+   * Quoting handles a project path containing spaces on every platform this
+   * targets: double quotes around the whole path work identically for
+   * `node` under POSIX sh/bash AND under Windows cmd.exe (VS Code's default
+   * hook launcher on win32) — there is no reliance on `$VAR`-style shell
+   * expansion (which cmd.exe does not perform) or on any particular shell
+   * being present, so no CLAUDE_PROJECT_DIR-based form is used here even
+   * though the hook script itself also honors that env var internally as a
+   * belt-and-braces fallback (see hooks/tycoon-claude-hook.cjs's
+   * findProjectRootFallback).
+   *
+   * `root` is this panel's resolved project root (same value already used
+   * to build settingsPath/claudeDir at the call site) — NOT
+   * `process.cwd()`, so this is correct even if the extension host's own
+   * cwd differs from the workspace. isOurHookCommand() still matches this
+   * (and the legacy relative form) by filename substring, so an existing
+   * entry of either form is replaced in place, not duplicated.
+   *
+   * Delegates to the pure, unit-tested `buildAbsoluteHookCommand` in
+   * hookInstall.ts (shared with teamSetupHost.ts) — this method only
+   * exists so panel.ts's other private call sites don't need to import it
+   * directly.
+   */
+  private _buildHookCommand(root: string): string {
+    return buildAbsoluteHookCommand(root);
   }
 
   private _readSettingsTolerant(settingsPath: string): any | null {
@@ -9022,7 +9122,7 @@ export class TycoonPanel {
     const claudeDir = path.join(root, ".claude");
     const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
     const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
-    const currentHookCommand = this._buildHookCommand();
+    const currentHookCommand = this._buildHookCommand(root);
     const hookScriptExists = fs.existsSync(path.join(claudeDir, "tycoon", "tycoon-claude-hook.cjs"));
     const legacyArtifacts = this._detectLegacyArtifacts(claudeDir, localSettings, sharedSettings);
     const { lockFileAgeMs, activeAgentState, activityTailLines } = this._readOperationalHealth(claudeDir);
@@ -9088,7 +9188,7 @@ export class TycoonPanel {
         return;
       }
       const claudeDir = path.join(root, ".claude");
-      const currentHookCommand = this._buildHookCommand();
+      const currentHookCommand = this._buildHookCommand(root);
 
       // Pre-strip read: what WOULD be removed if the user confirms. Two
       // distinct "foreign command" concepts feed the confirmation list —
@@ -9123,7 +9223,20 @@ export class TycoonPanel {
       const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
       const foreignCommands = findForeignHooks(localSettings, sharedSettings);
       const { settings, changes } = repairSettings(localSettings, currentHookCommand, { removeForeign, foreignCommands: removeForeign ? foreignCommands : undefined });
-      fs.writeFileSync(path.join(claudeDir, "settings.local.json"), JSON.stringify(settings, null, 2));
+      const settingsLocalPath = path.join(claudeDir, "settings.local.json");
+      // Back up before any repair write (including the relative->absolute
+      // hook-command migration folded into repairSettings' stale-path fix),
+      // same pattern as _installAgentFiles's <id>.md.bak / keywordsPath.bak —
+      // never overwrites a prior backup from earlier in this same run, so
+      // the FIRST fix attempt's pre-state is always recoverable.
+      try {
+        if (fs.existsSync(settingsLocalPath) && !fs.existsSync(`${settingsLocalPath}.bak`)) {
+          fs.writeFileSync(`${settingsLocalPath}.bak`, fs.readFileSync(settingsLocalPath));
+        }
+      } catch {
+        /* best-effort backup; never block the repair itself */
+      }
+      fs.writeFileSync(settingsLocalPath, JSON.stringify(settings, null, 2));
 
       const input = this._gatherDoctorInput(root);
       const findings = diagnose(input);

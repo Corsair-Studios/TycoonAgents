@@ -12,6 +12,36 @@ interface HookCommand {
   type: "command";
   command: string;
 }
+
+/**
+ * Builds the Claude Code hook command as an ABSOLUTE, quoted path:
+ * `node "<root>/.claude/tycoon/tycoon-claude-hook.cjs"`.
+ *
+ * A project-relative command (`node .claude/tycoon/tycoon-claude-hook.cjs`,
+ * used through 0.0.664) assumed Claude Code always runs hooks with
+ * cwd = project root. Field evidence showed that's false: once the
+ * session's cwd changes mid-session (e.g. an agent `cd`s into a subfolder),
+ * Claude Code launches the hook with THAT cwd, `node` can't resolve the
+ * relative script path, and the hook silently stops firing for the rest of
+ * the session — no error surfaces anywhere, activity.jsonl just stops
+ * growing. An absolute path removes the cwd dependency entirely, matching
+ * the pattern `standalone/src/installHook.mjs` already uses
+ * (`node "${hookScriptPath}"`).
+ *
+ * Quoting the whole path handles spaces on every platform this targets:
+ * double quotes around a path work identically for `node` under POSIX
+ * sh/bash AND under Windows cmd.exe (Claude Code's hook launcher on win32),
+ * with no reliance on `$VAR`-style shell expansion (cmd.exe doesn't do
+ * that) or on any particular shell being present. `path.join` is used
+ * rather than manual string concatenation so the path separator matches
+ * the host OS either way.
+ *
+ * `root` must be the resolved project root (NOT `process.cwd()`).
+ */
+export function buildAbsoluteHookCommand(root: string): string {
+  const scriptPath = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
+  return `node "${scriptPath}"`;
+}
 interface HookEntry {
   matcher: string;
   hooks: HookCommand[];
@@ -128,6 +158,71 @@ export function migrateLegacyHookMatchers(
     const next = renamePureOursMatchers(list as HookEntry[], alias.from, alias.to);
     if (next !== list) {
       nextHooks[alias.event] = next;
+      changed = true;
+    }
+  }
+
+  if (!changed) {
+    return { settings: existing, changed: false };
+  }
+  return { settings: { ...existing, hooks: nextHooks }, changed: true };
+}
+
+/** Matches the pre-0.0.665 project-relative hook command, either slash style (`node .claude/tycoon/tycoon-claude-hook.cjs` or the Windows-backslash form) — the form that silently stops firing once a session's cwd leaves the project root (see buildAbsoluteHookCommand's doc comment). */
+const RELATIVE_HOOK_COMMAND_RE = /^node\s+\.claude[\\/]tycoon[\\/]tycoon-claude-hook\.cjs\s*$/;
+
+/**
+ * Auto-migration companion to {@link buildAbsoluteHookCommand}: rewrites
+ * ONLY hook entries whose command is exactly the old project-relative form
+ * to `absoluteHookCommand`, leaving every other entry (a different command,
+ * a foreign hook, an already-absolute Tycoon command, or any unrelated
+ * top-level key) byte-for-byte untouched. Idempotent — a settings object
+ * with no relative commands comes back with `changed: false` and the SAME
+ * object reference, so a caller can skip the write entirely.
+ *
+ * Deliberately narrower than {@link repairSettings}/{@link mergeTycoonHooks}
+ * (which also add missing slots, dedupe, and optionally strip foreign
+ * hooks): this is meant for a silent, best-effort auto-heal on activation/
+ * panel-open, so it only ever does the one rewrite the incident calls for.
+ */
+export function migrateRelativeHookCommand(
+  existing: Record<string, unknown>,
+  absoluteHookCommand: string
+): { settings: Record<string, unknown>; changed: boolean } {
+  const hooksSection = existing.hooks;
+  if (hooksSection === null || typeof hooksSection !== "object") {
+    return { settings: existing, changed: false };
+  }
+  const hooks = hooksSection as Record<string, unknown>;
+
+  let changed = false;
+  const nextHooks: Record<string, unknown> = { ...hooks };
+  for (const event of Object.keys(hooks)) {
+    const list = hooks[event];
+    if (!Array.isArray(list)) continue;
+    let entryChanged = false;
+    const nextList = list.map((e: unknown) => {
+      if (e === null || typeof e !== "object" || !Array.isArray((e as HookEntry).hooks)) return e;
+      const entry = e as HookEntry;
+      let hooksListChanged = false;
+      const nextHooksList = entry.hooks.map((h) => {
+        if (
+          h !== null &&
+          typeof h === "object" &&
+          typeof h.command === "string" &&
+          RELATIVE_HOOK_COMMAND_RE.test(h.command)
+        ) {
+          hooksListChanged = true;
+          return { ...h, command: absoluteHookCommand };
+        }
+        return h;
+      });
+      if (!hooksListChanged) return e;
+      entryChanged = true;
+      return { ...entry, hooks: nextHooksList };
+    });
+    if (entryChanged) {
+      nextHooks[event] = nextList;
       changed = true;
     }
   }
