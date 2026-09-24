@@ -1824,6 +1824,7 @@
     "illicit": "illicit content",
     "illicit/violent": "illicit content",
     "likeness": "a real person's likeness",
+    "ip": "copyrighted or trademarked content",
   };
 
   function themeAttemptCategoryLabel(category) {
@@ -2014,9 +2015,17 @@
       const fields = Array.isArray(item.error_fields) ? item.error_fields : [];
       const categoryLabel = themeAttemptCategoryLabel(categories[0]);
       const fieldLabel = themeAttemptFieldLabel(fields[0], item);
+      // p94: the likeness/IP precheck block sends a category with no field
+      // path at all (see themeServiceClient.ts's 422 handling) — that must
+      // still name the category, not fall all the way back to the generic
+      // copy just because fieldLabel is unavailable.
       if (categoryLabel && fieldLabel) {
         notice.appendChild(document.createTextNode(
           `Blocked by content screening (${categoryLabel}): ${fieldLabel}. No credit was spent. Rephrase it and retry. `,
+        ));
+      } else if (categoryLabel) {
+        notice.appendChild(document.createTextNode(
+          `Blocked by content screening (${categoryLabel}). No credit was spent. Rephrase it and retry. `,
         ));
       } else {
         notice.appendChild(document.createTextNode(THEME_ATTEMPT_ERROR_TEXT.content_blocked + " "));
@@ -2494,8 +2503,19 @@
         // mechanism, so it resumes THIS board once sign-in completes instead
         // of only surfacing a not_signed_in error after a round trip.
         const isFreshGenerate = !(item.image_src || item.generation_error);
-        const signedIn = typeof themeServiceStatus !== "undefined" && themeServiceStatus && themeServiceStatus.signedIn;
-        if (isFreshGenerate && !signedIn) {
+        // Bug fix (p94): only a DEFINITIVE signed-out status opens the
+        // builder/sign-in shell here. A soft/unknown status (no status
+        // fetched yet, or a transient status-fetch error with a stored
+        // session — see isThemeServiceSoftState) must never be treated as
+        // "needs sign-in": that used to open the shell with signedIn
+        // false/undefined and, since renderThemeServicePanel used to bail
+        // out on a null status, left the modal body empty. Now the request
+        // is just sent and the host's result (including a genuine
+        // not_signed_in error_kind, persisted and rendered by
+        // buildThemeAttemptStatusNotice above) speaks for itself.
+        const liveStatus = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
+        const definitelySignedOut = !!liveStatus && liveStatus.signedIn === false && liveStatus.hasStoredSession !== true;
+        if (isFreshGenerate && definitelySignedOut) {
           themeGeneratePendingIntent = true;
           themePendingIntentResume = () => retryBtn.click();
           openThemeBuilderShellModal();

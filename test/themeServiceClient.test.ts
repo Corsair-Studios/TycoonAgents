@@ -838,6 +838,55 @@ test("generateAttempt: 422 content_blocked carries categories/fields when the ba
   }
 });
 
+// p94: the likeness/IP precheck (corsair-theme-service's src/attempt.mjs,
+// src/precheck.mjs) sends a singular `category: "likeness" | "ip"` string,
+// not the plural `categories` array — an older client here read only
+// `categories`, so this shape's category was silently dropped. Regression
+// test for folding the singular field into the same `categories` array the
+// UI renders from.
+test("generateAttempt: 422 content_blocked with a singular `category` (likeness/IP precheck) folds into categories", async () => {
+  const { fake } = setupClient();
+  const account = fake.helpers.createAccount("blockedlikeness@example.com");
+  fake.helpers.grant(account.id, 5);
+
+  const blockedFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/api/generate")) {
+      return new Response(
+        JSON.stringify({ error: "content_blocked", category: "likeness" }),
+        { status: 422, headers: { "content-type": "application/json" } },
+      );
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+
+  const spiedClient = createThemeServiceClient({
+    fetch: blockedFetch,
+    tokenStore: createMemoryTokenStore(),
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+  await spiedClient.requestMagicLink("blockedlikeness@example.com");
+  await spiedClient.verifyMagicLink("blockedlikeness@example.com", "123456");
+
+  const res = await spiedClient.generateAttempt({
+    idempotencyKey: "blocked-likeness-key",
+    boardType: "rival_group",
+    promptTemplateVersion: "test-v1",
+    theme: { description: "a theme" },
+    themeName: "Test Theme",
+    slot: [{ display_name: "Sana Qi" }],
+    size: "1024x1024",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.error.kind, "content_blocked");
+    assert.deepEqual(res.error.categories, ["likeness"]);
+    assert.equal(res.error.fields, undefined);
+  }
+});
+
 test("generateAttempt: 422 content_blocked from an old backend (no categories/fields) leaves them undefined", async () => {
   const { fake, client } = setupClient();
   const account = fake.helpers.createAccount("blockedold@example.com");

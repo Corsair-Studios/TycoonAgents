@@ -665,6 +665,14 @@ test('a per-board generate click while signed out opens the sign-in shell and po
     });
     await new Promise((r) => setTimeout(r, 0));
 
+    // p93: the shell only gates a fresh-item generate when the client is
+    // DEFINITELY signed out (signedIn:false, no stored session to retry
+    // against). An unconfirmed/unknown status now sends the request
+    // directly instead of blocking, so make the signed-out state explicit
+    // here to exercise the shell-gating path this test is about.
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: false, hasStoredSession: false } });
+    await new Promise((r) => setTimeout(r, 0));
+
     const retryBtn = doc.querySelector('.theme-review-retry');
     assert.ok(retryBtn, 'expected a per-board generate/retry button to render');
 

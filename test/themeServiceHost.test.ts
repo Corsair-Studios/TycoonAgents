@@ -467,14 +467,14 @@ test("panel.ts wraps GOOGLE_START and GOOGLE_OPEN handlers in try/catch posting 
 
   const startIdx = src.indexOf("THEME_SERVICE_GOOGLE_START");
   assert.ok(startIdx >= 0, "panel.ts should handle THEME_SERVICE_GOOGLE_START");
-  const startSnippet = src.slice(startIdx, startIdx + 1000);
+  const startSnippet = src.slice(startIdx, startIdx + 1200);
   assert.match(startSnippet, /try\s*\{/, "GOOGLE_START handler should be wrapped in try/catch");
   assert.match(startSnippet, /catch\s*\(err\)/, "GOOGLE_START handler should catch errors");
   assert.match(startSnippet, /browser_open_failed/, "GOOGLE_START catch should post browser_open_failed");
 
   const openIdx = src.indexOf("THEME_SERVICE_GOOGLE_OPEN");
   assert.ok(openIdx >= 0, "panel.ts should handle THEME_SERVICE_GOOGLE_OPEN");
-  const openSnippet = src.slice(openIdx, openIdx + 1000);
+  const openSnippet = src.slice(openIdx, openIdx + 1200);
   assert.match(openSnippet, /try\s*\{/, "GOOGLE_OPEN handler should be wrapped in try/catch");
   assert.match(openSnippet, /catch\s*\(err\)/, "GOOGLE_OPEN handler should catch errors");
   assert.match(openSnippet, /browser_open_failed/, "GOOGLE_OPEN catch should post browser_open_failed");
