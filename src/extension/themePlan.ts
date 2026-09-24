@@ -32,6 +32,49 @@ export const FIXED_EXPRESSION_LABELS = [
 export const THEME_ACHIEVEMENT_COUNT = 25;
 export const THEME_DECOR_COUNT = 9;
 
+/**
+ * Strip a LEADING occurrence of `name` from `description` (case-insensitive),
+ * so a generated visual description doesn't repeat the slot's own display
+ * name (redundant for a visual spec, invites text rendering, and would feed
+ * a bare name into the likeness precheck). Matches the full name first, then
+ * the name with any trailing parenthetical dropped (e.g. "Marek Drills
+ * (heavy-builder)" also matches a description starting "Marek Drills:"), each
+ * followed by a word boundary (so "Robot" does not match "Robotic arm…"),
+ * then one separator: ":", "–", "—", "," or "." with optional surrounding
+ * whitespace, or "-" which requires whitespace on BOTH sides (" - ") so a
+ * hyphenated compound like "Torch-lit sconce" is left alone for name
+ * "Torch". Only a PREFIX match is stripped — the same name appearing
+ * mid-text is left alone. If stripping would leave the description empty,
+ * the original is returned unchanged. The first letter of the result is
+ * capitalized.
+ */
+export function stripLeadingName(name: string, description: string): string {
+  const cleanedName = typeof name === 'string' ? name.trim() : '';
+  const cleanedDesc = typeof description === 'string' ? description.trim() : '';
+  if (!cleanedName || !cleanedDesc) return description;
+
+  const withoutParen = cleanedName.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const candidates = [cleanedName, withoutParen].filter(
+    (candidate, index, arr) => candidate.length > 0 && arr.indexOf(candidate) === index,
+  );
+  // Longest candidate first so the full name is preferred over its
+  // parenthetical-stripped variant when both would match.
+  candidates.sort((a, b) => b.length - a.length);
+
+  for (const candidate of candidates) {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`^${escaped}\\b(?:\\s*[:–—,.]\\s*|\\s+-\\s+)`, 'i');
+    const match = cleanedDesc.match(re);
+    if (match) {
+      const rest = cleanedDesc.slice(match[0].length).trim();
+      if (rest.length > 0) {
+        return rest.charAt(0).toUpperCase() + rest.slice(1);
+      }
+    }
+  }
+  return description;
+}
+
 export type ClipName = 'walk'|'idle'|'sit'|'melee'|'build'|'tool_idle'|'shoot'|'dance'|'cheer'|'point'|'signal'|'block'|'stand_back';
 
 export interface AtlasClip {
@@ -321,6 +364,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
   );
   const characters = normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character');
   const decor = normalizeDecorNames(input.decor);
+  const achievements = normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge');
   return {
     version: 1,
     theme_id: themeId,
@@ -346,9 +390,11 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     expressions: applyFixedExpressionLabels(
       normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     ),
-    expression_descriptions: normalizePositionalDescriptions(input.expression_descriptions, THEME_EXPRESSION_COUNT),
-    achievements: normalizeNames(input.achievements, THEME_ACHIEVEMENT_COUNT, 'Achievement Badge'),
-    achievement_descriptions: normalizeAchievementDescriptions(input.achievement_descriptions),
+    expression_descriptions: normalizePositionalDescriptions(
+      input.expression_descriptions, THEME_EXPRESSION_COUNT, [...FIXED_EXPRESSION_LABELS],
+    ),
+    achievements,
+    achievement_descriptions: normalizeAchievementDescriptions(input.achievement_descriptions, achievements),
     descriptions_direction: cleanValue(input.descriptions_direction) || undefined,
     previous_descriptions: input.previous_descriptions,
   };
@@ -360,22 +406,25 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
  * index, padding/truncating to THEME_ACHIEVEMENT_COUNT. Returns undefined when
  * there is no description data at all (callers fall back to name-only prompts).
  */
-function normalizeAchievementDescriptions(rawExtra: unknown): string[] | undefined {
-  return normalizePositionalDescriptions(rawExtra, THEME_ACHIEVEMENT_COUNT);
+function normalizeAchievementDescriptions(rawExtra: unknown, names: string[]): string[] | undefined {
+  return normalizePositionalDescriptions(rawExtra, THEME_ACHIEVEMENT_COUNT, names);
 }
 
 /**
  * Positional (index === slot) description normalizer shared by the badge and
  * expression boards: pad/truncate `rawExtra` to exactly `count` entries, each a
- * trimmed string ('' where absent). Returns undefined when there is no
- * description data at all so callers fall back to name-only prompts.
+ * trimmed string ('' where absent), with any leading occurrence of that same
+ * index's `names` entry stripped (see stripLeadingName). Returns undefined
+ * when there is no description data at all so callers fall back to name-only
+ * prompts.
  */
-function normalizePositionalDescriptions(rawExtra: unknown, count: number): string[] | undefined {
+function normalizePositionalDescriptions(rawExtra: unknown, count: number, names: string[]): string[] | undefined {
   if (!Array.isArray(rawExtra) || rawExtra.length === 0) return undefined;
   const out: string[] = [];
   for (let i = 0; i < count; i += 1) {
     const value = rawExtra[i];
-    out.push(typeof value === 'string' ? value.trim() : '');
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    out.push(stripLeadingName(names[i] ?? '', trimmed));
   }
   return out;
 }
@@ -422,7 +471,7 @@ function alignDescriptions(
   const paired = names
     .map((name, index) => ({ name, extra: extras[index] ?? '' }))
     .filter((entry) => entry.name.length > 0);
-  const aligned = normalizedNames.map((_name, index) => paired[index]?.extra ?? '');
+  const aligned = normalizedNames.map((name, index) => stripLeadingName(name, paired[index]?.extra ?? ''));
   return aligned.some((description) => description.length > 0) ? aligned : undefined;
 }
 
@@ -589,7 +638,9 @@ function reserveRangedWeaponRackSlot(
   // rest's values in order, padded with empty strings so index i maps to objects[i].
   const hints = [rackHint, ...rest.map((entry) => entry.hint)].slice(0, THEME_OBJECT_COUNT);
   while (hints.length < objects.length) hints.push('');
-  const descriptionsAligned = [rackDescription, ...rest.map((entry) => entry.description)].slice(0, THEME_OBJECT_COUNT);
+  const descriptionsAligned = [rackDescription, ...rest.map((entry) => entry.description)]
+    .slice(0, THEME_OBJECT_COUNT)
+    .map((description, index) => stripLeadingName(objects[index] ?? '', description));
   while (descriptionsAligned.length < objects.length) descriptionsAligned.push('');
   const hasAnyHint = hints.some((hint) => hint.length > 0);
   // Every one of the 21 final slots (including any planner-padded fallback-named
@@ -659,7 +710,8 @@ function normalizeEnemies(
   const stylesAligned = paired.map((entry) => entry.style).slice(0, THEME_ENEMY_COUNT);
   while (stylesAligned.length < enemies.length) stylesAligned.push(undefined);
   const hasAnyStyle = stylesAligned.some((style) => style !== undefined);
-  const descriptionsAligned = paired.map((entry) => entry.description).slice(0, THEME_ENEMY_COUNT);
+  const descriptionsAligned = paired.map((entry) => entry.description).slice(0, THEME_ENEMY_COUNT)
+    .map((description, index) => stripLeadingName(enemies[index] ?? '', description));
   while (descriptionsAligned.length < enemies.length) descriptionsAligned.push('');
   const hasAnyDescription = descriptionsAligned.some((description) => description.length > 0);
   return {

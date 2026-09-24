@@ -10,6 +10,7 @@ import {
   type PromptRowSpec,
   type StructuredGenerateRequest,
 } from '../core/themePromptTemplates';
+import { stripLeadingName } from './themePlan';
 
 export { CHARACTER_TARGET_CONTENT_HEIGHT, CHARACTER_TARGET_CONTENT_PERCENT };
 
@@ -172,9 +173,12 @@ function baseRequest(creativeDirection: string, themeName: string, background: B
 }
 
 function toRowSpec(row: { display_name: string; visual_description?: string; motion_hint?: string; is_ranged_rack?: boolean }): PromptRowSpec {
+  const visualDescription = row.visual_description
+    ? stripLeadingName(row.display_name, row.visual_description)
+    : row.visual_description;
   return {
     display_name: row.display_name,
-    ...(row.visual_description ? { visual_description: row.visual_description } : {}),
+    ...(visualDescription ? { visual_description: visualDescription } : {}),
     ...(row.motion_hint ? { motion_hint: row.motion_hint } : {}),
     ...(row.is_ranged_rack ? { is_ranged_rack: true } : {}),
   };
@@ -352,7 +356,9 @@ export function createRivalBoardRows(rivals: ThemeRivalPromptSpec[]): ThemeRival
       kind: 'rival',
       rival_id: rival.rival_id,
       display_name: rival.display_name,
-      ...(rival.visual_description ? { visual_description: rival.visual_description } : {}),
+      ...(rival.visual_description
+        ? { visual_description: stripLeadingName(rival.display_name, rival.visual_description) }
+        : {}),
     })));
   }
   return boards;
@@ -430,13 +436,14 @@ export function buildCharacterAtlasRequest(
   visualDescription?: string,
   options?: CharacterAtlasPromptOptions,
 ): StructuredGenerateRequest {
+  const description = visualDescription ? stripLeadingName(characterName, visualDescription) : visualDescription;
   return {
     ...baseRequest(creativeDirection, themeName, background, 'roster_agent'),
     boardType: 'roster_agent',
     slot: {
       name: characterName,
       bodyPlan: options?.walkPoseGuide ?? 'biped',
-      ...(visualDescription ? { description: visualDescription } : {}),
+      ...(description ? { description } : {}),
     },
   };
 }

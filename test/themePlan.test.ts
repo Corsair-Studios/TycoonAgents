@@ -5,6 +5,7 @@ import {
   themePlanToManifest,
   FIXED_EXPRESSION_LABELS,
   themeHasFreedFrames,
+  stripLeadingName,
 } from '../src/extension/themePlan';
 import type { ThemePlan } from '../src/extension/themePlan';
 
@@ -526,4 +527,86 @@ test('projectile_description is trimmed/cleaned when supplied, and undefined whe
 
   const blank = normalizeThemePlan({ display_name: 'Neon Harbor', projectile_description: '   ' });
   assert.equal(blank.projectile_description, undefined);
+});
+
+// --- stripLeadingName: named-slot descriptions must not repeat the slot's
+// own name (see translator.ts prompt instruction + themeAssetPrompts.ts
+// request-time strip) -------------------------------------------------------
+
+test('stripLeadingName strips a plain "Name: description" prefix', () => {
+  assert.equal(
+    stripLeadingName('Sana Qi', 'Sana Qi: slim lab coat fused with translucent bio-panels'),
+    'Slim lab coat fused with translucent bio-panels',
+  );
+});
+
+test('stripLeadingName strips using the name with a trailing parenthetical dropped', () => {
+  assert.equal(
+    stripLeadingName('Marek Drills (heavy-builder)', 'Marek Drills: stocky frame in reinforced overalls'),
+    'Stocky frame in reinforced overalls',
+  );
+});
+
+test('stripLeadingName is case-insensitive', () => {
+  assert.equal(
+    stripLeadingName('Sana Qi', 'sana qi - slim lab coat'),
+    'Slim lab coat',
+  );
+});
+
+test('stripLeadingName handles each supported separator', () => {
+  for (const sep of [':', '–', '—', ',', '.']) {
+    assert.equal(stripLeadingName('Rex', `Rex${sep} a stocky mech`), 'A stocky mech', `separator "${sep}"`);
+  }
+  // "-" requires whitespace on both sides ("Rex - a stocky mech"), unlike the others.
+  assert.equal(stripLeadingName('Rex', 'Rex - a stocky mech'), 'A stocky mech', 'separator " - "');
+});
+
+test('stripLeadingName leaves a bare hyphen compound unchanged ("Torch-lit sconce" for name "Torch")', () => {
+  const description = 'Torch-lit sconce with a brass bracket';
+  assert.equal(stripLeadingName('Torch', description), description);
+});
+
+test('stripLeadingName strips a spaced-hyphen separator ("Torch - lit sconce" for name "Torch")', () => {
+  assert.equal(stripLeadingName('Torch', 'Torch - lit sconce with a brass bracket'), 'Lit sconce with a brass bracket');
+});
+
+test('stripLeadingName requires a word boundary after the name ("Robotic arm…" is unchanged for name "Robot")', () => {
+  const description = 'Robotic arm with a chrome finish';
+  assert.equal(stripLeadingName('Robot', description), description);
+});
+
+test('stripLeadingName leaves the name alone when it only appears mid-text', () => {
+  const description = 'A stocky mech that patrols near the Rex outpost gates.';
+  assert.equal(stripLeadingName('Rex', description), description);
+});
+
+test('stripLeadingName keeps the original description when stripping would leave it empty', () => {
+  assert.equal(stripLeadingName('Rex', 'Rex:'), 'Rex:');
+  assert.equal(stripLeadingName('Rex', 'Rex:   '), 'Rex:   ');
+});
+
+test('normalizeThemePlan strips leading names across character, object, decor, enemy, expression, and achievement descriptions', () => {
+  const plan = normalizeThemePlan({
+    display_name: 'Name Strip Theme',
+    characters: ['Sana Qi'],
+    character_descriptions: ['Sana Qi: slim lab coat fused with bio-panels'],
+    objects: ['Themed Ranged Weapon Rack', ...Array.from({ length: 20 }, (_, i) => `Object ${i + 1}`)],
+    object_descriptions: ['Themed Ranged Weapon Rack - a wall rack of glowing rifles', ...Array.from({ length: 20 }, (_, i) => `Object ${i + 1}: plain prop`)],
+    decor: ['Neon Bench'],
+    decor_descriptions: ['Neon Bench, a glowing seat'],
+    enemies: ['Data Pirate'],
+    enemy_descriptions: ['Data Pirate: a cloaked raider'],
+    expressions: [...FIXED_EXPRESSION_LABELS],
+    expression_descriptions: FIXED_EXPRESSION_LABELS.map((label) => `${label}: a bold icon`),
+    achievements: ['First Light'],
+    achievement_descriptions: ['First Light: a glowing badge'],
+  });
+  assert.equal(plan.character_descriptions?.[0], 'Slim lab coat fused with bio-panels');
+  assert.equal(plan.object_descriptions?.[0], 'A wall rack of glowing rifles');
+  assert.equal(plan.object_descriptions?.[1], 'Plain prop');
+  assert.equal(plan.decor_descriptions?.[0], 'A glowing seat');
+  assert.equal(plan.enemy_descriptions?.[0], 'A cloaked raider');
+  assert.equal(plan.expression_descriptions?.[0], 'A bold icon');
+  assert.equal(plan.achievement_descriptions?.[0], 'A glowing badge');
 });

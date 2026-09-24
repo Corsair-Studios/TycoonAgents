@@ -42,7 +42,7 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { buildThemePlanningPrompt } = require('../src/extension/translator') as typeof import('../src/extension/translator');
+const { buildThemePlanningPrompt, buildThemeDescriptionsPrompt } = require('../src/extension/translator') as typeof import('../src/extension/translator');
 import {
   FIXED_EXPRESSION_LABELS,
   normalizeThemePlan,
@@ -97,6 +97,11 @@ test('buildThemePlanningPrompt enforces non-empty, exact-count descriptions', ()
   const prompt = buildThemePlanningPrompt('haunted carnival');
   assert.match(prompt, /non-empty/i);
   assert.match(prompt, /exactly the required count/i);
+});
+
+test('buildThemePlanningPrompt instructs descriptions to omit the entry\'s own name', () => {
+  const prompt = buildThemePlanningPrompt('haunted carnival');
+  assert.match(prompt, /must NOT include or start with the entry's own name/i);
 });
 
 test('buildThemePlanningPrompt does not request editable expression NAMES (labels are fixed, only appearance is asked for)', () => {
@@ -175,4 +180,10 @@ test('normalizeThemePlan leaves expression_descriptions/achievement_descriptions
   const plan = normalizeThemePlan({ display_name: 'No Descriptions' });
   assert.equal(plan.expression_descriptions, undefined);
   assert.equal(plan.achievement_descriptions, undefined);
+});
+
+test('buildThemeDescriptionsPrompt instructs descriptions to omit the entry\'s own name', () => {
+  const plan = normalizeThemePlan({ display_name: 'Neon Harbor', characters: ['Dockmaster'] });
+  const prompt = buildThemeDescriptionsPrompt(plan);
+  assert.match(prompt, /must NOT include or start with the entry's own name/i);
 });

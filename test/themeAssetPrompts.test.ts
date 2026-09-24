@@ -4,6 +4,7 @@ import {
   buildAchievementAtlasPrompt,
   buildBackgroundDecorPrompt,
   buildCharacterAtlasPrompt,
+  buildCharacterAtlasRequest,
   buildEmoteAtlasPrompt,
   buildEnvironmentPrompt,
   buildExpressionAtlasPrompt,
@@ -647,6 +648,23 @@ test('buildCharacterAtlasPrompt injects an Appearance line only when a visual de
   );
   assert.match(withDescription, /Appearance — depict this exact design: A chrome humanoid with glowing blue circuitry seams/);
   assert.notEqual(withDescription, baseline);
+});
+
+test('buildCharacterAtlasRequest strips a leading name from visual_description so the wire body and local prompt preview agree', () => {
+  const req = buildCharacterAtlasRequest(
+    'neon cyberpunk', 'Nova', 'Night Grid', 'magenta',
+    'Nova: a chrome humanoid with glowing blue circuitry seams',
+  );
+  assert.equal(req.boardType, 'roster_agent');
+  if (req.boardType !== 'roster_agent') throw new Error('expected roster_agent boardType');
+  assert.equal(req.slot.description, 'A chrome humanoid with glowing blue circuitry seams');
+
+  const prompt = buildCharacterAtlasPrompt(
+    'neon cyberpunk', 'Nova', 'Night Grid', 'magenta',
+    'Nova: a chrome humanoid with glowing blue circuitry seams',
+  );
+  assert.match(prompt, /Appearance — depict this exact design: A chrome humanoid with glowing blue circuitry seams/);
+  assert.doesNotMatch(prompt, /Nova: a chrome humanoid/);
 });
 
 test('buildRivalAtlasPrompt appends an Appearance line per-row when visual_description is present, and stays byte-identical without one', () => {

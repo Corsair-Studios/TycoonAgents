@@ -177,6 +177,7 @@ export function buildThemePlanningPrompt(userPrompt: string): string {
     'Achievements are visual concepts only; do not define unlock rules yet.',
     '',
     'Every "*_descriptions" array is a concise (1-2 sentence) CONCRETE visual spec for the matching entry at the same index: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features. Every entry in every "*_descriptions" array is REQUIRED and must be a non-empty, concrete spec — never leave a slot blank, and return exactly the required count for each array.',
+    'Each description describes APPEARANCE ONLY and must NOT include or start with the entry\'s own name (the name is already known from the matching list above) — begin directly with the visual description itself.',
     '"crate_description", "poof_description", and "projectile_description" are the same kind of concise CONCRETE visual spec, but each is a single string (not an array) — there is exactly one build crate, one build-completion poof effect, and one ranged-combat projectile per theme.',
     'Each description must be consistent with "creative_direction" and coherent across the whole set (shared palette, materials, and art language).',
     'If the named item corresponds to a recognizable, well-known design (a famous character, vehicle, building, weapon, logo, etc.), describe THAT specific design faithfully — accuracy over generic invention is the whole point of these fields.',
@@ -320,6 +321,7 @@ export function buildThemeDescriptionsPrompt(plan: ThemePlan): string {
     '}',
     '',
     'Every description is a concise (1-2 sentence) CONCRETE visual spec: overall silhouette/form, primary + accent colors, key materials/finish, and 1-2 signature identifying features. Every entry is REQUIRED — never leave a slot blank, and return exactly the required count for each array. Every description must be consistent with the creative direction above and coherent across the whole set (shared palette, materials, and art language).',
+    'Each description describes APPEARANCE ONLY and must NOT include or start with the entry\'s own name (the name is already known from the matching list above) — begin directly with the visual description itself.',
   ].join('\n');
 }
 
