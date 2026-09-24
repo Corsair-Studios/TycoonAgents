@@ -1033,6 +1033,63 @@ test("p2 concern: after a signed-in credits:500 status, a subsequent throw posts
   assert.equal(delays.pendingCount(), 0);
 });
 
+// v0.0.661 bug fix: buildStatus's !res.ok branch previously hardcoded
+// signedIn:false for EVERY getStatus() error kind, not just a definitive
+// sign-out. A 401 whose refresh fails IS a definitive sign-out and must
+// still report signedIn:false; a transient kind (timeout/unreachable/
+// server_error/unavailable) must not.
+// Note: the real client.ts getStatus() (~1078) maps a 401/no-session to
+// ok:true, value.signedIn:false, not ok:false — so this !res.ok branch is
+// defensive (a future client change, or a hand-rolled test double) rather
+// than the path getStatus normally takes for an ordinary sign-out.
+test("buildStatus: not_signed_in (401, refresh failed) posts a definitive signedIn:false", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const client: any = {
+    getStatus: async () => ({ ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    now: () => Date.now(),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, false);
+  assert.equal(posted[0].error?.kind, "not_signed_in");
+});
+
+for (const kind of ["timeout", "unreachable", "server_error", "unavailable", "invalid_response", "rate_limited"]) {
+  test(`buildStatus: transient error kind=${kind} omits signedIn (never a false sign-out)`, async () => {
+    const posted: ThemeServiceHostStatus[] = [];
+    const timers = fakeTimers();
+    const client: any = {
+      getStatus: async () => ({ ok: false, error: { kind, message: "n/a" } }),
+      getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+    };
+    const host = createThemeServiceHost({
+      secrets: {} as any,
+      client,
+      openExternal: () => {},
+      postStatus: (status) => posted.push(status),
+      now: () => Date.now(),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    host.start();
+    await host.handleGetStatus();
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].signedIn, undefined, `kind=${kind} must not claim a definitive sign-out`);
+    assert.equal(posted[0].error?.kind, kind);
+  });
+}
+
 test("diagnosticReport: includes 'URI scheme' line with the injected scheme", () => {
   const { buildDiagnosticReport } = require("../src/host/vscode/diagnosticReport");
   const report = buildDiagnosticReport({

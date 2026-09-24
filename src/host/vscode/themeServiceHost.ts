@@ -414,7 +414,25 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     try {
       const res = await client.getStatus();
       if (!res.ok) {
-        return { signedIn: false, pendingCheckout, error: toErrorPayload(res.error) };
+        // Bug fix (v0.0.661): only a DEFINITIVE sign-out ("not_signed_in" —
+        // no session, or a session whose refresh was rejected, e.g. a
+        // revoked/expired refresh token or a 401 the client couldn't
+        // recover from; see clearSession() in themeServiceClient.ts)
+        // reports signedIn:false. Every other kind here (timeout,
+        // unreachable, server_error, unavailable, invalid_response,
+        // rate_limited, ...) is a TRANSIENT failure of the status fetch
+        // itself and must omit signedIn, exactly like buildStatus's own
+        // catch below — otherwise a real signed-in user's brief network
+        // hiccup gets reported as a definitive sign-out, wiping the
+        // webview's cached credits balance (writeCachedThemeServiceStatus)
+        // and leaving no way back to a signed-in view once the network
+        // recovers.
+        const definitiveSignOut = res.error.kind === "not_signed_in";
+        return {
+          ...(definitiveSignOut ? { signedIn: false as const } : {}),
+          pendingCheckout,
+          error: toErrorPayload(res.error),
+        };
       }
       const status: ThemeServiceStatus = res.value;
       // Refetch pricing on every status build (it can change server-side);

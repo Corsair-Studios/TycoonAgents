@@ -275,6 +275,38 @@ test('signed-out state renders Google button + email form, and Continue with Goo
   h.win.close();
 });
 
+// Review fix: a double click on the same button node (before the
+// google-wait re-render removes it) must post THEME_SERVICE_GOOGLE_START
+// exactly once.
+test('double-clicking Continue with Google posts THEME_SERVICE_GOOGLE_START exactly once', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  const body = h.panelBody();
+  const btn = Array.from(body.querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Continue with Google',
+  ) as any;
+  assert.ok(btn, 'Continue with Google button should render');
+  btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const starts = h.posted.filter((p: any) => p.type === 'THEME_SERVICE_GOOGLE_START');
+  assert.equal(starts.length, 1, 'a double click must post exactly one THEME_SERVICE_GOOGLE_START');
+  h.win.close();
+});
+
+// A deliberate Cancel then a fresh Sign in click must still work (the guard
+// must not survive a Cancel).
+test('Cancel from google-wait then Sign in again posts a second THEME_SERVICE_GOOGLE_START', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  assert.equal(h.posted.filter((p: any) => p.type === 'THEME_SERVICE_GOOGLE_START').length, 1);
+  h.clickButtonByText('Cancel');
+  h.clickButtonByText('Continue with Google');
+  const starts = h.posted.filter((p: any) => p.type === 'THEME_SERVICE_GOOGLE_START');
+  assert.equal(starts.length, 2, 'a restart after Cancel must post a new THEME_SERVICE_GOOGLE_START');
+  h.win.close();
+});
+
 test('signed-out state: Send sign-in link posts REQUEST_MAGIC_LINK with the entered email', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
@@ -449,6 +481,28 @@ test('unreachable state renders error + Retry, and Retry posts requestThemeServi
   const countAfter = h.posted.filter((p) => p.type === 'requestThemeServiceStatus').length;
   assert.equal(countAfter, countBefore + 1, 'Retry should post requestThemeServiceStatus, not the old THEME_SERVICE_GET_STATUS');
   assert.equal(h.posted.filter((p) => p.type === 'THEME_SERVICE_GET_STATUS').length, 0, 'Retry must not also post the old GET_STATUS wire message');
+  h.win.close();
+});
+
+// v0.0.661 bug fix: an "internal"/"unavailable" status with signedIn OMITTED
+// (unknown, not a known sign-out — see themeServiceHost.ts buildStatus) used
+// to render Retry only, stranding a real signed-in user's transient failure
+// with no path forward and no sign-in control anywhere in the Theme Builder.
+test('unreachable/internal state with signedIn unknown also renders a Sign in action that posts THEME_SERVICE_GOOGLE_START', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened({ error: { kind: 'internal', message: 'Theme Service unavailable. No credits were charged.' } }));
+  assert.match(h.panelText(), /unavailable/i);
+  h.clickButtonByText('Sign in');
+  const googleStart = h.lastPosted('THEME_SERVICE_GOOGLE_START');
+  assert.ok(googleStart, 'the limbo screen\'s Sign in action should post THEME_SERVICE_GOOGLE_START directly');
+  h.win.close();
+});
+
+// A DEFINITIVE signed-in status must never show the limbo Sign in button.
+test('unreachable state with signedIn:true does not render a Sign in action', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ error: { kind: 'unavailable', message: 'Theme Service unavailable (503). No credits were charged.' }, credits: undefined })));
+  assert.throws(() => h.clickButtonByText('Sign in'), /expected a button\/link/i);
   h.win.close();
 });
 

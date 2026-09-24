@@ -758,6 +758,16 @@ export class TycoonPanel {
   /** p42-t1: Theme Service auth/balance/checkout host, owns its own polling
    * and the in-memory Google PKCE code verifier. Disposed in dispose(). */
   private readonly _themeServiceHost: ThemeServiceHost;
+  /** Review fix (v0.0.661): defense-in-depth against a duplicate
+   * Google-sign-in-start message (the webview has its own guard, but a
+   * stray duplicate — e.g. one queued before that guard's own re-render
+   * lands — must not open a second browser tab). Tracks
+   * whether a handleGoogleStart() call is currently in flight and when it
+   * started; a duplicate is dropped only while one is still in flight and
+   * within 30s, so a deliberate restart after Cancel (which always finds
+   * the prior call already resolved) is never blocked. */
+  private _themeServiceGoogleStartInFlight = false;
+  private _themeServiceGoogleStartInFlightSince = 0;
   private _enginePollInterval: NodeJS.Timeout | undefined;
   /**
    * Incremental read state for the session-scoped delegationHealth rebuild
@@ -2059,6 +2069,13 @@ export class TycoonPanel {
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_START) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_START.safeParse(themeServiceMessagePayload(message));
           if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
+          const nowMs = Date.now();
+          if (this._themeServiceGoogleStartInFlight && nowMs - this._themeServiceGoogleStartInFlightSince < 30_000) {
+            log("panel: GOOGLE_START dropped (already in flight)");
+            return;
+          }
+          this._themeServiceGoogleStartInFlight = true;
+          this._themeServiceGoogleStartInFlightSince = nowMs;
           try {
             await this._themeServiceHost.handleGoogleStart();
           } catch (err) {
@@ -2067,6 +2084,8 @@ export class TycoonPanel {
               type: MSG.THEME_SERVICE_STATUS,
               payload: { signedIn: false, error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) } },
             });
+          } finally {
+            this._themeServiceGoogleStartInFlight = false;
           }
         } else if (message.type === MSG.THEME_SERVICE_GOOGLE_COMPLETE) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_GOOGLE_COMPLETE.safeParse(themeServiceMessagePayload(message));

@@ -3940,6 +3940,43 @@ if (typeof module !== "undefined" && module.exports) {
     return grid;
   }
 
+  /**
+   * Starts a Google sign-in directly — the same THEME_SERVICE_GOOGLE_START
+   * message and google-wait view transition the signed-out screen's own
+   * "Continue with Google" button uses. Shared by every "Sign in" affordance
+   * (the signed-out screen, the unreachable/limbo screens, the status chip,
+   * and the image-review card) so each one starts sign-in rather than only
+   * opening or scrolling to a panel that may have nothing to click (v0.0.661
+   * bug fix).
+   */
+  // Review fix: without a guard, repeated clicks across the chip, the
+  // unreachable/limbo screen and the image-review card each post
+  // THEME_SERVICE_GOOGLE_START, and the host opens a browser tab per
+  // message (panel.ts). `themeServiceGoogleStartGuardUntil` blocks a new
+  // start for a short window after one is already issued, on top of the
+  // themeServiceView === "google-wait" check (belt-and-braces for a click
+  // that lands before the view's own re-render commits). Cleared on
+  // sign-in success, Cancel/Back from the google-wait screen, and any
+  // THEME_SERVICE_STATUS carrying a definitive signedIn (true or false) —
+  // see renderThemeServicePanel and renderThemeServiceGoogleWait's Cancel.
+  let themeServiceGoogleStartGuardUntil = 0;
+  const THEME_SERVICE_GOOGLE_START_GUARD_MS = 3000;
+
+  function startThemeServiceGoogleSignIn() {
+    if (themeServiceView === "google-wait" || Date.now() < themeServiceGoogleStartGuardUntil) {
+      return;
+    }
+    themeServiceGoogleStartGuardUntil = Date.now() + THEME_SERVICE_GOOGLE_START_GUARD_MS;
+    themeServiceView = "google-wait";
+    clearThemeServiceGoogleWaitTimer();
+    themeServiceGoogleWaitStartedAt = Date.now();
+    themeServiceGoogleWaitTimeoutTimer = setTimeout(() => {
+      if (themeServiceView === "google-wait") renderThemeServicePanel(themeServiceStatus);
+    }, 90000);
+    postThemeService("THEME_SERVICE_GOOGLE_START", {});
+    renderThemeServicePanel(themeServiceStatus);
+  }
+
   // C. Not signed in.
   function renderThemeServiceSignedOut(container, status) {
     container.appendChild(tspEl("h3", null, "Generate a theme"));
@@ -3964,14 +4001,7 @@ if (typeof module !== "undefined" && module.exports) {
     }
 
     container.appendChild(tspButton("tsp-google-btn", "Continue with Google", () => {
-      themeServiceView = "google-wait";
-      clearThemeServiceGoogleWaitTimer();
-      themeServiceGoogleWaitStartedAt = Date.now();
-      themeServiceGoogleWaitTimeoutTimer = setTimeout(() => {
-        if (themeServiceView === "google-wait") renderThemeServicePanel(themeServiceStatus);
-      }, 90000);
-      postThemeService("THEME_SERVICE_GOOGLE_START", {});
-      renderThemeServicePanel(themeServiceStatus);
+      startThemeServiceGoogleSignIn();
     }));
 
     const divider = tspEl("div", "tsp-divider");
@@ -4076,6 +4106,7 @@ if (typeof module !== "undefined" && module.exports) {
     cancelP.appendChild(tspLink("Cancel", () => {
       clearThemeServiceGoogleWaitTimer();
       themeServiceView = "signin";
+      themeServiceGoogleStartGuardUntil = 0;
       renderThemeServicePanel(themeServiceStatus);
     }));
     container.appendChild(cancelP);
@@ -4240,6 +4271,19 @@ if (typeof module !== "undefined" && module.exports) {
     container.appendChild(tspButton(null, "Retry", () => {
       requestThemeServiceStatus();
     }));
+    // Bug fix (v0.0.661): this status's signedIn is genuinely UNKNOWN here
+    // (a transient fetch failure never claims signedIn:false — see
+    // themeServiceHost.ts's buildStatus) — it must never be treated as
+    // "signed in, just offline" by omission. Unless we already have a
+    // DEFINITIVE signedIn:true for this session, always offer a way to
+    // sign in too, so the panel never strands the person with only a
+    // Retry button and no path forward.
+    if (status.signedIn !== true) {
+      // Starts sign-in directly rather than only flipping a local view flag
+      // — the error-kind check above takes precedence on the next render,
+      // so a flag alone would leave this same screen up.
+      container.appendChild(tspButton(null, "Sign in", () => startThemeServiceGoogleSignIn()));
+    }
     if (!waking) {
       container.appendChild(tspEl("p", "muted tsp-note-bottom",
         "Imports still work while the service is down — use Import .zip from the Themes page."));
@@ -4263,6 +4307,14 @@ if (typeof module !== "undefined" && module.exports) {
     tspClear(themeServicePanelBody);
     const s = themeServiceStatus;
     if (!s) return;
+
+    // Review fix: a definitive signedIn (true or false — not the
+    // omitted/unknown value a transient error carries) always clears the
+    // Google-start guard, so a genuine sign-out or a completed sign-in
+    // never leaves a stale guard blocking a deliberate restart.
+    if (s.signedIn === true || s.signedIn === false) {
+      themeServiceGoogleStartGuardUntil = 0;
+    }
 
     // p46-t3: last known lock state gates the Themes-modal Generate entry
     // point too — the review card's own per-item locked handling
@@ -4703,6 +4755,13 @@ if (typeof module !== "undefined" && module.exports) {
       themeBuilderStatusChip.classList.add("tsp-status-chip-error");
       themeBuilderStatusChip.appendChild(document.createTextNode("Service unavailable — no credits charged"));
       themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
+      // Bug fix (v0.0.661): signedIn is unknown on a transient fetch
+      // failure (never forced false — see themeServiceHost.ts's
+      // buildStatus), so this chip must never silently drop the only way
+      // to sign in when we're not sure the account is already signed in.
+      if (status.signedIn !== true) {
+        themeBuilderStatusChip.appendChild(tspLink("Sign in", () => startThemeServiceGoogleSignIn()));
+      }
       return;
     }
     if (status.signedIn) {
@@ -7179,7 +7238,20 @@ if (typeof module !== "undefined" && module.exports) {
       btn.className = "skill-btn theme-attempt-action";
       btn.type = "button";
       btn.textContent = item.error_kind === "not_signed_in" ? "Sign in" : "Buy credits";
-      btn.addEventListener("click", () => openThemeBuilderFromReview());
+      // Bug fix (v0.0.661): opening the builder tab alone left the Theme
+      // Builder panel showing whatever it was last showing (which, in the
+      // observed bug, was a Retry-only "unreachable" screen with no
+      // sign-in control at all) — so clicking this only scrolled the
+      // panel into view with nothing new to do. Start sign-in directly,
+      // the same THEME_SERVICE_GOOGLE_START message the Theme Builder's
+      // own "Continue with Google" button posts, so a click here always
+      // does something.
+      btn.addEventListener("click", () => {
+        openThemeBuilderFromReview();
+        if (item.error_kind === "not_signed_in" && typeof startThemeServiceGoogleSignIn === "function") {
+          startThemeServiceGoogleSignIn();
+        }
+      });
       notice.appendChild(btn);
       return notice;
     }
@@ -16703,6 +16775,13 @@ if (typeof module !== "undefined" && module.exports) {
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
     "alibaba/qwen3": { perMtok: 1.5, weight: 1 },
+    // xAI Grok, via OpenCode's built-in xai provider (no native Claude/Codex
+    // host) — source https://docs.x.ai/developers/models, fetched 2026-09-23,
+    // <200k-token pricing tier. grok-4.7 (flagship reasoning): $2 in / $6 out
+    // -> blended (3*2+6)/4 = 3. grok-build-0.1 (cheap/fast): $1 in / $2 out
+    // -> blended (3*1+2)/4 = 1.25. Refresh via the update-pricing skill.
+    "xai/grok-4.7": { perMtok: 3, weight: 4 },
+    "xai/grok-build-0.1": { perMtok: 1.25, weight: 1 },
   };
 
   /** Legacy alias, kept for any external readers: opus/sonnet/haiku/fable -> perMtok only. */
@@ -17289,6 +17368,11 @@ if (typeof module !== "undefined" && module.exports) {
     // codex-* collides with an Anthropic family substring above.
     if (s.includes("gpt") || s.includes("codex")) {
       return "subscription";
+    }
+    // xAI Grok, via OpenCode's built-in xai provider (see PRICE_TABLE above)
+    // — API-key metered, like the Anthropic families, not a CLI subscription.
+    if (s.includes("xai") || s.includes("grok")) {
+      return "metered";
     }
     // FORWARD-LOOKING, NOT YET VERIFIED: no local provider (Ollama/LM
     // Studio) is live yet per docs/provider-contract.md section 4 ("this

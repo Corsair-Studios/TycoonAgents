@@ -1973,7 +1973,20 @@
       btn.className = "skill-btn theme-attempt-action";
       btn.type = "button";
       btn.textContent = item.error_kind === "not_signed_in" ? "Sign in" : "Buy credits";
-      btn.addEventListener("click", () => openThemeBuilderFromReview());
+      // Bug fix (v0.0.661): opening the builder tab alone left the Theme
+      // Builder panel showing whatever it was last showing (which, in the
+      // observed bug, was a Retry-only "unreachable" screen with no
+      // sign-in control at all) — so clicking this only scrolled the
+      // panel into view with nothing new to do. Start sign-in directly,
+      // the same THEME_SERVICE_GOOGLE_START message the Theme Builder's
+      // own "Continue with Google" button posts, so a click here always
+      // does something.
+      btn.addEventListener("click", () => {
+        openThemeBuilderFromReview();
+        if (item.error_kind === "not_signed_in" && typeof startThemeServiceGoogleSignIn === "function") {
+          startThemeServiceGoogleSignIn();
+        }
+      });
       notice.appendChild(btn);
       return notice;
     }
