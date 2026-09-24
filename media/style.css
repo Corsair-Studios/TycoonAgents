@@ -1927,8 +1927,8 @@ body {
   gap: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 10px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
   font-size: 12px;
 }
 
@@ -1942,22 +1942,32 @@ body {
   font-size: 11.5px;
   color: var(--muted);
   line-height: 1.45;
-  margin: 0 0 10px;
+  margin: 0 0 14px;
 }
 
 .tsp-pack-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin: 8px 0;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+@media (max-width: 420px) {
+  .tsp-pack-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tsp-pack {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   font-family: inherit;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 7px 8px;
+  border-radius: 8px;
+  padding: 16px 12px 14px;
   font-size: 11.5px;
   text-align: center;
   background: var(--surface);
@@ -1971,16 +1981,25 @@ body {
 
 .tsp-pack b {
   display: block;
-  font-size: 13px;
+  font-size: 20px;
+  line-height: 1.2;
   color: var(--accent);
 }
 
 .tsp-pack-label {
   display: block;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 2px;
+}
+
+.tsp-pack-price {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 4px;
 }
 
 .tsp-pack-bonus {
@@ -1991,20 +2010,21 @@ body {
 
 .tsp-pack-badge {
   display: inline-block;
-  margin-top: 3px;
-  padding: 1px 6px;
+  margin-top: 6px;
+  padding: 3px 9px;
   border-radius: 999px;
-  font-size: 9.5px;
-  font-weight: 600;
-  background: var(--accent);
-  color: var(--accent-contrast, #fff);
+  font-size: 10.5px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--success, #2ea043) 18%, transparent);
+  color: var(--success, #2ea043);
+  border: 1px solid color-mix(in srgb, var(--success, #2ea043) 45%, transparent);
 }
 
 .tsp-pack-chip {
   position: absolute;
-  top: -7px;
-  right: 6px;
-  padding: 1px 6px;
+  top: -8px;
+  right: 8px;
+  padding: 2px 7px;
   border-radius: 999px;
   font-size: 9px;
   font-weight: 700;
@@ -2017,7 +2037,8 @@ body {
 .tsp-caveat {
   font-size: 10.5px;
   line-height: 1.4;
-  margin-bottom: 10px;
+  margin-top: 4px;
+  margin-bottom: 14px;
 }
 
 .tsp-notice {

@@ -673,6 +673,9 @@ test('#theme-builder-credits-chip is visible only when signed in with numeric cr
   h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
   assert.ok(!h.chip().hasAttribute('hidden'), 'chip should stay visible, showing the cached balance, when credits is unfetchable');
   assert.equal(h.chip().textContent, '17 credits');
+  // p94: an unfetchable-balance state is still "retry mode" (see below) —
+  // the chip keeps the pre-existing informative title/click-to-retry
+  // affordance here rather than opening the store.
   assert.match(h.chip().title, /last known balance/i);
   h.win.close();
 });
@@ -683,6 +686,41 @@ test('#theme-builder-credits-chip shows an explicit placeholder when signed in w
   assert.ok(!h.chip().hasAttribute('hidden'), 'chip should stay visible with a placeholder rather than hide');
   assert.equal(h.chip().textContent, '— credits');
   assert.match(h.chip().title, /could not fetch/i);
+  h.win.close();
+});
+
+// p94: the CTA-row chip does nothing today — it must open the same
+// buy-credits shell modal the sticky topbar pill opens (reusing
+// openThemeBuilderShellModal), with real button semantics.
+test('p94: #theme-builder-credits-chip opens the buy-credits shell modal on click, with button role/tabindex', async () => {
+  const h = await bootThemePanelHarness();
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 17 })));
+
+  const chip = h.chip();
+  assert.equal(chip.getAttribute('role'), 'button');
+  assert.equal(chip.getAttribute('tabindex'), '0');
+  assert.equal(chip.style.cursor, 'pointer');
+
+  chip.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(!shell.hasAttribute('hidden'), 'clicking the chip should open the buy-credits shell modal');
+  h.win.close();
+});
+
+test('p94: #theme-builder-credits-chip opens the buy-credits shell modal on Enter and Space', async () => {
+  const h = await bootThemePanelHarness();
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 17 })));
+
+  const chip = h.chip();
+  chip.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  assert.ok(!shell.hasAttribute('hidden'), 'Enter on the chip should open the buy-credits shell modal');
+
+  shell.setAttribute('hidden', '');
+  chip.dispatchEvent(new h.win.KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
+  assert.ok(!shell.hasAttribute('hidden'), 'Space on the chip should open the buy-credits shell modal');
   h.win.close();
 });
 
@@ -891,10 +929,15 @@ test('chip: a second click while a retry is still in flight is ignored, until th
   h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
   assert.equal(requestCount(), countBeforeClick + 1, 'clicks while a retry is in flight must be ignored');
 
-  // A real status arriving clears the in-flight flag — clicking works again.
+  // A real credits status arriving clears the in-flight flag and takes the
+  // chip out of retry mode (p94) — a click now opens the buy-credits shell
+  // instead of posting another status request.
   h.dispatch(themeServiceStatus(signedInStatus({ credits: 9 })));
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  shell.setAttribute('hidden', '');
   h.chip().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
-  assert.equal(requestCount(), countBeforeClick + 2, 'a click after a terminal status must post again');
+  assert.equal(requestCount(), countBeforeClick + 1, 'a click once a real balance is known must not post another status request');
+  assert.ok(!shell.hasAttribute('hidden'), 'that click should instead open the buy-credits shell modal');
   h.win.close();
 });
 

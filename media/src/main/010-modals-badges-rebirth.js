@@ -1835,14 +1835,29 @@
   // or by the pending-timeout fallback below, whichever comes first.
   let themeCreditsChipRetryInFlight = false;
   if (themeBuilderCreditsChip) {
-    // p91 fix: retry affordance for the pending-timeout/error fallback below
-    // — harmless (and cheap) to fire on any click, including the normal
-    // "N credits" state, since requestThemeServiceStatus() is idempotent.
+    // p94: the CTA-row chip opens the same buy-credits shell as the sticky
+    // topbar pill (openThemeBuilderShellModal) rather than only retrying the
+    // status fetch — it's a <span>, so give it real button semantics
+    // (role, tabindex, Enter/Space) instead of duplicating the pill's own
+    // click handler.
     themeBuilderCreditsChip.style.cursor = "pointer";
-    themeBuilderCreditsChip.addEventListener("click", () => {
-      if (themeCreditsChipRetryInFlight) return;
-      themeCreditsChipRetryInFlight = true;
-      requestThemeServiceStatus();
+    themeBuilderCreditsChip.setAttribute("role", "button");
+    themeBuilderCreditsChip.setAttribute("tabindex", "0");
+    const onThemeCreditsChipActivate = () => {
+      if (themeCreditsChipRetryMode) {
+        if (themeCreditsChipRetryInFlight) return;
+        themeCreditsChipRetryInFlight = true;
+        requestThemeServiceStatus();
+        return;
+      }
+      openThemeBuilderShellModal();
+    };
+    themeBuilderCreditsChip.addEventListener("click", onThemeCreditsChipActivate);
+    themeBuilderCreditsChip.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+        e.preventDefault();
+        onThemeCreditsChipActivate();
+      }
     });
   }
   if (themeBuilderCreditsPill) {
@@ -1938,9 +1953,9 @@
       // Never hide the chip here (it may well still be signed in).
       var cached = readCachedThemeServiceStatus();
       if (cached && cached.signedIn && typeof cached.credits === "number") {
-        setThemeCreditsDisplay(cached.credits + " credits", "Showing your last known balance — could not refresh it just now.", false);
+        setThemeCreditsDisplay(cached.credits + " credits", "Showing your last known balance — could not refresh it just now.", false, true);
       } else {
-        setThemeCreditsDisplay("— credits", "Couldn't load your balance — click to retry", false);
+        setThemeCreditsDisplay("— credits", "Couldn't load your balance — click to retry", false, true);
       }
       // p91-t3: the retry click is what we were waiting on — done waiting,
       // clicking again (e.g. the "click to retry" placeholder just shown)
@@ -1950,6 +1965,19 @@
   }
 
   /**
+   * p94: whether the CTA-row chip's last render left it in a "balance fetch
+   * needs a retry" state (loading fallback / unfetchable-balance placeholder)
+   * — those keep the pre-existing click-to-retry affordance (posts
+   * requestThemeServiceStatus) rather than opening the buy-credits shell,
+   * since there is nothing useful to buy against until the balance resolves.
+   * Every other state (a real fetched or cached credits number, or hidden)
+   * opens the shell on click instead. Set by setThemeCreditsDisplay's
+   * `retryMode` argument.
+   * @type {boolean}
+   */
+  var themeCreditsChipRetryMode = false;
+
+  /**
    * Applies the same text/title/hidden triple to both the CTA-row credits
    * chip and the sticky topbar credits pill so the two can never show
    * different numbers. The pill additionally gets an aria-label built from
@@ -1957,11 +1985,23 @@
    * @param {string} text
    * @param {string} title
    * @param {boolean} hidden
+   * @param {boolean} [retryMode] p94: true for the loading/unfetchable-balance
+   *   states where the chip's click should retry the status fetch instead of
+   *   opening the buy-credits shell (see themeCreditsChipRetryMode above).
    */
-  function setThemeCreditsDisplay(text, title, hidden) {
+  function setThemeCreditsDisplay(text, title, hidden, retryMode) {
+    themeCreditsChipRetryMode = Boolean(retryMode);
     if (themeBuilderCreditsChip) {
       themeBuilderCreditsChip.textContent = text;
-      themeBuilderCreditsChip.title = title;
+      if (themeCreditsChipRetryMode) {
+        themeBuilderCreditsChip.title = title;
+        themeBuilderCreditsChip.removeAttribute("aria-label");
+      } else {
+        // p94: opens the store on click/Enter/Space (see the click/keydown
+        // wiring below) — title/aria-label state that action.
+        themeBuilderCreditsChip.title = "Buy credits";
+        themeBuilderCreditsChip.setAttribute("aria-label", text + " — Buy credits");
+      }
       if (hidden) themeBuilderCreditsChip.setAttribute("hidden", "");
       else themeBuilderCreditsChip.removeAttribute("hidden");
     }
@@ -2076,7 +2116,7 @@
       // Start screen before any THEME_SERVICE_STATUS round trip) stays
       // hidden, matching the pre-p87 Start-screen contract.
       if (s && s.pending) {
-        setThemeCreditsDisplay("…", "", false);
+        setThemeCreditsDisplay("…", "", false, true);
         armThemeCreditsChipPendingTimeout();
         return;
       }
@@ -2099,7 +2139,7 @@
     // signedIn field wasn't carried at all — must never hide the chip. Show
     // the best known balance when there is one (from either cache).
     if (typeof bestCachedCredits === "number") {
-      setThemeCreditsDisplay(bestCachedCredits + " credits", "Showing your last known balance — could not refresh it just now.", false);
+      setThemeCreditsDisplay(bestCachedCredits + " credits", "Showing your last known balance — could not refresh it just now.", false, true);
       // p89 fix: write the cache here too, so a THEN later error status still
       // has something to fall back to (never let a placeholder overwrite a
       // previously known number with undefined).
@@ -2111,14 +2151,14 @@
       return;
     }
     if (s.signedIn === true) {
-      setThemeCreditsDisplay("— credits", "Could not fetch your credit balance.", false);
+      setThemeCreditsDisplay("— credits", "Could not fetch your credit balance.", false, true);
       writeCachedThemeServiceStatus(s);
       return;
     }
     // Nothing known at all (no live number, no cache of any kind) and
     // signedIn wasn't even carried — still never hide; show the loading
     // indicator rather than claim a sign-out this status never asserted.
-    setThemeCreditsDisplay("…", "Still checking your account status…", false);
+    setThemeCreditsDisplay("…", "Still checking your account status…", false, true);
   }
 
   // p86: fire the status request as soon as this script runs — previously
@@ -2233,7 +2273,7 @@
       }
       btn.appendChild(tspEl("span", "tsp-pack-label", String(pack.label || pack.id)));
       btn.appendChild(tspEl("b", null, String(pack.credits)));
-      btn.appendChild(document.createTextNode(formatPackPrice(pack)));
+      btn.appendChild(tspEl("span", "tsp-pack-price", formatPackPrice(pack)));
       const percent = packBonusPercent(pack);
       if (percent !== null) {
         btn.appendChild(tspEl("span", "tsp-pack-badge", "+" + percent + "% credits"));
