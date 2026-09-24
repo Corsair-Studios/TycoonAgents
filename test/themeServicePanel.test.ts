@@ -2010,3 +2010,87 @@ test('a schema-rejected SET_THEME_ITEM_DESCRIPTIONS reply (error) surfaces a vis
   assert.ok(statusEl.classList.contains('theme-review-error'));
   h.win.close();
 });
+
+// ── v0.0.661 stuck-sign-in bug repro (real host log sequence) ──────────────
+// Root cause was in src/core/themeServiceClient.ts's doRefreshSession /
+// serviceRequest, not this webview: a transient refresh failure right after
+// a cold-start-adjacent sign-in cleared the just-stored valid session and
+// was reported as a definitive not_signed_in, which this panel correctly
+// (by its own contract) renders as signed-out. These tests confirm the
+// panel itself does the right thing once given a genuine signedIn:true
+// status in each leg of that sequence, so a regression here can't hide
+// behind the client-side fix alone.
+test('a transient timeout status followed by a signed-in ok status switches to the signed-in view (v0.0.661 log repro, leg 1)', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus({ error: { kind: 'timeout', message: 'timed out' } }));
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  assert.match(h.panelText(), /dev@example\.com/);
+  assert.ok(!/Sign in/.test(h.panelText()), 'no Sign in control should remain once signedIn:true arrives');
+  assert.equal(h.chip().textContent, '40 credits');
+  h.win.close();
+});
+
+test('google-wait followed by the completeGoogle ok status switches to the signed-in view (v0.0.661 log repro, leg 2)', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  assert.match(h.panelText(), /Finish signing in with Google/);
+  h.dispatch(themeServiceStatus({ signedIn: false, pendingCheckout: false, browserUrl: 'https://x/auth' }));
+  assert.match(h.panelText(), /Finish signing in with Google/, 'the browserUrl status must not leave google-wait early');
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  assert.match(h.panelText(), /dev@example\.com/);
+  assert.ok(!/Sign in/.test(h.panelText()));
+  assert.equal(h.chip().textContent, '40 credits');
+  h.win.close();
+});
+
+// Follow-up to the v0.0.661 investigation: item.error_kind "not_signed_in"
+// is PERSISTED to disk (themeImageReviewState.ts's setThemeImageReviewErrorKind)
+// from an earlier failed attempt and is only cleared by a later successful
+// attempt on that item — never by signing back in. A fresh THEME_IMAGE_REVIEW
+// payload carrying that stale field (a reload, reopening the review, or any
+// host resend after sign-in) must not reintroduce the "Sign in" card while
+// the live status is genuinely signed in.
+test('a stale persisted not_signed_in item error is ignored once a signed-in status is known', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'not_signed_in' })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(!notice || !notice.classList.contains('theme-attempt-signin'),
+    'a stale persisted not_signed_in error must not render the Sign in notice while signed in');
+  assert.ok(!/Sign in from the Theme Builder/.test(h.doc.body.textContent || ''));
+  h.win.close();
+});
+
+// Review follow-up: the review card must drop a stale not_signed_in prompt
+// the moment a signed-in status arrives, even with NO fresh THEME_IMAGE_REVIEW
+// resend — 060-theme-image-review.js's THEME_SERVICE_STATUS handler already
+// re-renders lastThemeImageReviewPayload unconditionally on every status
+// (not just when signedIn is true), so sanitizeStaleNotSignedInItems
+// (020-theme-plan-editor.js's renderThemeImageReview) picks up the newly
+// live signedIn:true on that same re-render.
+test('a review rendered with a stale not_signed_in card drops the Sign in prompt once a signed-in status arrives, with no THEME_IMAGE_REVIEW resend', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'not_signed_in' })],
+  }));
+  const noticeBefore = attemptNotice(h);
+  assert.ok(noticeBefore && noticeBefore.classList.contains('theme-attempt-signin'),
+    'sanity: the stale card must render the Sign in notice before sign-in arrives');
+
+  const reviewPostsBefore = h.posted.filter((p: any) => p.type === 'GET_THEME_IMAGE_REVIEW').length;
+  h.dispatch(themeServiceStatus(signedInStatus()));
+  const reviewPostsAfter = h.posted.filter((p: any) => p.type === 'GET_THEME_IMAGE_REVIEW').length;
+  assert.equal(reviewPostsAfter, reviewPostsBefore, 'the card must update from the status push alone, without requesting a resend');
+
+  const noticeAfter = attemptNotice(h);
+  assert.ok(!noticeAfter || !noticeAfter.classList.contains('theme-attempt-signin'),
+    'the Sign in notice must be gone once a signed-in status arrives');
+  h.win.close();
+});

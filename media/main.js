@@ -7314,8 +7314,30 @@ if (typeof module !== "undefined" && module.exports) {
     return null;
   }
 
+  // Bug fix (v0.0.661 follow-up): a not_signed_in error_kind is persisted
+  // to disk per item (themeImageReviewState.ts's setThemeImageReviewErrorKind)
+  // from an earlier failed generate attempt, and is only ever cleared by a
+  // later SUCCESSFUL attempt on that same item — never by signing back in.
+  // So a fresh THEME_IMAGE_REVIEW payload (a reload, reopening the review,
+  // or any host resend) can reintroduce a stale "Sign in from the Theme
+  // Builder to generate" card even while genuinely signed in, since the
+  // payload is rendered as-is regardless of the live theme-service status.
+  // Sanitize it here, at render time, using whatever status this module
+  // already has (themeServiceStatus, 010-modals-badges-rebirth.js's shared
+  // state) rather than trusting the persisted per-item field once we know
+  // better.
+  function sanitizeStaleNotSignedInItems(payload) {
+    if (!payload || !Array.isArray(payload.items)) return;
+    var status = typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null;
+    if (!status || !status.signedIn) return;
+    payload.items.forEach(function (item) {
+      if (item && item.error_kind === "not_signed_in") item.error_kind = undefined;
+    });
+  }
+
   function renderThemeImageReview(payload) {
     if (!themeImageReview || !themeImageReviewList) return;
+    sanitizeStaleNotSignedInItems(payload);
     lastThemeImageReviewPayload = payload;
     // Clear/hide any stale health-check results from a previous manual click
     // so they don't linger over a new generation/review render — the health

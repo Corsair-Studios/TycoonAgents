@@ -769,7 +769,23 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   async function doRefreshSession(): Promise<ThemeServiceResult<void>> {
     if (refreshInFlight) return refreshInFlight;
     const attempt = doRefreshSessionUncoordinated().then(async (res) => {
-      if (!res.ok) await clearSession();
+      // Bug fix: only a DEFINITIVE rejection of the refresh token itself
+      // (kind "not_signed_in" — Supabase's /token?grant_type=refresh_token
+      // returning 400/401, or no session to refresh at all) proves the
+      // session is actually invalid. Every other failure kind here
+      // ("unreachable", "timeout", "server_error", "rate_limited",
+      // "invalid_response", ...) is a TRANSIENT problem reaching the auth
+      // server — most plausibly right after a Render cold start, exactly
+      // like the account-fetch "timeout" that preceded this call — and
+      // must never destroy a session that may still be perfectly valid.
+      // Previously ANY failure here cleared the session, so a brief
+      // network/server hiccup immediately after a genuine, successful
+      // sign-in silently and permanently signed the user back out: the
+      // next getStatus() correctly reported signedIn:false (the session
+      // really was gone from local storage), and the webview correctly
+      // rendered Sign-in for what looked to the user like an ignored
+      // login.
+      if (!res.ok && res.error.kind === "not_signed_in") await clearSession();
       return res;
     });
     refreshInFlight = attempt;
@@ -804,6 +820,15 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     // 401 handler further down knows not to retry a refresh that already
     // failed for this same session.
     let proactiveRefreshFailed = false;
+    // Bug fix: the actual error a refresh attempt (proactive or reactive,
+    // below) failed with, so a transient one (network/server hiccup —
+    // "unreachable"/"timeout"/"server_error"/"rate_limited"/
+    // "invalid_response") can be reported as-is instead of being collapsed
+    // into a hardcoded "not_signed_in" the caller (getStatus) treats as a
+    // DEFINITIVE sign-out. Only a real "not_signed_in" refresh rejection
+    // (doRefreshSession's own definitive-kind check) should ever produce
+    // that kind here.
+    let refreshFailureError: ThemeServiceError | undefined;
 
     async function once(): Promise<{ status: "ok"; value: unknown } | { status: "unauthorized" } | { status: "error"; error: ThemeServiceError }> {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -817,6 +842,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
           const refreshed = await doRefreshSession();
           if (!refreshed.ok) {
             proactiveRefreshFailed = true;
+            refreshFailureError = refreshed.error;
             return { status: "unauthorized" };
           }
           session = await loadSession();
@@ -952,13 +978,29 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
     if (r.status === "unauthorized" && !proactiveRefreshFailed) {
       const refreshed = await doRefreshSession();
       if (!refreshed.ok) {
-        return { ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } };
+        // Bug fix: only report "not_signed_in" (which callers treat as a
+        // definitive, permanent sign-out) when the refresh itself was
+        // definitively rejected. A transient refresh failure (network
+        // hiccup, backend still warming after a cold start, ...) is
+        // reported with its real kind instead, so a signed-in status fetch
+        // that follows a genuine, successful sign-in never gets
+        // misreported as "you're signed out" just because one refresh
+        // attempt hit a flaky backend.
+        return refreshed.error.kind === "not_signed_in"
+          ? { ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } }
+          : { ok: false, error: refreshed.error };
       }
       r = await once();
     }
     if (r.status === "ok") return { ok: true, value: r.value };
     if (r.status === "unauthorized") {
       if (!proactiveRefreshFailed) await clearSession();
+      // Same fix as above: a proactive refresh that failed transiently
+      // (refreshFailureError set, session left intact) must not be
+      // reported as a definitive sign-out.
+      if (proactiveRefreshFailed && refreshFailureError && refreshFailureError.kind !== "not_signed_in") {
+        return { ok: false, error: refreshFailureError };
+      }
       return { ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } };
     }
     return { ok: false, error: r.error };

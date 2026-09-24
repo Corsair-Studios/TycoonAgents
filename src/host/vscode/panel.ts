@@ -3653,6 +3653,16 @@ export class TycoonPanel {
         }
         return {
           ...item,
+          // Bug fix (v0.0.661 follow-up): error_kind:"not_signed_in" is
+          // persisted to disk per item (setThemeImageReviewErrorKind) from
+          // an earlier failed attempt and is only ever cleared by a later
+          // successful attempt on that item — never by signing back in. A
+          // definitively signed-in cached status means it is stale, so it
+          // must not reach the webview and reintroduce a "Sign in" card the
+          // user has already resolved.
+          error_kind: item.error_kind === "not_signed_in" && this._themeServiceHost.getCachedOrPendingStatus().signedIn === true
+            ? undefined
+            : item.error_kind,
           currentPrompt,
           generated,
           // Only sliced atlas boards can be re-sliced; environment boards normalize a

@@ -193,6 +193,56 @@ test("refresh failure clears the token store and yields not_signed_in", async ()
   assert.equal(tokenStore.value, null);
 });
 
+// v0.0.661 bug fix: a TRANSIENT failure of the refresh call itself (network
+// error reaching Supabase, e.g. right after a Render cold start) must never
+// be treated the same as a genuine invalid/expired refresh token. Previously
+// doRefreshSession cleared the token store on ANY refresh failure and
+// serviceRequest hardcoded the resulting error to "not_signed_in", so a
+// perfectly valid, just-stored session was silently destroyed and getStatus
+// reported a definitive signedIn:false for what was really just a flaky
+// network blip.
+test("a transient (network) refresh failure keeps the session and reports a non-definitive error, not signedIn:false", async () => {
+  const { fake, tokenStore, client } = setupClient();
+  const account = fake.helpers.createAccount("flaky@example.com");
+  fake.helpers.grant(account.id, 9);
+  await client.requestMagicLink("flaky@example.com");
+  await client.verifyMagicLink("flaky@example.com", "123456");
+  assert.ok(tokenStore.value);
+  const storedBeforeRefresh = tokenStore.value;
+
+  fake.helpers.expireAccessToken();
+
+  // Fail only the refresh_token grant call with a network error; everything
+  // else (including the retried /api/account) goes through the real fake.
+  const flakyFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes("/auth/v1/token") && url.includes("grant_type=refresh_token")) {
+      throw new Error("network down");
+    }
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const flakyClient = createThemeServiceClient({
+    fetch: flakyFetch,
+    tokenStore,
+    endpoint: ENDPOINT,
+    supabaseUrl: SUPABASE_URL,
+    supabaseAnonKey: "anon-key",
+  });
+
+  const status = await flakyClient.getStatus();
+  assert.equal(status.ok, false, "a transient refresh failure must not be reported as ok:true signedIn:false");
+  if (!status.ok) {
+    assert.notEqual(status.error.kind, "not_signed_in");
+  }
+  assert.equal(tokenStore.value, storedBeforeRefresh, "the valid session must survive a transient refresh failure");
+
+  // A subsequent call against the real fake (network recovered) must see the
+  // still-valid session and succeed normally.
+  const recovered = await client.getStatus();
+  assert.equal(recovered.ok, true);
+  if (recovered.ok) assert.equal(recovered.value.signedIn, true);
+});
+
 test("concurrent 401s share one session refresh", async () => {
   const { fake, tokenStore, client } = setupClient();
   const account = fake.helpers.createAccount("concurrent@example.com");
