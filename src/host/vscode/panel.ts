@@ -8946,7 +8946,7 @@ export class TycoonPanel {
 
   /**
    * Builds the hook command as an ABSOLUTE, quoted path, e.g.
-   * `node "D:\...\.claude\tycoon\tycoon-claude-hook.cjs"`.
+   * `node "<projectRoot>/.claude/tycoon/tycoon-claude-hook.cjs"`.
    *
    * A project-relative command (`node .claude/tycoon/tycoon-claude-hook.cjs`)
    * was used through 0.0.664 on the assumption that Claude Code always runs
