@@ -125,11 +125,62 @@ test("fresh clone: export from A, copy manifest+CLAUDE.md to empty root B, apply
       if (managed.model !== undefined) assert.equal(slot.model, managed.model);
     }
 
+    // Exported artifacts (manifest + CLAUDE.md) are shared/committed and must
+    // stay portable: no machine-specific absolute path from A leaks into them.
+    // Handles both raw filesystem paths (single backslash) and JSON-escaped
+    // text read from a settings file (doubled backslash).
+    const norm = (p: string): string => p.replace(/\\+/g, "/").toLowerCase();
+    const claudeMdText = fs.readFileSync(path.join(rootB, "CLAUDE.md"), "utf8");
+    for (const sharedText of [manifestText, claudeMdText]) {
+      assert.ok(!/^[a-zA-Z]:[\\/]/m.test(sharedText), "exported artifact must not contain a drive letter absolute path");
+      assert.ok(!sharedText.includes("/Users/"), "exported artifact must not contain a /Users/ path");
+      assert.ok(!sharedText.includes("/home/"), "exported artifact must not contain a /home/ path");
+      assert.ok(!norm(sharedText).includes(norm(rootA)), "exported artifact must not contain A's absolute root path");
+    }
+
+    // The hook command written into B is machine-specific by design: it is an
+    // absolute path into B's own root, written only to the gitignored
+    // settings.local.json — never shared, never pointing at A.
     const settingsPath = path.join(rootB, ".claude", "settings.local.json");
     assert.ok(fs.existsSync(settingsPath), "settings.local.json must exist (hook entry)");
-    const settingsText = fs.readFileSync(settingsPath, "utf8");
-    assert.ok(settingsText.includes(".claude/tycoon/tycoon-claude-hook.cjs"), "hook command must be project-relative");
-    assert.ok(!settingsText.includes(rootB), "settings.local.json must not contain the project's absolute root path");
+    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const hookCommands: string[] = [];
+    for (const entries of Object.values<any>(settings.hooks ?? {})) {
+      for (const entry of entries) {
+        for (const hook of entry.hooks ?? []) {
+          if (typeof hook.command === "string") hookCommands.push(hook.command);
+        }
+      }
+    }
+    assert.ok(hookCommands.length > 0, "settings.local.json must contain at least one hook command");
+    for (const command of hookCommands) {
+      assert.ok(norm(command).includes(norm(rootB)), `hook command must be absolute and rooted in B: ${command}`);
+      const needle = norm(path.join(".claude", "tycoon", "tycoon-claude-hook.cjs"));
+      assert.ok(
+        norm(command).endsWith(needle) || norm(command).endsWith(needle + '"'),
+        `hook command must end with .claude/tycoon/tycoon-claude-hook.cjs: ${command}`,
+      );
+      assert.ok(!norm(command).includes(norm(rootA)), `hook command must not contain A's absolute root path: ${command}`);
+    }
+
+    const settingsSharedPath = path.join(rootB, ".claude", "settings.json");
+    if (fs.existsSync(settingsSharedPath)) {
+      const sharedSettings = JSON.parse(fs.readFileSync(settingsSharedPath, "utf8"));
+      const sharedHookCommands: string[] = [];
+      for (const entries of Object.values<any>(sharedSettings.hooks ?? {})) {
+        for (const entry of entries) {
+          for (const hook of entry.hooks ?? []) {
+            if (typeof hook.command === "string") sharedHookCommands.push(hook.command);
+          }
+        }
+      }
+      for (const command of sharedHookCommands) {
+        assert.ok(
+          !command.includes("tycoon-claude-hook.cjs") || !norm(command).includes(norm(rootB)),
+          `settings.json (shared) must not carry an absolute-path Tycoon hook command: ${command}`,
+        );
+      }
+    }
 
     const stampPath = path.join(rootB, ".claude", "tycoon", "team-setup-applied.json");
     assert.ok(fs.existsSync(stampPath));
