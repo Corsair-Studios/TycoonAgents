@@ -2528,3 +2528,99 @@ test('a review rendered with a stale not_signed_in card drops the Sign in prompt
     'the Sign in notice must be gone once a signed-in status arrives');
   h.win.close();
 });
+
+// Bug fix: a bad_request failure duplicated "The Theme Service rejected this
+// request. No credits were charged." twice on one card — once from
+// buildThemeAttemptStatusNotice's .theme-attempt-notice above Generate/Retry
+// (020-theme-plan-editor.js ~2064), and again as raw text in
+// .theme-review-retry-status below it, set from THEME_IMAGE_RETRY_STATE's
+// bare payload.error (060-theme-image-review.js's THEME_IMAGE_RETRY_STATE
+// handler). The host always sends a fresh THEME_IMAGE_REVIEW just before
+// that message, so the friendly notice already covers it; the retry-status
+// echo must now be suppressed whenever the item's error_kind already has one.
+test('a bad_request retry failure renders exactly one error message, including the error code', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'bad_request',
+      error_code: 'slot.achievements:max_count',
+      generation_error: { message: 'bad_request' },
+    })],
+  }));
+  h.dispatch({
+    type: 'THEME_IMAGE_RETRY_STATE',
+    payload: {
+      item_id: 'env1',
+      busy: false,
+      error: 'The Theme Service rejected this request. No credits were charged.',
+    },
+  });
+
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  assert.ok(card, 'expected a review card for env1');
+
+  const notice = attemptNotice(h);
+  assert.ok(notice && notice.classList.contains('theme-attempt-badrequest'),
+    'expected the friendly bad_request notice above the button');
+  assert.match(notice.textContent, /slot\.achievements:max_count/, 'notice must include the server error code detail');
+
+  const rejectedEls = Array.from(card.querySelectorAll('*')).filter(
+    (el: any) => el.children.length === 0 && /rejected this request/.test(el.textContent || ''),
+  );
+  assert.equal(rejectedEls.length, 1, `expected exactly one error message element, found ${rejectedEls.length}`);
+
+  const statusEl = card.querySelector('.theme-review-retry-status');
+  assert.ok(statusEl, 'expected the retry-status element');
+  assert.equal(statusEl.textContent, '', 'the retry-status echo must be suppressed once the friendly notice covers this error_kind');
+  h.win.close();
+});
+
+test('rate_limited, unavailable and content_blocked each still render exactly one error message', async () => {
+  const h = await bootThemePanelHarness();
+
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ id: 'env1', error_kind: 'rate_limited' })],
+  }));
+  h.dispatch({
+    type: 'THEME_IMAGE_RETRY_STATE',
+    payload: { item_id: 'env1', busy: false, error: 'Too many requests, try again shortly' },
+  });
+  let card = h.doc.querySelector('[data-item-id="env1"]');
+  let msgEls = Array.from(card.querySelectorAll('.theme-attempt-notice, .theme-review-retry-status'))
+    .filter((el: any) => (el.textContent || '').trim() !== '');
+  assert.equal(msgEls.length, 1, 'rate_limited should render exactly one message element');
+
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ id: 'env1', error_kind: 'unavailable' })],
+  }));
+  h.dispatch({
+    type: 'THEME_IMAGE_RETRY_STATE',
+    payload: { item_id: 'env1', busy: false, error: 'Theme Service unavailable — no credits were charged' },
+  });
+  card = h.doc.querySelector('[data-item-id="env1"]');
+  msgEls = Array.from(card.querySelectorAll('.theme-attempt-notice, .theme-review-retry-status'))
+    .filter((el: any) => (el.textContent || '').trim() !== '');
+  assert.equal(msgEls.length, 1, 'unavailable should render exactly one message element');
+
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ id: 'env1', error_kind: 'content_blocked' })],
+  }));
+  h.dispatch({
+    type: 'THEME_IMAGE_RETRY_STATE',
+    payload: { item_id: 'env1', busy: false, error: 'This prompt was blocked by content screening. No credit was spent.' },
+  });
+  card = h.doc.querySelector('[data-item-id="env1"]');
+  msgEls = Array.from(card.querySelectorAll('.theme-attempt-notice, .theme-review-retry-status'))
+    .filter((el: any) => (el.textContent || '').trim() !== '');
+  assert.equal(msgEls.length, 1, 'content_blocked should render exactly one message element');
+
+  h.win.close();
+});

@@ -15016,8 +15016,28 @@ if (typeof module !== "undefined" && module.exports) {
           nameInput.disabled = Boolean(msg.payload?.busy);
         }
         if (statusEl) {
-          statusEl.textContent = msg.payload?.error || msg.payload?.message || "";
-          statusEl.classList.toggle("theme-review-error", Boolean(msg.payload?.error));
+          // Bug fix: a retry/generate failure already gets a full
+          // THEME_IMAGE_REVIEW re-render (via _postThemeImageReview on the
+          // host, sent just before this THEME_IMAGE_RETRY_STATE), which
+          // updates item.error_kind and re-runs buildThemeAttemptStatusNotice
+          // above the button. This message's bare `error` string is the SAME
+          // failure restated as raw text — showing it here duplicated that
+          // notice below the button (e.g. bad_request's "Theme Service
+          // rejected this request..." twice for one failure). Only show it
+          // when the item has no error_kind with a friendly notice already
+          // covering it, so genuinely uncovered failures (re-slice errors,
+          // "wait until generation finishes", etc.) still surface here.
+          var statusItem = lastThemeImageReviewPayload && Array.isArray(lastThemeImageReviewPayload.items)
+            ? lastThemeImageReviewPayload.items.find(function (it) { return it && it.id === itemId; })
+            : null;
+          var itemHasFriendlyNotice = Boolean(statusItem)
+            && (statusItem.lastAttemptRefunded
+              || statusItem.error_kind === "provider_failed"
+              || (Boolean(statusItem.error_kind)
+                && Object.prototype.hasOwnProperty.call(THEME_ATTEMPT_ERROR_TEXT, statusItem.error_kind)));
+          var suppressDuplicateError = Boolean(msg.payload?.error) && itemHasFriendlyNotice;
+          statusEl.textContent = suppressDuplicateError ? "" : (msg.payload?.error || msg.payload?.message || "");
+          statusEl.classList.toggle("theme-review-error", Boolean(msg.payload?.error) && !suppressDuplicateError);
         }
       }
     } else if (msg && msg.type === "THEME_GENERATION_ERROR") {
