@@ -1641,7 +1641,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         currentTaskId: 'task-s',
       };
 
-      // 13a. Stale lastActivityAt (6 min ago, past the 5 min STALL_MS) + an
+      // 13a. Stale lastActivityAt (21 min ago, past the 20 min STALL_MS) + an
       // active task -> the stall note renders, and Retry/Skip remain.
       dispatch({
         type: 'state',
@@ -1650,7 +1650,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
           completedTasks: 0,
           workers: {},
           agentMetrics: [],
-          lastActivityAt: Date.now() - 6 * 60 * 1000,
+          lastActivityAt: Date.now() - 21 * 60 * 1000,
         },
       });
       dispatch({ type: 'PLAN_STATE', enabled: true, plan: stallPlan });
@@ -1718,6 +1718,87 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
         null,
         'an omitted lastActivityAt must not render a stall note (back-compat)'
       );
+    });
+
+    // ── Step 13d: relative-time copy + Retry/Skip confirm on an active task ──
+    await t.test('13d. stall note uses relative "Quiet for N min" copy, and Retry/Skip on an active task show an inline confirm (no window.confirm)', async () => {
+      const stallPlan = {
+        version: 1,
+        title: 'Stall Plan',
+        phases: [
+          { id: 'phase-s', num: 1, name: 'Phase S', goal: 'Get S done', gate: 'pending', taskIds: ['task-s'] },
+        ],
+        tasks: [
+          {
+            id: 'task-s',
+            phaseId: 'phase-s',
+            title: 'Task S',
+            detail: 'detail',
+            acceptanceCriteria: ['works'],
+            status: 'active',
+            verifyAttempts: 0,
+          },
+        ],
+        currentPhaseId: 'phase-s',
+        currentTaskId: 'task-s',
+      };
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true,
+          completedTasks: 0,
+          workers: {},
+          agentMetrics: [],
+          lastActivityAt: Date.now() - 45 * 60 * 1000,
+        },
+      });
+      dispatch({ type: 'PLAN_STATE', enabled: true, plan: stallPlan });
+      tick(2);
+      await flush();
+      assertNoErrors('plan-stall-relative-copy');
+
+      const card = doc.getElementById('project-plan-body').querySelector('.plan-task-card[data-task-id="task-s"]');
+      const note = card.querySelector('.plan-stall-note');
+      assert.ok(note, 'stall note should render at 45 min quiet');
+      assert.match(note.textContent, /Quiet for \d+ hr \d+ min|Quiet for \d+ min/, 'copy must be relative, never a bare clock time');
+      assert.doesNotMatch(note.textContent, /^\D*No agent activity since \d/, 'the old bare-clock-time phrasing must be gone');
+
+      // Clicking Retry on an active task must NOT post OVERRIDE_TASK
+      // immediately, and must not rely on window.confirm (unreliable/a
+      // no-op in the sandboxed webview) — instead it swaps the actions row
+      // for an inline confirm (note + "Retry anyway" + "Cancel").
+      const actionsRow = card.querySelector('.plan-task-actions');
+      assert.ok(actionsRow, 'actions row should exist');
+      const retryBtn = [...card.querySelectorAll('.plan-task-btn--retry')][0] as any;
+      assert.ok(retryBtn, 'Retry button should exist on the active task');
+      const postedBefore = posted.length;
+      retryBtn.click();
+      assert.equal(posted.length, postedBefore, 'clicking Retry on an active task must not post OVERRIDE_TASK yet');
+
+      const confirmWrap = actionsRow.querySelector('.plan-task-confirm');
+      assert.ok(confirmWrap, 'an inline confirm block must appear in the actions row');
+      assert.match(confirmWrap.textContent, /still marked active/i);
+      const proceedBtn = confirmWrap.querySelector('.plan-task-btn--retry');
+      const cancelBtn = confirmWrap.querySelector('.plan-task-btn--cancel');
+      assert.ok(proceedBtn && proceedBtn.textContent.includes('anyway'), '"Retry anyway" button must be present');
+      assert.ok(cancelBtn, 'Cancel button must be present');
+
+      // Cancel restores the original Retry/Skip buttons, still with no post.
+      cancelBtn.click();
+      assert.equal(actionsRow.querySelector('.plan-task-confirm'), null, 'Cancel must remove the inline confirm');
+      assert.ok(actionsRow.querySelector('.plan-task-btn--retry'), 'Cancel must restore the Retry button');
+      assert.ok(actionsRow.querySelector('.plan-task-btn--skip'), 'Cancel must restore the Skip button');
+      assert.equal(posted.length, postedBefore, 'Cancel must never post OVERRIDE_TASK');
+
+      // Re-open the confirm and accept it -> OVERRIDE_TASK is posted.
+      const retryBtn2 = [...card.querySelectorAll('.plan-task-btn--retry')][0] as any;
+      retryBtn2.click();
+      const proceedBtn2 = actionsRow.querySelector('.plan-task-confirm .plan-task-btn--retry') as any;
+      assert.ok(proceedBtn2, '"Retry anyway" must be present after re-opening the confirm');
+      proceedBtn2.click();
+      assert.equal(posted.length, postedBefore + 1, 'accepting the inline confirm must post OVERRIDE_TASK');
+      assert.equal(posted[posted.length - 1].type, 'OVERRIDE_TASK');
+      assert.equal(posted[posted.length - 1].action, 'retry');
     });
 
     // ── Step 14: per-achievement "unseen" red-dot (0.0.346+) ─────────────────

@@ -246,8 +246,11 @@
    * fabricated "0 tokens this session".
    */
   let lastSessionMetrics = { available: false, reason: "Waiting for the first state update…" };
-  /** Advisory-only threshold (ms): how long with no agent activity before the active task card shows a "may be stalled" note. Deterministic, no AI involved — purely a staleness signal off state.lastActivityAt. */
-  const STALL_MS = 5 * 60 * 1000;
+  /** Advisory-only threshold (ms): how long with no agent activity before the active task card shows a "may be stalled" note. Deterministic, no AI involved — purely a staleness signal off state.lastActivityAt. Overridable at runtime via window.TYCOON_STALL_MS (set by tests, or by a host-injected setting) so the value need not be hardcoded per install. */
+  const DEFAULT_STALL_MS = 20 * 60 * 1000;
+  const STALL_MS = (typeof window !== "undefined" && typeof window.TYCOON_STALL_MS === "number" && window.TYCOON_STALL_MS > 0)
+    ? window.TYCOON_STALL_MS
+    : DEFAULT_STALL_MS;
   /** Last computed isPlanStalled() result, used by the 1s ticker to re-render the plan section only when the stall state actually flips (not every tick). */
   let lastPlanStallState = false;
 
@@ -455,7 +458,37 @@
     }
   }
 
-  /** Build an OVERRIDE_TASK action button. @param {string} label @param {"approve"|"retry"|"skip"} action @param {string} taskId */
+  /**
+   * Format a past epoch ms timestamp as a short relative "quiet for" string
+   * ("just now", "3 min", "1 hr 12 min"), never a bare clock time — a bare
+   * clock reads as "recent" hours after the fact once the user's mental
+   * clock has moved on. Falls back to an absolute local time (with the date
+   * when it isn't today) only as a parenthetical, and only when the caller
+   * asks for it via `withAbsolute`.
+   * @param {number} sinceMs @param {boolean} [withAbsolute]
+   */
+  function formatQuietFor(sinceMs, withAbsolute) {
+    const deltaMs = Math.max(0, Date.now() - sinceMs);
+    const minutes = Math.floor(deltaMs / 60000);
+    let rel;
+    if (minutes < 1) {
+      rel = "just now";
+    } else if (minutes < 60) {
+      rel = minutes + " min";
+    } else {
+      const hrs = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      rel = hrs + " hr" + (mins > 0 ? " " + mins + " min" : "");
+    }
+    if (!withAbsolute) return rel;
+    const d = new Date(sinceMs);
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    const abs = sameDay ? d.toLocaleTimeString() : d.toLocaleString();
+    return rel + " (since " + abs + ")";
+  }
+
+  /** Build an OVERRIDE_TASK action button that posts immediately on click (no confirmation gate). @param {string} label @param {"approve"|"retry"|"skip"} action @param {string} taskId */
   function buildProjectPlanTaskButton(label, action, taskId) {
     const btn = document.createElement("button");
     btn.className = "skill-btn plan-task-btn plan-task-btn--" + action;
@@ -464,6 +497,63 @@
     btn.addEventListener("click", () => {
       btn.disabled = true;
       vscode.postMessage({ type: "OVERRIDE_TASK", taskId, action });
+    });
+    return btn;
+  }
+
+  /**
+   * Build a Retry/Skip button that, when the task is still "active", does
+   * NOT post OVERRIDE_TASK on click — it replaces the actions row with an
+   * inline confirm (text + "<Label> anyway" + "Cancel"), following the same
+   * no-window.confirm pattern as confirmThemePlanOverwrite
+   * (010-modals-badges-rebirth.js): `window.confirm` is unreliable/a no-op
+   * in the sandboxed VS Code webview (no `allow-modals` on the iframe), so
+   * a real dialog can silently never appear, leaving the click looking like
+   * a no-op. Cancel restores the original actions row untouched.
+   * @param {string} label @param {"retry"|"skip"} action @param {import("../../../src/core/state").ProjectPlanTask} task @param {HTMLElement} actionsEl the actions row to swap content in/out of
+   */
+  function buildProjectPlanConfirmButton(label, action, task, actionsEl) {
+    const btn = document.createElement("button");
+    btn.className = "skill-btn plan-task-btn plan-task-btn--" + action;
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      if (task.status !== "active") {
+        btn.disabled = true;
+        vscode.postMessage({ type: "OVERRIDE_TASK", taskId: task.id, action });
+        return;
+      }
+      const originalChildren = Array.from(actionsEl.childNodes);
+      const verb = action === "retry" ? "retrying may start duplicate work" : "skipping may abandon in-progress work";
+
+      const confirmWrap = document.createElement("div");
+      confirmWrap.className = "plan-task-confirm";
+      const note = document.createElement("span");
+      note.className = "plan-task-confirm-note";
+      note.textContent = "This task is still marked active — " + verb + ". ";
+      confirmWrap.appendChild(note);
+
+      const proceedBtn = document.createElement("button");
+      proceedBtn.type = "button";
+      proceedBtn.className = "skill-btn plan-task-btn plan-task-btn--" + action;
+      proceedBtn.textContent = label + " anyway";
+      proceedBtn.addEventListener("click", () => {
+        proceedBtn.disabled = true;
+        cancelBtn.disabled = true;
+        vscode.postMessage({ type: "OVERRIDE_TASK", taskId: task.id, action });
+      });
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "skill-btn secondary plan-task-btn plan-task-btn--cancel";
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.addEventListener("click", () => {
+        actionsEl.replaceChildren(...originalChildren);
+      });
+
+      confirmWrap.appendChild(proceedBtn);
+      confirmWrap.appendChild(cancelBtn);
+      actionsEl.replaceChildren(confirmWrap);
     });
     return btn;
   }
@@ -539,9 +629,13 @@
     if (task.status === "active" && isPlanStalled()) {
       const stallNote = document.createElement("div");
       stallNote.className = "plan-stall-note";
+      // Activity is tracked per-project, not per-task (no reliable taskId on
+      // hook records yet — see mapHookRecord.ts), so the note says so rather
+      // than implying this specific task went quiet.
       stallNote.textContent =
-        "⏸ No agent activity since " + new Date(state.lastActivityAt).toLocaleTimeString() +
-        " — this task may be stalled. Ask Claude to \"resume the project plan\", or run /project-plan.";
+        "⏸ Quiet for " + formatQuietFor(state.lastActivityAt) +
+        " (project-wide) — agents may still be working. Check the terminal before retrying. " +
+        "Ask Claude to \"resume the project plan\", or run /project-plan.";
       card.appendChild(stallNote);
     }
 
@@ -552,8 +646,8 @@
     const showApprove = task.status === "needs_fix";
     if (showApprove) actions.appendChild(buildProjectPlanTaskButton("Approve", "approve", task.id));
     if (showRetrySkip) {
-      actions.appendChild(buildProjectPlanTaskButton("Retry", "retry", task.id));
-      actions.appendChild(buildProjectPlanTaskButton("Skip", "skip", task.id));
+      actions.appendChild(buildProjectPlanConfirmButton("Retry", "retry", task, actions));
+      actions.appendChild(buildProjectPlanConfirmButton("Skip", "skip", task, actions));
     }
     if (actions.childElementCount > 0) card.appendChild(actions);
 
@@ -7721,12 +7815,26 @@ if (typeof module !== "undefined" && module.exports) {
       meta.className = "theme-review-meta";
       meta.textContent = `${item.kind.replace(/_/g, " ")} · revision ${item.revision}`;
 
+      // p97 review fix: item.generation_error.message is sometimes just the
+      // raw error_kind enum string ("content_blocked", "not_signed_in", ...)
+      // verbatim — an older/thinner backend response, or a value that never
+      // got mapped to prose. When item.error_kind is one of the KNOWN kinds,
+      // buildThemeAttemptStatusNotice below already renders a friendly,
+      // human-readable notice for it (with its own sign-in/buy-credits
+      // button, content-screening category detail, etc.) — showing this box
+      // too would duplicate that as a bare error code in red right above it.
+      // This box is only for a generation_error that ISN'T already covered
+      // by a known error_kind (a legacy/unmapped failure shape), or whose
+      // message is genuine free text rather than the bare kind identifier.
       let generationError = null;
-      if (item.generation_error) {
+      const hasFriendlyNoticeForKind = Boolean(item.error_kind) && Object.prototype.hasOwnProperty.call(THEME_ATTEMPT_ERROR_TEXT, item.error_kind);
+      const rawMessage = item.generation_error && typeof item.generation_error.message === "string" ? item.generation_error.message : "";
+      const messageIsBareErrorKind = rawMessage !== "" && rawMessage === item.error_kind;
+      if (item.generation_error && !hasFriendlyNoticeForKind && !messageIsBareErrorKind) {
         generationError = document.createElement("div");
         generationError.className = "theme-review-generation-error";
         const errorMessage = document.createElement("strong");
-        errorMessage.textContent = item.generation_error.message
+        errorMessage.textContent = rawMessage
           || "This image request was blocked. Revise its instructions and retry.";
         generationError.appendChild(errorMessage);
         const errorHelp = document.createElement("span");

@@ -2279,12 +2279,26 @@
       meta.className = "theme-review-meta";
       meta.textContent = `${item.kind.replace(/_/g, " ")} · revision ${item.revision}`;
 
+      // p97 review fix: item.generation_error.message is sometimes just the
+      // raw error_kind enum string ("content_blocked", "not_signed_in", ...)
+      // verbatim — an older/thinner backend response, or a value that never
+      // got mapped to prose. When item.error_kind is one of the KNOWN kinds,
+      // buildThemeAttemptStatusNotice below already renders a friendly,
+      // human-readable notice for it (with its own sign-in/buy-credits
+      // button, content-screening category detail, etc.) — showing this box
+      // too would duplicate that as a bare error code in red right above it.
+      // This box is only for a generation_error that ISN'T already covered
+      // by a known error_kind (a legacy/unmapped failure shape), or whose
+      // message is genuine free text rather than the bare kind identifier.
       let generationError = null;
-      if (item.generation_error) {
+      const hasFriendlyNoticeForKind = Boolean(item.error_kind) && Object.prototype.hasOwnProperty.call(THEME_ATTEMPT_ERROR_TEXT, item.error_kind);
+      const rawMessage = item.generation_error && typeof item.generation_error.message === "string" ? item.generation_error.message : "";
+      const messageIsBareErrorKind = rawMessage !== "" && rawMessage === item.error_kind;
+      if (item.generation_error && !hasFriendlyNoticeForKind && !messageIsBareErrorKind) {
         generationError = document.createElement("div");
         generationError.className = "theme-review-generation-error";
         const errorMessage = document.createElement("strong");
-        errorMessage.textContent = item.generation_error.message
+        errorMessage.textContent = rawMessage
           || "This image request was blocked. Revise its instructions and retry.";
         generationError.appendChild(errorMessage);
         const errorHelp = document.createElement("span");

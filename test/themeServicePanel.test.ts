@@ -1286,6 +1286,51 @@ test('content_blocked with no categories/fields (old backend) renders the generi
   h.win.close();
 });
 
+// p97 review fix: a generation_error.message that is just the bare
+// error_kind enum string (an older/thinner backend shape) must never render
+// as a raw code in red under Generate/Retry, duplicating the friendly
+// .theme-attempt-notice already shown for that same error_kind.
+test('a bare error-code generation_error.message is suppressed when a friendly notice already covers that error_kind', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      generation_error: { message: 'content_blocked' },
+    })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  assert.ok(card, 'expected a review card for env1');
+  assert.equal(
+    card.querySelector('.theme-review-generation-error'),
+    null,
+    'the raw-code generation_error box must not render when the friendly notice already covers it',
+  );
+  const notice = attemptNotice(h);
+  assert.ok(notice, 'the friendly .theme-attempt-notice must still render');
+  assert.ok(notice.classList.contains('theme-attempt-contentblocked'));
+  assert.ok(!card.textContent.includes('"content_blocked"'), 'the bare error code must never appear as visible text');
+  h.win.close();
+});
+
+test('an unmapped generation_error with no matching friendly error_kind still renders its own message (legacy shape)', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      generation_error: { message: 'Some legacy provider failure text.', request_id: 'req-123' },
+    })],
+  }));
+  const card = h.doc.querySelector('[data-item-id="env1"]');
+  const box = card.querySelector('.theme-review-generation-error');
+  assert.ok(box, 'a generation_error with no covering error_kind must still render its own notice');
+  assert.ok(box.textContent.includes('Some legacy provider failure text.'));
+  h.win.close();
+});
+
 test('content_blocked with categories/fields names what was flagged, mapping a slot[i] path to its rival row name', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeImageReview({

@@ -4493,6 +4493,26 @@ tr.metrics-row--child td.col-name {
 .plan-task-actions {
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.plan-task-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.plan-task-confirm-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.plan-task-btn--cancel {
+  background: transparent;
 }
 
 .plan-task-btn {
