@@ -439,7 +439,7 @@ test('POST /message {type: "getPacks"} -> lists every catalog pack with installe
     const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
     assert.ok(multiLlm, 'multi-llm pack must be present');
     assert.equal(multiLlm.installed.agent, false, 'no agent files exist yet in the fresh temp project');
-    assert.deepEqual(multiLlm.agents.map((a) => a.id).sort(), ['claude-worker', 'codex-reviewer', 'gemini-reviewer', 'kimi-reviewer']);
+    assert.deepEqual(multiLlm.agents.map((a) => a.id).sort(), ['claude-worker', 'codex-reviewer', 'gemini-reviewer', 'grok-reviewer', 'kimi-reviewer']);
   } finally {
     controller.abort();
     await runtime.close();
