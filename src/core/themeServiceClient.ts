@@ -94,6 +94,17 @@ export interface ThemeServiceAuthConfig {
   supabaseAnonKey: string;
   promptTemplateVersion: string;
   contractVersion: string;
+  /**
+   * Optional absolute https landing-page URL (p87). When present, the
+   * Google sign-in redirect_to becomes `${authLandingUrl}?scheme=<encoded
+   * vscode.env.uriScheme>` instead of the direct deep link, so the landing
+   * page can reopen `<scheme>://tycoonagents.tycoonagents/theme-service-auth`
+   * itself. Passed through here as the raw string from the server; callers
+   * (themeServiceHost) do the https/length validation and log-on-reject
+   * since only they have a logger, and fall back to today's direct deep
+   * link when it's absent or invalid.
+   */
+  authLandingUrl?: string;
 }
 
 export type ThemeServiceErrorKind =
@@ -302,6 +313,8 @@ export interface ThemeServiceClient {
   requestMagicLink(email: string): Promise<ThemeServiceResult<void>>;
   verifyMagicLink(email: string, code: string): Promise<ThemeServiceResult<void>>;
   startGoogleSignIn(input: { redirectTo: string }): Promise<ThemeServiceResult<GoogleSignInStart>>;
+  /** p87: the raw (unvalidated) authLandingUrl from GET /api/auth-config, or undefined when absent. */
+  getAuthLandingUrl(): Promise<ThemeServiceResult<string | undefined>>;
   completeGoogleSignIn(input: { authCode: string; codeVerifier: string }): Promise<ThemeServiceResult<void>>;
   /** p83-t1: implicit-flow completion (fragment access_token/refresh_token, no code). */
   completeGoogleSignInImplicit(input: {
@@ -327,6 +340,14 @@ export interface ThemeServiceClient {
    * blocker to the sign-in that just completed).
    */
   applyReferralCode(code: string): Promise<ThemeServiceResult<ApplyReferralResult>>;
+  /**
+   * p92: true iff the token store holds a well-formed session, WITHOUT
+   * validating it against the service (no network call) — lets a host tell
+   * "no session at all" (show Sign in) apart from "a session exists but the
+   * status fetch just failed/timed out" (show a waking/retry state, never
+   * Sign in) when a definitive signedIn can't be determined.
+   */
+  hasStoredSession(): Promise<boolean>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -540,6 +561,10 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
     }
     const supabaseUrl = `${parsedSupabaseUrl.protocol}//${parsedSupabaseUrl.host}${parsedSupabaseUrl.pathname.replace(/\/+$/, "")}`;
+    // p87: authLandingUrl is optional and passed through as-is (raw string,
+    // typeof-checked only) — full https/length validation happens in
+    // themeServiceHost, which has a logger to record a rejection.
+    const authLandingUrl = typeof json.authLandingUrl === "string" && json.authLandingUrl.length > 0 ? json.authLandingUrl : undefined;
     return {
       ok: true,
       value: {
@@ -547,6 +572,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
         supabaseAnonKey: json.supabasePublishableKey,
         promptTemplateVersion: json.promptTemplateVersion,
         contractVersion: json.contractVersion,
+        authLandingUrl,
       },
     };
   }
@@ -1007,6 +1033,10 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
   }
 
   return {
+    async hasStoredSession() {
+      return (await loadSession()) !== null;
+    },
+
     async requestMagicLink(email) {
       const res = await authRequest("/auth/v1/otp", { email, create_user: true });
       if (!res.ok) return res as ThemeServiceResult<void>;
@@ -1020,6 +1050,12 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       if (!parsed) return { ok: false, error: invalidResponse("malformed verify response") };
       await saveSession(parsed);
       return { ok: true, value: undefined };
+    },
+
+    async getAuthLandingUrl() {
+      const configRes = await getAuthConfig();
+      if (!configRes.ok) return configRes;
+      return { ok: true, value: configRes.value.authLandingUrl };
     },
 
     async startGoogleSignIn({ redirectTo }) {

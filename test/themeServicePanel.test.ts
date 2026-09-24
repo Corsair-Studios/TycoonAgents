@@ -238,6 +238,13 @@ function themeServiceStatus(payload: any) {
   return { type: 'THEME_SERVICE_STATUS', payload };
 }
 
+// p87: simulates the host's THEME_SERVICE_GOOGLE_OPENED reply once
+// openExternal settles for a GOOGLE_START — moves the webview off its
+// "Contacting sign-in service…" loading state.
+function googleOpened(overrides: any = {}) {
+  return { type: 'THEME_SERVICE_GOOGLE_OPENED', payload: { ok: true, ...overrides } };
+}
+
 // ── THEME_BUILDER_OPENED / THEME_SERVICE_STATUS wiring ─────────────────────
 
 test('THEME_BUILDER_OPENED renders the status and posts no THEME_SERVICE_GET_STATUS (p75-t2: host already refreshes in background)', async () => {
@@ -333,12 +340,144 @@ test('signed-out state: "Service:" line absent when status.endpointHost is unset
   h.win.close();
 });
 
+// ── p92: hasStoredSession-gated soft state (transient error, session fine) ──
+
+test('p92: stored session + timeout shows waking text with Retry, no Sign in anywhere, and a later ok status restores the normal signed-in view', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ credits: 40 })));
+  h.dispatch(themeServiceStatus({
+    signedIn: undefined,
+    hasStoredSession: true,
+    pendingCheckout: false,
+    error: { kind: 'timeout', message: 'timed out' },
+  }));
+  assert.match(h.panelText(), /waking up/i);
+  assert.ok(!/Sign in/.test(h.panelText()), 'no Sign in text should appear anywhere in the panel body');
+  const retry: any = Array.from(h.panelBody().querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Retry',
+  );
+  assert.ok(retry, 'expected a Retry button');
+  const statusChip = h.doc.getElementById('theme-builder-status-chip');
+  if (statusChip) assert.ok(!/Sign in/.test(statusChip.textContent || ''), 'the header status chip must not offer Sign in either');
+
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 42 })));
+  assert.match(h.panelText(), /dev@example\.com/);
+  assert.ok(!/Sign in/.test(h.panelText()));
+  assert.equal(h.chip().textContent, '42 credits');
+  h.win.close();
+});
+
+test('p92: no stored session + timeout shows Sign in', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.dispatch(themeServiceStatus({
+    signedIn: undefined,
+    hasStoredSession: false,
+    pendingCheckout: false,
+    error: { kind: 'timeout', message: 'timed out' },
+  }));
+  assert.match(h.panelText(), /Sign in/);
+  h.win.close();
+});
+
+test('p92: definitive signed-out status shows Sign in regardless of hasStoredSession', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus({ hasStoredSession: true })));
+  assert.match(h.panelText(), /Continue with Google/);
+  h.win.close();
+});
+
+// ── State: google-contacting (p87) ──────────────────────────────────────────
+
+test('Continue with Google immediately shows "Contacting sign-in service…" before GOOGLE_OPENED arrives', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  assert.match(h.panelText(), /Contacting sign-in service…/);
+  assert.ok(!/Finish signing in with Google/.test(h.panelText()));
+  h.win.close();
+});
+
+test('GOOGLE_OPENED ok:true transitions from contacting to the google-wait view', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  assert.match(h.panelText(), /Contacting sign-in service…/);
+  h.dispatch(googleOpened());
+  assert.match(h.panelText(), /Finish signing in with Google/);
+  h.win.close();
+});
+
+test('GOOGLE_OPENED ok:false shows a Retry button with the error message, still in the contacting view', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  h.clickButtonByText('Continue with Google');
+  h.dispatch(googleOpened({ ok: false, error: { kind: 'browser_open_failed', message: "couldn't open the browser for sign-in" } }));
+  assert.match(h.panelText(), /couldn't open the browser for sign-in/);
+  const retry: any = Array.from(h.panelBody().querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Retry',
+  );
+  assert.ok(retry, 'expected a Retry button after a failed GOOGLE_OPENED');
+  h.win.close();
+});
+
+test('no GOOGLE_OPENED within 30s shows "Couldn\'t reach the sign-in service" with Retry', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+
+  const originalSetTimeout = h.win.setTimeout.bind(h.win);
+  let contactingTimeoutCb: (() => void) | null = null;
+  let contactingTimeoutMs: number | null = null;
+  h.win.setTimeout = (cb: () => void, ms: number) => {
+    if (ms === 30000) {
+      contactingTimeoutCb = cb;
+      contactingTimeoutMs = ms;
+    }
+    return originalSetTimeout(cb, ms);
+  };
+  try {
+    h.clickButtonByText('Continue with Google');
+  } finally {
+    h.win.setTimeout = originalSetTimeout;
+  }
+  assert.equal(contactingTimeoutMs, 30000, 'expected a 30s contacting timeout to be scheduled');
+  assert.ok(contactingTimeoutCb, 'expected the 30s timeout callback to be captured');
+  (contactingTimeoutCb as unknown as () => void)();
+
+  assert.match(h.panelText(), /Couldn't reach the sign-in service/);
+  const retry: any = Array.from(h.panelBody().querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Retry',
+  );
+  assert.ok(retry, 'expected a Retry button after the 30s timeout');
+
+  // A GOOGLE_OPENED arriving late (after the timeout already fired and
+  // moved the view state) must be ignored, not silently re-open google-wait.
+  h.dispatch(googleOpened());
+  assert.match(h.panelText(), /Couldn't reach the sign-in service/, 'a stale late GOOGLE_OPENED must not override the timeout state');
+  h.win.close();
+});
+
+test('double-click guard: a second click while contacting still posts THEME_SERVICE_GOOGLE_START exactly once', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  const body = h.panelBody();
+  const btn = Array.from(body.querySelectorAll('button')).find(
+    (b: any) => (b.textContent || '').trim() === 'Continue with Google',
+  ) as any;
+  btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  btn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  const starts = h.posted.filter((p: any) => p.type === 'THEME_SERVICE_GOOGLE_START');
+  assert.equal(starts.length, 1, 'a double click during contacting must post exactly one THEME_SERVICE_GOOGLE_START');
+  h.win.close();
+});
+
 // ── State: google-wait ───────────────────────────────────────────────────────
 
 test('google-wait state renders paste-code field and posts GOOGLE_COMPLETE', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
   h.clickButtonByText('Continue with Google');
+  h.dispatch(googleOpened());
   assert.match(h.panelText(), /Finish signing in with Google/);
   const codeInput = h.doc.getElementById('theme-service-google-code');
   assert.ok(codeInput, 'paste-code input should render in google-wait state');
@@ -1306,6 +1445,7 @@ test('google-wait state with a browser_open_failed error renders the error notic
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
   h.clickButtonByText('Continue with Google');
+  h.dispatch(googleOpened());
   h.dispatch(
     themeServiceStatus(
       signedOutStatus({ error: { kind: 'browser_open_failed', message: "couldn't open the browser for sign-in" }, browserUrl: 'https://auth.example/authorize?code_challenge=abc' }),
@@ -1324,6 +1464,7 @@ test('google-wait state without an error renders no error notice and no Open/Cop
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
   h.clickButtonByText('Continue with Google');
+  h.dispatch(googleOpened());
   assert.match(h.panelText(), /Waiting…/);
   assert.ok(!/Open the sign-in link/.test(h.panelText()));
   assert.ok(!/Copy link/.test(h.panelText()));
@@ -1351,6 +1492,7 @@ test('google-wait state: the 90s nudge notice appears after the wait timer fires
   };
   try {
     h.clickButtonByText('Continue with Google');
+    h.dispatch(googleOpened());
   } finally {
     h.win.setTimeout = originalSetTimeout;
   }
@@ -2034,6 +2176,7 @@ test('google-wait followed by the completeGoogle ok status switches to the signe
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedOutStatus()));
   h.clickButtonByText('Continue with Google');
+  h.dispatch(googleOpened());
   assert.match(h.panelText(), /Finish signing in with Google/);
   h.dispatch(themeServiceStatus({ signedIn: false, pendingCheckout: false, browserUrl: 'https://x/auth' }));
   assert.match(h.panelText(), /Finish signing in with Google/, 'the browserUrl status must not leave google-wait early');

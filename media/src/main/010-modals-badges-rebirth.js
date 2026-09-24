@@ -2154,19 +2154,102 @@
   let themeServiceGoogleStartGuardUntil = 0;
   const THEME_SERVICE_GOOGLE_START_GUARD_MS = 3000;
 
+  // p87: "Contacting sign-in service…" view shown from click until the host
+  // confirms THEME_SERVICE_GOOGLE_OPENED (browser opened, or a failure to
+  // show with Retry). handleGoogleStart fetches auth-config first, which
+  // can take 5-6s on a cold Render instance, so this covers that gap
+  // instead of leaving the button looking unresponsive.
+  const THEME_SERVICE_GOOGLE_CONTACTING_TIMEOUT_MS = 30000;
+  let themeServiceGoogleContactingTimer = null;
+  let themeServiceGoogleContactingError = null;
+  // True once the 30s contacting timeout has fired for the CURRENT attempt
+  // — a GOOGLE_OPENED that arrives after that point is stale (the view
+  // already moved to the timeout's own Retry state) and must not silently
+  // resurrect google-wait or clear the timeout message.
+  let themeServiceGoogleContactingTimedOut = false;
+
+  function clearThemeServiceGoogleContactingTimer() {
+    if (themeServiceGoogleContactingTimer !== null) {
+      clearTimeout(themeServiceGoogleContactingTimer);
+      themeServiceGoogleContactingTimer = null;
+    }
+  }
+
   function startThemeServiceGoogleSignIn() {
-    if (themeServiceView === "google-wait" || Date.now() < themeServiceGoogleStartGuardUntil) {
+    if (
+      themeServiceView === "google-wait" ||
+      themeServiceView === "google-contacting" ||
+      Date.now() < themeServiceGoogleStartGuardUntil
+    ) {
       return;
     }
     themeServiceGoogleStartGuardUntil = Date.now() + THEME_SERVICE_GOOGLE_START_GUARD_MS;
-    themeServiceView = "google-wait";
+    themeServiceView = "google-contacting";
+    themeServiceGoogleContactingError = null;
+    themeServiceGoogleContactingTimedOut = false;
     clearThemeServiceGoogleWaitTimer();
-    themeServiceGoogleWaitStartedAt = Date.now();
-    themeServiceGoogleWaitTimeoutTimer = setTimeout(() => {
-      if (themeServiceView === "google-wait") renderThemeServicePanel(themeServiceStatus);
-    }, 90000);
+    clearThemeServiceGoogleContactingTimer();
+    themeServiceGoogleContactingTimer = setTimeout(() => {
+      if (themeServiceView === "google-contacting") {
+        themeServiceGoogleContactingTimedOut = true;
+        themeServiceGoogleContactingError = "Couldn't reach the sign-in service.";
+        renderThemeServicePanel(themeServiceStatus);
+      }
+    }, THEME_SERVICE_GOOGLE_CONTACTING_TIMEOUT_MS);
     postThemeService("THEME_SERVICE_GOOGLE_START", {});
     renderThemeServicePanel(themeServiceStatus);
+  }
+
+  /**
+   * p87: handles the host's THEME_SERVICE_GOOGLE_OPENED reply — fires once
+   * openExternal settles for the in-flight GOOGLE_START. Ignored if the
+   * view has already moved on (e.g. Cancel was clicked, or the 30s timeout
+   * already fired and the user retried).
+   */
+  function handleThemeServiceGoogleOpened(payload) {
+    if (themeServiceView !== "google-contacting" || themeServiceGoogleContactingTimedOut) return;
+    clearThemeServiceGoogleContactingTimer();
+    if (payload && payload.ok) {
+      themeServiceGoogleContactingError = null;
+      themeServiceView = "google-wait";
+      clearThemeServiceGoogleWaitTimer();
+      themeServiceGoogleWaitStartedAt = Date.now();
+      themeServiceGoogleWaitTimeoutTimer = setTimeout(() => {
+        if (themeServiceView === "google-wait") renderThemeServicePanel(themeServiceStatus);
+      }, 90000);
+    } else {
+      themeServiceGoogleContactingError =
+        (payload && payload.error && payload.error.message) || "Couldn't reach the sign-in service.";
+    }
+    renderThemeServicePanel(themeServiceStatus);
+  }
+
+  // C1. Contacting the sign-in service (after GOOGLE_START, before GOOGLE_OPENED).
+  function renderThemeServiceGoogleContacting(container) {
+    container.appendChild(tspEl("h3", null, "Signing in with Google"));
+    const row = tspEl("div", "tsp-wait-row");
+    row.appendChild(tspEl("span", "tsp-spinner"));
+    row.appendChild(tspEl("span", "muted", themeServiceGoogleContactingError || "Contacting sign-in service…"));
+    container.appendChild(row);
+
+    if (themeServiceGoogleContactingError) {
+      container.appendChild(tspButton(null, "Retry", () => {
+        themeServiceView = "signin";
+        themeServiceGoogleStartGuardUntil = 0;
+        themeServiceGoogleContactingError = null;
+        startThemeServiceGoogleSignIn();
+      }));
+    }
+
+    const cancelP = tspEl("p", "tsp-cancel-row");
+    cancelP.appendChild(tspLink("Cancel", () => {
+      clearThemeServiceGoogleContactingTimer();
+      themeServiceGoogleContactingError = null;
+      themeServiceView = "signin";
+      themeServiceGoogleStartGuardUntil = 0;
+      renderThemeServicePanel(themeServiceStatus);
+    }));
+    container.appendChild(cancelP);
   }
 
   // C. Not signed in.
@@ -2448,10 +2531,35 @@
   }
 
   // G. Theme Service unreachable, or (p75-t2) still waking up.
+  // p92: error kinds treated as a TRANSIENT status-fetch failure — never a
+  // reason to claim the account is signed out. Shared by
+  // renderThemeServiceUnreachable, renderThemeServicePanel's routing, and
+  // renderThemeBuilderStatusChip.
+  const THEME_SERVICE_TRANSIENT_ERROR_KINDS = [
+    "timeout", "unreachable", "unavailable", "waking", "server_error", "rate_limited", "internal",
+  ];
+
+  function isThemeServiceSoftState(status) {
+    return !!(
+      status &&
+      status.signedIn !== true &&
+      status.hasStoredSession === true &&
+      status.error &&
+      THEME_SERVICE_TRANSIENT_ERROR_KINDS.indexOf(status.error.kind) !== -1
+    );
+  }
+
   function renderThemeServiceUnreachable(container, status) {
-    const waking = status && status.error && status.error.kind === "waking";
+    // p92: a stored session exists but the status fetch is transiently
+    // failing (e.g. a Render cold start returning timeout/server_error, not
+    // just the host's own "waking" remap) — show the same waking/retry
+    // treatment and never Sign in; the session is fine, just unconfirmed.
+    const softState = isThemeServiceSoftState(status);
+    const waking = (status && status.error && status.error.kind === "waking") || softState;
     container.appendChild(tspEl("h3", null, "Generate a theme"));
-    const message = (status.error && status.error.message) || "Theme Service unavailable — no credits were charged.";
+    const message = softState
+      ? "Theme Service is waking up… This can take about a minute. Your session is fine."
+      : (status.error && status.error.message) || "Theme Service unavailable — no credits were charged.";
     if (waking) {
       const notice = tspNotice("info", "");
       notice.appendChild(tspEl("span", "tsp-spinner", null));
@@ -2467,10 +2575,11 @@
     // (a transient fetch failure never claims signedIn:false — see
     // themeServiceHost.ts's buildStatus) — it must never be treated as
     // "signed in, just offline" by omission. Unless we already have a
-    // DEFINITIVE signedIn:true for this session, always offer a way to
-    // sign in too, so the panel never strands the person with only a
-    // Retry button and no path forward.
-    if (status.signedIn !== true) {
+    // DEFINITIVE signedIn:true for this session, OR a stored session is
+    // known to exist (softState, p92), always offer a way to sign in too,
+    // so the panel never strands the person with only a Retry button and
+    // no path forward.
+    if (status.signedIn !== true && status.hasStoredSession !== true) {
       // Starts sign-in directly rather than only flipping a local view flag
       // — the error-kind check above takes precedence on the next render,
       // so a flag alone would leave this same screen up.
@@ -2525,12 +2634,23 @@
       renderThemeServicePendingCheckout(themeServicePanelBody);
       return;
     }
-    if (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable" || s.error.kind === "waking" || s.error.kind === "internal")) {
+    // p92: a stored-session soft-state (timeout/server_error/rate_limited
+    // etc. with hasStoredSession true) also routes here, not just the
+    // original unavailable/unreachable/waking/internal kinds — otherwise a
+    // transient timeout for an already-signed-in user fell through to the
+    // signed-out screen and showed "Sign in" for no reason (v0.0.661/662
+    // bug; see the 2026-09-24 log repro).
+    if (
+      (s.error && (s.error.kind === "unavailable" || s.error.kind === "unreachable" || s.error.kind === "waking" || s.error.kind === "internal")) ||
+      isThemeServiceSoftState(s)
+    ) {
       renderThemeServiceUnreachable(themeServicePanelBody, s);
       return;
     }
     if (!s.signedIn) {
-      if (themeServiceView === "google-wait") {
+      if (themeServiceView === "google-contacting") {
+        renderThemeServiceGoogleContacting(themeServicePanelBody);
+      } else if (themeServiceView === "google-wait") {
         renderThemeServiceGoogleWait(themeServicePanelBody, s);
       } else if (themeServiceView === "email-sent") {
         renderThemeServiceEmailCode(themeServicePanelBody, s);
@@ -2936,14 +3056,18 @@
       return;
     }
     const kind = status.error && status.error.kind;
-    if (kind === "waking") {
+    // p92: a stored session plus a transient error (timeout/server_error/
+    // rate_limited too, not just waking) shows the same waking/retry
+    // treatment, never Sign in — the session is fine, just unconfirmed.
+    const softState = isThemeServiceSoftState(status);
+    if (kind === "waking" || softState) {
       themeBuilderStatusChip.classList.add("tsp-status-chip-info");
       themeBuilderStatusChip.appendChild(tspEl("span", "tsp-spinner"));
-      themeBuilderStatusChip.appendChild(document.createTextNode("Starting service…"));
+      themeBuilderStatusChip.appendChild(document.createTextNode(kind === "waking" ? "Starting service…" : "Reconnecting…"));
       themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
       return;
     }
-    if (kind === "unavailable" || kind === "unreachable" || kind === "internal") {
+    if (kind === "unavailable" || kind === "unreachable" || kind === "internal" || kind === "timeout" || kind === "server_error" || kind === "rate_limited") {
       themeBuilderStatusChip.classList.add("tsp-status-chip-error");
       themeBuilderStatusChip.appendChild(document.createTextNode("Service unavailable — no credits charged"));
       themeBuilderStatusChip.appendChild(tspLink("Retry", requestThemeServiceStatus));
@@ -2951,7 +3075,11 @@
       // failure (never forced false — see themeServiceHost.ts's
       // buildStatus), so this chip must never silently drop the only way
       // to sign in when we're not sure the account is already signed in.
-      if (status.signedIn !== true) {
+      // p92: EXCEPT when a stored session is known to exist — then never
+      // offer Sign in for a transient failure (softState already returned
+      // above whenever hasStoredSession is true, so reaching here means
+      // it's false/unknown).
+      if (status.signedIn !== true && status.hasStoredSession !== true) {
         themeBuilderStatusChip.appendChild(tspLink("Sign in", () => startThemeServiceGoogleSignIn()));
       }
       return;

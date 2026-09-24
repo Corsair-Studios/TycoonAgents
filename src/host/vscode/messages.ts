@@ -488,6 +488,10 @@ export const MSG = {
   // Host -> webview: current auth/balance/pricing snapshot. Never carries
   // any token — see themeServiceHost.ts.
   THEME_SERVICE_STATUS: "THEME_SERVICE_STATUS",
+  // Host -> webview, no token material (p87): fires once openExternal
+  // settles for a Google sign-in attempt, so the webview can leave its
+  // "Contacting sign-in service…" loading state. See schema above.
+  THEME_SERVICE_GOOGLE_OPENED: "THEME_SERVICE_GOOGLE_OPENED",
 } as const;
 
 /** Union of every wire string this module knows about (either direction). */
@@ -1004,6 +1008,17 @@ export const MSG_SCHEMAS = {
       showReferralField: z.boolean().optional(),
       referralMessage: z.string().optional(),
       referralCodePrefill: z.string().optional(),
+    })
+    .passthrough(),
+  // p87: outbound host -> webview only, sent exactly once per
+  // THEME_SERVICE_GOOGLE_START/OPEN attempt once openExternal settles —
+  // lets the webview leave its "Contacting sign-in service…" loading state
+  // for the existing "finish sign-in in your browser" wait view (ok:true)
+  // or a Retry prompt (ok:false). Carries no token material.
+  THEME_SERVICE_GOOGLE_OPENED: z
+    .object({
+      ok: z.boolean(),
+      error: z.object({ kind: z.string(), message: z.string() }).optional(),
     })
     .passthrough(),
 } as const;

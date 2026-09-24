@@ -1099,3 +1099,277 @@ test("diagnosticReport: includes 'URI scheme' line with the injected scheme", ()
   });
   assert.match(report, /URI scheme.*antigravity/);
 });
+
+// ── p87: authLandingUrl-driven redirect_to + THEME_SERVICE_GOOGLE_OPENED ───
+
+function makeStubClient(overrides: {
+  authLandingUrl?: string;
+  startGoogleSignInOk?: boolean;
+} = {}) {
+  const startCalls: { redirectTo: string }[] = [];
+  const client: any = {
+    getAuthLandingUrl: async () => ({ ok: true, value: overrides.authLandingUrl }),
+    startGoogleSignIn: async (input: { redirectTo: string }) => {
+      startCalls.push(input);
+      if (overrides.startGoogleSignInOk === false) {
+        return { ok: false, error: { kind: "server_error", message: "sign-in configuration unavailable" } };
+      }
+      return { ok: true, value: { browserUrl: "https://fake-project.supabase.co/auth/v1/authorize?x=1", codeVerifier: "v" } };
+    },
+  };
+  return { client, startCalls };
+}
+
+test("p87: redirect_to uses authLandingUrl + encoded scheme when the backend advertises one", async () => {
+  const { client, startCalls } = makeStubClient({ authLandingUrl: "https://landing.example/auth" });
+  const timers = fakeTimers();
+  const opened: string[] = [];
+  const openedMessages: any[] = [];
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    uriScheme: "vscode-insiders",
+    openExternal: (url) => { opened.push(url); },
+    postStatus: () => {},
+    postGoogleOpened: (result) => openedMessages.push(result),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  assert.equal(startCalls[0].redirectTo, "https://landing.example/auth?scheme=vscode-insiders");
+  assert.deepEqual(openedMessages, [{ ok: true }]);
+});
+
+test("p87: redirect_to falls back to the direct deep link when authLandingUrl is absent", async () => {
+  const { client, startCalls } = makeStubClient({});
+  const timers = fakeTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    uriScheme: "vscode",
+    openExternal: () => {},
+    postStatus: () => {},
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  assert.equal(startCalls[0].redirectTo, "vscode://tycoonagents.tycoonagents/theme-service-auth");
+});
+
+test("p87: an invalid authLandingUrl (non-https) is ignored, falling back to the direct deep link, and is logged without the value", async () => {
+  const { client, startCalls } = makeStubClient({ authLandingUrl: "http://insecure.example/auth" });
+  const timers = fakeTimers();
+  const logs: string[] = [];
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    uriScheme: "vscode",
+    openExternal: () => {},
+    postStatus: () => {},
+    log: (msg: string) => logs.push(msg),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  assert.equal(startCalls[0].redirectTo, "vscode://tycoonagents.tycoonagents/theme-service-auth");
+  const rejectionLog = logs.find((l) => l.includes("authLandingUrl invalid"));
+  assert.ok(rejectionLog, "expected a log line noting the invalid authLandingUrl");
+  assert.ok(!rejectionLog!.includes("insecure.example"), "the log line must not carry the rejected URL's value");
+});
+
+test("p87: postGoogleOpened posts ok:false when startGoogleSignIn itself fails", async () => {
+  const { client } = makeStubClient({ startGoogleSignInOk: false });
+  const timers = fakeTimers();
+  const openedMessages: any[] = [];
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: () => {},
+    postGoogleOpened: (result) => openedMessages.push(result),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  assert.equal(openedMessages.length, 1);
+  assert.equal(openedMessages[0].ok, false);
+  assert.equal(openedMessages[0].error.kind, "server_error");
+});
+
+test("p87: postGoogleOpened posts ok:false when openExternal fails", async () => {
+  const { client } = makeStubClient({});
+  const timers = fakeTimers();
+  const openedMessages: any[] = [];
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => false,
+    postStatus: () => {},
+    postGoogleOpened: (result) => openedMessages.push(result),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  assert.equal(openedMessages.length, 1);
+  assert.equal(openedMessages[0].ok, false);
+  assert.equal(openedMessages[0].error.kind, "browser_open_failed");
+});
+
+// ── p92: hasStoredSession on the posted status ──────────────────────────────
+
+test("p92: buildStatus includes hasStoredSession true on a transient timeout when a session is stored", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const client: any = {
+    hasStoredSession: async () => true,
+    getStatus: async () => ({ ok: false, error: { kind: "timeout", message: "timed out" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].signedIn, undefined, "a transient error must never claim a definitive sign-out");
+  assert.equal(posted[0].hasStoredSession, true);
+  assert.equal(posted[0].error?.kind, "timeout");
+});
+
+test("p92: buildStatus includes hasStoredSession false when no session is stored", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const client: any = {
+    hasStoredSession: async () => false,
+    getStatus: async () => ({ ok: false, error: { kind: "timeout", message: "timed out" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted[0].hasStoredSession, false);
+});
+
+test("p92: a definitive not_signed_in status still carries hasStoredSession (false, since the session was cleared)", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const client: any = {
+    hasStoredSession: async () => false,
+    getStatus: async () => ({ ok: false, error: { kind: "not_signed_in", status: 401, message: "not signed in" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGetStatus();
+  assert.equal(posted[0].signedIn, false);
+  assert.equal(posted[0].hasStoredSession, false);
+});
+
+test("p92: getCachedOrPendingStatus's pending stub carries the last checked hasStoredSession", async () => {
+  const timers = fakeTimers();
+  const client: any = {
+    hasStoredSession: async () => true,
+    getStatus: async () => ({ ok: false, error: { kind: "timeout", message: "timed out" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: () => {},
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  assert.equal(host.getCachedOrPendingStatus().hasStoredSession, undefined, "nothing checked yet");
+  await host.handleGetStatus();
+  assert.equal(host.getCachedOrPendingStatus().hasStoredSession, true);
+});
+
+// ── Review fixes (p92 round 2) ──────────────────────────────────────────────
+
+test("p92 review fix: redirect_to appends scheme via searchParams when authLandingUrl already carries a query string", async () => {
+  const { client, startCalls } = makeStubClient({ authLandingUrl: "https://landing.example/auth?ref=abc" });
+  const timers = fakeTimers();
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    uriScheme: "vscode",
+    openExternal: () => {},
+    postStatus: () => {},
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  });
+  host.start();
+  await host.handleGoogleStart();
+  const redirectTo = startCalls[0].redirectTo;
+  assert.equal(redirectTo, "https://landing.example/auth?ref=abc&scheme=vscode");
+  // Guard against the old string-concat bug regressing: never a second "?".
+  assert.equal((redirectTo.match(/\?/g) || []).length, 1, "redirect_to must have exactly one '?'");
+});
+
+test("p92 review fix: after the waking-retry budget is exhausted, hasStoredSession is deliberately false (the escape hatch) even though a session is stored", async () => {
+  const posted: ThemeServiceHostStatus[] = [];
+  const timers = fakeTimers();
+  const queue: Array<() => void> = [];
+  const client: any = {
+    hasStoredSession: async () => true,
+    getStatus: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+    getPricing: async () => ({ ok: false, error: { kind: "unavailable", message: "n/a" } }),
+  };
+  const host = createThemeServiceHost({
+    secrets: {} as any,
+    client,
+    openExternal: () => {},
+    postStatus: (status) => posted.push(status),
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+    setTimeout: ((fn: () => void) => {
+      queue.push(fn);
+      return queue.length;
+    }) as any,
+    clearTimeout: (() => {}) as any,
+  });
+  host.start();
+  host.refreshStatusInBackground();
+  await new Promise((r) => setImmediate(r));
+
+  // Drain the whole retry chain (backoff sums past the 3-minute budget
+  // within ~8 scheduled attempts — see STATUS_RETRY_BACKOFF_MS/
+  // STATUS_RETRY_MAX_TOTAL_MS) until nothing more gets scheduled.
+  for (let i = 0; i < 20 && queue.length > 0; i++) {
+    const fn = queue.shift()!;
+    fn();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  }
+
+  const last = posted[posted.length - 1];
+  assert.equal(last.error?.kind, "unavailable", "expected the final post-exhaustion status");
+  assert.equal(last.hasStoredSession, false, "the escape hatch must deliberately force hasStoredSession:false so the webview offers Sign in");
+  assert.equal(last.signedIn, undefined, "still never a definitive sign-out");
+});

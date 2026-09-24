@@ -1282,3 +1282,95 @@ test("createCheckoutSession (a generation-shaped request) is NOT bound by status
   const res = await client.createCheckoutSession("starter45");
   assert.equal(res.ok, true, "checkout must succeed even though statusTimeoutMs is tiny");
 });
+
+// ── p87: authLandingUrl passthrough on GET /api/auth-config ────────────────
+
+test("getAuthLandingUrl returns the raw authLandingUrl string when the backend sends one", async () => {
+  const tokenStore = createMemoryTokenStore();
+  const fetchImpl = async (url: string | URL) => {
+    if (String(url).endsWith("/api/auth-config")) {
+      return new Response(
+        JSON.stringify({
+          supabaseUrl: "https://fake-project.supabase.co",
+          supabasePublishableKey: "fake-key",
+          promptTemplateVersion: "v1",
+          contractVersion: "v1",
+          authLandingUrl: "https://landing.example/auth",
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
+  const client = createThemeServiceClient({ fetch: fetchImpl as any, tokenStore, endpoint: "https://theme-service.example" });
+  const res = await client.getAuthLandingUrl();
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value, "https://landing.example/auth");
+});
+
+test("getAuthLandingUrl returns undefined when the backend omits authLandingUrl (today's behavior)", async () => {
+  const tokenStore = createMemoryTokenStore();
+  const fetchImpl = async (url: string | URL) => {
+    if (String(url).endsWith("/api/auth-config")) {
+      return new Response(
+        JSON.stringify({
+          supabaseUrl: "https://fake-project.supabase.co",
+          supabasePublishableKey: "fake-key",
+          promptTemplateVersion: "v1",
+          contractVersion: "v1",
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("not found", { status: 404 });
+  };
+  const client = createThemeServiceClient({ fetch: fetchImpl as any, tokenStore, endpoint: "https://theme-service.example" });
+  const res = await client.getAuthLandingUrl();
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value, undefined);
+});
+
+// ── p92: hasStoredSession (no network call) ─────────────────────────────────
+
+test("hasStoredSession is false with no stored token", async () => {
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: (async () => new Response("unused", { status: 500 })) as any,
+    tokenStore,
+    endpoint: "https://theme-service.example",
+    supabaseUrl: "https://fake-project.supabase.co",
+    supabaseAnonKey: "fake-key",
+  });
+  assert.equal(await client.hasStoredSession(), false);
+});
+
+test("hasStoredSession is true once a well-formed session is stored, without any network call", async () => {
+  const tokenStore = createMemoryTokenStore();
+  let fetchCalls = 0;
+  const client = createThemeServiceClient({
+    fetch: (async () => {
+      fetchCalls++;
+      return new Response("unused", { status: 500 });
+    }) as any,
+    tokenStore,
+    endpoint: "https://theme-service.example",
+    supabaseUrl: "https://fake-project.supabase.co",
+    supabaseAnonKey: "fake-key",
+  });
+  await tokenStore.set(JSON.stringify({ accessToken: "a", refreshToken: "r", expiresAt: Date.now() + 60000 }));
+  assert.equal(await client.hasStoredSession(), true);
+  assert.equal(fetchCalls, 0, "hasStoredSession must not make a network call");
+});
+
+test("hasStoredSession is false for a malformed stored value", async () => {
+  const tokenStore = createMemoryTokenStore();
+  const client = createThemeServiceClient({
+    fetch: (async () => new Response("unused", { status: 500 })) as any,
+    tokenStore,
+    endpoint: "https://theme-service.example",
+    supabaseUrl: "https://fake-project.supabase.co",
+    supabaseAnonKey: "fake-key",
+  });
+  await tokenStore.set("not-json");
+  assert.equal(await client.hasStoredSession(), false);
+});

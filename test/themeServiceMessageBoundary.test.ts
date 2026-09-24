@@ -227,6 +227,12 @@ function themeBuilderOpened(payload: any) {
   return { type: 'THEME_BUILDER_OPENED', payload };
 }
 
+// p87: simulates the host's THEME_SERVICE_GOOGLE_OPENED reply, needed to
+// move the webview off "Contacting sign-in service…" into google-wait.
+function googleOpened() {
+  return { type: 'THEME_SERVICE_GOOGLE_OPENED', payload: { ok: true } };
+}
+
 // ── Drive every THEME_SERVICE_* action and validate each posted message ────
 
 test('boundary contract: every THEME_SERVICE_* message the real webview posts parses against MSG_SCHEMAS via themeServiceMessagePayload', async () => {
@@ -268,6 +274,7 @@ test('boundary contract: every THEME_SERVICE_* message the real webview posts pa
     h.dispatch(themeBuilderOpened(signedOutStatus()));
     h.clickButtonByText('Continue with Google');
     capturedByType.set('THEME_SERVICE_GOOGLE_START', h.lastPosted('THEME_SERVICE_GOOGLE_START'));
+    h.dispatch(googleOpened());
 
     const codeInput = h.doc.getElementById('theme-service-google-code');
     codeInput.value = 'pasted-code-123';
@@ -280,6 +287,7 @@ test('boundary contract: every THEME_SERVICE_* message the real webview posts pa
     const h = await bootThemePanelHarness();
     h.dispatch(themeBuilderOpened(signedOutStatus()));
     h.clickButtonByText('Continue with Google');
+    h.dispatch(googleOpened());
     h.dispatch({
       type: 'THEME_SERVICE_STATUS',
       payload: signedOutStatus({

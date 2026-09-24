@@ -1240,6 +1240,8 @@
       // The host already refreshes status in the background after open, so
       // the old extra THEME_SERVICE_GET_STATUS post is dropped as redundant.
       renderThemeServicePanel(msg.payload || null);
+    } else if (msg && msg.type === "THEME_SERVICE_GOOGLE_OPENED") {
+      handleThemeServiceGoogleOpened(msg.payload || null);
     } else if (msg && msg.type === "THEME_SERVICE_STATUS") {
       renderThemeServicePanel(msg.payload || null);
       // p84: a signed-in status clears any stale "Sign in" prompt left over

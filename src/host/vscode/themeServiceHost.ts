@@ -84,6 +84,14 @@ export interface ThemeServiceHostStatus {
    * follows shortly. Never set on a cached snapshot, even a stale one.
    */
   pending?: boolean;
+  /**
+   * p92: true iff the token store holds a session (no network validation),
+   * false when it definitely doesn't, undefined when that couldn't be
+   * checked. Lets the webview tell "genuinely signed out" apart from "a
+   * session exists but this status fetch failed/timed out" when signedIn
+   * can't be confirmed true — the latter must never show Sign in.
+   */
+  hasStoredSession?: boolean;
 }
 
 /**
@@ -136,6 +144,14 @@ export interface ThemeServiceHostOptions {
   openExternal: (url: string) => boolean | void | Thenable<boolean | void>;
   /** Posts the current status to the webview. */
   postStatus: (status: ThemeServiceHostStatus) => void;
+  /**
+   * p87: posts THEME_SERVICE_GOOGLE_OPENED once openExternal settles (or
+   * the attempt fails before reaching it) for a Google sign-in — lets the
+   * webview leave its "Contacting sign-in service…" loading state. Optional
+   * so older test doubles that don't care about this transition still
+   * compile; a real panel always supplies it.
+   */
+  postGoogleOpened?: (result: { ok: boolean; error?: { kind: string; message: string } }) => void;
   /** Injectable client for tests; defaults to a real one on the VS Code token store. */
   client?: ThemeServiceClient;
   /**
@@ -191,6 +207,23 @@ function toErrorPayload(error: ThemeServiceError): { kind: string; message: stri
  * p66-t1: hostname only, for logging — never logs the full authorize URL
  * (it carries a PKCE code_challenge) or any query string/key.
  */
+/**
+ * p87: validates the optional `authLandingUrl` from GET /api/auth-config —
+ * must be a well-formed absolute https URL, and kept to a sane length so a
+ * malformed/huge value can't be smuggled into redirect_to. Invalid input is
+ * ignored (caller falls back to the direct deep link) rather than failing
+ * sign-in outright.
+ */
+function isValidAuthLandingUrl(url: string): boolean {
+  if (url.length === 0 || url.length > 2048) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function hostOnly(url: string): string {
   try {
     return new URL(url).host;
@@ -354,6 +387,10 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   // immediate (no-await) reply. Never cleared on a later failure — a stale
   // signed-in snapshot is a better first paint than a bare "Connecting…".
   let lastSnapshot: ThemeServiceHostStatus | undefined;
+  // p92: last successfully-checked hasStoredSession, used as a fallback when
+  // a fresh client.hasStoredSession() call throws, and for the synchronous
+  // pending stub in getCachedOrPendingStatus (which can't await one).
+  let cachedHasStoredSession: boolean | undefined;
   let statusRetryHandle: unknown | undefined;
   let statusRetryGeneration = 0;
 
@@ -411,6 +448,16 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     // buildSnapshotForOpen, refreshStatusInBackground, scheduleStatusRetry)
     // goes through, so catching here guarantees ALL of them always resolve
     // to a terminal status instead of throwing.
+    // p92: checked once per buildStatus call, outside the main try, so a
+    // throw here can't skip the terminal-status guarantee the try/catch
+    // below provides. No network call (see hasStoredSession's own doc).
+    let hasStoredSession: boolean | undefined;
+    try {
+      hasStoredSession = await client.hasStoredSession();
+      cachedHasStoredSession = hasStoredSession;
+    } catch {
+      hasStoredSession = cachedHasStoredSession;
+    }
     try {
       const res = await client.getStatus();
       if (!res.ok) {
@@ -432,6 +479,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
           ...(definitiveSignOut ? { signedIn: false as const } : {}),
           pendingCheckout,
           error: toErrorPayload(res.error),
+          hasStoredSession,
         };
       }
       const status: ThemeServiceStatus = res.value;
@@ -472,6 +520,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         referralMessage,
         referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
         endpointHost: effectiveEndpointHost,
+        hasStoredSession,
       };
     } catch (err) {
       const ctor = err instanceof Error ? err.constructor.name : typeof err;
@@ -489,7 +538,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       // scheduleStatusRetry — using "unavailable" here would silently retry a
       // local exception for up to STATUS_RETRY_MAX_TOTAL_MS instead of
       // surfacing it once.
-      return { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE } };
+      return { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE }, hasStoredSession };
     }
   }
 
@@ -539,7 +588,19 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       // sign-out; a hardcoded false here hid the credits chip and wiped its
       // cached balance for a signed-in user who was simply waiting on a slow
       // wake-up.
-      lastSnapshot = { pendingCheckout, error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE } };
+      //
+      // p92 review fix: hasStoredSession is deliberately set to false here
+      // (not omitted, and not the last-known cachedHasStoredSession) — this
+      // IS the escape hatch. The soft-state (hasStoredSession:true) view has
+      // no time limit of its own; after ~3 minutes of retries the service is
+      // either genuinely down for good or the stored session itself is bad,
+      // and the person needs a way out (Sign in) rather than an infinite
+      // silent "waking up…" spinner with no path forward.
+      lastSnapshot = {
+        pendingCheckout,
+        error: { kind: "unavailable", message: UNAVAILABLE_MESSAGE },
+        hasStoredSession: false,
+      };
       opts.postStatus(lastSnapshot);
       return;
     }
@@ -727,7 +788,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     getCachedOrPendingStatus() {
-      return lastSnapshot ?? { signedIn: false, pending: true };
+      return lastSnapshot ?? { signedIn: false, pending: true, hasStoredSession: cachedHasStoredSession };
     },
 
     refreshStatusInBackground() {
@@ -793,11 +854,30 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       // sign-in, instead of always vscode://. Falls back to "vscode" when
       // the host didn't supply one (e.g. an older test double).
       const scheme = opts.uriScheme && opts.uriScheme.length > 0 ? opts.uriScheme : "vscode";
-      const redirectTo = `${scheme}://tycoonagents.tycoonagents/theme-service-auth`;
+      // p87: when the backend advertises an authLandingUrl, redirect_to goes
+      // through it (`${authLandingUrl}?scheme=<encoded scheme>`) so the
+      // landing page can reopen the deep link itself; an absent or invalid
+      // authLandingUrl keeps today's direct deep link exactly.
+      const landingRes = await client.getAuthLandingUrl();
+      let redirectTo = `${scheme}://tycoonagents.tycoonagents/theme-service-auth`;
+      if (landingRes.ok && landingRes.value) {
+        if (isValidAuthLandingUrl(landingRes.value)) {
+          // Review fix: build via URL/searchParams, not string concatenation
+          // — an authLandingUrl that already carries a query string (e.g.
+          // "...?ref=abc") must get "&scheme=..." appended correctly, not a
+          // second "?scheme=..." that yields an invalid "?a=1?scheme=...".
+          const u = new URL(landingRes.value);
+          u.searchParams.set("scheme", scheme);
+          redirectTo = u.toString();
+        } else {
+          log("themeServiceHost.handleGoogleStart: authLandingUrl invalid, ignoring");
+        }
+      }
       const res = await client.startGoogleSignIn({ redirectTo });
       if (!res.ok) {
         log(`themeServiceHost.handleGoogleStart: startGoogleSignIn failed kind=${res.error.kind}`);
         opts.postStatus({ signedIn: false, pendingCheckout, error: toErrorPayload(res.error) });
+        opts.postGoogleOpened?.({ ok: false, error: toErrorPayload(res.error) });
         return;
       }
       pendingGoogleCodeVerifier = res.value.codeVerifier;
@@ -828,6 +908,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
             browserUrl,
           });
         }
+        opts.postGoogleOpened?.({ ok: false, error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) } });
         return;
       }
       if (opened === false) {
@@ -840,12 +921,17 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
             browserUrl,
           });
         }
+        opts.postGoogleOpened?.({
+          ok: false,
+          error: { kind: "browser_open_failed", message: "couldn't open the browser for sign-in" },
+        });
         return;
       }
       log("themeServiceHost.handleGoogleStart: openExternal succeeded");
       // Nothing further to post on success — the pre-await post above already
       // delivered browserUrl, and posting again here risks overwriting a
       // signedIn:true the deep-link completion posted in the meantime.
+      opts.postGoogleOpened?.({ ok: true });
     },
 
     async handleGoogleOpen() {

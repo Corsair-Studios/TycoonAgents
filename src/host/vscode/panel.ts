@@ -1106,6 +1106,7 @@ export class TycoonPanel {
       postStatus: (status: ThemeServiceHostStatus) => {
         void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_STATUS, payload: status });
       },
+      postGoogleOpened: (result) => this._postThemeServiceGoogleOpened(result),
       log,
       clientVersion: this._currentExtensionVersion() ?? undefined,
       // p64-t1: raw setting value; validated/normalized inside
@@ -2105,6 +2106,9 @@ export class TycoonPanel {
               payload: { signedIn: false, error: { kind: "browser_open_failed", message: scrubOpenExternalError(err) } },
             });
           }
+          // p87: posts MSG.THEME_SERVICE_GOOGLE_OPENED — see
+          // _postThemeServiceGoogleOpened below, wired as
+          // createThemeServiceHost's postGoogleOpened option.
         } else if (message.type === MSG.THEME_SERVICE_SIGN_OUT) {
           const parsed = MSG_SCHEMAS.THEME_SERVICE_SIGN_OUT.safeParse(themeServiceMessagePayload(message));
           if (!parsed.success) { logThemeServiceRejection(message.type, parsed.error); return; }
@@ -3267,6 +3271,18 @@ export class TycoonPanel {
         }
       })
     );
+  }
+
+  // --- Theme Service Google sign-in loading state (p87) -------------------
+  /**
+   * Posts MSG.THEME_SERVICE_GOOGLE_OPENED to the webview once
+   * handleGoogleStart's openExternal settles (success or failure), or
+   * handleGoogleStart itself fails before reaching it — wired as
+   * createThemeServiceHost's postGoogleOpened option. Never carries token
+   * material.
+   */
+  private _postThemeServiceGoogleOpened(result: { ok: boolean; error?: { kind: string; message: string } }): void {
+    void this._panel.webview.postMessage({ type: MSG.THEME_SERVICE_GOOGLE_OPENED, payload: result });
   }
 
   // --- Badge unlock persistence -------------------------------------
