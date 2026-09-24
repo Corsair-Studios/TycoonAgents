@@ -20,10 +20,22 @@ import { spawn } from 'node:child_process';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import os from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', '..', 'hooks', 'openai-compatible-mcp.cjs');
+
+// An empty, per-test TYCOON_STANDALONE_DATA_DIR guarantees the hook's
+// localEnvStore fallback (hooks/localEnvStore.js) finds nothing on disk,
+// regardless of what the real machine has stored or has set as a real user
+// env var (e.g. a developer's own XAI_API_KEY). Tests whose premise is "this
+// var is absent" MUST use this — deleting the var from the child env alone
+// is not enough once a local-store or real-user-env fallback exists.
+function emptyStoreDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-openai-compat-test-store-'));
+}
 
 /** Starts a node:http mock OpenAI-compatible /v1/chat/completions endpoint on an ephemeral port. */
 function startMockEndpoint(handler) {
@@ -45,10 +57,16 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-/** Spawns the real MCP server child process with the given env. */
-function spawnMcpServer(env) {
+/**
+ * Spawns the real MCP server child process with the given env, merged over
+ * process.env. `env` may be a plain object of overrides (merged on top of
+ * process.env) or a full pre-built env object (e.g. `{ ...process.env, ... }`
+ * with keys already deleted) — passed through as-is so a caller's deletions
+ * are never undone by re-spreading process.env after the fact.
+ */
+function spawnMcpServer(env, { merge = true } = {}) {
   const child = spawn(process.execPath, [HOOK_PATH], {
-    env: { ...process.env, ...env },
+    env: merge ? { ...process.env, ...env } : env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const stderrChunks = [];
@@ -156,8 +174,10 @@ test('initialize -> tools/list -> tools/call chat returns text and usage from a 
 });
 
 test('missing OPENAI_COMPAT_BASE_URL returns isError with the env var name, no HTTP call made', async () => {
-  const env = { ...process.env };
+  const storeDir = emptyStoreDir();
+  const env = { ...process.env, TYCOON_STANDALONE_DATA_DIR: storeDir };
   delete env.OPENAI_COMPAT_BASE_URL;
+  delete env.OPENAI_COMPAT_API_KEY;
   const child = spawn(process.execPath, [HOOK_PATH], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const nextLine = makeLineReader(child);
   try {
@@ -176,6 +196,7 @@ test('missing OPENAI_COMPAT_BASE_URL returns isError with the env var name, no H
     assert.match(callLine.result.content[0].text, /OPENAI_COMPAT_BASE_URL/);
   } finally {
     child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
   }
 });
 
@@ -203,7 +224,7 @@ test('xai/ model: prefix is stripped for the upstream request, Authorization hea
   const env = { ...process.env, XAI_BASE_URL: baseUrl, XAI_API_KEY: 'fake-xai-test-key-not-real' };
   delete env.OPENAI_COMPAT_BASE_URL;
   delete env.OPENAI_COMPAT_API_KEY;
-  const { child, getStderr } = spawnMcpServer(env);
+  const { child, getStderr } = spawnMcpServer(env, { merge: false });
   const nextLine = makeLineReader(child);
   try {
     await initializeAndListTools(child, nextLine);
@@ -238,10 +259,16 @@ test('xai/ model: prefix is stripped for the upstream request, Authorization hea
 });
 
 test('xai/ model with no XAI_API_KEY: fails with a clear error naming XAI_API_KEY, no HTTP call made, never falls back to OPENAI_COMPAT_API_KEY', async () => {
-  const env = { ...process.env, XAI_BASE_URL: 'http://127.0.0.1:1', OPENAI_COMPAT_API_KEY: 'kimi-key-must-not-be-used' };
+  const storeDir = emptyStoreDir();
+  const env = {
+    ...process.env,
+    TYCOON_STANDALONE_DATA_DIR: storeDir,
+    XAI_BASE_URL: 'http://127.0.0.1:1',
+    OPENAI_COMPAT_API_KEY: 'kimi-key-must-not-be-used',
+  };
   delete env.OPENAI_COMPAT_BASE_URL;
   delete env.XAI_API_KEY;
-  const { child } = spawnMcpServer(env);
+  const { child } = spawnMcpServer(env, { merge: false });
   const nextLine = makeLineReader(child);
   try {
     await initializeAndListTools(child, nextLine);
@@ -257,6 +284,7 @@ test('xai/ model with no XAI_API_KEY: fails with a clear error naming XAI_API_KE
     assert.doesNotMatch(callLine.result.content[0].text, /kimi-key-must-not-be-used/);
   } finally {
     child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
   }
 });
 
