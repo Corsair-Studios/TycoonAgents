@@ -479,7 +479,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
           ...(definitiveSignOut ? { signedIn: false as const } : {}),
           pendingCheckout,
           error: toErrorPayload(res.error),
-          hasStoredSession,
+          ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
         };
       }
       const status: ThemeServiceStatus = res.value;
@@ -520,7 +520,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         referralMessage,
         referralCodePrefill: !status.signedIn && pendingReferralCode ? pendingReferralCode : undefined,
         endpointHost: effectiveEndpointHost,
-        hasStoredSession,
+        ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
       };
     } catch (err) {
       const ctor = err instanceof Error ? err.constructor.name : typeof err;
@@ -538,7 +538,11 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       // scheduleStatusRetry — using "unavailable" here would silently retry a
       // local exception for up to STATUS_RETRY_MAX_TOTAL_MS instead of
       // surfacing it once.
-      return { pendingCheckout, error: { kind: "internal", message: UNAVAILABLE_MESSAGE }, hasStoredSession };
+      return {
+        pendingCheckout,
+        error: { kind: "internal", message: UNAVAILABLE_MESSAGE },
+        ...(typeof hasStoredSession === "boolean" ? { hasStoredSession } : {}),
+      };
     }
   }
 
@@ -788,7 +792,11 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     },
 
     getCachedOrPendingStatus() {
-      return lastSnapshot ?? { signedIn: false, pending: true, hasStoredSession: cachedHasStoredSession };
+      return lastSnapshot ?? {
+        signedIn: false,
+        pending: true,
+        ...(typeof cachedHasStoredSession === "boolean" ? { hasStoredSession: cachedHasStoredSession } : {}),
+      };
     },
 
     refreshStatusInBackground() {
