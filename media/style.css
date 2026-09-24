@@ -4686,12 +4686,16 @@ td.col-status {
 #theme-builder-panel {
   display: flex;
   flex-direction: column;
-  /* p80-t1: last-resort backstop — every child below is fixed to wrap/
-     shrink instead of overflowing, but this keeps a narrow panel (down to
-     ~280px) from ever showing a horizontal scrollbar if something still
-     doesn't. */
   max-width: 100%;
-  overflow-x: hidden;
+  /* p80-t1 had `overflow-x: hidden` here as a last-resort horizontal-
+     scrollbar backstop, but overflow-x:hidden (with overflow-y left
+     visible) makes this element its own scroll container, which breaks
+     #theme-builder-topbar's `position: sticky` — a sticky element only
+     sticks against its NEAREST scrolling ancestor, and once this became
+     one, stickiness stopped tracking #themes-scroll (p93). clip-x achieves
+     the same visual backstop (clips horizontal overflow) without
+     establishing a scroll container / new sticky containing block. */
+  overflow-x: clip;
 }
 
 #theme-picker-list[hidden],
@@ -8099,10 +8103,71 @@ button.theme-review-preview:focus-visible::after {
   gap: 8px;
 }
 
-/* Back to themes — at least 12px below it on every builder screen (was a
-   dropped inline margin-bottom:16px). */
+/* p93: sticky "Back to themes" / credits topbar — shared by every builder
+   screen (Start, AI plan review, manual build, image review) since they all
+   reuse the single #theme-builder-panel > #theme-builder-topbar row. Sticks
+   to the top of the scrolling #themes-scroll ancestor so it stays visible
+   through a long image-review scroll; opaque surface background keeps cards
+   from showing through, and z-index sits above card content (see
+   .theme-review-board-card etc.) but below #themes-modal-close (z-index 6). */
+#theme-builder-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: nowrap;
+  background: var(--surface);
+  padding: 2px 0 16px;
+  margin: 0;
+  transition: box-shadow 0.15s, border-color 0.15s;
+  border-bottom: 1px solid transparent;
+}
+
+/* Toggled by a scroll listener on #themes-scroll once the topbar has
+   actually reached the top (scrollTop > 0) — a subtle separation from
+   content sliding underneath it. */
+#theme-builder-topbar.is-scrolled {
+  border-bottom-color: var(--border);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.28);
+}
+
+/* Back to themes — small, auto-width button on the left of the topbar
+   (was a full-width bar when it stretched as a direct flex column child of
+   #theme-builder-panel; the topbar row above fixes that). Compact padding
+   per p93. */
 #tab-theme-picker {
-  margin-bottom: 16px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  /* Spacing below the row now lives on #theme-builder-topbar's own
+     padding-bottom (16px) so the button stays vertically centered with the
+     credits pill instead of pushing itself down inside the flex row. */
+  margin: 0;
+}
+
+/* Credits pill on the far right of the topbar — clickable, opens the
+   buy-credits shell (openThemeBuilderShellModal(), same action as the
+   account/settings entry points). Visual language matches
+   .theme-credits-chip (amber accent pill) but as a real <button>. */
+.theme-credits-pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+
+.theme-credits-pill:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .theme-generation-approval-warning {

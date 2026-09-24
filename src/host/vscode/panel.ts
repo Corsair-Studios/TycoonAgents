@@ -10260,7 +10260,10 @@ export class TycoonPanel {
         </section>
       </div>
       <div id="theme-builder-panel" role="tabpanel" hidden>
-        <button id="tab-theme-picker" class="skill-btn">&larr; Back to themes</button>
+        <div id="theme-builder-topbar" class="theme-builder-topbar">
+          <button id="tab-theme-picker" class="skill-btn">&larr; Back to themes</button>
+          <button id="theme-builder-credits-pill" class="theme-credits-pill" type="button" hidden></button>
+        </div>
         <div id="theme-image-settings" class="theme-image-settings">
           <div class="theme-image-settings-heading">Image generation</div>
           <p class="theme-image-settings-note muted">Image generation runs through your Corsair credits. Sign in from the Theme Builder to see your balance.</p>

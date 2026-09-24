@@ -184,6 +184,15 @@ async function bootThemePanelHarness() {
     return doc.getElementById('theme-builder-credits-chip');
   }
 
+  // p93: sticky topbar "Back to themes" button and credits pill.
+  function backBtn(): any {
+    return doc.getElementById('tab-theme-picker');
+  }
+
+  function creditsPill(): any {
+    return doc.getElementById('theme-builder-credits-pill');
+  }
+
   function lastPosted(type?: string): any {
     for (let i = posted.length - 1; i >= 0; i--) {
       if (!type || posted[i].type === type) return posted[i];
@@ -201,7 +210,7 @@ async function bootThemePanelHarness() {
     el.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   }
 
-  return { win, doc, dom, dispatch, panelText, panelBody, chip, posted, lastPosted, clickButtonByText, errors };
+  return { win, doc, dom, dispatch, panelText, panelBody, chip, backBtn, creditsPill, posted, lastPosted, clickButtonByText, errors };
 }
 
 // ── Fixture payloads ────────────────────────────────────────────────────────
@@ -694,6 +703,58 @@ test('p89: signed-in-no-credits placeholder caches signedIn so a later error sta
     ),
   );
   assert.ok(!h.chip().hasAttribute('hidden'), 'chip must stay visible on a later error status, not disappear');
+  h.win.close();
+});
+
+// ── p93: sticky topbar back button + credits pill ──────────────────────────
+
+test('p93: #tab-theme-picker is a small button (no full-width class) inside the sticky #theme-builder-topbar row', async () => {
+  const h = await bootThemePanelHarness();
+  const back = h.backBtn();
+  assert.ok(back, 'expected #tab-theme-picker to exist');
+  assert.equal(back.className.split(/\s+/).includes('primary'), false, 'Back to themes must not carry a full-width/primary class');
+  // JSDOM here synthesizes flat elements per id (see scanElementIds above),
+  // so real DOM nesting isn't observable through the harness — check the
+  // source markup directly for the sticky topbar wrapper instead.
+  const panelSrc = readFileSync(join(process.cwd(), 'src', 'host', 'vscode', 'panel.ts'), 'utf8');
+  assert.match(
+    panelSrc,
+    /<div id="theme-builder-topbar"[^>]*>\s*<button id="tab-theme-picker"[\s\S]{0,160}<button id="theme-builder-credits-pill"/,
+    'expected #tab-theme-picker and #theme-builder-credits-pill inside #theme-builder-topbar in panel.ts',
+  );
+  h.win.close();
+});
+
+test('p93: #theme-builder-credits-pill mirrors #theme-builder-credits-chip and stays in sync across status updates', async () => {
+  const h = await bootThemePanelHarness();
+
+  h.dispatch(themeBuilderOpened(signedOutStatus()));
+  assert.ok(h.creditsPill().hasAttribute('hidden'), 'pill should be hidden when signed out, like the chip');
+  assert.equal(h.creditsPill().hasAttribute('hidden'), h.chip().hasAttribute('hidden'));
+
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 46 })));
+  assert.ok(!h.creditsPill().hasAttribute('hidden'));
+  assert.equal(h.creditsPill().textContent, '46 credits');
+  assert.equal(h.creditsPill().textContent, h.chip().textContent, 'pill and chip must show the same balance');
+  assert.equal(h.creditsPill().getAttribute('aria-label'), '46 credits remaining — buy more');
+
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: undefined })));
+  assert.equal(h.creditsPill().textContent, h.chip().textContent, 'pill must stay in sync on the unfetchable-balance fallback too');
+  h.win.close();
+});
+
+test('p93: clicking the credits pill opens the buy-credits shell (openThemeBuilderShellModal), reusing the existing action', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeServiceStatus(signedInStatus({ credits: 46 })));
+
+  const shell = h.doc.getElementById('theme-builder-shell-modal');
+  assert.ok(shell, 'expected #theme-builder-shell-modal to exist');
+  // The JSDOM harness synthesizes bare elements (no `hidden` by default —
+  // see scanElementIds above); set it explicitly to match production markup.
+  shell.setAttribute('hidden', '');
+
+  h.creditsPill().dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(!shell.hasAttribute('hidden'), 'clicking the pill must open the same buy-credits shell modal used elsewhere');
   h.win.close();
 });
 
@@ -1301,6 +1362,32 @@ test('content_blocked with a likeness category (no reason/fields, per the backen
   assert.ok(
     notice.textContent.startsWith('This prompt was blocked by content screening. No credit was spent.'),
     `unexpected notice text: ${notice.textContent}`,
+  );
+  h.win.close();
+});
+
+test('content_blocked with a category but no fields (likeness/IP precheck shape) still names the category', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    // p94: the likeness/IP precheck returns { error: "content_blocked",
+    // category: "likeness" | "ip" } with no `fields` — themeServiceClient.ts
+    // folds the singular `category` into error_categories, so this item
+    // arrives with error_categories set but error_fields empty/absent. The
+    // notice must still name the category rather than falling all the way
+    // back to the generic copy.
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      attemptCost: 0,
+      error_categories: ['likeness'],
+      rival_rows: [{ kind: 'rival', rival_id: 'r1', display_name: 'Sana Qi' }],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (a real person's likeness). No credit was spent. Rephrase it and retry.",
   );
   h.win.close();
 });

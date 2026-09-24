@@ -64,18 +64,34 @@ test('#themes-dialog has no min-width above 0 and no fixed min-height of 600px o
   }
 });
 
-// p81-t2: proves the p81-t1 spacing fix (a dropped inline
-// margin-bottom:16px on #tab-theme-picker, moved to CSS since the real
-// webview CSP has no 'unsafe-inline' — see themeBuilderCspGuard.test.ts)
-// actually lands in the stylesheet.
-test('#tab-theme-picker declares a margin-bottom of at least 10px (Back to themes spacing)', () => {
+// p81-t2 / p93: proves the p81-t1 spacing fix (space below the "Back to
+// themes" row, moved to CSS since the real webview CSP has no
+// 'unsafe-inline' — see themeBuilderCspGuard.test.ts) actually lands in the
+// stylesheet. p93 moved this spacing from #tab-theme-picker's own
+// margin-bottom onto #theme-builder-topbar's padding-bottom, so the button
+// stays vertically centered with the credits pill next to it instead of
+// pushing itself down inside the flex row.
+test('#theme-builder-topbar declares a padding-bottom of at least 10px (Back to themes spacing)', () => {
   const css = loadCss();
   const rules = splitRules(css);
-  const rule = rules.find((r) => r.selector.split(',').some((s) => s.trim() === '#tab-theme-picker'));
-  assert.ok(rule, 'expected a #tab-theme-picker rule in media/style.css');
-  const match = /margin-bottom\s*:\s*([0-9.]+)px/.exec(rule!.body);
-  assert.ok(match, '#tab-theme-picker must declare a margin-bottom in px');
-  assert.ok(parseFloat(match![1]) >= 10, `#tab-theme-picker margin-bottom must be >= 10px, found ${match![1]}px`);
+  const rule = rules.find((r) => r.selector.split(',').some((s) => s.trim() === '#theme-builder-topbar'));
+  assert.ok(rule, 'expected a #theme-builder-topbar rule in media/style.css');
+  let bottomPx: number | undefined;
+  const longhand = /padding-bottom\s*:\s*([0-9.]+)px/.exec(rule!.body);
+  if (longhand) {
+    bottomPx = parseFloat(longhand[1]);
+  } else {
+    const shorthand = /(?:^|[;{\s])padding\s*:\s*([^;]+);/.exec(rule!.body);
+    assert.ok(shorthand, '#theme-builder-topbar must declare a padding or padding-bottom in px');
+    const parts = shorthand![1].trim().split(/\s+/);
+    // padding shorthand: top [right [bottom [left]]] — bottom is the 3rd
+    // value (index 2) when 3+ values are given, else it mirrors top.
+    const bottomToken = parts.length >= 3 ? parts[2] : parts[0];
+    const pxMatch = /([0-9.]+)px/.exec(bottomToken);
+    assert.ok(pxMatch, `#theme-builder-topbar padding-bottom value must be in px, found "${bottomToken}"`);
+    bottomPx = parseFloat(pxMatch![1]);
+  }
+  assert.ok(bottomPx! >= 10, `#theme-builder-topbar padding-bottom must be >= 10px, found ${bottomPx}px`);
 });
 
 test('the review header and action rows declare flex-wrap: wrap', () => {

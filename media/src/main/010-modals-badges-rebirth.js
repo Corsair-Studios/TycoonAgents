@@ -1080,6 +1080,18 @@
   }
   const themesDialog = /** @type {HTMLElement} */ (document.getElementById("themes-dialog"));
   const themesScrollEl = /** @type {HTMLElement} */ (document.getElementById("themes-scroll"));
+  // p93: subtle bottom border/shadow on the sticky Back-to-themes/credits
+  // topbar once the modal has actually scrolled past it.
+  const themeBuilderTopbar = /** @type {HTMLElement} */ (document.getElementById("theme-builder-topbar"));
+  if (themesScrollEl && themeBuilderTopbar) {
+    themesScrollEl.addEventListener(
+      "scroll",
+      () => {
+        themeBuilderTopbar.classList.toggle("is-scrolled", themesScrollEl.scrollTop > 0);
+      },
+      { passive: true }
+    );
+  }
   let reviewThemeId = "";
   /** @type {Array<any>} Last received THEMES_LIST payload, for re-render on selection change. */
   let lastThemesList = [];
@@ -1810,6 +1822,13 @@
   // transient view state here and cleared once a real signedIn status
   // arrives (see renderThemeServicePanel below).
   const themeBuilderCreditsChip = /** @type {HTMLElement} */ (document.getElementById("theme-builder-credits-chip"));
+  // p93: sticky "Back to themes" topbar credits pill — shares display state
+  // (text/title/hidden) with themeBuilderCreditsChip above via
+  // updateThemeBuilderCreditsChip's setDisplay() below so the two never
+  // drift apart, but its click opens the buy-credits shell (the same
+  // openThemeBuilderShellModal() the account/settings entry points use)
+  // instead of retrying the status fetch.
+  const themeBuilderCreditsPill = /** @type {HTMLElement} */ (document.getElementById("theme-builder-credits-pill"));
   // p91-t3: while a refresh we asked for is still in flight, ignore further
   // clicks rather than firing a new requestThemeServiceStatus() on every one
   // — cleared by the next real (non-pending) status this function receives,
@@ -1824,6 +1843,11 @@
       if (themeCreditsChipRetryInFlight) return;
       themeCreditsChipRetryInFlight = true;
       requestThemeServiceStatus();
+    });
+  }
+  if (themeBuilderCreditsPill) {
+    themeBuilderCreditsPill.addEventListener("click", () => {
+      openThemeBuilderShellModal();
     });
   }
   const themeServicePanelBody   = /** @type {HTMLElement} */ (document.getElementById("theme-service-panel-body"));
@@ -1908,19 +1932,16 @@
     if (themeCreditsChipPendingTimer) return; // already armed — don't restart the clock
     themeCreditsChipPendingTimer = setTimeout(function () {
       themeCreditsChipPendingTimer = 0;
-      if (!themeBuilderCreditsChip) return;
+      if (!themeBuilderCreditsChip && !themeBuilderCreditsPill) return;
       // Still on "…" with nothing having followed up — fall back to the
       // cached balance if there is one, else an explicit retry placeholder.
       // Never hide the chip here (it may well still be signed in).
       var cached = readCachedThemeServiceStatus();
       if (cached && cached.signedIn && typeof cached.credits === "number") {
-        themeBuilderCreditsChip.textContent = cached.credits + " credits";
-        themeBuilderCreditsChip.title = "Showing your last known balance — could not refresh it just now.";
+        setThemeCreditsDisplay(cached.credits + " credits", "Showing your last known balance — could not refresh it just now.", false);
       } else {
-        themeBuilderCreditsChip.textContent = "— credits";
-        themeBuilderCreditsChip.title = "Couldn't load your balance — click to retry";
+        setThemeCreditsDisplay("— credits", "Couldn't load your balance — click to retry", false);
       }
-      themeBuilderCreditsChip.removeAttribute("hidden");
       // p91-t3: the retry click is what we were waiting on — done waiting,
       // clicking again (e.g. the "click to retry" placeholder just shown)
       // must work.
@@ -1928,8 +1949,39 @@
     }, THEME_SERVICE_STATUS_PENDING_TIMEOUT_MS);
   }
 
+  /**
+   * Applies the same text/title/hidden triple to both the CTA-row credits
+   * chip and the sticky topbar credits pill so the two can never show
+   * different numbers. The pill additionally gets an aria-label built from
+   * the same text (task p93: "N credits remaining — buy more").
+   * @param {string} text
+   * @param {string} title
+   * @param {boolean} hidden
+   */
+  function setThemeCreditsDisplay(text, title, hidden) {
+    if (themeBuilderCreditsChip) {
+      themeBuilderCreditsChip.textContent = text;
+      themeBuilderCreditsChip.title = title;
+      if (hidden) themeBuilderCreditsChip.setAttribute("hidden", "");
+      else themeBuilderCreditsChip.removeAttribute("hidden");
+    }
+    if (themeBuilderCreditsPill) {
+      themeBuilderCreditsPill.textContent = text;
+      themeBuilderCreditsPill.title = title;
+      if (hidden) {
+        themeBuilderCreditsPill.setAttribute("hidden", "");
+      } else {
+        themeBuilderCreditsPill.removeAttribute("hidden");
+        themeBuilderCreditsPill.setAttribute(
+          "aria-label",
+          (text ? text + " remaining" : "Credits") + " — buy more"
+        );
+      }
+    }
+  }
+
   function updateThemeBuilderCreditsChip(status) {
-    if (!themeBuilderCreditsChip) return;
+    if (!themeBuilderCreditsChip && !themeBuilderCreditsPill) return;
     var s = status;
     var cached = readCachedThemeServiceStatus();
     // Any status that isn't the genuine in-flight stub is terminal — cancel
@@ -1945,9 +1997,7 @@
     // show "…" (loading) rather than hiding it outright.
     if (!s || s.pending) {
       if (cached && cached.signedIn && typeof cached.credits === "number") {
-        themeBuilderCreditsChip.textContent = cached.credits + " credits";
-        themeBuilderCreditsChip.title = "";
-        themeBuilderCreditsChip.removeAttribute("hidden");
+        setThemeCreditsDisplay(cached.credits + " credits", "", false);
         return;
       }
       // A genuine { pending: true } stub means a request is in flight —
@@ -1956,29 +2006,21 @@
       // Start screen before any THEME_SERVICE_STATUS round trip) stays
       // hidden, matching the pre-p87 Start-screen contract.
       if (s && s.pending) {
-        themeBuilderCreditsChip.textContent = "…";
-        themeBuilderCreditsChip.title = "";
-        themeBuilderCreditsChip.removeAttribute("hidden");
+        setThemeCreditsDisplay("…", "", false);
         armThemeCreditsChipPendingTimeout();
         return;
       }
-      themeBuilderCreditsChip.textContent = "";
-      themeBuilderCreditsChip.title = "";
-      themeBuilderCreditsChip.setAttribute("hidden", "");
+      setThemeCreditsDisplay("", "", true);
       return;
     }
     // Definitively signed out — hide, and forget any stale cached balance.
     if (s.signedIn === false) {
-      themeBuilderCreditsChip.textContent = "";
-      themeBuilderCreditsChip.title = "";
-      themeBuilderCreditsChip.setAttribute("hidden", "");
+      setThemeCreditsDisplay("", "", true);
       writeCachedThemeServiceStatus(s);
       return;
     }
     if (s.signedIn && typeof s.credits === "number") {
-      themeBuilderCreditsChip.textContent = s.credits + " credits";
-      themeBuilderCreditsChip.title = "";
-      themeBuilderCreditsChip.removeAttribute("hidden");
+      setThemeCreditsDisplay(s.credits + " credits", "", false);
       writeCachedThemeServiceStatus(s);
       return;
     }
@@ -1989,13 +2031,10 @@
     var signedInKnown = s.signedIn === true || (s.signedIn == null && Boolean(cached && cached.signedIn));
     if (signedInKnown) {
       if (cached && typeof cached.credits === "number") {
-        themeBuilderCreditsChip.textContent = cached.credits + " credits";
-        themeBuilderCreditsChip.title = "Showing your last known balance — could not refresh it just now.";
+        setThemeCreditsDisplay(cached.credits + " credits", "Showing your last known balance — could not refresh it just now.", false);
       } else {
-        themeBuilderCreditsChip.textContent = "— credits";
-        themeBuilderCreditsChip.title = "Could not fetch your credit balance.";
+        setThemeCreditsDisplay("— credits", "Could not fetch your credit balance.", false);
       }
-      themeBuilderCreditsChip.removeAttribute("hidden");
       // p89 fix: this branch previously never wrote the cache, so a signed-in
       // status that arrived without a numeric balance (e.g. the account
       // refetch failing) left nothing for a LATER error to fall back to —
@@ -2013,9 +2052,7 @@
       );
       return;
     }
-    themeBuilderCreditsChip.textContent = "";
-    themeBuilderCreditsChip.title = "";
-    themeBuilderCreditsChip.setAttribute("hidden", "");
+    setThemeCreditsDisplay("", "", true);
   }
 
   // p86: fire the status request as soon as this script runs — previously
@@ -2607,7 +2644,19 @@
     renderThemeBuilderStatusChip(themeServiceStatus);
     tspClear(themeServicePanelBody);
     const s = themeServiceStatus;
-    if (!s) return;
+    // Bug fix (p94): a status fetch that hasn't resolved yet (s is null/
+    // undefined — no THEME_SERVICE_STATUS has arrived since this session
+    // started) must never leave the body blank under the static "Back to
+    // builder" footer. Render the same waking/checking treatment as a
+    // pending fetch instead of silently returning.
+    if (!s) {
+      renderThemeServiceUnreachable(themeServicePanelBody, {
+        signedIn: null,
+        hasStoredSession: false,
+        error: { kind: "waking", message: "Checking your Theme Service status…" },
+      });
+      return;
+    }
 
     // Review fix: a definitive signedIn (true or false — not the
     // omitted/unknown value a transient error carries) always clears the
