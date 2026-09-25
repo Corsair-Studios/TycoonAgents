@@ -580,6 +580,35 @@ export function buildDecorObjects(names: string[]): DecorObject[] {
   });
 }
 
+/**
+ * Reverse of themePlanToManifest: build a MINIMAL Partial<ThemePlan> seed from
+ * an already-saved manifest, for themes created before plan.json existed (see
+ * updateThemeItemDescriptionsBatch in themeService.ts). Pulls only what the
+ * manifest actually carries — display names, character/enemy/object/decor/
+ * badge names, theme_id — and invents nothing else; every other ThemePlan
+ * field (creative_direction, environment, descriptions, etc.) is left absent
+ * so normalizeThemePlan(...) fills its own defaults/fallbacks exactly as it
+ * would for any other under-specified plan. Caller is expected to pass this
+ * straight into normalizeThemePlan.
+ */
+export function manifestToPlanSeed(manifest: ThemeManifest): Partial<ThemePlan> {
+  return {
+    theme_id: manifest.theme_id,
+    display_name: manifest.display_name,
+    characters: manifest.roster_agents
+      .slice()
+      .sort((a, b) => a.slot_id - b.slot_id)
+      .map((agent) => agent.name),
+    objects: manifest.buildable_objects
+      .slice()
+      .sort((a, b) => a.build_order - b.build_order)
+      .map((object) => object.display_name),
+    decor: manifest.decor_objects.map((decor) => decor.display_name),
+    enemies: manifest.roster_rivals.map((rival) => rival.name),
+    achievements: manifest.badges.map((badge) => badge.display_name),
+  };
+}
+
 export function toSafeThemeId(value: string): string {
   return value
     .toLowerCase()

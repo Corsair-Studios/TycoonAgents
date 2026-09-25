@@ -99,6 +99,7 @@ import { selectThemeImageRetryPrompt } from './themeImageRetry';
 import type { ThemeImageRetryMode } from './themeImageRetry';
 import {
   ATLAS_CLIPS,
+  manifestToPlanSeed,
   normalizeThemePlan,
   THEME_ACHIEVEMENT_COUNT,
   THEME_EXPRESSION_COUNT,
@@ -311,7 +312,7 @@ function structuredRequestForItem(
         item.subject ?? item.label,
         plan.display_name,
         background,
-        item.character_description,
+        resolveCharacterDescription(item.character_description, item.subject ?? item.label),
         { walkPoseGuide: bodyPlan },
       );
     }
@@ -2067,13 +2068,28 @@ export async function updateThemeItemDescriptionsBatch(
   const descriptionsStore = resolveThemeFileStore(globalStorageUri);
   const savedPlan = (await readJson<ThemePlan>(descriptionsStore, themePlanPath(themeId)))
     ?? (await readJson<ThemePlan>(descriptionsStore, legacyPlanPath(themeId)));
-  if (!savedPlan) throw new Error('This theme has no saved plan — descriptions require plan.json.');
-  const plan = normalizeThemePlan(savedPlan, manifest.display_name);
+  // Older themes (pre-dating AI plans) were never given a plan.json. Rather
+  // than fail the save, synthesize a minimal valid plan from the theme's own
+  // manifest (display names, character/enemy/object/decor/badge names) via
+  // manifestToPlanSeed, then run it through the same normalizeThemePlan every
+  // other plan goes through — this invents no content beyond what the
+  // manifest already has; every other field gets normalizeThemePlan's usual
+  // defaults, exactly as it would for a sparse AI-authored plan.
+  const plan = normalizeThemePlan(savedPlan ?? manifestToPlanSeed(manifest), manifest.display_name);
   if (plan.theme_id !== themeId) throw new Error('Saved plan does not match this theme.');
 
   const result = applyThemeItemDescriptionChanges(manifest, plan, changes);
   if (result.applied.length) {
-    await descriptionsStore.writeFile(themePlanPath(themeId), jsonBuffer(plan));
+    const planBuffer = jsonBuffer(plan);
+    await descriptionsStore.writeFile(themePlanPath(themeId), planBuffer);
+    // Mirror every plan write into plan.json.bak, same as the plan writer
+    // elsewhere backs up manifest.json — cheap insurance against a corrupt/
+    // interrupted write on a theme's first-ever plan.json.
+    try {
+      await descriptionsStore.writeFile(`${themePlanPath(themeId)}.bak`, planBuffer);
+    } catch (err) {
+      console.warn('TycoonAgents: unable to write plan.json.bak:', err);
+    }
     try {
       const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
       if (document) {
@@ -3906,7 +3922,7 @@ export function createReviewItems(
         agent.name,
         plan.display_name,
         backgroundMode,
-        (plan.character_descriptions?.[agent.slot_id] ?? '').trim() || undefined,
+        resolveCharacterDescription(plan.character_descriptions?.[agent.slot_id], agent.name),
         walkPoseGuide ? { walkPoseGuide } : undefined,
       ),
       revision: 0,
@@ -4771,12 +4787,12 @@ export function buildReplacementRequest(
     return buildRivalAtlasRequest(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] || item.id);
-  const characterDescription = agentSlotId !== undefined
-    ? (plan?.character_descriptions?.[agentSlotId] ?? '').trim() || undefined
-    : undefined;
+  const characterName = item.subject ?? item.label;
+  const rawDescription = agentSlotId !== undefined ? plan?.character_descriptions?.[agentSlotId] : undefined;
+  const fallbackDescription = resolveCharacterDescription(rawDescription, characterName);
   const bodyPlan = agentSlotId !== undefined && plan ? effectiveCharacterBodyPlan(plan, agentSlotId) : 'biped';
   return buildCharacterAtlasRequest(
-    creativeDirection, item.subject ?? item.label, manifest.display_name, backgroundMode, characterDescription, { walkPoseGuide: bodyPlan },
+    creativeDirection, characterName, manifest.display_name, backgroundMode, fallbackDescription, { walkPoseGuide: bodyPlan },
   );
 }
 
@@ -4784,6 +4800,29 @@ export function buildReplacementRequest(
 function agentSlotIdFromFrameKey(frameKey: string): number | undefined {
   const match = /^agent_(\d+)$/.exec(frameKey);
   return match ? Number(match[1]) : undefined;
+}
+
+// Mirrors corsair-theme-service src/validate.mjs's roster_agent slot.description
+// checkString({ maxLen: 600 }) limit exactly — see resolveCharacterDescription.
+const ROSTER_AGENT_DESCRIPTION_MAX_LEN = 600;
+
+/**
+ * Every roster_agent StructuredGenerateRequest builder (buildReplacementRequest,
+ * createReviewItems, structuredRequestForItem) MUST send a non-empty
+ * slot.description: the backend's validateSlot('roster_agent') requires the
+ * field (validate.mjs), but the character card's own hint tells the user a
+ * blank description is fine locally, so a legacy theme (no plan.json) or a
+ * plan with a blank character_descriptions entry must never omit the key.
+ * Prefers the plan's own description; falls back to the character's display
+ * name (always non-empty). Trimmed and truncated to the backend's exact
+ * 600-char limit either way, so the fallback can never itself trip
+ * slot.description:max_len. Single shared helper so the three call sites
+ * can't drift apart.
+ */
+function resolveCharacterDescription(description: string | undefined, characterName: string): string {
+  const trimmedDescription = (description ?? '').trim();
+  const fallback = trimmedDescription || characterName.trim() || 'Character';
+  return fallback.slice(0, ROSTER_AGENT_DESCRIPTION_MAX_LEN);
 }
 
 function renameCharacterInPrompt(prompt: string, previousName: string, characterName: string): string {
