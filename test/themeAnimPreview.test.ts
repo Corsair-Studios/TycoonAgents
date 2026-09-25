@@ -128,33 +128,78 @@ function tickAll(rafQueue: Array<(ts: number) => void>, ts: number) {
 
 // ── buildThemeAnimPreviewSection: animated vs static boards ────────────────
 
+// Item shapes below copy real review.json field names/kind strings exactly
+// (verified 2026-09-25 against an installed theme's on-disk review.json) —
+// see themeAnimPreviewRowsForItem's doc comment for the source-of-truth
+// list. The bug this test file now guards against: an earlier revision of
+// this file used fixture kinds ("character"/"rival"/"object") that don't
+// match what panel.ts actually ships ("character_atlas"/"rival_atlas"/
+// "object_atlas"/"background_decor_atlas"), so the fixtures passed while the
+// real "Preview animation" section never rendered for any real board.
 test('renders the Preview animation section for animated boards only', () => {
   const { context } = bootAnimPreviewHarness();
   const build = context.buildThemeAnimPreviewSection;
 
-  assert.ok(build({ id: 'c1', kind: 'character', display_name: 'Hero' }, 'theme1'), 'character boards are animated');
-  assert.ok(build({ id: 'r1', kind: 'rival', display_name: 'Rival' }, 'theme1'), 'rival boards are animated');
   assert.ok(
-    build({ id: 'o1', kind: 'object', display_name: 'Crate', anim_fps: 5 }, 'theme1'),
-    'object boards with anim_fps > 0 are animated',
+    build({ id: 'agent_0', kind: 'character_atlas', label: 'Cali', frame_keys: ['agent_0'] }, 'theme1'),
+    'character_atlas boards are animated',
   );
   assert.ok(
-    build({ id: 'd1', kind: 'decor', display_name: 'Fountain', anim_fps: 12 }, 'theme1'),
-    'decor boards with anim_fps > 0 are animated',
+    build({
+      id: 'rivals',
+      kind: 'rival_atlas',
+      label: 'Rivals',
+      frame_keys: ['rival_wolf', 'rival_bear'],
+      rival_rows: [
+        { kind: 'rival', rival_id: 'wolf', display_name: 'Wolf' },
+        { kind: 'rival', rival_id: 'bear', display_name: 'Bear' },
+      ],
+    }, 'theme1'),
+    'rival_atlas boards are animated',
+  );
+  assert.ok(
+    build({
+      id: 'objects_02',
+      kind: 'object_atlas',
+      label: 'Static objects 17-19 & animated',
+      frame_keys: ['object_fishbowl', 'object_crate'],
+      object_rows: [
+        { kind: 'object_anim', object_id: 'fishbowl', display_name: 'Fishbowl' },
+        { kind: 'object_static', object_id: 'crate', display_name: 'Crate' },
+      ],
+    }, 'theme1'),
+    'object_atlas boards with at least one object_anim row are animated',
+  );
+  assert.ok(
+    build({
+      id: 'background_decor',
+      kind: 'background_decor_atlas',
+      label: 'Background decor',
+      frame_keys: ['decor_seat_a', 'decor_waterbowl'],
+      decor_rows: [
+        { kind: 'seat', decor_id: 'seat_a', display_name: 'Seat A' },
+        { kind: 'decor_anim', decor_id: 'waterbowl', display_name: 'Water bowl' },
+      ],
+    }, 'theme1'),
+    'background_decor_atlas boards with at least one decor_anim row are animated',
   );
 
-  assert.equal(build({ id: 'e1', kind: 'expression', display_name: 'Happy' }, 'theme1'), null);
-  assert.equal(build({ id: 'b1', kind: 'badge', display_name: 'Badge' }, 'theme1'), null);
-  assert.equal(build({ id: 'env1', kind: 'environment', display_name: 'Sky' }, 'theme1'), null);
+  assert.equal(build({ id: 'e1', kind: 'expression_atlas', label: 'Happy' }, 'theme1'), null);
+  assert.equal(build({ id: 'b1', kind: 'achievement_atlas', label: 'Badge' }, 'theme1'), null);
+  assert.equal(build({ id: 'env1', kind: 'environment', label: 'Environment' }, 'theme1'), null);
   assert.equal(
-    build({ id: 'o2', kind: 'object', display_name: 'Rock', anim_fps: 0 }, 'theme1'),
+    build({
+      id: 'objects_01',
+      kind: 'object_atlas',
+      label: 'Static objects 1-16',
+      frame_keys: ['object_a', 'object_b'],
+      object_rows: [
+        { kind: 'object_static', object_id: 'a', display_name: 'A' },
+        { kind: 'object_static', object_id: 'b', display_name: 'B' },
+      ],
+    }, 'theme1'),
     null,
-    'static objects (anim_fps 0/absent) do not render',
-  );
-  assert.equal(
-    build({ id: 'o3', kind: 'object', display_name: 'Rock2' }, 'theme1'),
-    null,
-    'objects with no anim_fps at all do not render',
+    'an object_atlas board with no object_anim rows does not render (all object_static)',
   );
 });
 
@@ -162,7 +207,14 @@ test('renders the Preview animation section for animated boards only', () => {
 
 test('opening a preview posts GET_THEME_ITEM_FRAMES with the right themeId/itemId', () => {
   const { context, doc, posted } = bootAnimPreviewHarness();
-  const item = { id: 'rival-7', kind: 'rival', display_name: 'Rival Seven', image_src: 'foo.png?revision=0' };
+  const item = {
+    id: 'rival-7',
+    kind: 'rival_atlas',
+    label: 'Rivals',
+    image_src: 'foo.png?revision=0',
+    frame_keys: ['rival_seven'],
+    rival_rows: [{ kind: 'rival', rival_id: 'seven', display_name: 'Rival Seven' }],
+  };
   const section = context.buildThemeAnimPreviewSection(item, 'theme-abc');
   doc.body.appendChild(section);
 
@@ -184,7 +236,7 @@ test('opening a preview posts GET_THEME_ITEM_FRAMES with the right themeId/itemI
 
 test('steps atlas walk clip frame indices at ATLAS_CLIPS.walk.fps', () => {
   const { context, doc, rafQueue, getPlayer } = bootAnimPreviewHarness();
-  const item = { id: 'char-1', kind: 'character', display_name: 'Hero', image_src: 'a.png?revision=0' };
+  const item = { id: 'char-1', kind: 'character_atlas', label: 'Hero', image_src: 'a.png?revision=0', frame_keys: ['agent_0'] };
   const section = context.buildThemeAnimPreviewSection(item, 'theme1');
   doc.body.appendChild(section);
   const details = section.querySelector('details');
@@ -192,9 +244,10 @@ test('steps atlas walk clip frame indices at ATLAS_CLIPS.walk.fps', () => {
   details.dispatchEvent(new context.window.Event('toggle'));
 
   // Reply with frames for every ATLAS_CLIPS.walk frame index used (a single
-  // key holding all poses, matching character-board storage per 065's own
-  // comment at ~L384-385).
-  const framesReply = { theme_id: 'theme1', item_id: 'char-1', frames: { char_1: Array.from({ length: 20 }, (_, i) => `frame${i}.png`) } };
+  // key holding all poses, matching character-board storage — real
+  // review.json's character_atlas item carries exactly one frame_keys entry
+  // whose stored array holds all 20 poses).
+  const framesReply = { theme_id: 'theme1', item_id: 'char-1', frames: { agent_0: Array.from({ length: 20 }, (_, i) => `frame${i}.png`) } };
   context.handleThemeItemFramesMessage(framesReply);
 
   const player = getPlayer('char-1');
@@ -228,7 +281,7 @@ test('steps atlas walk clip frame indices at ATLAS_CLIPS.walk.fps', () => {
 
 test('ping-pong order for the dance clip follows ATLAS_CLIPS.dance.frames forward then back', () => {
   const { context, doc, rafQueue, getPlayer } = bootAnimPreviewHarness();
-  const item = { id: 'char-2', kind: 'character', display_name: 'Hero2', image_src: 'a.png?revision=0' };
+  const item = { id: 'char-2', kind: 'character_atlas', label: 'Hero2', image_src: 'a.png?revision=0', frame_keys: ['agent_1'] };
   const section = context.buildThemeAnimPreviewSection(item, 'theme1');
   doc.body.appendChild(section);
   const details = section.querySelector('details');
@@ -237,7 +290,7 @@ test('ping-pong order for the dance clip follows ATLAS_CLIPS.dance.frames forwar
   context.handleThemeItemFramesMessage({
     theme_id: 'theme1',
     item_id: 'char-2',
-    frames: { char_2: Array.from({ length: 20 }, (_, i) => `frame${i}.png`) },
+    frames: { agent_1: Array.from({ length: 20 }, (_, i) => `frame${i}.png`) },
   });
 
   const player = getPlayer('char-2');
@@ -270,6 +323,35 @@ test('ping-pong order for the dance clip follows ATLAS_CLIPS.dance.frames forwar
   for (let i = 0; i < seq.length; i++) {
     assert.equal(observed[i + 1], seq[(i + 1) % seq.length], `observed[${i + 1}]`);
   }
+});
+
+test('a rival_atlas board with 2 rows offers a subject picker keyed positionally to frame_keys/rival_rows', () => {
+  const { context, doc, getPlayer } = bootAnimPreviewHarness();
+  const item = {
+    id: 'rivals',
+    kind: 'rival_atlas',
+    label: 'Rivals',
+    frame_keys: ['rival_wolf', 'rival_bear'],
+    rival_rows: [
+      { kind: 'rival', rival_id: 'wolf', display_name: 'Wolf' },
+      { kind: 'rival', rival_id: 'bear', display_name: 'Bear' },
+    ],
+  };
+  const section = context.buildThemeAnimPreviewSection(item, 'theme1');
+  doc.body.appendChild(section);
+
+  const subjectSelect = section.querySelector('.theme-anim-preview-subject-select');
+  assert.ok(subjectSelect, 'a 2-row rival_atlas board renders a subject picker');
+  assert.deepEqual(
+    Array.from(subjectSelect.options).map((o: any) => o.textContent),
+    ['Wolf', 'Bear'],
+  );
+
+  const player = getPlayer('rivals');
+  assert.equal(player.rowKey, 'rival_wolf', 'defaults to the first row');
+  subjectSelect.value = '1';
+  subjectSelect.dispatchEvent(new context.window.Event('change'));
+  assert.equal(player.rowKey, 'rival_bear', 'switching subjects switches rowKey to the positionally-paired frame key');
 });
 
 // ── MSG_SCHEMAS.GET_THEME_ITEM_FRAMES validation ────────────────────────────

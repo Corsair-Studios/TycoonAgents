@@ -16315,24 +16315,53 @@ let themeAnimPreviewRafHandle = null;
 let themeAnimPreviewLastTs = 0;
 
 /**
- * Returns the ordered clip table for one board kind, or null when that
- * board isn't animated. Mirrors the stage's own clip selection so the
- * preview can never drift (values are read directly, never copied).
+ * Returns the animated "subjects" on one review item, or null when the
+ * board has none. A subject is one thing the stage animates on its own
+ * clip loop: a character board is one subject (its own frame_keys[0]);
+ * a rival_atlas/object_atlas/background_decor_atlas board packs several
+ * roster rows into ONE review item (frame_keys[i] <-> rival_rows[i] /
+ * object_rows[i] / decor_rows[i], positionally paired — panel.ts's
+ * _postThemeImageReview spreads the raw review.json item as-is, so these
+ * arrays are exactly what's on disk). Real review.json kind strings (see
+ * ThemeImageReviewItem in src/extension/themeImageReviewState.ts):
+ * character_atlas, rival_atlas, object_atlas, background_decor_atlas,
+ * expression_atlas, achievement_atlas, environment — NOT the bare
+ * "character"/"rival"/"object"/"decor" this module originally checked for
+ * (that was an earlier, unverified guess; item.anim_fps also never exists
+ * on a review item — only rows carry kind "object_anim"/"decor_anim").
  * @param {any} item a THEME_IMAGE_REVIEW review item
+ * @returns {Array<{ key: string, label: string, clips: any }> | null}
  */
-function themeAnimPreviewClipsForItem(item) {
+function themeAnimPreviewRowsForItem(item) {
   if (!item) return null;
-  if (item.kind === "character") return typeof ATLAS_CLIPS !== "undefined" ? ATLAS_CLIPS : null;
-  if (item.kind === "rival") return typeof RIVAL_CLIPS !== "undefined" ? RIVAL_CLIPS : null;
-  if ((item.kind === "object" || item.kind === "decor") && typeof item.anim_fps === "number" && item.anim_fps > 0) {
-    return typeof OBJECT_CLIPS !== "undefined" ? OBJECT_CLIPS : null;
+  const frameKeys = Array.isArray(item.frame_keys) ? item.frame_keys : [];
+  if (item.kind === "character_atlas") {
+    if (!frameKeys.length || typeof ATLAS_CLIPS === "undefined") return null;
+    return [{ key: frameKeys[0], label: item.subject || item.label || item.id, clips: ATLAS_CLIPS }];
+  }
+  if (item.kind === "rival_atlas") {
+    if (typeof RIVAL_CLIPS === "undefined" || !Array.isArray(item.rival_rows)) return null;
+    const rows = item.rival_rows
+      .map((row, i) => ({ key: frameKeys[i], label: row.display_name || row.rival_id || "Rival " + (i + 1), clips: RIVAL_CLIPS }))
+      .filter((r) => !!r.key);
+    return rows.length ? rows : null;
+  }
+  if (item.kind === "object_atlas" || item.kind === "background_decor_atlas") {
+    if (typeof OBJECT_CLIPS === "undefined") return null;
+    const sourceRows = Array.isArray(item.object_rows) ? item.object_rows : (Array.isArray(item.decor_rows) ? item.decor_rows : []);
+    const rows = sourceRows
+      .map((row, i) => ({ row, key: frameKeys[i] }))
+      .filter(({ row }) => row && (row.kind === "object_anim" || row.kind === "decor_anim"))
+      .map(({ row, key }) => ({ key, label: row.display_name || row.object_id || row.decor_id || "Animated", clips: OBJECT_CLIPS }))
+      .filter((r) => !!r.key);
+    return rows.length ? rows : null;
   }
   return null;
 }
 
-/** True iff this board kind/manifest data is animated (see task brief). */
+/** True iff this board has at least one animated subject (see task brief). */
 function themeAnimPreviewIsAnimated(item) {
-  return Boolean(themeAnimPreviewClipsForItem(item));
+  return Boolean(themeAnimPreviewRowsForItem(item));
 }
 
 function themeAnimPreviewRequestFrames(themeId, itemId, imageSrc) {
@@ -16411,8 +16440,8 @@ function themeAnimPreviewSweepDetached() {
  * @param {string} themeId
  */
 function buildThemeAnimPreviewSection(item, themeId) {
-  const clips = themeAnimPreviewClipsForItem(item);
-  if (!clips) return null;
+  const rows = themeAnimPreviewRowsForItem(item);
+  if (!rows) return null;
 
   // A fresh THEME_IMAGE_REVIEW for this item (Retry, re-slice, Normalize
   // size) bumps image_src's revision query param — treat that as "frames
@@ -16428,7 +16457,6 @@ function buildThemeAnimPreviewSection(item, themeId) {
     try { themeAnimPreviewObserver.unobserve(existingPlayer.canvas); } catch (_e) { /* noop */ }
   }
 
-  const clipNames = Object.keys(clips);
   const section = document.createElement("div");
   section.className = "theme-anim-preview-section";
   const details = document.createElement("details");
@@ -16446,7 +16474,7 @@ function buildThemeAnimPreviewSection(item, themeId) {
   canvas.width = 128;
   canvas.height = 128;
   canvas.setAttribute("role", "img");
-  canvas.setAttribute("aria-label", "Animation preview for " + (item.display_name || item.id));
+  canvas.setAttribute("aria-label", "Animation preview for " + (item.label || item.id));
   const ctx = canvas.getContext("2d");
   if (ctx) ctx.imageSmoothingEnabled = false;
   body.appendChild(canvas);
@@ -16454,20 +16482,42 @@ function buildThemeAnimPreviewSection(item, themeId) {
   const controls = document.createElement("div");
   controls.className = "theme-anim-preview-controls";
 
+  // Roster boards (rival_atlas, and any object/decor board with more than
+  // one animated row) pack several subjects into one review item — offer a
+  // subject picker alongside the clip picker. Single-subject boards
+  // (character_atlas) skip it entirely.
+  let subjectSelect = null;
+  if (rows.length > 1) {
+    subjectSelect = document.createElement("select");
+    subjectSelect.className = "theme-anim-preview-subject-select";
+    subjectSelect.setAttribute("aria-label", "Animation subject");
+    rows.forEach((row, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = row.label;
+      subjectSelect.appendChild(opt);
+    });
+    controls.appendChild(subjectSelect);
+  }
+
   const clipSelect = document.createElement("select");
   clipSelect.className = "theme-anim-preview-clip-select";
   clipSelect.setAttribute("aria-label", "Animation clip");
-  const cycleOpt = document.createElement("option");
-  cycleOpt.value = "__cycle__";
-  cycleOpt.textContent = "Cycle all";
-  clipSelect.appendChild(cycleOpt);
-  clipNames.forEach((name) => {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    clipSelect.appendChild(opt);
-  });
-  clipSelect.value = "__cycle__";
+  function populateClipSelect(clips) {
+    clipSelect.innerHTML = "";
+    const cycleOpt = document.createElement("option");
+    cycleOpt.value = "__cycle__";
+    cycleOpt.textContent = "Cycle all";
+    clipSelect.appendChild(cycleOpt);
+    Object.keys(clips).forEach((name) => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      clipSelect.appendChild(opt);
+    });
+    clipSelect.value = "__cycle__";
+  }
+  populateClipSelect(rows[0].clips);
   controls.appendChild(clipSelect);
 
   const playBtn = document.createElement("button");
@@ -16524,7 +16574,9 @@ function buildThemeAnimPreviewSection(item, themeId) {
   const player = {
     itemId: item.id,
     themeId,
-    clips,
+    rows,
+    rowKey: rows[0].key,
+    clips: rows[0].clips,
     clipKey: "__cycle__",
     cycleIndex: 0,
     frameIndex: 0,
@@ -16541,6 +16593,21 @@ function buildThemeAnimPreviewSection(item, themeId) {
     visible: false,
   };
   themeAnimPreviewPlayers.set(item.id, player);
+
+  if (subjectSelect) {
+    subjectSelect.addEventListener("change", () => {
+      const row = rows[parseInt(subjectSelect.value, 10) || 0];
+      player.rowKey = row.key;
+      player.clips = row.clips;
+      player.clipKey = "__cycle__";
+      player.frameIndex = 0;
+      player.elapsed = 0;
+      player.cycleElapsed = 0;
+      player.cycleIndex = 0;
+      populateClipSelect(row.clips);
+      themeAnimPreviewDraw(player);
+    });
+  }
 
   clipSelect.addEventListener("change", () => {
     player.clipKey = clipSelect.value;
@@ -16744,9 +16811,11 @@ function themeAnimPreviewDraw(player) {
     if (player.frameLabel) player.frameLabel.textContent = "loading...";
     return;
   }
-  // Rival/object/decor boards key frames per clip name; character boards
-  // store all 16 poses under one key — clip.frames indexes into that array.
-  const framesForKey = state.frames[clipName] || Object.values(state.frames)[0] || [];
+  // Every board kind keys its frames by the selected row's frame_key (a
+  // character's sole key holds all 20 poses; a rival/object/decor row's key
+  // holds that one row's poses) — clip.frames indexes WITHIN that array, not
+  // by clip name (see themeAnimPreviewRowsForItem).
+  const framesForKey = state.frames[player.rowKey] || Object.values(state.frames)[0] || [];
   const seq = themeAnimPreviewClipSequence(clip);
   const idx = seq[player.frameIndex % Math.max(seq.length, 1)] ?? 0;
   const img = framesForKey[idx] || framesForKey[0];
