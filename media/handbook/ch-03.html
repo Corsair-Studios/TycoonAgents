@@ -18,7 +18,7 @@
 <a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,6 +29,7 @@
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
@@ -131,11 +132,17 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   <div class="callout note">
     <span class="callout-label">Note</span>
     <p>
-      An optional "Multi-LLM agents" pack lets specialist agents run on
-      Codex, Gemini, Kimi, or any OpenAI-compatible endpoint instead of
-      Claude, declared per-agent rather than hardcoded &mdash; see
-      <code>docs/AGENT-BACKENDS.md</code>. It's early: schema and parser
-      only so far, not yet wired into the hook's dispatch path.
+      An optional "Multi-LLM agents" pack adds specialist agents
+      (Codex, Gemini, Kimi, Grok, and a subscription-backed Claude Worker)
+      that run on another vendor through an MCP bridge instead of the
+      orchestrator's own model &mdash; see Chapter 15 for the full walkthrough
+      and <code>docs/AGENT-BACKENDS.md</code> for the schema. Routing is
+      wired end to end for these agents via <code>routing.json</code> and
+      the Routing view below; the per-agent <code>backend:</code>
+      frontmatter block itself is still schema-and-parser only &mdash; the
+      hook's dispatch path doesn't read it directly yet, so routing
+      changes go through the Routing view, not a hand-edited frontmatter
+      block.
     </p>
   </div>
   <div class="callout note">
@@ -170,7 +177,75 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.5 &middot; What differs on screen</div>
+    <div class="s-title">&sect; 3.5 &middot; Setup D &middot; VS Code + Codex (Experimental)</div>
+    <div class="s-caption">a third harness</div>
+  </div>
+  <p>
+    Codex support reads activity through the same provider abstraction as
+    Claude Code and OpenCode, but Codex has no per-agent hook payload the
+    way the other two do &mdash; attribution is reconstructed from a
+    <code>notify</code> entry point TycoonAgents registers in
+    <code>CODEX_HOME/config.toml</code> plus Codex's own session metadata,
+    cross-referenced to map a spawn back to the agent that made it. Set
+    <code>tycoonagents.provider</code> to <code>"codex"</code> in Settings
+    (or the <code>TYCOON_PROVIDER</code> environment variable, which always
+    overrides the setting) to select it.
+  </p>
+  <ol>
+    <li>Install the Codex CLI. This project pins
+    <code>@openai/codex</code> at <code>0.153.0</code> as a devDependency
+    because Codex CLI 0.154+ removed the <code>mcp-server</code> stdio
+    command TycoonAgents' Codex MCP entry used to launch directly.</li>
+    <li>Run <strong>Install Hooks</strong> (or the portable/team install
+    path) at least once so <code>.claude/hooks/</code> has
+    <code>codex-mcp-launcher.cjs</code> and its fallback companion
+    <code>codex-app-server-mcp.cjs</code>, and so the Codex <code>notify</code>
+    hook is registered in <code>CODEX_HOME/config.toml</code>.</li>
+    <li>On first use, Claude Code asks once per project to approve the
+    Codex MCP server before it will run &mdash; use
+    <code>claude mcp list</code> to check or approve it manually.</li>
+  </ol>
+  <p>
+    The Codex MCP entry runs <code>node hooks/codex-mcp-launcher.cjs</code>,
+    which discovers the Codex binary at runtime (checking the
+    <code>CODEX_BINARY_PATH</code>/<code>CODEX_CLI_PATH</code> override
+    first, then <code>node_modules</code>, PATH, the npm global install
+    location, Homebrew, <code>~/.codex/bin</code>, <code>~/.local/bin</code>,
+    and finally the newest OpenAI VS Code extension bundle). It prefers a
+    binary that still exposes <code>mcp-server</code>, and otherwise falls
+    back automatically to <code>codex-app-server-mcp.cjs</code>, a shim over
+    Codex's <code>app-server</code> protocol exposing the same
+    <code>codex</code> and <code>codex-reply</code> tools. Both the fallback
+    shim and Codex support as a whole are Experimental.
+  </p>
+  <div class="callout note">
+    <span class="callout-label">Known limitation</span>
+    <p>
+      Because attribution is reconstructed rather than pushed live per
+      turn, a sub-agent mid a multi-turn exchange shows as
+      <em>stopped</em> and then <em>reopened</em> between turns in the
+      panel, instead of staying continuously "running" the way a Claude
+      Code or OpenCode sub-agent does. This reflects what Codex currently
+      exposes, not a bug in the mapping.
+    </p>
+  </div>
+  <div class="callout note">
+    <span class="callout-label">Token usage</span>
+    <p>
+      Per-turn token usage isn't available from the Codex host today, so
+      the Metrics tab shows "n/a" for Codex agents and excludes them from
+      the token total. See <code>docs/codex-host.md</code> for the
+      underlying investigation.
+    </p>
+  </div>
+  <p>
+    See <code>docs/codex-host.md</code> for the full discovery ladder,
+    <code>CODEX_HOME</code> override, and reviewer model/reasoning-effort
+    notes, and Chapter 15 for adding a Codex-backed reviewer agent.
+  </p>
+
+  <div class="section-head">
+    <div class="s-title">&sect; 3.6 &middot; What differs on screen</div>
     <div class="s-caption">provider, vendor, cost class</div>
   </div>
   <p>
@@ -200,7 +275,7 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.6 &middot; Not yet at parity</div>
+    <div class="s-title">&sect; 3.7 &middot; Not yet at parity</div>
     <div class="s-caption">be aware before you rely on it</div>
   </div>
   <p>
@@ -227,7 +302,7 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.7 &middot; Routing: choosing models per agent</div>
+    <div class="s-title">&sect; 3.8 &middot; Routing: choosing models per agent</div>
     <div class="s-caption">the Routing view</div>
   </div>
   <p>

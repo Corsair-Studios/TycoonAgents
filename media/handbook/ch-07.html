@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link side-rail-current" href="ch-07.html" aria-current="page">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,6 +29,7 @@
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
@@ -80,18 +81,21 @@
     </div>
     <div class="step">
       <div class="step-num">07</div>
-      <div class="step-body"><p><strong>Badges</strong></p></div>
+      <div class="step-body"><p><strong>Achievement badges</strong></p></div>
     </div>
   </div>
   <p>
-    A <strong>"Pause for review"</strong> toggle, when on, stops generation
-    between boards so you can check each batch before moving to the next
-    instead of waiting for the whole pipeline to finish.
+    Items populate the review screen as they finish generating, so you can
+    start reviewing and retrying the first boards while the rest of the
+    pipeline is still running. <strong>Stop generation</strong> is available
+    at any point to halt the run, and if a run gets interrupted,
+    <strong>Resume N generations</strong> picks the remaining unfinished
+    items back up as a single paid batch action.
   </p>
 
   <div class="figure-placeholder">
     <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Generation in progress, showing pipeline stage and pause-for-review toggle.</div>
+    <div class="fig-caption">Generation in progress, showing the current board and Stop generation.</div>
   </div>
 
   <div class="section-head">
@@ -108,12 +112,13 @@
   </p>
   <p>
     Below that, every generated item gets its own collapsible
-    name-and-description editor with a per-item <strong>Retry</strong>
-    button &mdash; so a single bad character or object can be regenerated on
-    its own instead of redoing the whole board. <strong>Approve all</strong>
-    accepts everything currently shown, and <strong>Resume</strong> /
-    <strong>Stop</strong> control whether the pipeline continues to the next
-    board.
+    name-and-description editor with a per-item <strong>Retry image</strong>
+    button (labeled <strong>Generate image</strong> before the first
+    attempt) &mdash; so a single bad character or object can be regenerated
+    on its own instead of redoing the whole board. A retry always rebuilds
+    the prompt from whatever visual description is currently saved for that
+    item, so editing the description is how you steer a redo (&sect; 6.5).
+    <strong>Approve all</strong> accepts everything currently shown.
   </p>
 
   <div class="figure-placeholder">

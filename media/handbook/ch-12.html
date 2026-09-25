@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,6 +29,7 @@
 <a class="side-rail-link side-rail-current" href="ch-12.html" aria-current="page">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
@@ -90,9 +91,9 @@
   <span class="s-title">§ 12.4 · When something looks stuck</span>
   <span class="cap">stall indicator &amp; plan recovery</span>
 </div>
-<div class="callout warn">
+<div class="callout warn" id="stall-indicator">
   <p class="callout-label">Warn</p>
-  <p>If an active task shows no hook activity for roughly five minutes, the panel flags it: <em>"this task may be stalled. Ask Claude to resume the plan."</em> This is a nudge, not an automatic action — you decide whether to resume it.</p>
+  <p>If an active task shows no hook activity anywhere in the project for 20 minutes by default, the panel flags it: <em>"⏸ Quiet for N min (project-wide) — agents may still be working. Check the terminal before retrying…"</em>, with an inline <strong>Retry</strong> / <strong>Skip</strong> confirm. This is a nudge, not an automatic action — activity is tracked project-wide (not just this task), so check your terminal before acting, and you decide whether to retry or skip.</p>
 </div>
 <div class="callout note">
   <p class="callout-label">Note</p>

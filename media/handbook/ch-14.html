@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -50,12 +50,16 @@
 <div class="steps">
   <div class="step">
     <span class="stepno">01</span>
-    <div><p>Open Settings → <strong>Hook health</strong> and use <strong>Troubleshoot → Fix</strong> to repair the install.</p></div>
+    <div><p>Open Settings → <strong>Hook health</strong> and use <strong>Troubleshoot &amp; Fix</strong> to run Hook Doctor, which scans for issues and offers a <strong>Fix issues</strong> button for anything it can repair automatically.</p></div>
   </div>
   <div class="step">
     <span class="stepno">02</span>
-    <div><p>Restart your Claude Code session so it picks up the newly installed hooks.</p></div>
+    <div><p>Restart your Claude Code session so it picks up the newly installed or repaired hooks. If a finding persists after a fix, it may mean a previously-installed hook is still active in this session — a full IDE restart, then running Troubleshoot &amp; Fix again, resolves it.</p></div>
   </div>
+</div>
+<div class="callout note">
+  <p class="callout-label">Advanced</p>
+  <p>The hook command TycoonAgents installs is an <strong>absolute path</strong>, not a relative one — because Claude Code launches the hook with whatever working directory an agent happens to be in, and agents often work in subfolders mid-session, a relative command would silently stop firing the moment an agent leaves the project root. On panel open, TycoonAgents auto-repairs a relative command it finds to its absolute form, taking a one-time backup of <code>settings.local.json</code> to <code>settings.local.json.bak</code> first (it never overwrites an existing backup from an earlier repair).</p>
 </div>
 
 <div class="section-head">
@@ -165,6 +169,10 @@
 </div>
 <div class="callout tip">
   <p class="callout-label">Tip</p>
+  <p>For a store or credit issue specifically (a failed purchase, a balance that looks wrong, a locked account), include your <strong>account ID</strong> from the Theme Builder header (it has its own copy button — see &sect; 5.2) in the description field. The diagnostic report doesn't carry it automatically, and it's the fastest way for the maintainer to look up your account.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
   <p>Submissions become tickets the maintainer triages directly — there's no account to create and no board to check. If sending fails (offline, timeout), the payload is copied to your clipboard automatically so nothing is lost, and you can retry or use the fallback form at <a href="https://feedback.corsairstudios.com">feedback.corsairstudios.com</a>.</p>
 </div>
 
@@ -177,7 +185,7 @@
 <p class="nav-links">
   <a class="prev" href="ch-13.html">&larr; Ch 13 · UEFN Pack</a>
   <a class="index" href="index.html">Index</a>
-  <span class="next-placeholder">End of handbook</span>
+  <a class="next" href="ch-15.html">Ch 15 · Other AIs &amp; Routing &rarr;</a>
 </p>
 
 </body>

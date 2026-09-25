@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -53,17 +53,16 @@
     <tr><td><code>tycoonagents.autoShow</code></td><td>true</td><td>Automatically opens the live agent panel when a workspace opens.</td></tr>
     <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Freezes an agent's live time after this many minutes with no activity.</td></tr>
     <tr><td><code>tycoonagents.sanityCapMinutes</code></td><td>15</td><td>Hard cap on any single active stretch, in minutes.</td></tr>
-    <tr><td><code>tycoonagents.themeImageProvider</code></td><td>openai</td><td>Which image provider to use — <code>openai</code> or <code>gemini</code>.</td></tr>
-    <tr><td><code>tycoonagents.geminiApiKey</code></td><td>&nbsp;</td><td>Fallback Gemini API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
-    <tr><td><code>tycoonagents.openaiApiKey</code></td><td>&nbsp;</td><td>Fallback OpenAI API key. Prefer the secure field in Themes &gt; Theme Builder.</td></tr>
-    <tr><td><code>tycoonagents.geminiModel</code></td><td>&nbsp;</td><td>Image model override for Gemini. Leave blank to always use the latest recommended model.</td></tr>
-    <tr><td><code>tycoonagents.openaiModel</code></td><td>&nbsp;</td><td>Image model override for OpenAI. Leave blank to always use the latest recommended model.</td></tr>
+    <tr><td><code>tycoonagents.provider</code></td><td>claude-code</td><td>Which coding agent harness TycoonAgents reads activity from — <code>claude-code</code>, <code>opencode</code>, or <code>codex</code>. The <code>TYCOON_PROVIDER</code> environment variable, if set, always overrides this.</td></tr>
+    <tr><td><code>tycoonagents.agents.multiProvider</code></td><td>false</td><td>Shows vendor and fallback controls for every agent in the Agents view. Turn this on if you use more than one AI provider for delegation — see <a href="ch-15.html">Chapter 15 · Adding Other AIs</a>. Leave it off if you use a single AI provider.</td></tr>
+    <tr><td><code>tycoonagents.themeService.endpoint</code></td><td>&nbsp;</td><td>Advanced: override the Theme Service base URL (https only). Leave empty for the production service — see &sect; 5.6.</td></tr>
   </tbody>
 </table>
 </div>
+
 <div class="callout note">
   <p class="callout-label">Note</p>
-  <p>Leaving the model overrides blank isn't a placeholder — it's the recommended setting. TycoonAgents resolves to the newest supported model for your chosen provider automatically.</p>
+  <p>An older, per-provider image-key settings path (six settings: <code>themeImageProvider</code>, <code>geminiApiKey</code>, <code>openaiApiKey</code>, <code>geminiModel</code>, <code>openaiModel</code>, <code>openaiImageQuality</code>) was removed from Settings in 0.0.670. All generation runs only through the Theme Service (Chapter 05).</p>
 </div>
 
 <div class="section-head">
@@ -120,6 +119,36 @@
       <p><strong>Report a bug / Diagnostics.</strong> Generates a sanitized diagnostic report you can share when something isn't working — see Chapter 14.</p>
     </div>
   </div>
+  <div class="step">
+    <span class="stepno">09</span>
+    <div>
+      <p><strong>Team setup.</strong> Export and apply a shared roster/routing shape with teammates, and check readiness on the current machine — see &sect; 10.3 below.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section-head">
+  <span class="s-title">§ 10.3 · Team setup</span>
+  <span class="cap">share the shape of your setup, not your machine</span>
+</div>
+<p>Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex, OpenCode) are discovered per machine. Team setup exports the <em>shape</em> of your setup instead — path-free and secret-free by construction, so it's safe to commit.</p>
+<div class="steps">
+  <div class="step">
+    <span class="stepno">01</span>
+    <div><p><strong>Export team setup</strong> writes <code>.claude/tycoon-team.json</code> — the agent roster, per-agent routing (vendor/model plus fallback chains), the <em>names</em> of the env vars each slot needs (never values), which skills and MCP servers are enabled, the delegation mode and parallel limit, an optional plan pointer, and which harness the orchestrator was recorded running on.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">02</span>
+    <div><p>A teammate who clones the project and opens TycoonAgents sees a <strong>"Team setup changed. Apply?"</strong> drift notice the next time Settings opens. <strong>Apply</strong> installs the agents, keywords, skills, delegation mode, and hooks, using project-relative commands so they work regardless of where the project lives on disk. The originator's vendor/model choices only seed routing on a fresh clone (or when local routing is unreadable) — after that, each teammate's own routing choices are kept as-is. MCP installation always needs separate confirmation and is skipped during Apply.</p></div>
+  </div>
+  <div class="step">
+    <span class="stepno">03</span>
+    <div><p><strong>Check readiness</strong> reports, per agent, a "team: vendor/model · you: vendor/model" line with a "differs" chip when your routing diverges, plus whether it resolves ready, on a fallback, "will use default fallback," or not ready, and which env vars by name are still unset — with a summary count and a harness line. <strong>Probe reachability (may use vendor quota)</strong> adds a live check and is off by default since it can spend vendor quota.</p></div>
+  </div>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>When only routing changed (not the roster), the drift notice instead reads <strong>"Team routing changed (reference only)"</strong> and prompts nothing to apply — routing is a reference, the roster is authoritative.</p>
 </div>
 
 <p class="nav-links">

@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link side-rail-current" href="ch-06.html" aria-current="page">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,6 +29,7 @@
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
@@ -47,18 +48,48 @@
     </div>
   </div>
 
-  <div class="section-head">
-    <div class="s-title">&sect; 6.1 &middot; Name and creative direction</div>
-    <div class="s-caption">the seed everything else follows</div>
+  <div class="section-head" id="first-flow">
+    <div class="s-title">&sect; 6.1 &middot; Starting a theme</div>
+    <div class="s-caption">one name field, then two paths</div>
   </div>
   <p>
-    Start with a <strong>theme name</strong> and a
-    <strong>creative direction</strong> textarea &mdash; a short paragraph
-    describing the overall look and feel (for example, a neon-city theme,
-    or a high-seas theme). This is the seed that every subsequent image
-    prompt draws from, so it's worth spending a minute getting it
-    specific. An <strong>environment description</strong> follows, covering
-    the background/stage setting your characters will be built into.
+    The Theme Builder starts with a single <strong>theme name</strong>
+    field, then two buttons: <strong>Generate with AI</strong> and
+    <strong>Build manually</strong>.
+  </p>
+  <table class="ref-table">
+    <thead>
+      <tr>
+        <th>Path</th>
+        <th>What it does</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Generate with AI</td>
+        <td>Sends the name to the Theme Service, which drafts a full plan (creative direction, environment, and every character/object/rival/decor/badge field) for you to review and edit before anything is generated.</td>
+      </tr>
+      <tr>
+        <td>Build manually</td>
+        <td>Opens the same form empty except for the name, so you fill in creative direction, environment, and every roster field by hand.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Either path lands on the same <strong>AI plan review</strong> screen
+    before any images are generated &mdash; nothing is billed and no
+    generation starts until you approve the plan there. The review screen
+    shows your current credit balance and the estimated cost of the run, so
+    you know what you're committing to before the first board generates
+    (see &sect; 5.3 &middot; Credits &amp; board costs).
+  </p>
+  <p>
+    From the plan review screen, the <strong>creative direction</strong>
+    textarea is the seed every subsequent image prompt draws from &mdash; a
+    short paragraph describing the overall look and feel (for example, a
+    neon-city theme, or a high-seas theme) &mdash; and it's worth spending a
+    minute getting it specific. An <strong>environment description</strong>
+    covers the background/stage setting your characters will be built into.
   </p>
 
   <div class="section-head">
@@ -112,7 +143,7 @@
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 6.4 &middot; Badges</div>
+    <div class="s-title">&sect; 6.4 &middot; Achievement badges</div>
     <div class="s-caption">up to 25</div>
   </div>
   <p>
@@ -138,6 +169,15 @@
       consistent art than "a worker" &mdash; every image prompt in the
       pipeline consumes the exact per-item description you write here, so
       specificity up front saves you retries later.
+    </p>
+  </div>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      A per-item description is optional &mdash; leaving one blank falls
+      back to the item's name in the prompt. A name alone ("Sana") reads as
+      a name, not a look, so a blank description usually produces vaguer,
+      less consistent art than a short visual description would.
     </p>
   </div>
   <div class="callout tip">
@@ -188,12 +228,13 @@
   <div class="callout tip">
     <span class="callout-label">Tip</span>
     <p>
-      Use the review screen's <strong>Retry notes</strong> field when a
-      redo needs a specific correction ("less saturated, remove the hat") &mdash;
-      it steers just that regeneration. A blank reroll (no notes) asks for a
-      fresh take on the same description and is the better choice when the
-      first result was simply an off draw rather than wrong in a specific,
-      nameable way.
+      There's no separate "retry notes" field &mdash; a retry always
+      rebuilds the prompt from the item's current visual description. To
+      steer a redo toward a specific correction ("less saturated, remove the
+      hat"), edit the item's description first, then click
+      <strong>Retry image</strong>. A retry with the description unchanged
+      asks for a fresh take on the same prompt, which is the better choice
+      when the first result was simply an off draw.
     </p>
   </div>
   <div class="callout note">

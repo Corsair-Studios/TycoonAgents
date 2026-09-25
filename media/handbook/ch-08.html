@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link" href="ch-05.html">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link side-rail-current" href="ch-08.html" aria-current="page">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,6 +29,7 @@
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
@@ -99,12 +100,23 @@
 
 <div class="section-head">
   <span class="s-title">§ 8.3 · Rate limits &amp; server errors</span>
-  <span class="cap">HTTP 429 / 5xx</span>
+  <span class="cap">HTTP 429 / 5xx / 400</span>
 </div>
-<p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote.</p>
+<p>A <code>429</code> (rate limited) or any <code>5xx</code> (provider-side server error) is treated as retryable — the request didn't fail because of anything you wrote. No credits are charged for either.</p>
+<p>A rate-limit message names the limit and how long to wait, when the backend sends that detail, for example:</p>
+<pre>Too many requests — the Theme Service allows up to 5 generations per minute. Try again in 42 seconds. No credits were charged.</pre>
+<p>A <code>5xx</code> shows as <strong>"Theme Service unavailable"</strong> instead — no credits were charged, and if you started several generations at once, the message suggests trying fewer at a time.</p>
 <div class="callout note">
   <p class="callout-label">Note</p>
-  <p>Wait a moment and retry the item. If <code>429</code>s keep happening across many items in a row, it's usually your account's request-rate tier on the provider's side rather than anything in the theme — space retries out and give it a few minutes.</p>
+  <p>Wait for the time named in the message and retry the item. If you don't see a wait time, give it a few minutes before retrying — space retries out rather than hammering the same item.</p>
+</div>
+<div class="callout note">
+  <p class="callout-label">Note</p>
+  <p>An outright malformed request comes back as <strong>"The Theme Service rejected this request (code). No credits were charged"</strong>, with a short code identifying what was wrong. These are rare and usually mean a field is empty or out of range — check the item's fields and retry.</p>
+</div>
+<div class="callout tip">
+  <p class="callout-label">Tip</p>
+  <p>Transient errors (rate limits, server errors, unavailable) clear once the request that hit them succeeds — they don't linger after a successful <strong>Retry</strong>, and they never survive a restart of your editor.</p>
 </div>
 
 <div class="section-head">
@@ -128,13 +140,14 @@
 </div>
 
 <div class="section-head">
-  <span class="s-title">§ 8.5 · Objects bleeding into neighbors</span>
-  <span class="cap">wide objects encroach adjacent cells</span>
+  <span class="s-title">§ 8.5 · Rivals and objects bleeding into neighbors</span>
+  <span class="cap">a silhouette budget, and gutter-aware slicing</span>
 </div>
-<p>Object boards are also sliced into a fixed grid. An object described as unusually wide or sprawling can visually bleed past its own cell into the one next to it.</p>
+<p>Rival, object, and decor boards are sliced into a fixed grid. Prompts for these boards are built with a <strong>silhouette budget</strong> — guidance that keeps each figure's limbs, tentacles, or particle effects inside its own cell — but an unusually wide or sprawling description can still push past it and bleed into the neighboring cell.</p>
+<p>On the rival board specifically, each interior grid line is <strong>gutter-aware</strong>: the slicer looks for the nearest fully-empty column or row near the expected cut and snaps to it, rather than always cutting exactly on the proportional line. This absorbs a small overflow automatically — a limb that spills a few pixels past the nominal boundary usually still slices cleanly — but a description that blows well past the budget can still bleed through.</p>
 <div class="callout tip">
   <p class="callout-label">Tip</p>
-  <p>Retry with phrasing like "compact, centered, fits fully in frame" added to the object's description, then retry just that object.</p>
+  <p>Retry with phrasing like "compact, centered, fits fully in frame" (objects/decor) or "limbs tucked in, no wide reach" (rivals) added to the item's description, then retry just that item.</p>
 </div>
 
 <div class="section-head">

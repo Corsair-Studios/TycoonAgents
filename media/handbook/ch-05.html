@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 05 &middot; API Keys &amp; Providers</title>
+<title>Ch. 05 &middot; Theme Service: Sign-in &amp; Credits</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
-<a class="side-rail-link side-rail-current" href="ch-05.html" aria-current="page">05 &middot; API Keys &amp; Providers</a>
+<a class="side-rail-link side-rail-current" href="ch-05.html" aria-current="page">05 &middot; Theme Service: Sign-in &amp; Credits</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
 <a class="side-rail-link" href="ch-08.html">08 &middot; Troubleshooting &amp; Redos</a>
@@ -29,143 +29,187 @@
 <a class="side-rail-link" href="ch-12.html">12 &middot; Project Plan</a>
 <a class="side-rail-link" href="ch-13.html">13 &middot; UEFN Pack</a>
 <a class="side-rail-link" href="ch-14.html">14 &middot; Diagnostics</a>
+<a class="side-rail-link" href="ch-15.html">15 &middot; Other AIs &amp; Routing</a>
 </nav>
 </details>
 </aside>
   <div class="crumb">TycoonAgents Handbook / Chapter 05 / Part II &middot; Theme Maker</div>
 
   <div class="chapter-num">05</div>
-  <h1>API Keys &amp; Providers</h1>
+  <h1>Theme Service: Sign-in &amp; Credits</h1>
 
   <div class="lede">
     <div class="lede-label">Before you build</div>
     <div class="lede-intro">
-      The Theme Maker needs an image-generation API key to turn your
-      creative direction into art. This is the one place TycoonAgents talks
-      to an external AI provider &mdash; and only when you tell it to.
+      AI theme generation runs through the Corsair-hosted <strong>Theme
+      Service</strong> and spends <strong>credits</strong> you buy in packs
+      &mdash; there's no API key to find or paste in. Uploading or
+      hand-making your own art (Import .zip) stays completely free and needs
+      no account at all.
     </div>
   </div>
 
-  <div class="section-head">
-    <div class="s-title">&sect; 5.1 &middot; Authoring-time only</div>
-    <div class="s-caption">what the key is for</div>
+  <div class="section-head" id="providers">
+    <div class="s-title">&sect; 5.1 &middot; What the Theme Service does</div>
+    <div class="s-caption">authoring-time only</div>
   </div>
   <p>
-    An API key is only ever used while you're generating a theme. Once the
-    images are generated, they're saved locally as part of the theme
-    (Chapter 07 covers exactly what gets stored), and the extension never
-    calls the image API again to render the scene &mdash; it just plays back
-    the stored frames. Runtime rendering has no AI dependency at all.
+    The Theme Service plans and generates a theme's art on Corsair's
+    infrastructure &mdash; TycoonAgents sends it your theme description,
+    creative direction, and per-item fields, and it returns the assembled
+    prompt plus the generated images. This only happens while you're
+    actively generating. Once images come back, they're saved locally as
+    part of the theme (Chapter 07 covers exactly what gets stored), and the
+    extension never calls the service again to render the scene at runtime
+    &mdash; it just plays back the stored frames.
   </p>
 
-  <div class="section-head">
-    <div class="s-title">&sect; 5.2 &middot; Choosing a provider</div>
-    <div class="s-caption">two options</div>
+  <div class="section-head" id="sign-in">
+    <div class="s-title">&sect; 5.2 &middot; Signing in</div>
+    <div class="s-caption">magic link or Google</div>
+  </div>
+  <p>
+    Opening the Theme Builder for the first time asks you to sign in &mdash;
+    by an emailed magic link, or with Google. In VS Code (and forks like
+    Insiders, VSCodium, Cursor, Windsurf, or Antigravity), the Google
+    callback deep-links back into whichever editor you started sign-in
+    from; if it ever lands somewhere with no sign-in pending, you'll see the
+    code in a notification with a <strong>Copy code</strong> button to paste
+    into the Theme Builder instead. In the standalone host, Google completes
+    through a local browser callback, with a paste-the-code fallback if that
+    callback can't reach your browser session.
+  </p>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Your <strong>account ID</strong> is shown in the Theme Builder with a
+      copy button next to it. Include it whenever you contact support about
+      a store or credit issue &mdash; it's the fastest way for the
+      maintainer to look up your account.
+    </p>
+  </div>
+
+  <div class="section-head" id="credits">
+    <div class="s-title">&sect; 5.3 &middot; Credits &amp; board costs</div>
+    <div class="s-caption">what generation spends</div>
+  </div>
+  <p>
+    Every generation attempt spends credits, including retries, and the
+    plan review screen shows the cost before each attempt so you're never
+    guessing. Attempts cost <strong>2 credits</strong> for object,
+    expression, and achievement boards, and <strong>3 credits</strong> for
+    character, rival, and environment boards.
+  </p>
+  <div class="callout tip">
+    <span class="callout-label">Tip</span>
+    <p>
+      Re-slicing an existing image is always free, no matter how many times
+      you do it &mdash; only a fresh generation attempt spends credits.
+    </p>
+  </div>
+  <div class="callout note">
+    <span class="callout-label">Note</span>
+    <p>
+      Failed generations caused by provider or network errors, and
+      generations the provider refuses on content-policy grounds, are
+      refunded automatically. Prompts blocked by content screening or a
+      locked account are never charged at all. Credits are <strong>not</strong>
+      refunded for images you generated successfully but simply don't like
+      &mdash; spend a retry instead.
+    </p>
+  </div>
+
+  <div class="section-head" id="buying-credits">
+    <div class="s-title">&sect; 5.4 &middot; Buying credits</div>
+    <div class="s-caption">Stripe Checkout, three packs</div>
   </div>
   <table class="ref-table">
     <thead>
       <tr>
-        <th>Provider</th>
-        <th>Where to get a key</th>
-        <th>Notes</th>
+        <th>Pack</th>
+        <th>Credits</th>
+        <th>Price</th>
+        <th>Bonus badge</th>
       </tr>
     </thead>
     <tbody>
       <tr>
-        <td>OpenAI GPT Image <em>(recommended default)</em></td>
-        <td>platform.openai.com &rarr; API keys</td>
-        <td>Requires a paid OpenAI account with credits.</td>
+        <td>Starter</td>
+        <td>45</td>
+        <td>$4.99</td>
+        <td>&mdash; (no bonus)</td>
       </tr>
       <tr>
-        <td>Google Gemini image models <em>(community nickname "Nano Banana")</em></td>
-        <td>aistudio.google.com &rarr; Get API key</td>
-        <td>Has a free tier, good for experimenting before committing to a paid provider.</td>
+        <td>Theme</td>
+        <td>100</td>
+        <td>$9.99</td>
+        <td>"+11% credits"</td>
+      </tr>
+      <tr>
+        <td>Bundle</td>
+        <td>205</td>
+        <td>$19.99</td>
+        <td>"+14% credits"</td>
       </tr>
     </tbody>
   </table>
+  <p>
+    The store shows each pack's total credit count and price as above. The
+    "Best value" chip and the bonus badge on the Theme and Bundle packs are
+    computed from a base credit count baked into the pack &mdash; the badge
+    percentage is bonus credits divided by that base, rounded to the
+    nearest whole percent (for example, the Theme pack's badge comes from
+    10 bonus credits over a 90-credit base, and the Bundle pack's from 25
+    over 180). The Starter pack carries no bonus and shows no badge.
+  </p>
+  <p>
+    <strong>Buy credits</strong> opens Stripe Checkout in your browser; your
+    balance updates when you return to the panel. A typical 23-board theme
+    runs about 95 credits, a careful run about 55, and heavy retries up to
+    about 170 &mdash; output quality tracks prompt quality, so a clear,
+    specific description usually costs less than a vague one you keep
+    retrying (see &sect; 6.5 &middot; Writing good descriptions).
+  </p>
+
+  <div class="figure-placeholder">
+    <span class="fig-label">Screenshot</span>
+    <div class="fig-caption">Theme Builder header: account ID with copy button, credit balance, and Buy credits.</div>
+  </div>
+
+  <div class="section-head" id="acceptable-use">
+    <div class="s-title">&sect; 5.5 &middot; Acceptable use</div>
+    <div class="s-caption">strikes &amp; locked accounts</div>
+  </div>
+  <p>
+    Prompts and reference images are screened automatically before
+    generation runs (see &sect; 8.1). A generation the model refuses on
+    content-policy grounds is refunded, but still counts as a strike; three
+    strikes within 24 hours locks the account, disabling both generation
+    and purchases. A locked account can request an unlock through
+    <strong>Submit Feedback</strong> (&sect; 14.6).
+  </p>
+
+  <div class="section-head" id="advanced">
+    <div class="s-title">&sect; 5.6 &middot; Advanced: pointing at a different endpoint</div>
+    <div class="s-caption">testing only</div>
+  </div>
+  <p>
+    The advanced setting <code>tycoonagents.themeService.endpoint</code>
+    (VS Code) or the <code>THEME_SERVICE_ENDPOINT</code> environment
+    variable (standalone) points the client at a different
+    <code>https</code> Theme Service URL for testing, and is normally left
+    empty. Sign-in settings (the Supabase project and public key) are
+    fetched from whichever Theme Service you're pointed at, so this also
+    switches the sign-in project.
+  </p>
 
   <div class="callout note">
     <span class="callout-label">Note</span>
     <p>
-      Neither provider is required over the other &mdash; pick whichever you
-      already have an account with. OpenAI GPT Image is the recommended
-      default for consistency across a full theme's worth of images.
-    </p>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 5.3 &middot; Entering and storing your key</div>
-    <div class="s-caption">where it lives</div>
-  </div>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">01</div>
-      <div class="step-body">
-        <p>
-          Open the theme generation form (Chapter 06) and enter your key in
-          the provider section. Your editor stores it securely rather than
-          writing it into any project file.
-        </p>
-      </div>
-    </div>
-    <div class="step">
-      <div class="step-num">02</div>
-      <div class="step-body">
-        <p>
-          As a fallback, you can also set a key via Settings using
-          <code>tycoonagents.openaiApiKey</code> or
-          <code>tycoonagents.geminiApiKey</code> &mdash; useful if you want
-          the key pre-filled across the workspace rather than entering it
-          each time.
-        </p>
-      </div>
-    </div>
-  </div>
-
-  <div class="section-head">
-    <div class="s-title">&sect; 5.4 &middot; Picking a model</div>
-    <div class="s-caption">latest by default</div>
-  </div>
-  <p>
-    Model pickers default to <strong>"Latest (recommended)."</strong>
-    TycoonAgents never hardcodes a specific model version internally &mdash;
-    the default always tracks whatever the provider currently considers
-    latest. If you want to pin an older or cheaper model instead, use the
-    dropdown, or set an override permanently via
-    <code>tycoonagents.openaiModel</code> / <code>tycoonagents.geminiModel</code>.
-  </p>
-
-  <table class="ref-table">
-    <thead>
-      <tr>
-        <th>Provider</th>
-        <th>Model menu (current)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td>OpenAI</td>
-        <td>GPT Image 2 (latest) &middot; 1.5 &middot; 1 &middot; 1 Mini (cheapest)</td>
-      </tr>
-      <tr>
-        <td>Gemini</td>
-        <td>Flash Image 3.1 (latest) &middot; Pro Image 3 &middot; Flash-Lite 3.1 (cheapest) &middot; 2.5 Flash Image (legacy)</td>
-      </tr>
-    </tbody>
-  </table>
-
-  <div class="figure-placeholder">
-    <span class="fig-label">Screenshot</span>
-    <div class="fig-caption">Provider, key, and model picker section of the theme generation form.</div>
-  </div>
-
-  <div class="callout tip">
-    <span class="callout-label">Tip</span>
-    <p>
-      A full theme generates 10 or more large images. If you're still
-      experimenting with a creative direction, pick one of the cheaper
-      models first and switch to the latest once you're happy with the
-      results.
+      An older, key-based image path (per-provider OpenAI/Gemini API keys,
+      model overrides, and image quality) was removed from Settings in
+      0.0.670. All generation runs through the Theme Service described in
+      this chapter.
     </p>
   </div>
 
