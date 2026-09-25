@@ -2220,6 +2220,49 @@
     return a;
   }
 
+  /**
+   * p95: the account row's "Account ID: <uuid>" line — a muted, truncated
+   * display of the Supabase account id (never a token) plus a copy button,
+   * so a user can quote the full id in a support report. Only rendered when
+   * the host's status carries a userId (see ThemeServiceHostStatus.userId in
+   * themeServiceHost.ts); hidden entirely otherwise.
+   * @param {string} userId
+   */
+  function renderAccountIdRow(userId) {
+    const row = tspEl("p", "muted tsp-account-id-row");
+    const shortId = userId.length > 12 ? userId.slice(0, 8) + "…" : userId;
+    row.appendChild(document.createTextNode("Account ID: " + shortId + " "));
+    const copyBtn = tspEl("button", "tsp-account-id-copy", "Copy");
+    copyBtn.type = "button";
+    copyBtn.title = "Copy full account ID";
+    copyBtn.setAttribute("aria-label", "Copy full account ID");
+    copyBtn.addEventListener("click", () => {
+      const done = () => {
+        const prevText = copyBtn.textContent;
+        copyBtn.textContent = "Copied";
+        setTimeout(() => { copyBtn.textContent = prevText; }, 2000);
+      };
+      const fallbackCopy = () => {
+        const tmp = document.createElement("textarea");
+        tmp.value = userId;
+        tmp.style.position = "fixed";
+        tmp.style.opacity = "0";
+        document.body.appendChild(tmp);
+        tmp.select();
+        try { document.execCommand("copy"); } catch (e) { /* best effort */ }
+        document.body.removeChild(tmp);
+        done();
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(userId).then(done, fallbackCopy);
+      } else {
+        fallbackCopy();
+      }
+    });
+    row.appendChild(copyBtn);
+    return row;
+  }
+
   function formatPackPrice(pack) {
     const cents = typeof pack.priceCents === "number" ? pack.priceCents : 0;
     const amount = (cents / 100).toFixed(2);
@@ -2622,6 +2665,10 @@
     balanceRow.appendChild(tspEl("span", "tsp-balance-num", (typeof status.credits === "number" ? status.credits : 0) + " credits"));
     container.appendChild(balanceRow);
 
+    if (typeof status.userId === "string" && status.userId.length > 0) {
+      container.appendChild(renderAccountIdRow(status.userId));
+    }
+
     if (status.locked) {
       container.appendChild(tspNotice("warn",
         "Your account is locked for repeated content-policy violations. Generation is disabled. Contact us through Submit Feedback to request an unlock."));
@@ -2643,12 +2690,16 @@
         typicalSentence + " One attempt per board is the minimum; retries cost the same as the first attempt."));
     }
 
-    const buyCreditsBtn = tspButton("secondary-info", "Buy credits", () => { /* pack buttons below post BUY_CREDITS directly */ });
+    // p95: "Buy credits" is a section heading, not a button — the pack
+    // cards below (renderPackGrid, real <button>s) are the clickable menu
+    // items; there was never a separate purchase action on this label
+    // itself (its old click handler was a no-op), so nothing is lost by
+    // dropping the button.
+    const buyCreditsHeading = tspEl("h3", "tsp-buy-credits-heading", "Buy credits");
     if (status.locked) {
-      buyCreditsBtn.disabled = true;
-      buyCreditsBtn.title = "Account locked";
+      buyCreditsHeading.title = "Account locked";
     }
-    container.appendChild(buyCreditsBtn);
+    container.appendChild(buyCreditsHeading);
     container.appendChild(renderPackGrid(pricing, (pack) => {
       if (status.locked) return;
       postThemeService("THEME_SERVICE_BUY_CREDITS", { pack: pack.id });
@@ -2658,11 +2709,9 @@
       "Results depend on your prompts. Every attempt that returns an image is billed, including retries. Re-slicing is free. Only attempts that fail outright are refunded."));
 
     const tipsP = tspEl("p", "tsp-tips-row");
-    const tipsLink = tspEl("a", "muted tsp-link", "Prompt tips");
-    tipsLink.href = "README.md#prompt-tips";
-    tipsLink.target = "_blank";
-    tipsLink.rel = "noopener noreferrer";
-    tipsP.appendChild(tipsLink);
+    tipsP.appendChild(tspLink("Prompt tips", () => {
+      vscode.postMessage({ type: "OPEN_HANDBOOK", page: "ch-06.html", anchor: "prompt-tips" });
+    }));
     container.appendChild(tipsP);
 
     if (insufficient) {

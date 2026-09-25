@@ -44,6 +44,10 @@ export interface ThemeServiceHostStatus {
    */
   signedIn?: boolean;
   email?: string;
+  /** Additive: the Supabase account id (JWT `sub` claim), display-only, for
+   * support reports. Best-effort/unverified — never used for anything
+   * security-sensitive. Omitted whenever it isn't known yet. */
+  userId?: string;
   provider?: string;
   credits?: number;
   locked?: boolean;
@@ -426,6 +430,22 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   // omitted entirely — never a guess.
   let currentUserId: string | undefined;
   /**
+   * Additive: the Supabase account id (JWT `sub`), display-only, surfaced on
+   * the status as `userId` for support reports. Separate from
+   * `currentUserId` above (which tracks email and gates the credits cache) —
+   * this never falls back to email. Best-effort: a failed/empty decode just
+   * means the account-id line stays hidden in the webview.
+   */
+  let accountUserId: string | undefined;
+  async function refreshAccountUserId(): Promise<void> {
+    try {
+      const id = await client.getStoredUserId();
+      if (id) accountUserId = id;
+    } catch {
+      // best-effort only
+    }
+  }
+  /**
    * Follow-up fix: after a full VS Code restart, currentUserId starts
    * unknown and stayed that way until the first live status fetch
    * succeeded — so cachedCredits was never offered at panel open right
@@ -442,6 +462,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
     try {
       const identity = await client.getStoredIdentity();
       if (identity && !currentUserId) currentUserId = identity;
+      await refreshAccountUserId();
     } catch {
       // best-effort only — an unseeded currentUserId just means
       // cachedCredits stays omitted until the first live fetch, same as
@@ -595,6 +616,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
         if (definitiveSignOut) {
           clearPersistedCredits();
           currentUserId = undefined;
+          accountUserId = undefined;
         }
         return {
           ...(definitiveSignOut ? { signedIn: false as const } : {}),
@@ -605,6 +627,7 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
           // other (transient) kind still offers it so the webview has
           // something to show during the hiccup.
           ...(definitiveSignOut ? {} : cachedCreditsField()),
+          ...(definitiveSignOut ? {} : accountUserId ? { userId: accountUserId } : {}),
         };
       }
       const status: ThemeServiceStatus = res.value;
@@ -648,16 +671,19 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
       if (status.signedIn === false) {
         clearPersistedCredits();
         currentUserId = undefined;
+        accountUserId = undefined;
       } else if (status.signedIn) {
         if (status.email && currentUserId && status.email !== currentUserId) {
           clearPersistedCredits();
         }
         if (status.email) currentUserId = status.email;
         if (typeof status.credits === "number") persistCredits(status.email, status.credits);
+        await refreshAccountUserId();
       }
       return {
         signedIn: status.signedIn,
         email: status.email,
+        ...(status.signedIn && accountUserId ? { userId: accountUserId } : {}),
         provider: status.role,
         credits: status.credits,
         locked: status.locked,

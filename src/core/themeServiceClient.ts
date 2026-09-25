@@ -425,6 +425,15 @@ export interface ThemeServiceClient {
    * a `sub` claim. Never logs the token itself.
    */
   getStoredIdentity(): Promise<string | undefined>;
+  /**
+   * Follow-up: the stored session's Supabase account id (the JWT `sub`
+   * claim only — never falls back to email, unlike {@link getStoredIdentity}),
+   * for display in support reports. Same unverified, no-network,
+   * never-logged posture as {@link getStoredIdentity}. Returns undefined
+   * when there's no stored session, the token doesn't parse, or it carries
+   * no `sub` claim.
+   */
+  getStoredUserId(): Promise<string | undefined>;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -443,6 +452,22 @@ function invalidResponse(message: string): ThemeServiceError {
  * malformed/unexpected shape yields undefined. Never logs the token.
  */
 function decodeJwtIdentityUnsafe(token: string): string | undefined {
+  const payload = decodeJwtPayloadUnsafe(token);
+  if (!payload) return undefined;
+  if (typeof payload.email === "string" && payload.email.length > 0) return payload.email;
+  if (typeof payload.sub === "string" && payload.sub.length > 0) return payload.sub;
+  return undefined;
+}
+
+/** Same decode as {@link decodeJwtIdentityUnsafe}, but the `sub` claim only
+ * (the Supabase account id) — never falls back to email. */
+function decodeJwtSubUnsafe(token: string): string | undefined {
+  const payload = decodeJwtPayloadUnsafe(token);
+  if (!payload) return undefined;
+  return typeof payload.sub === "string" && payload.sub.length > 0 ? payload.sub : undefined;
+}
+
+function decodeJwtPayloadUnsafe(token: string): Record<string, unknown> | undefined {
   try {
     const parts = token.split(".");
     if (parts.length < 2) return undefined;
@@ -450,10 +475,7 @@ function decodeJwtIdentityUnsafe(token: string): string | undefined {
     while (b64.length % 4 !== 0) b64 += "=";
     const jsonStr = typeof atob === "function" ? atob(b64) : Buffer.from(b64, "base64").toString("utf8");
     const payload: unknown = JSON.parse(jsonStr);
-    if (!isRecord(payload)) return undefined;
-    if (typeof payload.email === "string" && payload.email.length > 0) return payload.email;
-    if (typeof payload.sub === "string" && payload.sub.length > 0) return payload.sub;
-    return undefined;
+    return isRecord(payload) ? payload : undefined;
   } catch {
     return undefined;
   }
@@ -1189,6 +1211,12 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       const session = await loadSession();
       if (!session) return undefined;
       return decodeJwtIdentityUnsafe(session.accessToken);
+    },
+
+    async getStoredUserId() {
+      const session = await loadSession();
+      if (!session) return undefined;
+      return decodeJwtSubUnsafe(session.accessToken);
     },
 
     async requestMagicLink(email) {

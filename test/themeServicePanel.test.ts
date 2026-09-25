@@ -542,7 +542,11 @@ test('signed-in state renders email/provider, Sign out, credits, guidance, packs
     (a: any) => (a.textContent || '').trim() === 'Prompt tips',
   ) as any;
   assert.ok(tipsLink, 'Prompt tips link should render');
-  assert.match(tipsLink.getAttribute('href') || '', /#prompt-tips$/);
+  tipsLink.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.ok(
+    h.posted.some((p: any) => p.type === 'OPEN_HANDBOOK' && p.page === 'ch-06.html' && p.anchor === 'prompt-tips'),
+    'Prompt tips should open the handbook at the prompt-tips section',
+  );
 
   const packButtons: any[] = Array.from(h.panelBody().querySelectorAll('.tsp-pack'));
   assert.equal(packButtons.length, 3, 'all pricing packs should render as buttons');
@@ -1725,14 +1729,86 @@ test('strikes-warning line is absent when strikes is 0 and when the account is l
   h.win.close();
 });
 
-test('locked status disables the Buy credits button', async () => {
+test('locked status disables every pack card', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeBuilderOpened(signedInStatus({ locked: true, strikes: 3 })));
-  const buyBtn: any = Array.from(h.panelBody().querySelectorAll('button')).find(
+  const packButtons: any[] = Array.from(h.panelBody().querySelectorAll('.tsp-pack'));
+  assert.ok(packButtons.length > 0, 'expected pack cards');
+  for (const btn of packButtons) assert.equal(btn.disabled, true);
+  h.win.close();
+});
+
+// ── p95: "Buy credits" is a heading, not a button; pack cards are the menu ──
+
+test('"Buy credits" is a heading, not a button element', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  const buyBtn = Array.from(h.panelBody().querySelectorAll('button')).find(
     (b: any) => (b.textContent || '').trim() === 'Buy credits',
   );
-  assert.ok(buyBtn, 'expected a Buy credits button');
-  assert.equal(buyBtn.disabled, true);
+  assert.equal(buyBtn, undefined, '"Buy credits" must not be a button element');
+  const heading = Array.from(h.panelBody().querySelectorAll('h3')).find(
+    (el: any) => (el.textContent || '').trim() === 'Buy credits',
+  );
+  assert.ok(heading, 'expected a "Buy credits" heading');
+  h.win.close();
+});
+
+test('pack cards are always visible and keyboard-activatable buttons', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  const packButtons: any[] = Array.from(h.panelBody().querySelectorAll('.tsp-pack'));
+  assert.ok(packButtons.length >= 3, 'expected all pack cards to be visible without extra interaction');
+  for (const btn of packButtons) {
+    assert.equal(btn.tagName, 'BUTTON', 'each pack card must be a real <button> for native keyboard access');
+    assert.equal(btn.type, 'button');
+    assert.notEqual(btn.tabIndex, -1);
+  }
+  packButtons[0].dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  assert.ok(h.lastPosted('THEME_SERVICE_BUY_CREDITS'), 'clicking a pack card must still post THEME_SERVICE_BUY_CREDITS');
+  h.win.close();
+});
+
+// ── p95: account ID line ─────────────────────────────────────────────────
+
+test('account ID line shows a truncated id with a copy button that copies the full id', async () => {
+  const h = await bootThemePanelHarness();
+  const userId = '98cc8dd7-1234-4abc-9def-abcdef123456';
+  let copied: string | undefined;
+  (h.win.navigator as any).clipboard = { writeText: (text: string) => { copied = text; return Promise.resolve(); } };
+  h.dispatch(themeBuilderOpened(signedInStatus({ userId })));
+  const row = h.panelBody().querySelector('.tsp-account-id-row');
+  assert.ok(row, 'expected an account ID row');
+  assert.match(row.textContent, /Account ID: 98cc8dd7/);
+  const copyBtn = row.querySelector('button');
+  assert.ok(copyBtn, 'expected a copy button');
+  copyBtn.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true }));
+  await Promise.resolve();
+  assert.equal(copied, userId, 'clicking copy should copy the full account id');
+  h.win.close();
+});
+
+test('account ID line is hidden when the id is unknown', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({ userId: undefined })));
+  assert.equal(h.panelBody().querySelector('.tsp-account-id-row'), null, 'no account ID row when userId is unknown');
+  h.win.close();
+});
+
+// ── p95: Prompt tips opens the handbook ──────────────────────────────────
+
+test('Prompt tips link posts OPEN_HANDBOOK for the prompt-tips section', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus()));
+  const link = Array.from(h.panelBody().querySelectorAll('a')).find(
+    (a: any) => (a.textContent || '').trim() === 'Prompt tips',
+  ) as any;
+  assert.ok(link, 'expected a Prompt tips link');
+  link.dispatchEvent(new h.win.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.ok(
+    h.posted.some((p: any) => p.type === 'OPEN_HANDBOOK' && p.page === 'ch-06.html' && p.anchor === 'prompt-tips'),
+    'clicking Prompt tips should post OPEN_HANDBOOK for the prompt-tips section',
+  );
   h.win.close();
 });
 
