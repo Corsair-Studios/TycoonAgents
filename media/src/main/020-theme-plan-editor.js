@@ -2491,6 +2491,9 @@
         item,
         false,
       );
+      const animPreviewSection = typeof buildThemeAnimPreviewSection === "function"
+        ? buildThemeAnimPreviewSection(item, reviewThemeId)
+        : null;
       const retryRow = document.createElement("div");
       retryRow.className = "theme-review-retry-row";
       // Single retry action — no mode dropdown, no notes channel. Always sends
@@ -2637,6 +2640,7 @@
       if (nameRow) body.appendChild(nameRow);
       if (namesDescriptionsSection) body.appendChild(namesDescriptionsSection);
       if (frameGridSection) body.appendChild(frameGridSection);
+      if (animPreviewSection) body.appendChild(animPreviewSection);
       body.appendChild(decisionRow);
       body.appendChild(attemptCostLine);
       if (attemptStatusNotice) body.appendChild(attemptStatusNotice);

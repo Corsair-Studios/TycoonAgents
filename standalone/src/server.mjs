@@ -67,6 +67,7 @@ import {
   handleSelectTheme,
   handleDeleteTheme,
   handleGetThemeImageReview,
+  handleGetThemeItemFrames,
   listThemesFromStore,
   addUnlockedBadgeStandalone,
   saveRebirthStateStandalone,
@@ -728,6 +729,11 @@ function handleBrowserMessage(msg) {
     case THEME_MSG_WIRE.GET_THEME_IMAGE_REVIEW:
       handleGetThemeImageReview(themeStore, broadcast, payload.theme_id).catch((err) => {
         console.error('[tycoonagents-standalone] GET_THEME_IMAGE_REVIEW failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.GET_THEME_ITEM_FRAMES:
+      handleGetThemeItemFrames(themeStore, broadcast, payload.theme_id, payload.item_id).catch((err) => {
+        console.error('[tycoonagents-standalone] GET_THEME_ITEM_FRAMES failed:', err);
       });
       break;
     // ── Theme GENERATION messages (pC-t1 step 2) — drive the REAL

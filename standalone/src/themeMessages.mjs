@@ -274,6 +274,8 @@ export const MSG_WIRE = {
   DELETE_THEME: 'DELETE_THEME',
   GET_THEME_IMAGE_REVIEW: 'GET_THEME_IMAGE_REVIEW',
   THEME_IMAGE_REVIEW: 'THEME_IMAGE_REVIEW',
+  GET_THEME_ITEM_FRAMES: 'GET_THEME_ITEM_FRAMES',
+  THEME_ITEM_FRAMES: 'THEME_ITEM_FRAMES',
   THEME_GENERATION_ERROR: 'THEME_GENERATION_ERROR',
 
   // ── Theme GENERATION messages (project-plan task pC-t1 step 2) — added
@@ -628,6 +630,42 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
     broadcast('message', {
       type: MSG_WIRE.THEME_IMAGE_REVIEW,
       payload: { theme_id: themeId, items: [], error: String(err), hasBoards: false, boardCount: 0 },
+    });
+  }
+}
+
+/**
+ * Theme Builder review animation preview (standalone parity with
+ * panel.ts's _postThemeItemFrames): THEME_IMAGE_REVIEW only ships the first
+ * frame per key for multi-key boards, so the preview fetches the rest here,
+ * on demand. Reads the same frames.json map handleGetThemeImageReview's
+ * frameSlots computation reads, so pending (not-yet-approved) sliced frames
+ * are included automatically — approval only flips item status, not the
+ * stored frame data.
+ */
+export async function handleGetThemeItemFrames(store, broadcast, themeId, itemId) {
+  if (!isThemeId(themeId) || typeof itemId !== 'string' || !itemId) return;
+  try {
+    const [frames, reviewDoc] = await Promise.all([
+      readJsonSafe(store, themeFramesPath(themeId)),
+      readJsonSafe(store, themeReviewPath(themeId)),
+    ]);
+    const framesMap = frames ?? {};
+    const items = Array.isArray(reviewDoc?.items) ? reviewDoc.items : [];
+    const item = items.find((it) => it.id === itemId);
+    const keys = Array.isArray(item?.frame_keys) ? item.frame_keys : [];
+    const outFrames = {};
+    for (const key of keys) {
+      outFrames[key] = (framesMap[key] ?? []).map((data) => data ?? '');
+    }
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_FRAMES,
+      payload: { theme_id: themeId, item_id: itemId, frames: outFrames },
+    });
+  } catch (err) {
+    broadcast('message', {
+      type: MSG_WIRE.THEME_ITEM_FRAMES,
+      payload: { theme_id: themeId, item_id: itemId, frames: {}, error: String(err) },
     });
   }
 }

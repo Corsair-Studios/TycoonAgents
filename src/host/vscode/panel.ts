@@ -2178,6 +2178,14 @@ export class TycoonPanel {
           if (/^[a-z0-9_]+$/.test(themeId)) {
             await this._postThemeImageReview(themeId);
           }
+        } else if (message.type === MSG.GET_THEME_ITEM_FRAMES) {
+          const parsed = MSG_SCHEMAS.GET_THEME_ITEM_FRAMES.safeParse((message as any).payload);
+          if (parsed.success) {
+            const { theme_id: themeId, item_id: itemId } = parsed.data;
+            if (/^[a-z0-9_]+$/.test(themeId) && /^[a-z0-9_-]+$/.test(itemId)) {
+              await this._postThemeItemFrames(themeId, itemId);
+            }
+          }
         } else if (message.type === MSG.SET_THEME_IMAGE_REVIEW_STATUS) {
           const payload = (message as any).payload as {
             theme_id?: string;
@@ -3645,6 +3653,39 @@ export class TycoonPanel {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Theme Builder review animation preview (leaf task, see media 020/060):
+   * THEME_IMAGE_REVIEW only ships the FIRST frame per key for multi-key
+   * boards (rivals/objects/decor), so the preview asks for the rest
+   * on-demand. Reads the same `loadedTheme.frames` map
+   * `_postThemeImageReview`'s frame_slots reads (frame_slots comment above,
+   * ~L3744), which is why pending (not-yet-approved) sliced frames come
+   * through automatically: loadTheme's frames map always reflects the
+   * latest stored slice for a key, approved or not — approval only flips
+   * item status, it doesn't move frame data.
+   */
+  private async _postThemeItemFrames(themeId: string, itemId: string): Promise<void> {
+    try {
+      const review = await getThemeImageReview(this._globalStorageUri, themeId);
+      const loadedTheme = await loadTheme(this._globalStorageUri, themeId);
+      const entry = review?.entries?.find((e) => e.item.id === itemId);
+      const keys = entry?.item.frame_keys ?? [];
+      const frames: Record<string, string[]> = {};
+      for (const key of keys) {
+        frames[key] = (loadedTheme?.frames?.[key] ?? []).map((data) => data ?? "");
+      }
+      void this._panel.webview.postMessage({
+        type: MSG.THEME_ITEM_FRAMES,
+        payload: { theme_id: themeId, item_id: itemId, frames },
+      });
+    } catch (err) {
+      void this._panel.webview.postMessage({
+        type: MSG.THEME_ITEM_FRAMES,
+        payload: { theme_id: themeId, item_id: itemId, frames: {}, error: String(err) },
+      });
     }
   }
 

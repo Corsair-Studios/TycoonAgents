@@ -8341,3 +8341,75 @@ button.theme-review-preview:focus-visible::after {
   border: 1px solid rgba(224, 168, 0, 0.4);
   vertical-align: middle;
 }
+
+/* Theme Builder review: "Preview animation" section on animated board
+   cards (characters, rivals, animated objects/decor). Mirrors
+   .theme-review-frame-grid-section's card language. */
+.theme-anim-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.theme-anim-preview-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.theme-anim-preview-details > summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground, #4daafc);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.theme-anim-preview-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.theme-anim-preview-canvas {
+  width: 128px;
+  height: 128px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 1px solid var(--vscode-panel-border, var(--border));
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.theme-anim-preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.theme-anim-preview-controls select,
+.theme-anim-preview-controls button {
+  font-size: 11px;
+}
+
+.theme-anim-preview-frame-label {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #9a9a9a);
+  white-space: nowrap;
+}
+
+@media (max-width: 480px) {
+  .theme-anim-preview-controls {
+    gap: 4px;
+  }
+  .theme-anim-preview-canvas {
+    width: 96px;
+    height: 96px;
+  }
+}

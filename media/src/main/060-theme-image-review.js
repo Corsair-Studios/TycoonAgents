@@ -1674,6 +1674,12 @@
       currentThemeHasBoards = Boolean(msg.payload?.hasBoards);
       updateThemeDraftUi();
       renderThemeImageReview(msg.payload || {});
+    } else if (msg && msg.type === "THEME_ITEM_FRAMES") {
+      // Animation preview (Theme Builder review card): host reply to
+      // GET_THEME_ITEM_FRAMES, includes pending (not-yet-approved) frames.
+      if (typeof handleThemeItemFramesMessage === "function") {
+        handleThemeItemFramesMessage(msg.payload || {});
+      }
     } else if (msg && msg.type === "THEME_PROMPT_MISMATCH") {
       // p59-t3: one-line notice when generateBoardImage's sha256 compare
       // finds the service assembled the prompt from a newer template than

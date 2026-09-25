@@ -332,6 +332,12 @@ export const MSG = {
   REVEAL_THEME_IMAGE: "REVEAL_THEME_IMAGE",
   GET_THEME_IMAGE_REVIEW: "GET_THEME_IMAGE_REVIEW",
   THEME_IMAGE_REVIEW: "THEME_IMAGE_REVIEW",
+  // Webview -> host: fetch ALL stored frames (including any not-yet-approved
+  // pending frames) for one item's animation preview, since THEME_IMAGE_REVIEW
+  // only carries the first frame per key for multi-key boards. Host -> webview
+  // reply carries the same theme_id/item_id plus a {key: dataURI[]} map.
+  GET_THEME_ITEM_FRAMES: "GET_THEME_ITEM_FRAMES",
+  THEME_ITEM_FRAMES: "THEME_ITEM_FRAMES",
   SET_THEME_IMAGE_REVIEW_STATUS: "SET_THEME_IMAGE_REVIEW_STATUS",
   APPROVE_ALL_THEME_IMAGES: "APPROVE_ALL_THEME_IMAGES",
   THEME_APPROVE_ALL_RESULT: "THEME_APPROVE_ALL_RESULT",
@@ -529,6 +535,13 @@ export const MSG_SCHEMAS = {
   // PLAN_THEME failure came from the Theme Service, so the webview can show
   // a Sign in affordance for kind "not_signed_in" instead of raw error text.
   THEME_PLAN_ERROR: z.object({ message: z.string(), kind: z.string().optional() }).passthrough(),
+
+  // Theme Builder review animation preview (webview -> host): fetch every
+  // stored frame (including pending, not-yet-approved ones) for one item's
+  // keys, since THEME_IMAGE_REVIEW only ships the first frame per key.
+  GET_THEME_ITEM_FRAMES: z
+    .object({ theme_id: z.string().min(1), item_id: z.string().min(1) })
+    .passthrough(),
 
   // ---- install / remove: skill, agent, pack -------------------------------
   // (dispatcher reads `message.id` directly, not a nested `.payload`)
