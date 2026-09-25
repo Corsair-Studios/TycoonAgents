@@ -3752,6 +3752,7 @@ async function processRivalAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
   rows: ThemeRivalBoardRow[],
+  backgroundMode: BoardBackgroundMode = boardBackgroundModeForProvider(),
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
   if (rows.length < 1 || rows.length > 4) throw new Error('Rival board carries one to four rows.');
   const rowGroups = Array.from({ length: rows.length }, (_row, rowIndex) =>
@@ -3762,9 +3763,12 @@ async function processRivalAtlas(
     rows: rows.length,
     scaleReferenceSlots: Array.from({ length: rows.length * 5 }, (_unused, cell) => cell),
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
-    // Raised 120 -> 126 so rivals fill ~92-98% of the 128px frame (less
-    // downscaling of the 1024px source = sharper); still <= 128 so nothing clips.
-    maxContentExtent: 126,
+    // Lowered from the character/126 value to 120: rivals' wide appendages
+    // (limbs, tentacles, particle trails) routinely push closer to the frame
+    // edge than a character's silhouette does, so 126/128 left rivals almost
+    // no margin before clipping. 120 restores a small buffer while still
+    // filling most of the 128px frame.
+    maxContentExtent: 120,
     normalizationGroups: rowGroups,
     // Each row's walk+attack frames are one rival animating in place, so any
     // drawn side-to-side drift across the row is unwanted and gets canceled.
@@ -3772,6 +3776,17 @@ async function processRivalAtlas(
     // Same cape-drag guard as characters: trim thin below-feet content so scale +
     // bottom-justify anchor to the dense feet row, not a trailing cape tip.
     feetAnchorMinWidthRatio: 0.2,
+    // Rival-only: nudge each interior grid cut into a nearby background gap
+    // (alpha 0, or chroma-magenta on a magenta board — within ~8% of the
+    // cell size) instead of always cutting exactly on the proportional line,
+    // so a limb/tentacle that spills slightly past the nominal boundary is
+    // less likely to be sliced. Production boards are magenta-keyed
+    // (boardBackgroundModeForProvider), so gutterKeyColor must be passed
+    // through or the gap search only ever finds alpha-0 pixels, which never
+    // occur on a magenta board and make snapping a silent no-op. Never
+    // enabled for other boards.
+    snapGutterBoundaries: true,
+    gutterKeyColor: backgroundMode === 'transparent' ? 'transparent' : 'magenta',
   });
   const output = await optimizeSpriteBoardCanvas(generated, 5, rows.length);
   return { output, spritePackage };

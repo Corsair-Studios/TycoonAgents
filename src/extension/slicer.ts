@@ -122,6 +122,111 @@ export interface AtlasGrid {
    * handled via clipWidthOverflow / per-clip normalization.
    */
   removeHorizontalStrayColumns?: boolean;
+  /**
+   * Rival atlas ONLY. When true, each interior grid boundary (between two
+   * frames of the same rival, or between two rivals) is snapped to the
+   * nearest fully-background column/row within a small window
+   * (SNAP_GUTTER_WINDOW_RATIO of the cell size) around the fixed
+   * proportional cut, instead of always cutting exactly on the proportional
+   * line. Guards against a limb/tentacle/particle that spills a few pixels
+   * past the nominal cell boundary despite staying within the prompt's
+   * silhouette budget. "Background" means alpha 0 OR matching the board's
+   * chroma-key color (via `gutterKeyColor`) — the same isChromaMagenta test
+   * the per-cell keying pass below already uses, so a magenta board's
+   * padding is found the same way a transparent board's is. When no such
+   * gap exists in the window, the proportional cut is used unchanged. Each
+   * snapped boundary is also clamped to stay strictly between its two
+   * already-snapped neighbors, with a minimum cell size, so a false-positive
+   * gap can never collapse or invert a cell. Other boards must never set this.
+   */
+  snapGutterBoundaries?: boolean;
+  /**
+   * The board's chroma-key background color, used only when
+   * snapGutterBoundaries is set: a pixel counts as "background" (a
+   * candidate gutter pixel) when its alpha is 0 OR — for 'magenta' — it
+   * passes isChromaMagenta. 'transparent' boards have no magenta padding to
+   * match, so only alpha 0 counts there. Defaults to 'magenta'.
+   */
+  gutterKeyColor?: 'magenta' | 'transparent';
+}
+
+/** Search window for snapGutterBoundaries, as a fraction of the cell size. */
+const SNAP_GUTTER_WINDOW_RATIO = 0.08;
+/** Smallest a snapped cell may shrink to, in pixels, when clamping neighbors. */
+const SNAP_GUTTER_MIN_CELL_SIZE = 8;
+
+/** A pixel counts as gutter/background when transparent, or (for a magenta
+ * board) when it matches the same isChromaMagenta test the per-cell keying
+ * pass uses — so gutter-snapping and actual chroma-keying agree on what
+ * counts as background. */
+function isBackgroundPixel(data: Buffer, idx: number, keyColor: 'magenta' | 'transparent'): boolean {
+  if (data[idx + 3] === 0) return true;
+  return keyColor === 'magenta' && isChromaMagenta(data[idx], data[idx + 1], data[idx + 2]);
+}
+
+function isBackgroundColumn(
+  atlas: Jimp, x: number, yTop: number, yBottom: number, keyColor: 'magenta' | 'transparent',
+): boolean {
+  const { data, width } = atlas.bitmap;
+  for (let y = yTop; y < yBottom; y++) {
+    if (!isBackgroundPixel(data, (y * width + x) * 4, keyColor)) return false;
+  }
+  return true;
+}
+
+function isBackgroundRow(
+  atlas: Jimp, y: number, xLeft: number, xRight: number, keyColor: 'magenta' | 'transparent',
+): boolean {
+  const { data, width } = atlas.bitmap;
+  for (let x = xLeft; x < xRight; x++) {
+    if (!isBackgroundPixel(data, (y * width + x) * 4, keyColor)) return false;
+  }
+  return true;
+}
+
+/**
+ * Searches outward from a nominal proportional boundary, alternating forward
+ * and backward one pixel at a time, for the nearest position that satisfies
+ * `isBackground`. Falls back to the nominal boundary itself when nothing in
+ * the window qualifies (the proportional cut).
+ */
+function snapToGutterGap(
+  nominal: number,
+  window: number,
+  isBackground: (pos: number) => boolean,
+  min: number,
+  max: number,
+): number {
+  for (let d = 0; d <= window; d++) {
+    const forward = nominal + d;
+    if (forward <= max && isBackground(forward)) return forward;
+    if (d > 0) {
+      const backward = nominal - d;
+      if (backward >= min && isBackground(backward)) return backward;
+    }
+  }
+  return nominal;
+}
+
+/**
+ * Enforces that every boundary stays strictly between its already-snapped
+ * neighbors with at least SNAP_GUTTER_MIN_CELL_SIZE px of cell width/height
+ * on each side, so a false-positive gap (or two independently-snapped gaps
+ * pulled toward each other) can never collapse or invert a cell. `boundaries`
+ * is mutated in place; index 0 and the last index (the sheet's outer edges)
+ * are never snapped and are left untouched as anchors. A forward pass raises
+ * each interior boundary to clear its left neighbor by the minimum; a
+ * backward pass then lowers each to clear its (now-final) right neighbor,
+ * which keeps every boundary within [prevFinal, nextFinal] once both passes
+ * complete.
+ */
+function clampBoundariesMonotonic(boundaries: number[]): void {
+  for (let i = 1; i < boundaries.length - 1; i++) {
+    boundaries[i] = Math.max(boundaries[i], boundaries[i - 1] + SNAP_GUTTER_MIN_CELL_SIZE);
+  }
+  for (let i = boundaries.length - 2; i >= 1; i--) {
+    boundaries[i] = Math.min(boundaries[i], boundaries[i + 1] - SNAP_GUTTER_MIN_CELL_SIZE);
+  }
 }
 
 /** One sliced-and-cleaned grid cell, plus its opaque-content bounds. */
@@ -210,15 +315,59 @@ export async function sliceAndNormalizeAtlas(
 
   const cells: SliceCell[] = [];
 
+  // Precompute grid-cut boundaries. Proportional boundaries cover the entire
+  // source even when a 512px canvas cannot divide evenly by the requested
+  // row/column count. When snapGutterBoundaries is set, interior boundaries
+  // are nudged to the nearest fully-background (alpha 0, or chroma-magenta
+  // for a magenta board) gap within a small window; otherwise (the default,
+  // and always at the outer edges) these are exactly the proportional cuts,
+  // so non-rival boards are unaffected.
+  const gutterKeyColor = grid.gutterKeyColor ?? 'magenta';
+  const colWindowPx = Math.round((atlas.bitmap.width / grid.columns) * SNAP_GUTTER_WINDOW_RATIO);
+  const rowWindowPx = Math.round((atlas.bitmap.height / grid.rows) * SNAP_GUTTER_WINDOW_RATIO);
+  const rowBoundaries: number[] = [];
+  for (let row = 0; row <= grid.rows; row++) {
+    const nominal = Math.floor(row * atlas.bitmap.height / grid.rows);
+    rowBoundaries.push(
+      grid.snapGutterBoundaries && row > 0 && row < grid.rows
+        ? snapToGutterGap(
+          nominal, rowWindowPx,
+          (y) => isBackgroundRow(atlas, y, 0, atlas.bitmap.width, gutterKeyColor),
+          1, atlas.bitmap.height - 1,
+        )
+        : nominal,
+    );
+  }
+  if (grid.snapGutterBoundaries) clampBoundariesMonotonic(rowBoundaries);
+
+  const columnBoundariesByRow: number[][] = [];
+  for (let row = 0; row < grid.rows; row++) {
+    const yTop = rowBoundaries[row];
+    const yBottom = rowBoundaries[row + 1];
+    const bounds: number[] = [];
+    for (let col = 0; col <= grid.columns; col++) {
+      const nominal = Math.floor(col * atlas.bitmap.width / grid.columns);
+      bounds.push(
+        grid.snapGutterBoundaries && col > 0 && col < grid.columns
+          ? snapToGutterGap(
+            nominal, colWindowPx,
+            (x) => isBackgroundColumn(atlas, x, yTop, yBottom, gutterKeyColor),
+            1, atlas.bitmap.width - 1,
+          )
+          : nominal,
+      );
+    }
+    if (grid.snapGutterBoundaries) clampBoundariesMonotonic(bounds);
+    columnBoundariesByRow.push(bounds);
+  }
+
   for (let row = 0; row < grid.rows; row++) {
     for (let col = 0; col < grid.columns; col++) {
       const slot_id = row * grid.columns + col;
-      // Proportional boundaries cover the entire source even when a 512px
-      // canvas cannot divide evenly by the requested row/column count.
-      const left = Math.floor(col * atlas.bitmap.width / grid.columns);
-      const right = Math.floor((col + 1) * atlas.bitmap.width / grid.columns);
-      const top = Math.floor(row * atlas.bitmap.height / grid.rows);
-      const bottom = Math.floor((row + 1) * atlas.bitmap.height / grid.rows);
+      const left = columnBoundariesByRow[row][col];
+      const right = columnBoundariesByRow[row][col + 1];
+      const top = rowBoundaries[row];
+      const bottom = rowBoundaries[row + 1];
       const cell = atlas.clone().crop(left, top, right - left, bottom - top);
       keyBorderConnectedMagenta(cell);
       removeAllChromaMagenta(cell);

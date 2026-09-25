@@ -95,7 +95,7 @@ No `Authorization` header required. Response `200`,
 {
   "supabaseUrl": "https://xxxx.supabase.co",
   "supabasePublishableKey": "sb_publishable_... (or legacy anon key)",
-  "promptTemplateVersion": "2026-09-16.1",
+  "promptTemplateVersion": "2026-09-24.1",
   "contractVersion": "3.6"
 }
 ```

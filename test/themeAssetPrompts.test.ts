@@ -103,6 +103,16 @@ test('rival prompt is a 5x4 compact board with 2-frame walk + 3-frame attack per
   assert.match(prompt, /drifts, re-centers, or changes scale.*incorrect result/i);
 });
 
+test('rival prompt states an explicit numeric width+height silhouette budget and minimum gutter', () => {
+  const boards = createRivalBoardRows(rivalSpecs());
+  const prompt = buildRivalAtlasPrompt('gritty wasteland', 'Rust Valley', boards[0]);
+  assert.match(prompt, /RIVAL SILHOUETTE BUDGET \(STRICT — WIDTH AND HEIGHT\)/i);
+  assert.match(prompt, /stays within the central 70% of the cell in BOTH width and height/i);
+  assert.match(prompt, /clear (transparent|magenta) gutter of at least 15% of the cell size on every side/i);
+  assert.match(prompt, /curl appendages, limbs, tentacles, and weapons INWARD/i);
+  assert.match(prompt, /No part of the enemy, in any frame, may touch or cross a cell edge/i);
+});
+
 test('rival prompt scales its board contract and row count to a partial (3-row) board', () => {
   const threeRivals = rivalSpecs().slice(0, 3);
   const boards = createRivalBoardRows(threeRivals);

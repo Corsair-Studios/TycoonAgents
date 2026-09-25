@@ -30,4 +30,9 @@ The attack is a playful, non-graphic, non-contact motion suitable for a general-
 On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy's firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.
 The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear magenta padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.
 Center each enemy in its cell with its feet just above the cell bottom (leave a thin strip of empty magenta background below the feet — never touching the cell's bottom edge) and generous magenta padding; nothing crosses a cell boundary.
+# RIVAL SILHOUETTE BUDGET (STRICT — WIDTH AND HEIGHT)
+In EVERY frame, the entire silhouette — body, legs, claws, tentacles, antennae, orbs, particle trails, and weapon — stays within the central 70% of the cell in BOTH width and height, measured against that individual cell, never the full canvas.
+Keep a clear magenta gutter of at least 15% of the cell size on every side — top, bottom, left, and right — in every frame.
+Keep poses compact: curl appendages, limbs, tentacles, and weapons INWARD toward the body rather than extending them outward, so a wind-up or strike pose stays inside the same budget as the walk cycle.
+No part of the enemy, in any frame, may touch or cross a cell edge. A frame where any part reaches the gutter or the cell boundary is an incorrect result.
 Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.

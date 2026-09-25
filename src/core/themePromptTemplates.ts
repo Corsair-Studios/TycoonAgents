@@ -14,7 +14,7 @@ import { WALK_POSE_GUIDE_PARAGRAPHS } from './walkPoseGuidePrompts';
  * arguments to a StructuredGenerateRequest, and call assembleThemePrompt so
  * the actual prompt text lives in exactly one place.
  */
-export const PROMPT_TEMPLATE_VERSION = '2026-09-16.1';
+export const PROMPT_TEMPLATE_VERSION = '2026-09-24.1';
 
 /** See BoardBackgroundMode in themeAssetPrompts.ts (re-declared here to stay import-free). */
 export type PromptBoardBackgroundMode = 'magenta' | 'transparent';
@@ -147,6 +147,16 @@ function boardContract(columns: number, rows: number, background: PromptBoardBac
 export const CHARACTER_TARGET_CONTENT_HEIGHT = 118;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
+/**
+ * Rivals have wide appendages (limbs, tentacles, weapons, particle trails) that
+ * characters don't, so their silhouette budget is enforced on BOTH axes, not
+ * just height, and is tighter than the character budget to leave those parts
+ * room to move without crossing a cell edge. Single source for both the prompt
+ * wording and any future slicer-side cross-check.
+ */
+export const RIVAL_TARGET_CONTENT_PERCENT = 70;
+export const RIVAL_MIN_GUTTER_PERCENT = 15;
+
 function objectRowAnimationConstraintLines(rowLabel: string): string[] {
   return [
     `${rowLabel}: all four cells show the same finished object from one fixed three-quarter/isometric camera.`,
@@ -212,6 +222,11 @@ function buildRivalAtlas(
     'On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy\'s firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.',
     `The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear ${spaceWord} padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.`,
     `Center each enemy in its cell with its feet just above the cell bottom (leave a thin strip of empty ${spaceWord} background below the feet — never touching the cell's bottom edge) and generous ${spaceWord} padding; nothing crosses a cell boundary.`,
+    '# RIVAL SILHOUETTE BUDGET (STRICT — WIDTH AND HEIGHT)',
+    `In EVERY frame, the entire silhouette — body, legs, claws, tentacles, antennae, orbs, particle trails, and weapon — stays within the central ${RIVAL_TARGET_CONTENT_PERCENT}% of the cell in BOTH width and height, measured against that individual cell, never the full canvas.`,
+    `Keep a clear ${spaceWord} gutter of at least ${RIVAL_MIN_GUTTER_PERCENT}% of the cell size on every side — top, bottom, left, and right — in every frame.`,
+    'Keep poses compact: curl appendages, limbs, tentacles, and weapons INWARD toward the body rather than extending them outward, so a wind-up or strike pose stays inside the same budget as the walk cycle.',
+    'No part of the enemy, in any frame, may touch or cross a cell edge. A frame where any part reaches the gutter or the cell boundary is an incorrect result.',
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
   ].join('\n');
 }
