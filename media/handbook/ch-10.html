@@ -134,15 +134,15 @@
 <p>Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex, OpenCode) are discovered per machine. Team setup exports the <em>shape</em> of your setup instead — path-free and secret-free by construction, so it's safe to commit.</p>
 <div class="steps">
   <div class="step">
-    <span class="stepno">01</span>
+    <span class="stepno">10</span>
     <div><p><strong>Export team setup</strong> writes <code>.claude/tycoon-team.json</code> — the agent roster, per-agent routing (vendor/model plus fallback chains), the <em>names</em> of the env vars each slot needs (never values), which skills and MCP servers are enabled, the delegation mode and parallel limit, an optional plan pointer, and which harness the orchestrator was recorded running on.</p></div>
   </div>
   <div class="step">
-    <span class="stepno">02</span>
+    <span class="stepno">11</span>
     <div><p>A teammate who clones the project and opens TycoonAgents sees a <strong>"Team setup changed. Apply?"</strong> drift notice the next time Settings opens. <strong>Apply</strong> installs the agents, keywords, skills, delegation mode, and hooks, using project-relative commands so they work regardless of where the project lives on disk. The originator's vendor/model choices only seed routing on a fresh clone (or when local routing is unreadable) — after that, each teammate's own routing choices are kept as-is. MCP installation always needs separate confirmation and is skipped during Apply.</p></div>
   </div>
   <div class="step">
-    <span class="stepno">03</span>
+    <span class="stepno">12</span>
     <div><p><strong>Check readiness</strong> reports, per agent, a "team: vendor/model · you: vendor/model" line with a "differs" chip when your routing diverges, plus whether it resolves ready, on a fallback, "will use default fallback," or not ready, and which env vars by name are still unset — with a summary count and a harness line. <strong>Probe reachability (may use vendor quota)</strong> adds a live check and is off by default since it can spend vendor quota.</p></div>
   </div>
 </div>
