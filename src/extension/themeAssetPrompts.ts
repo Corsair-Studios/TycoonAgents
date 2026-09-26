@@ -5,6 +5,7 @@ import {
   boardBackgroundPaddingAdjective as coreBoardBackgroundPaddingAdjective,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH,
   PROMPT_TEMPLATE_VERSION,
   type PromptBoardBackgroundMode,
   type PromptRowSpec,
@@ -12,7 +13,7 @@ import {
 } from '../core/themePromptTemplates';
 import { stripLeadingName } from './themePlan';
 
-export { CHARACTER_TARGET_CONTENT_HEIGHT, CHARACTER_TARGET_CONTENT_PERCENT };
+export { CHARACTER_TARGET_CONTENT_HEIGHT, CHARACTER_TARGET_CONTENT_PERCENT, CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH };
 
 /**
  * Board background fill mode. 'magenta' is the legacy #FF00FF chroma-key

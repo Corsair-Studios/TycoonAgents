@@ -28,6 +28,7 @@ import {
   buildObjectAtlasRequest,
   CHARACTER_TARGET_CONTENT_HEIGHT,
   CHARACTER_TARGET_CONTENT_PERCENT,
+  CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH,
   buildRivalAtlasPrompt,
   buildRivalAtlasRequest,
   createDecorBoardRows,
@@ -57,6 +58,7 @@ import type {
   ThemeServiceErrorKind,
 } from '../core/themeServiceClient';
 import { compositeBoardFromFrameKeys, sliceAndNormalizeAtlas } from './slicer';
+import type { AtlasGrid } from './slicer';
 import {
   optimizeSpriteBoard,
   optimizeSpriteBoardCanvas,
@@ -919,7 +921,7 @@ export async function uploadThemeImage(
     let frameKeys = item?.frame_keys ?? [];
 
     if (item?.kind === 'character_atlas') {
-      const characterAtlas = await processCharacterAtlas(buffer, manifest);
+      const characterAtlas = await processCharacterAtlas(buffer, manifest, item.body_plan ?? 'biped');
       output = characterAtlas.output;
       const spritePackage = characterAtlas.spritePackage;
       const frameKey = item.frame_keys[0] || item.id;
@@ -2862,7 +2864,7 @@ async function applySlicedAtlasFromBuffer(
   const previousFrameKeys = item.frame_keys;
 
   if (item.kind === 'character_atlas') {
-    const characterAtlas = await processCharacterAtlas(buffer, manifest);
+    const characterAtlas = await processCharacterAtlas(buffer, manifest, item.body_plan ?? 'biped');
     output = characterAtlas.output;
     const spritePackage = characterAtlas.spritePackage;
     const frameKey = item.frame_keys[0] || item.id;
@@ -3614,7 +3616,9 @@ function applyThemeReplacement(
   Object.assign(frames, replacement.frames);
 }
 
-function characterAtlasGrid(rebuildBoard = false) {
+/** Exported so tests can exercise the REAL production grid config (registration
+ * groups, feet anchor, clipWidthOverflow) rather than a hand-rolled stand-in. */
+export function characterAtlasGrid(rebuildBoard = false, bodyPlan: BodyPlan = 'biped') {
   const clipGroups = Object.values(ATLAS_CLIPS).map((clip) => clip.frames);
   // Melee's wind-up (frame 10, weapon coiled HIGH) and strike (frame 11, lunge LOW)
   // are DISTINCT poses; unioning them into one normalization bbox spans a tall
@@ -3624,15 +3628,25 @@ function characterAtlasGrid(rebuildBoard = false) {
   const normalizationGroups = Object.entries(ATLAS_CLIPS)
     .filter(([name]) => name !== 'melee')
     .map(([, clip]) => clip.frames);
+  const isQuadruped = bodyPlan === 'quadruped';
   return {
     columns: 5,
     rows: 4,
     // Walking and neutral-standing slots are stable body-height references.
     scaleReferenceSlots: [0, 1, 2, 3, 4, 16],
-    targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
+    // Four-legged bodies read wide rather than tall (body + tail + mid-stride
+    // legs), so they're fit to a target WIDTH instead of height — sizing a
+    // cat/dog by height alone left it visibly smaller than a biped at the
+    // same body-height. Two-legged characters are unaffected (still height-fit).
+    ...(isQuadruped
+      ? { targetContentWidth: CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH }
+      : { targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT }),
     // Raised 120 -> 126 so characters fill ~92-98% of the 128px frame (less
     // downscaling of the 1024px source = sharper); still <= 128 so nothing clips.
-    maxContentExtent: 126,
+    // Quadrupeds keep the tighter rival-style 120: their wide silhouette
+    // (tail, mid-stride legs) sits closer to the frame edge than a biped's at
+    // the same fit, so 126/128 would leave them almost no margin.
+    maxContentExtent: isQuadruped ? 120 : 126,
     // Group each animation CLIP's frames so they share one union bbox/crop/anchor,
     // mirroring the rival/object row grouping. Prevents walk/build/shoot/dance
     // frames jumping horizontally as pose mass shifts. Single-frame clips (idle,
@@ -3644,25 +3658,46 @@ function characterAtlasGrid(rebuildBoard = false) {
     registrationGroups: clipGroups,
     // A flowing cape trailing BELOW the feet would otherwise inflate the content
     // bbox and lift the figure; trim the thin below-feet drag so scale + anchor
-    // key to the dense feet row instead of the sparse cape tip.
+    // key to the dense feet row instead of the sparse cape tip. Also keeps
+    // quadruped feet anchored to the same ground line as bipeds (destY is
+    // always 128 - resizedHeight, so bottom-justification is automatic once
+    // the bbox's bottom is the feet, not a trailing tail).
     feetAnchorMinWidthRatio: 0.2,
     // Character poses must all render at the same (board) height. A wide pose
     // (extended weapon/arms) would otherwise trip the width caps and shrink its
     // whole clip below board scale; clip the horizontal overflow at the frame
     // edge instead. Height caps stay in force so heads/feet are never clipped.
-    clipWidthOverflow: true,
+    // Quadrupeds are excluded: their boardScale is driven by targetContentWidth
+    // (the whole point is a WIDTH budget, not a height one), so clipping width
+    // overflow here would silently slice a tail/leg at the cell edge -- exactly
+    // what the width budget exists to prevent. The width caps (maxContentExtent/
+    // 128 on bw) apply to quadrupeds instead, same as any non-character grid.
+    clipWidthOverflow: !isQuadruped,
+    // Character atlases: nudge each interior grid cut into a nearby
+    // background gap (alpha 0, or chroma-magenta on a magenta board — within
+    // ~8% of the cell size) instead of always cutting exactly on the
+    // proportional line. Enabled for ALL character boards, not only
+    // four-legged ones: on a well-behaved biped board with no gap in the
+    // search window it's a no-op (falls back to the proportional cut, see
+    // AtlasGrid.snapGutterBoundaries doc), so there's no regression risk, and
+    // it also helps any biped board whose weapon/cape strays slightly past
+    // the nominal boundary. This mirrors how afbf825 enabled it
+    // unconditionally for all rivals rather than gating it per-enemy-type.
+    snapGutterBoundaries: true,
+    gutterKeyColor: boardBackgroundModeForProvider() === 'transparent' ? 'transparent' : 'magenta',
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
-  };
+  } satisfies AtlasGrid;
 }
 
 async function processCharacterAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
+  bodyPlan: BodyPlan = 'biped',
 ): Promise<{ output: Buffer; spritePackage: Awaited<ReturnType<typeof sliceAndNormalizeAtlas>> }> {
   // Normalize from the provider's full-resolution output so undersized source
   // sprites retain as much detail as possible when fitted to the 128px cells.
-  const normalized = await sliceAndNormalizeAtlas(generated, manifest, characterAtlasGrid(true));
+  const normalized = await sliceAndNormalizeAtlas(generated, manifest, characterAtlasGrid(true, bodyPlan));
   // The retained/reviewed character canvas is an exact 512x512 artifact.
   // Frames stay at 128x128 and are not re-sliced from this presentation board.
   const output = await resizeSpriteBoardCanvas(normalized.board!, 512, 512);
@@ -4134,7 +4169,9 @@ async function generateAgentAsset(
   const attempt = await generateBoardImage(plan.theme_id, item, structuredRequest, spriteBoardOptions(options), item.prompt);
   const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
-  const { output, spritePackage } = await processCharacterAtlas(generated, manifest);
+  const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] ?? item.id);
+  const bodyPlan = agentSlotId !== undefined ? effectiveCharacterBodyPlan(plan, agentSlotId) : (item.body_plan ?? 'biped');
+  const { output, spritePackage } = await processCharacterAtlas(generated, manifest, bodyPlan);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, output);
   // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.

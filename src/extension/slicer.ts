@@ -59,6 +59,17 @@ export interface AtlasGrid {
   scaleReferenceSlots?: number[];
   /** Desired opaque-content height for the median reference slot. */
   targetContentHeight?: number;
+  /**
+   * Desired opaque-content WIDTH for the median reference slot, used instead
+   * of targetContentHeight. Four-legged characters are drawn wide (body +
+   * tail + mid-stride legs) rather than tall, so sizing them by height alone
+   * left a cat/dog looking tiny at the same body-height as a biped; sizing by
+   * width instead gives it a comparable presence in the 128x128 frame. Takes
+   * priority over targetContentHeight when both are set (a grid sets only
+   * one). Feet stay anchored to the same ground line either way — destY is
+   * always `128 - resizedHeight`, independent of which axis drove boardScale.
+   */
+  targetContentWidth?: number;
   /** Per-slot safety cap that prevents unusually wide poses from being clipped. */
   maxContentExtent?: number;
   /** Slots that must share one crop, scale, and anchor (for example one animation row). */
@@ -123,21 +134,24 @@ export interface AtlasGrid {
    */
   removeHorizontalStrayColumns?: boolean;
   /**
-   * Rival atlas ONLY. When true, each interior grid boundary (between two
-   * frames of the same rival, or between two rivals) is snapped to the
-   * nearest fully-background column/row within a small window
-   * (SNAP_GUTTER_WINDOW_RATIO of the cell size) around the fixed
+   * Rival and character atlases only. When true, each interior grid boundary
+   * (between two frames of the same rival/character, or between two rivals)
+   * is snapped to the nearest fully-background column/row within a small
+   * window (SNAP_GUTTER_WINDOW_RATIO of the cell size) around the fixed
    * proportional cut, instead of always cutting exactly on the proportional
-   * line. Guards against a limb/tentacle/particle that spills a few pixels
-   * past the nominal cell boundary despite staying within the prompt's
-   * silhouette budget. "Background" means alpha 0 OR matching the board's
-   * chroma-key color (via `gutterKeyColor`) — the same isChromaMagenta test
-   * the per-cell keying pass below already uses, so a magenta board's
-   * padding is found the same way a transparent board's is. When no such
-   * gap exists in the window, the proportional cut is used unchanged. Each
-   * snapped boundary is also clamped to stay strictly between its two
+   * line. Guards against a limb/tentacle/tail/particle that spills a few
+   * pixels past the nominal cell boundary despite staying within the
+   * prompt's silhouette budget. "Background" means alpha 0 OR matching the
+   * board's chroma-key color (via `gutterKeyColor`) — the same
+   * isChromaMagenta test the per-cell keying pass below already uses, so a
+   * magenta board's padding is found the same way a transparent board's is.
+   * When no such gap exists in the window, the proportional cut is used
+   * unchanged (a no-op on well-behaved content, which is why it's safe to
+   * enable for every character board rather than only four-legged ones).
+   * Each snapped boundary is also clamped to stay strictly between its two
    * already-snapped neighbors, with a minimum cell size, so a false-positive
-   * gap can never collapse or invert a cell. Other boards must never set this.
+   * gap can never collapse or invert a cell. Object/decor/environment/
+   * expression/achievement boards must never set this.
    */
   snapGutterBoundaries?: boolean;
   /**
@@ -442,17 +456,26 @@ export async function sliceAndNormalizeAtlas(
     }
   }
 
-  const referenceHeights = (grid.scaleReferenceSlots ?? [])
+  const referenceSlotCells = (grid.scaleReferenceSlots ?? [])
     .map((slotId) => cells[slotId])
-    .filter((cell): cell is typeof cells[number] => Boolean(cell?.count))
+    .filter((cell): cell is typeof cells[number] => Boolean(cell?.count));
+  const referenceHeights = referenceSlotCells
     .map((cell) => cell.maxY - cell.minY + 1)
     .sort((a, b) => a - b);
   const medianReferenceHeight = referenceHeights.length
     ? referenceHeights[Math.floor(referenceHeights.length / 2)]
     : undefined;
-  let boardScale = grid.targetContentHeight && medianReferenceHeight
-    ? grid.targetContentHeight / medianReferenceHeight
-    : 1;
+  const referenceWidths = referenceSlotCells
+    .map((cell) => cell.maxX - cell.minX + 1)
+    .sort((a, b) => a - b);
+  const medianReferenceWidth = referenceWidths.length
+    ? referenceWidths[Math.floor(referenceWidths.length / 2)]
+    : undefined;
+  let boardScale = grid.targetContentWidth && medianReferenceWidth
+    ? grid.targetContentWidth / medianReferenceWidth
+    : grid.targetContentHeight && medianReferenceHeight
+      ? grid.targetContentHeight / medianReferenceHeight
+      : 1;
   if (grid.noUpscale) {
     boardScale = Math.min(boardScale, 1);
   }
@@ -501,9 +524,19 @@ export async function sliceAndNormalizeAtlas(
       // own dimensions too so a grid that omits maxContentExtent still scales the
       // now-taller content down to fit instead of letting destY go negative and
       // silently clip the top of the sprite at composite time below.
-      const scale = grid.clipWidthOverflow
-        ? Math.min(boardScale, maxContentExtent / bh, 128 / bh)
-        : Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh);
+      // clipWidthOverflow (characters) normally skips the width caps so a
+      // wide clip clips at the frame edge instead of shrinking the whole
+      // clip below board scale. That's wrong when boardScale itself is
+      // WIDTH-driven (grid.targetContentWidth, four-legged bodies): the
+      // fitted width can then exceed maxContentExtent/128 outright (not just
+      // "wider than other clips"), which clipWidthOverflow would silently
+      // clip at the cell edge -- exactly the clipping this budget exists to
+      // prevent. So the width caps always apply when targetContentWidth is
+      // set, even if clipWidthOverflow is also true.
+      const applyWidthCaps = !grid.clipWidthOverflow || grid.targetContentWidth !== undefined;
+      const scale = applyWidthCaps
+        ? Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh)
+        : Math.min(boardScale, maxContentExtent / bh, 128 / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
       // Grouped bounds (normalizationGroups) union minX/maxX/minY/maxY across every

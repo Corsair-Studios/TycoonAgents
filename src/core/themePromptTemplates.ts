@@ -14,7 +14,7 @@ import { WALK_POSE_GUIDE_PARAGRAPHS } from './walkPoseGuidePrompts';
  * arguments to a StructuredGenerateRequest, and call assembleThemePrompt so
  * the actual prompt text lives in exactly one place.
  */
-export const PROMPT_TEMPLATE_VERSION = '2026-09-24.1';
+export const PROMPT_TEMPLATE_VERSION = '2026-09-26.1';
 
 /** See BoardBackgroundMode in themeAssetPrompts.ts (re-declared here to stay import-free). */
 export type PromptBoardBackgroundMode = 'magenta' | 'transparent';
@@ -148,6 +148,30 @@ export const CHARACTER_TARGET_CONTENT_HEIGHT = 118;
 export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
 
 /**
+ * Four-legged characters (cats, dogs, etc.) are drawn from a portrait-cell
+ * atlas (5 cols x 4 rows on a 1024 canvas => ~205x256 cells) but their bodies
+ * are as wide as tall or wider once tail and mid-stride legs are included, so
+ * the height-based CHARACTER_TARGET_CONTENT_PERCENT rule (which leaves no
+ * width margin) lets tails/strides cross into the neighboring cell. Mirrors
+ * RIVAL_TARGET_CONTENT_PERCENT/RIVAL_MIN_GUTTER_PERCENT above but as the sole
+ * budget for four-legged bodies (replaces the height rule, not additive to
+ * it) and used only for the 'quadruped' BodyPlan.
+ */
+export const CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT = 70;
+export const CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT = 15;
+
+/**
+ * Slicer-side (src/extension/themeService.ts characterAtlasGrid) mirror of
+ * CHARACTER_TARGET_CONTENT_HEIGHT, but sized by WIDTH for four-legged
+ * characters: a quadruped's body reads wide rather than tall, so fitting it
+ * to CHARACTER_TARGET_CONTENT_HEIGHT alone leaves it looking small next to a
+ * biped at the same body height. Same target magnitude as
+ * CHARACTER_TARGET_CONTENT_HEIGHT so a cat/dog keeps a similar presence in
+ * the 128x128 frame.
+ */
+export const CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH = 118;
+
+/**
  * Rivals have wide appendages (limbs, tentacles, weapons, particle trails) that
  * characters don't, so their silhouette budget is enforced on BOTH axes, not
  * just height, and is tighter than the character budget to leave those parts
@@ -238,6 +262,7 @@ function buildCharacterAtlas(
   background: PromptBoardBackgroundMode,
   visualDescription: string | undefined,
   walkPoseGuide: BodyPlan | undefined,
+  bodyPlan: BodyPlan,
 ): string {
   const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
   return [
@@ -294,10 +319,20 @@ function buildCharacterAtlas(
     '',
     'Character scale is a hard production-layout requirement, not a suggestion.',
     'Use the same camera distance and character scale used for every other character board in this theme.',
-    `In walking and neutral-standing cells, the complete character from head to feet occupies exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of the cell height.`,
-    `Measure that ${CHARACTER_TARGET_CONTENT_PERCENT}% against each individual cell, never against the full canvas.`,
-    'A standing character below 68% or above 76% of its cell height is an incorrect result.',
-    `Reserve the remaining approximately 28% as ${background === 'transparent' ? 'fully transparent' : 'solid-magenta'} safety padding split above the head and below the feet.`,
+    ...(bodyPlan === 'quadruped'
+      ? [
+        `For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.`,
+        `Measure that ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% against each individual cell's width, never against the full canvas.`,
+        `Keep a clear ${spaceWord} gutter of at least ${CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT}% of the cell width on the LEFT and RIGHT of the body in every frame.`,
+        'Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.',
+        'No part of the body — including tail, ears, whiskers, and legs — may touch or cross a cell edge in any frame. A frame where any part reaches the gutter or the cell boundary is an incorrect result.',
+      ]
+      : [
+        `In walking and neutral-standing cells, the complete character from head to feet occupies exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of the cell height.`,
+        `Measure that ${CHARACTER_TARGET_CONTENT_PERCENT}% against each individual cell, never against the full canvas.`,
+        'A standing character below 68% or above 76% of its cell height is an incorrect result.',
+        `Reserve the remaining approximately 28% as ${background === 'transparent' ? 'fully transparent' : 'solid-magenta'} safety padding split above the head and below the feet.`,
+      ]),
     `Keep a visible ${spaceWord} gutter at every horizontal row boundary and below the entire fourth row.`,
     `Do not leave oversized ${spaceWord} margins around a small character.`,
     'Do not zoom in or out based on the character costume, body type, equipment, or pose.',
@@ -837,6 +872,7 @@ export function assembleThemePrompt(
         background,
         req.slot.description,
         opts?.walkPoseGuideAttached ? req.slot.bodyPlan : undefined,
+        req.slot.bodyPlan,
       );
       break;
     case 'rival_group':

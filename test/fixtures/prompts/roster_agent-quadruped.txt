@@ -48,10 +48,11 @@ Maintain absolute consistency across all 20 frames:
 
 Character scale is a hard production-layout requirement, not a suggestion.
 Use the same camera distance and character scale used for every other character board in this theme.
-In walking and neutral-standing cells, the complete character from head to feet occupies exactly 72% of the cell height.
-Measure that 72% against each individual cell, never against the full canvas.
-A standing character below 68% or above 76% of its cell height is an incorrect result.
-Reserve the remaining approximately 28% as solid-magenta safety padding split above the head and below the feet.
+For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central 70% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.
+Measure that 70% against each individual cell's width, never against the full canvas.
+Keep a clear magenta gutter of at least 15% of the cell width on the LEFT and RIGHT of the body in every frame.
+Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.
+No part of the body — including tail, ears, whiskers, and legs — may touch or cross a cell edge in any frame. A frame where any part reaches the gutter or the cell boundary is an incorrect result.
 Keep a visible magenta gutter at every horizontal row boundary and below the entire fourth row.
 Do not leave oversized magenta margins around a small character.
 Do not zoom in or out based on the character costume, body type, equipment, or pose.
