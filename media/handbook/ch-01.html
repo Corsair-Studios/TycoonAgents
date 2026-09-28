@@ -41,13 +41,15 @@
   <div class="lede">
     <div class="lede-label">Read this first</div>
     <div class="lede-intro">
-      TycoonAgents runs three ways: as a VS Code extension next to Claude
-      Code, as a standalone app you open in a browser with no VS Code at
-      all, or with OpenCode as the provider in either host (setup for all
-      three is in <a href="ch-03.html">Chapter 03</a>). Whichever way you
-      run it, it watches your multi-agent delegation and turns it into a
-      living tycoon scene &mdash; agents that walk, build, and earn badges
-      as your orchestrator hands off real work to specialists. This
+      TycoonAgents runs two ways: as a VS Code extension, or as a
+      standalone app you open in a browser with no VS Code at all (setup
+      for both is in <a href="ch-03.html">Chapter 03</a>). Either way, it
+      needs a harness &mdash; the tool that actually runs your agent team
+      &mdash; and it works with three: Claude Code (the default), Codex
+      (Experimental), or OpenCode (Experimental). Whichever combination you
+      run, TycoonAgents watches your multi-agent delegation and turns it
+      into a living tycoon scene &mdash; agents that walk, build, and earn
+      badges as your orchestrator hands off real work to specialists. This
       chapter covers the four ideas you need before anything else in this
       handbook will make sense.
     </div>
@@ -58,17 +60,24 @@
     <div class="s-caption">the elevator pitch</div>
   </div>
   <p>
-    TycoonAgents comes in three forms &mdash; a VS Code extension, a
+    TycoonAgents comes in two forms &mdash; a VS Code extension, and a
     standalone app that runs the same panel in a browser with no VS Code
-    installed, and either one paired with OpenCode instead of Claude Code
-    as the provider (see <a href="ch-03.html">Chapter 03</a>). None of them
-    run your project or decide how your agents work. Instead, TycoonAgents
-    sits alongside Claude Code (or OpenCode) and <strong>observes</strong>:
-    every time your orchestrator dispatches a task to a specialist agent,
-    and every time that agent finishes, TycoonAgents' hooks record the
-    event. The panel then replays those events as a scene &mdash; each agent
-    is a character on a stage, walking to a build site, hammering away, and
-    celebrating when the task completes.
+    installed (see <a href="ch-03.html">Chapter 03</a> for setup). Either
+    form pairs with a harness: Claude Code by default, or Codex or OpenCode
+    (both Experimental). None of them run your project or decide how your
+    agents work. Instead, TycoonAgents sits alongside whichever harness
+    you've chosen and <strong>observes</strong>: every time your
+    orchestrator dispatches a task to a specialist agent, and every time
+    that agent finishes, TycoonAgents' hooks record the event. The panel
+    then replays those events as a scene &mdash; each agent is a character
+    on a stage, walking to a build site, hammering away, and celebrating
+    when the task completes.
+  </p>
+  <p>
+    Specialists aren't limited to your harness's own model either &mdash;
+    individual agents can be pointed at other AI vendors for cross-checks
+    or second opinions. That's covered in
+    <a href="ch-15.html">Chapter 15</a>.
   </p>
   <p>
     The important part: this is a <strong>visualization of work that is
@@ -87,7 +96,8 @@
     <div class="s-caption">who does what</div>
   </div>
   <p>
-    Claude Code multi-agent work in this project follows a simple split:
+    Multi-agent work under any of the three harnesses follows a simple
+    split:
   </p>
   <ul>
     <li>
@@ -129,9 +139,19 @@
     contains a <strong>delegation doctrine</strong>: instructions telling the
     orchestrator which kinds of work must be routed to which specialist,
     and forbidding it from doing that work directly. TycoonAgents installs
-    this doctrine for you during first-run setup (Chapter 02), and it's the
-    reason the scene has anything to show at all &mdash; no doctrine, no
-    delegation, no agents walking around.
+    this doctrine into <code>CLAUDE.md</code> for you during first-run
+    setup (Chapter 02), and it's the reason the scene has anything to show
+    at all &mdash; no doctrine, no delegation, no agents walking around.
+    Codex and OpenCode (both Experimental) don't read
+    <code>CLAUDE.md</code> &mdash; they read <code>AGENTS.md</code>
+    instead. On OpenCode, saving in the Routing view (<a href="ch-03.html">Chapter
+    03</a>) writes an adapted copy of the doctrine into its own managed
+    section of <code>AGENTS.md</code>; any hand-written content you keep
+    outside that section is left alone. Codex gets the same treatment: when
+    you switch the harness to Codex, install the Codex hooks from the
+    panel, or save in the Routing view while Codex is active, TycoonAgents
+    writes the doctrine into its own managed section of
+    <code>AGENTS.md</code>, leaving any hand-written content untouched.
   </p>
   <p>
     Two doctrine modes are available at install time: a flat

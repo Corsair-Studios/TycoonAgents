@@ -200,7 +200,11 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     path) at least once so <code>.claude/hooks/</code> has
     <code>codex-mcp-launcher.cjs</code> and its fallback companion
     <code>codex-app-server-mcp.cjs</code>, and so the Codex <code>notify</code>
-    hook is registered in <code>CODEX_HOME/config.toml</code>.</li>
+    hook is registered in <code>CODEX_HOME/config.toml</code>. Installing
+    the hooks, switching the harness to Codex, or saving in the Routing
+    view while Codex is active also writes the delegation doctrine into
+    Codex's own managed section of <code>AGENTS.md</code> (see &sect;
+    1.3), leaving hand-written content alone.</li>
     <li>On first use, Claude Code asks once per project to approve the
     Codex MCP server before it will run &mdash; use
     <code>claude mcp list</code> to check or approve it manually.</li>
