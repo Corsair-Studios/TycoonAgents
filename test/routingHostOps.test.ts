@@ -16,6 +16,7 @@ import {
   probeEnv,
   setLocalEnvValue,
   clearLocalEnvValue,
+  runCodexConfigGenerator,
 } from "../src/core/routingHostOps";
 
 function tmpRoot(): string {
@@ -50,6 +51,7 @@ function makeFakeScriptsDir(): string {
     "process.exit(process.env.FAKE_EXIT_CODE ? Number(process.env.FAKE_EXIT_CODE) : 0);\n";
   fs.writeFileSync(path.join(dir, "scripts", "apply-routing-profile.mjs"), body, "utf8");
   fs.writeFileSync(path.join(dir, "scripts", "generate-opencode-config.mjs"), body, "utf8");
+  fs.writeFileSync(path.join(dir, "scripts", "generate-codex-config.mjs"), body, "utf8");
   return dir;
 }
 
@@ -240,6 +242,59 @@ test("setLocalEnvValue/clearLocalEnvValue: round-trip through probeEnv's `stored
     const probedAfterClear = probeEnv(["MY_ENDPOINT_URL"], {});
     assert.deepEqual(probedAfterClear, { MY_ENDPOINT_URL: { env: false, stored: false } });
   });
+});
+
+// ---------------------------------------------------------------------------
+// codex generator wiring (codex-doctrine-gap follow-up)
+// ---------------------------------------------------------------------------
+
+test("runCodexConfigGenerator: spawns generate-codex-config.mjs with the project root", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const result = runCodexConfigGenerator(root, scriptsDir);
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.ok(result.output.includes("--root"));
+  assert.ok(result.output.includes(root));
+});
+
+test("runCodexConfigGenerator: missing script never throws, returns a non-zero result with a clear message", () => {
+  const root = tmpRoot();
+  const emptyScriptsDir = fs.mkdtempSync(path.join(os.tmpdir(), "routing-empty-scripts-"));
+  const result = runCodexConfigGenerator(root, emptyScriptsDir);
+  assert.notEqual(result.code, 0);
+  assert.ok(result.output.includes("generate-codex-config.mjs"));
+});
+
+test("saveRoutingProfile: runs the codex generator only when effectiveHarness is codex", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  const profile = { version: 1, agents: {} };
+
+  const claudeResult = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "claude-code" });
+  assert.equal(claudeResult.codex, undefined);
+
+  const codexResult = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+  assert.ok(codexResult.codex !== undefined, JSON.stringify(codexResult));
+  assert.equal(codexResult.codex!.code, 0);
+});
+
+test("saveRoutingProfile: a codex-generator failure never flips `ok` false (routing.json still saved)", () => {
+  const root = tmpRoot();
+  const scriptsDir = makeFakeScriptsDir();
+  // Only the codex script fails — claude/opencode stay healthy, so `ok`
+  // (which tracks just those two) must stay true.
+  const failingBody =
+    "#!/usr/bin/env node\n" +
+    "console.log('ARGS:' + process.argv.slice(2).join(' '));\n" +
+    "process.exit(1);\n";
+  fs.writeFileSync(path.join(scriptsDir, "scripts", "generate-codex-config.mjs"), failingBody, "utf8");
+  const profile = { version: 1, agents: {} };
+
+  const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.codex?.code, 1);
+  const written = JSON.parse(fs.readFileSync(path.join(root, ".claude", "tycoon", "routing.json"), "utf8"));
+  assert.deepEqual(written, profile);
 });
 
 test("setLocalEnvValue: rejects a malformed name", () => {

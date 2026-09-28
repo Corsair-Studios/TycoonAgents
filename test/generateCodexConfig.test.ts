@@ -15,6 +15,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const SCRIPT_URL = pathToFileURL(join(process.cwd(), "scripts", "generate-codex-config.mjs")).href;
 
@@ -144,6 +145,69 @@ test("upsert into AGENTS.md: block delimiters present exactly once and existing 
     const { agentsMdBlock: secondBlock } = generateCodexConfig({ projectDir });
     const rebuiltAgain = upsertCodexBlock(rebuilt, secondBlock);
     assert.equal(rebuiltAgain, rebuilt);
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+// Codex-doctrine-gap follow-up: full CLI round-trip (not just the in-memory
+// generateCodexConfig/upsertCodexBlock helpers above) — invokes the script
+// as a real subprocess the way runCodexConfigGenerator does, against an
+// AGENTS.md that already carries hand-written prose plus an OpenCode
+// managed block, and checks the .toml fragment never embeds an absolute
+// path.
+test("CLI round-trip: hand-written AGENTS.md text and the OpenCode block survive byte-for-byte; codex block appears; no absolute paths in the .toml fragment", () => {
+  const { projectDir } = makeRosterFixture();
+  try {
+    const handWrittenIntro = "# AGENTS.md\n\nSome hand-written project notes.\nA second hand-written line.\n\n";
+    const opencodeBlock =
+      "<!-- TYCOON-MANAGED:START -->\nsome opencode-managed content\nunchanged line\n<!-- TYCOON-MANAGED:END -->\n";
+    const handWrittenOutro = "\nMore hand-written notes after the opencode block.\n";
+    const agentsMdPath = join(projectDir, "AGENTS.md");
+    writeFileSync(agentsMdPath, handWrittenIntro + opencodeBlock + handWrittenOutro, "utf8");
+
+    execFileSync(process.execPath, [join(process.cwd(), "scripts", "generate-codex-config.mjs"), "--root", projectDir], {
+      encoding: "utf8",
+    });
+
+    const rebuilt = readFileSync(agentsMdPath, "utf8");
+    assert.ok(rebuilt.includes(handWrittenIntro), "hand-written intro must survive byte-for-byte");
+    assert.ok(rebuilt.includes(opencodeBlock), "OpenCode managed block must survive byte-for-byte");
+    assert.ok(rebuilt.includes(handWrittenOutro.trim()), "hand-written outro must survive");
+    assert.equal((rebuilt.match(/<!-- TYCOON-CODEX-MANAGED:START -->/g) || []).length, 1);
+    assert.equal((rebuilt.match(/<!-- TYCOON-CODEX-MANAGED:END -->/g) || []).length, 1);
+
+    const tomlPath = join(projectDir, ".claude", "tycoon", "codex-agents.toml.generated");
+    const toml = readFileSync(tomlPath, "utf8");
+    assert.ok(!toml.includes(projectDir), "generated TOML must never embed the absolute project path");
+    // Windows drive-letter absolute paths and POSIX-style ones alike.
+    assert.doesNotMatch(toml, /[A-Za-z]:[\\/]/);
+    assert.doesNotMatch(toml, /(?<!\.)\/(?:home|Users|tmp)\//);
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("upsert into AGENTS.md: two existing Codex marker pairs collapse into exactly one, not an orphaned second block", async () => {
+  const { generateCodexConfig, upsertCodexBlock } = await dynamicImport(SCRIPT_URL);
+  const { projectDir } = makeRosterFixture();
+  try {
+    const duplicated =
+      "# AGENTS.md\n\n" +
+      "<!-- TYCOON-CODEX-MANAGED:START -->\nstale first block\n<!-- TYCOON-CODEX-MANAGED:END -->\n\n" +
+      "some hand-written text in between\n\n" +
+      "<!-- TYCOON-CODEX-MANAGED:START -->\nstale second block\n<!-- TYCOON-CODEX-MANAGED:END -->\n";
+
+    const { agentsMdBlock } = generateCodexConfig({ projectDir });
+    const rebuilt = upsertCodexBlock(duplicated, agentsMdBlock);
+
+    const startCount = (rebuilt.match(/<!-- TYCOON-CODEX-MANAGED:START -->/g) || []).length;
+    const endCount = (rebuilt.match(/<!-- TYCOON-CODEX-MANAGED:END -->/g) || []).length;
+    assert.equal(startCount, 1, "exactly one Codex start marker after collapse");
+    assert.equal(endCount, 1, "exactly one Codex end marker after collapse");
+    assert.ok(!rebuilt.includes("stale first block"));
+    assert.ok(!rebuilt.includes("stale second block"));
+    assert.ok(rebuilt.includes("some hand-written text in between"), "hand-written text sandwiched between the two stale pairs must survive byte-for-byte");
   } finally {
     rmSync(projectDir, { recursive: true, force: true });
   }

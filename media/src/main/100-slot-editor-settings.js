@@ -1434,6 +1434,16 @@
           harness.codexDispatcherWarning
         )
       );
+      // Codex-doctrine-gap follow-up: AGENTS.md's TYCOON-CODEX-MANAGED
+      // block refreshes automatically (hook install, provider switch to
+      // codex, routing save) — no install button needed, just surface a
+      // failure the same way codexHooksWarning/codexDispatcherWarning do.
+      if (typeof harness.codexAgentsMdWarning === "string" && harness.codexAgentsMdWarning.length > 0) {
+        const warnRow = document.createElement("div");
+        warnRow.className = "theme-review-retry-warning harness-select-warning";
+        warnRow.textContent = harness.codexAgentsMdWarning;
+        harnessRow.appendChild(warnRow);
+      }
     }
     return harnessRow;
   }

@@ -2,10 +2,10 @@
 //
 // Guards against a repeat of the 0.0.576 packaging bug: the Routing
 // screen's Save spawns `node <extensionInstallPath>/scripts/<name>.mjs`
-// (src/core/routingHostOps.ts -> resolveGeneratorScripts), so the VSIX
-// must ship those two scripts plus the compiled modules they
-// createRequire() at runtime, and must never ship this machine's local
-// opencode.json.
+// (src/core/routingHostOps.ts -> resolveGeneratorScripts /
+// runCodexConfigGenerator), so the VSIX must ship those generator scripts
+// plus the compiled modules they createRequire() at runtime, and must
+// never ship this machine's local opencode.json.
 //
 // Requires dist/tycoonagents-<version>.vsix to already exist (built via
 // `npm run package`) and `unzip` on PATH.
@@ -22,6 +22,10 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const REQUIRED_ENTRIES = [
   "extension/scripts/apply-routing-profile.mjs",
   "extension/scripts/generate-opencode-config.mjs",
+  // Codex-doctrine-gap follow-up: saveRoutingProfile/INSTALL_CODEX_HOOKS/
+  // setHarness-to-codex all run this generator (routingHostOps.ts's
+  // runCodexConfigGenerator) — must ship the same way the opencode one does.
+  "extension/scripts/generate-codex-config.mjs",
   "extension/out/src/core/agentBackend.js",
   "extension/out/src/core/modelAliases.js",
   "extension/out/src/core/routingProfile.js",

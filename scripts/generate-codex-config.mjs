@@ -51,6 +51,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 const CODEX_START_MARKER = "<!-- TYCOON-CODEX-MANAGED:START -->";
 const CODEX_END_MARKER = "<!-- TYCOON-CODEX-MANAGED:END -->";
 const OPENCODE_END_MARKER = "<!-- TYCOON-MANAGED:END -->";
@@ -294,6 +298,37 @@ that is a violation of its brief, not a valid step.
 
 export function upsertCodexBlock(existingAgentsMd, blockBody) {
   const managedBlock = `${CODEX_START_MARKER}\n${blockBody.replace(/^\n+/, "").replace(/\s+$/, "")}\n${CODEX_END_MARKER}`;
+
+  // Collapse EVERY existing START/END marker pair (not just the first) into
+  // the single freshly-generated block, at the position of the first pair.
+  // A duplicated marker pair can arise from a hand edit or a merge; without
+  // this, the naive indexOf/indexOf below would only replace the first pair
+  // and leave a second, now-orphaned Codex block sitting untouched in
+  // `after`. Only the pair regions themselves are removed — any hand-written
+  // text sitting between two stale pairs, or anywhere else outside a
+  // managed block, is never touched: AGENTS.md content outside the managed
+  // block is off limits regardless of how many stale pairs surround it.
+  // Matches non-greedily and globally so N pairs collapse to exactly 1.
+  const pairRe = new RegExp(
+    `${escapeRegExp(CODEX_START_MARKER)}[\\s\\S]*?${escapeRegExp(CODEX_END_MARKER)}`,
+    "g"
+  );
+  const pairMatches = [...existingAgentsMd.matchAll(pairRe)];
+  if (pairMatches.length > 0) {
+    let result = "";
+    let cursor = 0;
+    let inserted = false;
+    for (const m of pairMatches) {
+      result += existingAgentsMd.slice(cursor, m.index);
+      if (!inserted) {
+        result += managedBlock;
+        inserted = true;
+      }
+      cursor = m.index + m[0].length;
+    }
+    result += existingAgentsMd.slice(cursor);
+    return result;
+  }
 
   const startIdx = existingAgentsMd.indexOf(CODEX_START_MARKER);
   const endIdx = existingAgentsMd.indexOf(CODEX_END_MARKER);

@@ -60,7 +60,7 @@ import {
   type ProviderId,
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
-import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute } from "../../core/routingHostOps";
+import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
 import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { REFERRAL_CODE_PATTERN } from "../../core/themeServiceClient";
@@ -8228,6 +8228,7 @@ export class TycoonPanel {
     codexDispatcherInstalled?: boolean;
     codexHooksWarning?: string;
     codexDispatcherWarning?: string;
+    codexAgentsMdWarning?: string;
   } {
     const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
     let description: ProviderSelectionDescription;
@@ -8274,6 +8275,7 @@ export class TycoonPanel {
             ...(this._codexDispatcherWarnings && this._codexDispatcherWarnings.length > 0
               ? { codexDispatcherWarning: this._codexDispatcherWarnings.join(" ") }
               : {}),
+            ...(this._codexAgentsMdWarning !== undefined ? { codexAgentsMdWarning: this._codexAgentsMdWarning } : {}),
           }
         : {};
     return {
@@ -8315,6 +8317,20 @@ export class TycoonPanel {
         this._providerSwap(providerId as ProviderId);
       } catch (err) {
         console.error("TycoonAgents: live provider swap failed:", err instanceof Error ? err.message : err);
+      }
+    }
+    // Trigger (b) of the codex-doctrine-gap follow-up: switching the
+    // provider TO codex refreshes AGENTS.md's Codex block right away, so
+    // Codex sessions get the delegation doctrine without waiting for a
+    // Routing save or a hook install. Switching AWAY from codex leaves the
+    // block in place on purpose (see runCodexConfigGenerator's own doc
+    // comment) — it's inert under another harness and removing it on every
+    // switch would just make it reappear/disappear noisily.
+    if (providerId === "codex") {
+      try {
+        this._runCodexConfigGenerator(root);
+      } catch (err) {
+        console.error("TycoonAgents: runCodexConfigGenerator (setHarness) failed:", err instanceof Error ? err.message : err);
       }
     }
     this._handleGetSettings();
@@ -8386,6 +8402,27 @@ export class TycoonPanel {
 
   private _codexHookWarnings?: string[];
   private _codexDispatcherWarnings?: string[];
+  private _codexAgentsMdWarning?: string;
+
+  /** Codex-doctrine-gap follow-up: runs scripts/generate-codex-config.mjs
+   *  (AGENTS.md's TYCOON-CODEX-MANAGED block + codex-agents.toml.generated)
+   *  for `root`, resolving the script from this extension's own install
+   *  root exactly like _handleSaveRouting resolves the claude/opencode
+   *  pair. Never throws: a failure is stashed in _codexAgentsMdWarning
+   *  (surfaced via SETTINGS' harness.codexAgentsMdWarning, same pattern as
+   *  codexHooksWarning) rather than blocking whichever trigger called this
+   *  — installing hooks, switching provider to codex, or saving routing
+   *  must never hard-fail just because the doctrine refresh did. */
+  private _runCodexConfigGenerator(root: string): void {
+    if (root === "") return;
+    try {
+      const result = runCodexConfigGenerator(root, this._extensionUri.fsPath);
+      this._codexAgentsMdWarning =
+        result.code === 0 ? undefined : `Couldn't update AGENTS.md for Codex: ${result.output || "unknown error"}`;
+    } catch (err) {
+      this._codexAgentsMdWarning = `Couldn't update AGENTS.md for Codex: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
 
   /** Handles MSG.INSTALL_CODEX_HOOKS: installs the Codex notify hook
    * (CODEX_HOME/config.toml + project .codex/hooks.json), then re-posts
@@ -8408,6 +8445,15 @@ export class TycoonPanel {
     } catch (err) {
       console.error("TycoonAgents: installCodexHooks failed:", err instanceof Error ? err.message : err);
       this._codexHookWarnings = [err instanceof Error ? err.message : String(err)];
+    }
+    // Trigger (a) of the codex-doctrine-gap follow-up: installing Codex
+    // hooks from the panel is the first moment a project commits to Codex,
+    // so refresh AGENTS.md's Codex block / codex-agents.toml.generated
+    // right alongside the hook install (idempotent — safe to re-run).
+    try {
+      this._runCodexConfigGenerator(root);
+    } catch (err) {
+      console.error("TycoonAgents: runCodexConfigGenerator (installCodexHooks) failed:", err instanceof Error ? err.message : err);
     }
     this._handleGetSettings();
   }

@@ -308,6 +308,7 @@ const CODEX_HOOK_TOML_MARKER = '# tycoon-codex-hook: managed notify entry (do no
 const CODEX_HOOKS_JSON_MARKER_DESCRIPTION = 'tycoon-codex-hook: managed by TycoonAgents (do not edit by hand)';
 let _lastCodexHookWarnings;
 let _lastCodexDispatcherWarnings;
+let _lastCodexAgentsMdWarning;
 
 /** Standalone analog of panel.ts's _detectCodexHooksInstalled. */
 function detectCodexHooksInstalledStandalone(root) {
@@ -348,6 +349,26 @@ let _routingHostOpsModule;
 function routingHostOpsModule() {
   if (!_routingHostOpsModule) _routingHostOpsModule = requireCompiledOrThrow(ROUTING_HOST_OPS_JS, 'routingHostOps');
   return _routingHostOpsModule;
+}
+
+/**
+ * Codex-doctrine-gap follow-up: standalone analog of panel.ts's
+ * `_runCodexConfigGenerator`. Resolves scripts/generate-codex-config.mjs
+ * from REPO_ROOT (the same scriptsDir saveRoutingProfile/clearRoutingProfile
+ * already use for this project) and runs it for `root`. Never throws —
+ * stashes a failure in `_lastCodexAgentsMdWarning`, surfaced by
+ * buildStandaloneHarnessSettings exactly like `_lastCodexHookWarnings`.
+ */
+function runCodexConfigGeneratorStandalone(root) {
+  if (!root) return;
+  try {
+    const { runCodexConfigGenerator } = routingHostOpsModule();
+    const result = runCodexConfigGenerator(root, REPO_ROOT);
+    _lastCodexAgentsMdWarning =
+      result.code === 0 ? undefined : `Couldn't update AGENTS.md for Codex: ${result.output || 'unknown error'}`;
+  } catch (err) {
+    _lastCodexAgentsMdWarning = `Couldn't update AGENTS.md for Codex: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 /**
@@ -990,6 +1011,13 @@ function handleBrowserMessage(msg) {
       } catch (err) {
         console.error('[tycoonagents-standalone] setHarness failed:', err instanceof Error ? err.message : err);
       }
+      // Trigger (b) of the codex-doctrine-gap follow-up: switching TO codex
+      // refreshes AGENTS.md's Codex block right away (standalone analog of
+      // panel.ts's _handleSetHarness). Switching away leaves the block in
+      // place on purpose — see runCodexConfigGenerator's doc comment.
+      if (String(msg.provider || '') === 'codex') {
+        runCodexConfigGeneratorStandalone(root);
+      }
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
       break;
     }
@@ -1012,6 +1040,9 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] installCodexHooks failed:', err instanceof Error ? err.message : err);
         _lastCodexHookWarnings = [err instanceof Error ? err.message : String(err)];
       }
+      // Trigger (a) of the codex-doctrine-gap follow-up (standalone analog
+      // of panel.ts's _handleInstallCodexHooks).
+      runCodexConfigGeneratorStandalone(root);
       broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
       break;
     }
@@ -2762,6 +2793,7 @@ function buildStandaloneHarnessSettings() {
         ...(_lastCodexDispatcherWarnings && _lastCodexDispatcherWarnings.length > 0
           ? { codexDispatcherWarning: _lastCodexDispatcherWarnings.join(' ') }
           : {}),
+        ...(_lastCodexAgentsMdWarning !== undefined ? { codexAgentsMdWarning: _lastCodexAgentsMdWarning } : {}),
       }
     : {};
   return {

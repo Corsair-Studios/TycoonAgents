@@ -76,6 +76,19 @@ copy('media', 'media');
 // hooks/ — installHook.mjs references these by absolute path into the repo.
 copy('hooks', 'hooks');
 
+// scripts/ — only the routing generator scripts saveRoutingProfile /
+// clearRoutingProfile spawn at runtime (routingHostOps.ts's
+// resolveGeneratorScripts + the codex-doctrine-gap follow-up), not the
+// whole dev-tooling scripts/ directory. REPO_ROOT in standalone/src/
+// server.mjs resolves to this stage dir once unzipped, so these three
+// files must exist at <stageDir>/scripts/*.mjs for the standalone host to
+// find them the same way the VS Code extension does via
+// this._extensionUri.fsPath.
+mkdirSync(join(stageDir, 'scripts'), { recursive: true });
+copy('scripts/apply-routing-profile.mjs', 'scripts/apply-routing-profile.mjs');
+copy('scripts/generate-opencode-config.mjs', 'scripts/generate-opencode-config.mjs');
+copy('scripts/generate-codex-config.mjs', 'scripts/generate-codex-config.mjs');
+
 // Root package.json trimmed to what the standalone actually needs
 // (name/version/engines + the jimp runtime dependency the theme pipeline
 // require()s via out/src/extension/*). No devDependencies, no scripts that

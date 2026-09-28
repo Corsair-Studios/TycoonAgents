@@ -86,6 +86,7 @@ opencode.json
 # everything else (the extension itself runs from bundled out/extension.js).
 !scripts/apply-routing-profile.mjs
 !scripts/generate-opencode-config.mjs
+!scripts/generate-codex-config.mjs
 !out/src/core/agentBackend.js
 !out/src/core/modelAliases.js
 !out/src/core/routingProfile.js

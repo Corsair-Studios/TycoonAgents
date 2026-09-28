@@ -143,6 +143,12 @@ export interface SaveRoutingResult {
   errors: string[];
   check: { claude: ScriptRunResult; opencode: ScriptRunResult };
   write: { claude: ScriptRunResult; opencode: ScriptRunResult };
+  /** Codex-doctrine-gap follow-up: only populated when saveRoutingProfile's
+   *  effectiveHarness was "codex" — the AGENTS.md/codex-agents.toml
+   *  generator only needs to run under that harness (see runCodexGenerator
+   *  below), so this stays undefined for claude-code/opencode saves rather
+   *  than padding every result with an irrelevant script run. */
+  codex?: ScriptRunResult;
 }
 
 const EMPTY_SCRIPT_RESULT: ScriptRunResult = { code: -1, output: "" };
@@ -542,6 +548,47 @@ function resolveGeneratorScripts(scriptsDir: string): { claude: string; opencode
   return { claude, opencode };
 }
 
+/**
+ * Resolve `<scriptsDir>/scripts/generate-codex-config.mjs` — the Codex
+ * doctrine (AGENTS.md managed block + codex-agents.toml.generated)
+ * generator, separate from resolveGeneratorScripts because it only needs
+ * to run when the effective harness is "codex" (unlike the claude/opencode
+ * pair above, which run on every save regardless of harness).
+ */
+function resolveCodexGeneratorScript(scriptsDir: string): string {
+  const codex = path.join(scriptsDir, "scripts", "generate-codex-config.mjs");
+  if (!fs.existsSync(codex)) {
+    throw new Error(
+      `routingHostOps: Codex config generator script not found. Tried: ${codex}. ` +
+        "Pass the correct scriptsDir (the TycoonAgents install root that contains scripts/)."
+    );
+  }
+  return codex;
+}
+
+/**
+ * Run scripts/generate-codex-config.mjs for `root` (write, not --check),
+ * resolving the script from `scriptsDir` the same way
+ * resolveGeneratorScripts resolves the claude/opencode pair — reused by
+ * saveRoutingProfile (when effectiveHarness === "codex"), the panel's
+ * INSTALL_CODEX_HOOKS handler, and both hosts' provider-switch-to-codex
+ * handlers, so all four triggers share one resolution + spawn path. Never
+ * throws: script-not-found and spawn failures both come back as a
+ * ScriptRunResult with code !== 0 and a human-readable `output`, exactly
+ * like runScript's own failure shape, so callers can surface it uniformly
+ * (e.g. "Couldn't update AGENTS.md for Codex: <output>").
+ */
+export function runCodexConfigGenerator(root: string, scriptsDir: string, nodeBin?: string): ScriptRunResult {
+  const bin = nodeBin ?? process.execPath;
+  let scriptPath: string;
+  try {
+    scriptPath = resolveCodexGeneratorScript(scriptsDir);
+  } catch (err) {
+    return { code: -1, output: err instanceof Error ? err.message : String(err) };
+  }
+  return runScript(bin, scriptPath, root, []);
+}
+
 const SCRIPT_TIMEOUT_MS = 15000;
 const OUTPUT_CAP = 4000;
 
@@ -811,8 +858,24 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
   };
   writeLastApplied(root, write);
 
+  // Codex-doctrine-gap follow-up (trigger (c)): a Routing save only needs
+  // to refresh AGENTS.md's Codex block / codex-agents.toml.generated when
+  // Codex is the effective harness — under claude-code/opencode this
+  // generator's output is irrelevant, so it stays out of `check`/`write`
+  // above (which run unconditionally for every save) and only appears on
+  // the result when it actually ran.
+  let codexResult: ScriptRunResult | undefined;
+  if (opts.effectiveHarness === "codex") {
+    codexResult = runCodexConfigGenerator(root, opts.scriptsDir, nodeBin);
+  }
+
+  // codexResult failure never flips `ok` — routing.json itself saved fine
+  // and the claude/opencode generators (the ones every save depends on)
+  // succeeded; a Codex doctrine-refresh failure is surfaced separately
+  // (panel.ts turns codexResult.code !== 0 into a non-blocking message)
+  // rather than reported as the whole save having failed.
   const ok = write.claude.code === 0 && write.opencode.code === 0;
-  return { ok, errors: [], check, write };
+  return { ok, errors: [], check, write, ...(codexResult !== undefined ? { codex: codexResult } : {}) };
 }
 
 export interface ClearRoutingProfileOptions {
