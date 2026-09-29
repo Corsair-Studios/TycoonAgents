@@ -87,6 +87,8 @@ missing, `<resolved id>` falls back to the literal string `unknown`.
 
 ## Examples
 
+Model aliases (`sonnet`, `opus`, `haiku`, `fable`, or `anthropic/sonnet`) always resolve to the newest model in that family, so the examples below never pin a version; pin one explicitly (for example `anthropic/claude-sonnet-4-6`) only if you want that exact model.
+
 ### claude-native (explicit, though this is also the default)
 
 ```yaml
@@ -95,7 +97,7 @@ model: sonnet
 backend:
   vendor: anthropic
   transport: claude-native
-  model: anthropic/claude-sonnet-4-6
+  model: anthropic/sonnet
   costModelClass: metered
 ---
 

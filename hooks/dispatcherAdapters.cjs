@@ -257,7 +257,10 @@ function redactSecrets(text) {
 
 /** Anthropic adapter: `claude -p --output-format json` over stdin, no shell. */
 async function anthropicAdapter(task, agentInfo) {
-  const model = (agentInfo && agentInfo.model) || resolveVendorEnv("CLAUDE_CLI_MODEL") || "claude-haiku-4-5";
+  const rawModel = (agentInfo && agentInfo.model) || resolveVendorEnv("CLAUDE_CLI_MODEL") || "haiku";
+  // The claude CLI takes an alias ("sonnet") or a bare id ("claude-sonnet-5-5"),
+  // never the vendor-qualified "anthropic/..." form a backend.model carries.
+  const model = rawModel.replace(/^anthropic\//i, "");
   if (!MODEL_RE.test(model)) return { error: `Invalid model "${model}"` };
 
   const { bin, triedPaths } = discoverClaudeBin();

@@ -762,6 +762,33 @@ test("anthropicAdapter: exit-1 error includes stderr tail and argv, never the pr
   }
 });
 
+test("anthropicAdapter: strips a leading anthropic/ so the CLI gets --model sonnet / --model claude-sonnet-5-5", async () => {
+  const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-claude-model-"));
+  const fakeClaudeBody = "process.stdin.resume();\nprocess.stdin.on('end', () => { process.stderr.write('fail'); process.exit(1); });";
+  let claudeBin: string;
+  if (process.platform === "win32") {
+    const jsEntryPath = path.join(fakeDir, "fake-claude.js").replace(/\\/g, "\\\\");
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.cmd"), `@echo off\r\nnode "${jsEntryPath}" %*\r\n`);
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.js"), fakeClaudeBody);
+    claudeBin = path.join(fakeDir, "fake-claude.cmd");
+  } else {
+    claudeBin = path.join(fakeDir, "fake-claude");
+    fs.writeFileSync(claudeBin, `#!/usr/bin/env node\n${fakeClaudeBody}\n`, "utf8");
+    fs.chmodSync(claudeBin, 0o755);
+  }
+  const prevBin = process.env.CLAUDE_CLI_BIN;
+  process.env.CLAUDE_CLI_BIN = claudeBin;
+  try {
+    const alias = await dispatcherAdapters.anthropicAdapter("p", { model: "anthropic/sonnet" });
+    assert.match(alias.error as string, /--model sonnet --permission-mode/);
+    const concrete = await dispatcherAdapters.anthropicAdapter("p", { model: "anthropic/claude-sonnet-5-5" });
+    assert.match(concrete.error as string, /--model claude-sonnet-5-5 --permission-mode/);
+  } finally {
+    if (prevBin === undefined) delete process.env.CLAUDE_CLI_BIN; else process.env.CLAUDE_CLI_BIN = prevBin;
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+  }
+});
+
 // --- Plan p25-t5: dispatcher reads the MERGED routing.resolved.json (defaults
 // inheritance), not the raw source routing.json ---
 

@@ -153,7 +153,7 @@ You MUST delegate:
 
 1. Any file edit or creation, including docs and markdown → coding-specialist.
 2. Any search, grep, glob, or multi-file/exploratory read → search-retrieval (Haiku).
-3. test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit → testing-specialist.
+3. test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit, review → testing-specialist.
 4. ux, ui, design, layout, css, canvas, render, animation, sprite, scene, visual, style, transition, accessibility → ux-ui-designer.
 5. vscode, extension, webview, panel, lifecycle, api, command, activation, manifest, menus, settings, configuration, disposable, message → vscode-integration.
 6. monitor, lifecycle, event, activity, hook, status, track, real-time, session, mapping, normalize, record, idle, active → workspace-monitor.
@@ -220,13 +220,13 @@ defeating the point of the system either way. When in doubt, delegate.
 
 | Specialist | Task types | Vendor / model |
 | --- | --- | --- |
-| claude-worker | claude-cli, subscription-worker | Anthropic · anthropic/claude-sonnet-4-6 (subscription) |
+| claude-worker | claude-cli, subscription-worker | Anthropic · anthropic/sonnet (subscription) |
 | codex-reviewer | codex, foreign-review, cross-vendor, second-opinion, adversarial-review | OpenAI · openai/gpt-5.6-sol (subscription) |
-| coding-specialist | implement, code, fix, bug, refactor, create, add, update, function, class, method, logic, algorithm, typescript | Anthropic · anthropic/sonnet |
+| coding-specialist | implement, code, fix, bug, refactor, create, add, update, function, class, method, logic, algorithm, typescript, key, phase, accuracy, copy, backup, fixes, dispatcher, follow-up, handlers, hardening, json, p23-t1, p37, p43 | Anthropic · anthropic/sonnet |
 | gemini-reviewer | gemini, foreign-review, cross-vendor, second-opinion, adversarial-review | Google · google/gemini-2.5-pro |
 | kimi-reviewer | kimi, qwen, local-review, openai-compatible, foreign-review, cross-vendor, second-opinion, adversarial-review | Moonshot · moonshot/kimi-k2 (local) |
 | search-retrieval | search, find, look, where, locate, explore, grep, glob, file, pattern, reference, documentation, example, retrieval | Anthropic · anthropic/haiku |
-| testing-specialist | test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit | Anthropic · anthropic/sonnet |
+| testing-specialist | test, spec, vitest, jest, mocha, assert, mock, stub, testing, qa, verify, validate, e2e, fixture, coverage, unit, review | Anthropic · anthropic/sonnet |
 | ux-ui-designer | ux, ui, design, layout, css, canvas, render, animation, sprite, scene, visual, style, transition, accessibility | Anthropic · anthropic/sonnet |
 | uefn-auditor | verse, uefn, fortnite, verse-audit, verse-review, verse-lint | Anthropic · anthropic/sonnet |
 | verse-expert | verse, uefn, fortnite, device, island, creative, digest | Anthropic · anthropic/sonnet |

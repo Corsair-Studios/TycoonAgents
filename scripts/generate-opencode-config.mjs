@@ -43,7 +43,9 @@
 //      (agents map with `model` only) and then continues the run.
 //   3. backend.model from the agent's `backend:` frontmatter block, when it
 //      already contains a '/' (already provider/model form).
-//   4. A bare top-level `model:` alias (opus/sonnet/haiku/fable/...) resolved
+//   4. A top-level `model:` alias (opus/sonnet/haiku/fable, bare or as
+//      `anthropic/<alias>`) mapped to the NEWEST concrete id from
+//      modelAliases.LATEST_MODEL_IDS (OpenCode has no alias support), or else resolved
 //      via modelAliases.resolveModelAlias to a canonical id, emitted as
 //      `anthropic/<id>`.
 //   5. Otherwise the `model:` field is omitted entirely from the output.
@@ -176,13 +178,14 @@ function loadCoreModules() {
   const modelAliasesPath = path.join(REPO_ROOT, "out", "src", "core", "modelAliases.js");
   const routingProfilePath = path.join(REPO_ROOT, "out", "src", "core", "routingProfile.js");
   const { readAgentFrontmatter, parseAgentBackend } = require(agentBackendPath);
-  const { resolveModelAlias } = require(modelAliasesPath);
+  const { resolveModelAlias, resolveLatestModelId } = require(modelAliasesPath);
   const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend, hasHandWrittenBackendBlock } =
     require(routingProfilePath);
   return {
     readAgentFrontmatter,
     parseAgentBackend,
     resolveModelAlias,
+    resolveLatestModelId,
     loadRoutingProfile,
     resolveAgentSlot,
     resolveOrchestratorSlot,
@@ -193,10 +196,22 @@ function loadCoreModules() {
 
 // Resolve a RoutingSlot's `model` field (provider/model or bare alias) to
 // the same 'provider/model' string form the rest of the generator expects.
-function resolveSlotModel(slot, resolveModelAlias) {
+function resolveSlotModel(slot, resolveModelAlias, resolveLatestModelId) {
   if (!slot || typeof slot.model !== "string" || slot.model === "") return undefined;
-  if (slot.model.includes("/")) return slot.model;
-  const resolved = resolveModelAlias(slot.model);
+  return toOpenCodeModel(slot.model, resolveModelAlias, resolveLatestModelId);
+}
+
+// Turn a model string into the concrete 'provider/model' id OpenCode needs.
+// OpenCode's catalog has no alias support, so an Anthropic alias — bare
+// ("sonnet") or vendor-qualified ("anthropic/sonnet") — maps to the newest
+// concrete id from modelAliases.LATEST_MODEL_IDS. Any other provider/model is
+// returned untouched, and a bare non-alias id gets exactly one `anthropic/`
+// prefix (never doubled).
+function toOpenCodeModel(raw, resolveModelAlias, resolveLatestModelId) {
+  const latest = resolveLatestModelId(raw);
+  if (latest) return `anthropic/${latest}`;
+  if (raw.includes("/")) return raw;
+  const resolved = resolveModelAlias(raw);
   return resolved ? `anthropic/${resolved}` : undefined;
 }
 
@@ -246,7 +261,7 @@ function loadModelOverrides(root) {
   }
 }
 
-function resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, slotModel }) {
+function resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, resolveLatestModelId, slotModel }) {
   if (slotModel) {
     return slotModel;
   }
@@ -256,14 +271,11 @@ function resolveModel({ agentName, frontmatter, backend, overrides, resolveModel
   const hasExplicitBackendBlock =
     frontmatter["backend"] !== undefined && frontmatter["backend"] !== null;
   if (hasExplicitBackendBlock && backend && typeof backend.model === "string" && backend.model.includes("/")) {
-    return backend.model;
+    return toOpenCodeModel(backend.model, resolveModelAlias, resolveLatestModelId);
   }
   const rawModel = typeof frontmatter["model"] === "string" ? frontmatter["model"] : undefined;
   if (rawModel) {
-    const resolved = resolveModelAlias(rawModel);
-    if (resolved) {
-      return `anthropic/${resolved}`;
-    }
+    return toOpenCodeModel(rawModel, resolveModelAlias, resolveLatestModelId);
   }
   return undefined;
 }
@@ -914,6 +926,7 @@ function main() {
     readAgentFrontmatter,
     parseAgentBackend,
     resolveModelAlias,
+    resolveLatestModelId,
     loadRoutingProfile,
     resolveAgentSlot,
     resolveOrchestratorSlot,
@@ -983,9 +996,9 @@ function main() {
         );
       }
       const slot = resolveAgentSlot(routingProfile, agentName, { hasHandWrittenBackend: handWritten });
-      const slotModel = resolveSlotModel(slot, resolveModelAlias);
+      const slotModel = resolveSlotModel(slot, resolveModelAlias, resolveLatestModelId);
 
-      const model = resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, slotModel });
+      const model = resolveModel({ agentName, frontmatter, backend, overrides, resolveModelAlias, resolveLatestModelId, slotModel });
 
       // A routing-profile slot wins over frontmatter's backend for MCP
       // preamble purposes too, so an agent moved to MCP transport purely via
@@ -1000,7 +1013,7 @@ function main() {
         const entry = {};
         if (slotModel) entry.model = slotModel;
         if (Array.isArray(slot.fallback) && slot.fallback.length > 0) {
-          entry.fallback = slot.fallback.map((fb) => resolveSlotModel(fb, resolveModelAlias)).filter(Boolean);
+          entry.fallback = slot.fallback.map((fb) => resolveSlotModel(fb, resolveModelAlias, resolveLatestModelId)).filter(Boolean);
         }
         if (Object.keys(entry).length > 0) {
           generatedRouting.agents[agentName] = entry;
@@ -1011,7 +1024,7 @@ function main() {
 
   const orchestratorSlot = resolveOrchestratorSlot(routingProfile);
   if (orchestratorSlot) {
-    const orchestratorModel = resolveSlotModel(orchestratorSlot, resolveModelAlias);
+    const orchestratorModel = resolveSlotModel(orchestratorSlot, resolveModelAlias, resolveLatestModelId);
     if (orchestratorModel) {
       generatedRouting.orchestrator = { model: orchestratorModel };
     }

@@ -17,7 +17,7 @@ const EXPECTED_BACKEND: Record<string, { vendor: string; transport: string; mode
   "gemini-reviewer": { vendor: "google", transport: "mcp", model: "google/gemini-2.5-pro", costModelClass: "metered" },
   "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2", costModelClass: "local" },
   "grok-reviewer": { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },
-  "claude-worker": { vendor: "anthropic", transport: "mcp", model: "anthropic/claude-sonnet-4-6", costModelClass: "subscription" },
+  "claude-worker": { vendor: "anthropic", transport: "mcp", model: "anthropic/sonnet", costModelClass: "subscription" },
 };
 
 test("FOREIGN_LLM_AGENTS has exactly the 5 expected ids", () => {

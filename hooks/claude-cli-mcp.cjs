@@ -144,7 +144,7 @@ const readline = require("readline");
 const SERVER_NAME = "claude-cli-mcp";
 const SERVER_VERSION = "1.0.0";
 
-const DEFAULT_MODEL = "claude-haiku-4-5";
+const DEFAULT_MODEL = "haiku"; // alias: always resolves to the newest Haiku, never a pinned version
 const DEFAULT_MAX_TURNS = 1;
 const DEFAULT_PERMISSION_MODE = "plan";
 const DEFAULT_TIMEOUT_MS = 180000;
@@ -164,7 +164,7 @@ const CLAUDE_TOOL = {
     properties: {
       prompt: { type: "string", description: "The prompt to send. Delivered over the CLI's stdin, never through a shell." },
       system: { type: "string", description: "Optional text appended to the default system prompt (--append-system-prompt). Must not contain NUL or other control characters." },
-      model: { type: "string", description: "Model alias or full name (e.g. 'claude-haiku-4-5', 'sonnet'). Defaults to CLAUDE_CLI_MODEL env or 'claude-haiku-4-5'. Must match /^[A-Za-z0-9._-/]{1,100}$/." },
+      model: { type: "string", description: "Model alias or full name (e.g. 'haiku', 'sonnet' — an alias always resolves to the newest model). Defaults to CLAUDE_CLI_MODEL env or 'haiku'. Must match /^[A-Za-z0-9._-/]{1,100}$/." },
       max_turns: { type: "number", description: "Max agentic turns. Defaults to 1." },
       cwd: { type: "string", description: "Working directory for the CLI session. Must already exist as a directory. Defaults to CLAUDE_CLI_CWD env, else a fresh scratch directory (so the caller's project CLAUDE.md is NOT auto-loaded unless you set this deliberately)." },
       allowed_tools: {

@@ -579,9 +579,9 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   // Known foreign-LLM model ids (mirrors FOREIGN_LLM_AGENTS' backend.model in
   // src/host/vscode/packCatalog.ts) must be present, labeled by their model
   // id — never an agent display name like "Claude Worker"/"Codex Reviewer".
-  const claudeWorker = byId.get("anthropic/claude-sonnet-4-6");
-  assert.ok(claudeWorker, "anthropic/claude-sonnet-4-6 preset should be present");
-  assert.equal(claudeWorker?.label, "anthropic/claude-sonnet-4-6");
+  const claudeWorker = byId.get("anthropic/sonnet");
+  assert.ok(claudeWorker, "anthropic/sonnet preset should be present");
+  assert.equal(claudeWorker?.label, "anthropic/sonnet");
   assert.equal(claudeWorker?.vendor, "anthropic");
 
   const codex = byId.get("openai/gpt-5.6-sol");
@@ -600,9 +600,9 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   assert.equal(new Set(ids).size, ids.length, "preset model ids should be deduplicated");
 
   // fable resolves to a different id than its alias -> alias shown in parens.
-  const fable = byId.get("anthropic/claude-fable-5");
-  assert.ok(fable, "anthropic/claude-fable-5 preset (fable alias) should be present");
-  assert.equal(fable?.label, "anthropic/claude-fable-5 (fable)");
+  const fable = byId.get("anthropic/claude-fable-5-1");
+  assert.ok(fable, "anthropic/claude-fable-5-1 preset (fable alias) should be present");
+  assert.equal(fable?.label, "anthropic/claude-fable-5-1 (fable)");
 });
 
 test("buildRoutingView: presets include the opencode Zen vendor and big-pickle model", () => {

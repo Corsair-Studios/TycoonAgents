@@ -4,6 +4,8 @@
  * Attribution header - optional; end users may remove it.
  */
 
+import { LATEST_MODEL_IDS } from "../../core/modelAliases";
+
 /** Short model labels TycoonAgents exposes in the Settings GUI. */
 export type ModelShort = "opus" | "sonnet" | "haiku" | "fable";
 
@@ -12,14 +14,14 @@ export type ModelShort = "opus" | "sonnet" | "haiku" | "fable";
  * frontmatter. For opus/sonnet/haiku we intentionally write the BARE ALIAS,
  * which Claude Code resolves to the LATEST model of that family automatically
  * (so the mapping never goes stale). Fable has no auto-latest alias, so it uses
- * its canonical id `claude-fable-5`. These values MUST match the Claude Code
+ * the newest concrete id from LATEST_MODEL_IDS (modelAliases.ts). These values MUST match the Claude Code
  * hook's expectations exactly (see tycoon-claude-hook.cjs).
  */
 const SHORT_TO_ID: Record<ModelShort, string> = {
   opus: "opus",
   sonnet: "sonnet",
   haiku: "haiku",
-  fable: "claude-fable-5",
+  fable: LATEST_MODEL_IDS.fable,
 };
 
 /**

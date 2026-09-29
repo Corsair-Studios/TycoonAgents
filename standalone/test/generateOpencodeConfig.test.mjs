@@ -17,13 +17,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { resolveModelAlias } from '../../out/src/core/modelAliases.js';
+import { resolveLatestModelId } from '../../out/src/core/modelAliases.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'generate-opencode-config.mjs');
 
-const EXPECT_HAIKU_MODEL = `anthropic/${resolveModelAlias('haiku')}`;
+const EXPECT_HAIKU_MODEL = `anthropic/${resolveLatestModelId('haiku')}`;
 
 function mkTempRoot(prefix = 'tycoon-opencode-config-test-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

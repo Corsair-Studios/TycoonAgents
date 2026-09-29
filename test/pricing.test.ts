@@ -170,3 +170,52 @@ test("local-class model (lmstudio-qwen2.5) -> null price, class 'local'", () => 
   assert.equal(mod.costModelClass("lmstudio-qwen2.5"), "local");
   assert.equal(mod.modelPricePerMtok("lmstudio-qwen2.5"), null);
 });
+
+// ---------------------------------------------------------------------------
+// Current exact model ids and alias rows (2026-09): aliases price the newest
+// model per family; exact ids win over the alias row.
+// ---------------------------------------------------------------------------
+
+test("claude-sonnet-5-5 has an explicit row priced $2/$10 -> blended 4, and the 'anthropic/sonnet' alias row matches it", () => {
+  assert.equal(mod.resolvePriceKey("claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5");
+  assert.equal(mod.resolvePriceKey("anthropic/claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5");
+  assert.equal(mod.modelPricePerMtok("claude-sonnet-5-5"), 4);
+  assert.equal(mod.PRICE_TABLE["anthropic/sonnet"].perMtok, mod.PRICE_TABLE["anthropic/claude-sonnet-5-5"].perMtok);
+  assert.equal(mod.modelPricePerMtok("sonnet"), mod.modelPricePerMtok("claude-sonnet-5-5"));
+});
+
+test("claude-opus-5-5 ($4/$20) resolves to its own row, blended 8", () => {
+  assert.equal(mod.resolvePriceKey("claude-opus-5-5"), "anthropic/claude-opus-5-5");
+  assert.equal(mod.modelPricePerMtok("claude-opus-5-5"), 8);
+});
+
+test("claude-fable-5-1 ($10/$50) resolves to its own row, blended 20", () => {
+  assert.equal(mod.resolvePriceKey("claude-fable-5-1"), "anthropic/claude-fable-5-1");
+  assert.equal(mod.modelPricePerMtok("anthropic/claude-fable-5-1"), 20);
+});
+
+test("dated haiku id resolves via the claude-haiku-4-5 exact row; an older ids keep their real rate; an id without a row uses its family row", () => {
+  assert.equal(mod.resolvePriceKey("claude-haiku-4-5-20251001"), "anthropic/claude-haiku-4-5");
+  assert.equal(mod.resolvePriceKey("claude-opus-4-6"), "anthropic/claude-opus-4-6");
+  assert.equal(mod.modelPricePerMtok("claude-opus-4-6"), 10);
+  assert.equal(mod.modelPricePerMtok("opus"), mod.modelPricePerMtok("claude-opus-5-5"));
+  assert.equal(mod.resolvePriceKey("claude-fable-5"), "anthropic/fable");
+});
+
+test("claude-opus-4-7 / 4-8 / 5 keep the $5/$25 rate (10) via explicit rows; claude-sonnet-5 is $2/$10 (4)", () => {
+  for (const id of ["claude-opus-4-7", "claude-opus-4-8", "claude-opus-5"]) {
+    assert.equal(mod.resolvePriceKey(id), `anthropic/${id}`);
+    assert.equal(mod.modelPricePerMtok(id), 10);
+  }
+  assert.equal(mod.resolvePriceKey("claude-sonnet-5"), "anthropic/claude-sonnet-5");
+  assert.equal(mod.modelPricePerMtok("claude-sonnet-5"), 4);
+  assert.equal(mod.resolvePriceKey("claude-opus-5-5"), "anthropic/claude-opus-5-5");
+});
+
+test("claude-opus-4 and claude-opus-4-1 keep their real $15/$75 rate (30), not the opus alias row", () => {
+  for (const id of ["claude-opus-4", "claude-opus-4-1", "claude-opus-4-20250514"]) {
+    assert.equal(mod.modelPricePerMtok(id), 30, id);
+  }
+  assert.equal(mod.resolvePriceKey("claude-opus-4-1"), "anthropic/claude-opus-4-1");
+  assert.equal(mod.modelPricePerMtok("claude-opus-4-6"), 10);
+});

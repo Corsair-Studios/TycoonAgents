@@ -41,6 +41,23 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+// Rates come from the shipped PRICE_TABLE (media/main.js), not literals, so a
+// price refresh never silently invalidates the ratio pins below.
+const MAIN_JS_SRC_FOR_RATES = readFileSync(join(process.cwd(), "media", "main.js"), "utf8");
+function tableRate(key: string): number {
+  const m = new RegExp(`"${key}": *\\{ *perMtok: *([0-9.]+)`).exec(MAIN_JS_SRC_FOR_RATES);
+  assert.ok(m, "no PRICE_TABLE row for " + key);
+  return Number(m[1]);
+}
+function fmtR(n: number): string {
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+function assertRatioLine(text: string, ratio: number): void {
+  const want = `delegated work ran at ${fmtR(ratio)}× cheaper than running the same billable tokens on the orchestrator's model`;
+  assert.ok(text.toLowerCase().includes(want), `expected "${want}", got: ${text}`);
+}
+
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { JSDOM } = require("jsdom");
@@ -306,7 +323,7 @@ test("delegation hero: detected Opus orchestrator renders the honest ledger (cou
   // Sonnet actual billed: 100000/1e6*4 = 0.40. ratio = 1.00/0.40 = 2.5 ->
   // fmtRatio(2.5) = "2.5". No dollar figures render (p60-t2 dollar-free
   // rewrite): the ledger is now token-only plus this one ratio line.
-  assert.match(text, /Delegated work ran at 2\.5× cheaper than running the same billable tokens on the orchestrator's model/i, `expected the 2.5x ratio line, got: ${text}`);
+  assertRatioLine(text, tableRate("anthropic/opus") / tableRate("anthropic/sonnet"));
   assert.match(text, /Where delegated work ran/i);
   assert.match(text, /Metered \(API\)/i);
   assert.match(text, /Subscription:.*quota, not billed per token/is);
@@ -435,7 +452,7 @@ test("delegation hero: modelBreakdown {opus:1000, sonnet:1000} blends to a token
   const text = String(body.textContent);
   // Blended price 7 $/Mtok: counterfactual = 0.70, billed = 0.40, ratio =
   // 0.70/0.40 = 1.75 -> fmtRatio(1.75) = "1.8".
-  assert.match(text, /Delegated work ran at 1\.8× cheaper than running the same billable tokens on the orchestrator's model/i, `expected the 1.8x ratio line, got: ${text}`);
+  assertRatioLine(text, ((tableRate("anthropic/opus") + tableRate("anthropic/sonnet")) / 2) / tableRate("anthropic/sonnet"));
   assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.doesNotMatch(text, /\$/, "the Metrics/Delegation tabs render no dollar figures");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
@@ -462,7 +479,7 @@ test("delegation hero: modelBreakdown {} (empty) behaves identically to no model
   assert.equal(body.querySelector(".delegation-hero-num"), null, "no headline percent should ever render");
   const text = String(body.textContent);
   // Empty breakdown falls back to scalar opus price 10 — same ratio as test (a): 2.5×.
-  assert.match(text, /Delegated work ran at 2\.5× cheaper than running the same billable tokens on the orchestrator's model/i, `expected the 2.5x ratio line, got: ${text}`);
+  assertRatioLine(text, tableRate("anthropic/opus") / tableRate("anthropic/sonnet"));
   assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.doesNotMatch(text, /\$/, "the Metrics/Delegation tabs render no dollar figures");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);

@@ -31,7 +31,7 @@ test("modelIdFromShort writes auto-latest aliases (opus/sonnet/haiku) and canoni
   assert.equal(modelIdFromShort("opus"), "opus");
   assert.equal(modelIdFromShort("sonnet"), "sonnet");
   assert.equal(modelIdFromShort("haiku"), "haiku");
-  assert.equal(modelIdFromShort("fable"), "claude-fable-5");
+  assert.equal(modelIdFromShort("fable"), "claude-fable-5-1");
   assert.equal(modelIdFromShort("gpt"), undefined);
 
   // round-trip: short -> written value -> short. Bare aliases must map back.

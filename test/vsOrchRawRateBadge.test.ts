@@ -41,6 +41,25 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+// Rates come from the shipped PRICE_TABLE (media/main.js), not literals, so a
+// price refresh never silently invalidates these ratio pins.
+const MAIN_JS_SRC_FOR_RATES = readFileSync(join(process.cwd(), "media", "main.js"), "utf8");
+function tableRate(key: string): number {
+  const m = new RegExp(`"${key}": *\\{ *perMtok: *([0-9.]+)`).exec(MAIN_JS_SRC_FOR_RATES);
+  assert.ok(m, "no PRICE_TABLE row for " + key);
+  return Number(m[1]);
+}
+const UNKNOWN_RATE = 3; // DEFAULT_PRICE_KEY row (media/main.js: unknown/metered)
+function fmtR(n: number): string {
+  return Number.isInteger(Math.round(n * 10) / 10) ? String(Math.round(n)) : (Math.round(n * 10) / 10).toFixed(1);
+}
+function cheaperLabel(orch: number, worker: number): string {
+  return fmtR(orch / worker) + "× cheaper";
+}
+function pricierLabel(orch: number, worker: number): string {
+  return fmtR(worker / orch) + "× pricier";
+}
+
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { JSDOM } = require("jsdom");
@@ -362,8 +381,8 @@ test("metrics row badge: Sonnet worker under Opus orchestrator renders '2.5x che
       const text = rowBadgeText(doc, "Coding Specialist");
       assert.equal(
         text,
-        "2.5× cheaper",
-        `orchCache=${orchCache}, workerCache=${workerCache}: expected '2.5× cheaper' (raw 10/4 opus/sonnet rate ratio), got '${text}'`,
+        cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")),
+        `orchCache=${orchCache}, workerCache=${workerCache}: expected the (opus/sonnet table ratio), got '${text}'`,
       );
       assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
     }
@@ -400,8 +419,8 @@ test("metrics row badge: Haiku worker under Opus orchestrator renders '5x cheape
     const text = rowBadgeText(doc, "Coding Specialist");
     assert.equal(
       text,
-      "5× cheaper",
-      `orchCache=${orchCache}: expected '5× cheaper' (raw 10/2 opus/haiku rate ratio), got '${text}'`,
+      cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/haiku")),
+      `orchCache=${orchCache}: expected the (opus/haiku table ratio), got '${text}'`,
     );
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
@@ -442,7 +461,7 @@ test("metrics row badge: Fable worker under Opus orchestrator renders '2x pricie
     pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
-    assert.equal(text, "2× pricier", `cache=${cache}: expected '2× pricier' (raw 20/10 fable/opus rate ratio), got '${text}'`);
+    assert.equal(text, pricierLabel(tableRate("anthropic/opus"), tableRate("anthropic/fable")), `cache=${cache}: expected the fable/opus rate ratio, got '${text}'`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
 });
@@ -484,7 +503,7 @@ test("metrics row badge: unknown worker model prices via DEFAULT_PRICE_KEY (unkn
   // ("unknown/metered", $3/Mtok, media/main.js ~13539-13541), so opus (10)
   // vs the $3 fallback renders as "3.3x cheaper", not "—". This is the
   // documented intent of the DEFAULT_PRICE_KEY design, not a regression.
-  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.equal(text, cheaperLabel(tableRate("anthropic/opus"), UNKNOWN_RATE), `expected the (opus/DEFAULT_PRICE_KEY table ratio), got '${text}'`);
   assert.doesNotMatch(String(text), /nan|infinity/i, "unpriced model must never render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -583,8 +602,8 @@ test("settings 'vs. orch.' chip: Sonnet worker under Opus orchestrator renders '
     const text = chipVsOrchText(doc, "Coding Specialist");
     assert.equal(
       text,
-      "2.5× cheaper",
-      `orchCache=${orchCache}: expected '2.5× cheaper' (raw 10/4 opus/sonnet rate ratio), got '${text}'`,
+      cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")),
+      `orchCache=${orchCache}: expected the (opus/sonnet table ratio), got '${text}'`,
     );
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
@@ -614,7 +633,7 @@ test("settings 'vs. orch.' chip: unknown worker model prices via DEFAULT_PRICE_K
   const text = chipVsOrchText(doc, "Coding Specialist");
   // See the row-badge test above: DEFAULT_PRICE_KEY ($3/Mtok) now prices
   // unrecognized-but-metered models instead of returning null.
-  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.equal(text, cheaperLabel(tableRate("anthropic/opus"), UNKNOWN_RATE), `expected the (opus/DEFAULT_PRICE_KEY table ratio), got '${text}'`);
   assert.doesNotMatch(String(text), /nan|infinity/i, "unpriced model must never render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -642,10 +661,10 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   };
 
-  expect("sonnet", "2.5× cheaper");
-  expect("haiku", "5× cheaper");
+  expect("sonnet", cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")));
+  expect("haiku", cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/haiku")));
   expect("opus", "same cost");
-  expect("fable", "2× pricier");
+  expect("fable", pricierLabel(tableRate("anthropic/opus"), tableRate("anthropic/fable")));
 });
 
 test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchanged (settings chip) -- Sonnet '2.5x cheaper', Haiku '5x cheaper', Opus 'same cost', Fable '2x pricier'", () => {
@@ -661,10 +680,10 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   };
 
-  expect("sonnet", "2.5× cheaper");
-  expect("haiku", "5× cheaper");
+  expect("sonnet", cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")));
+  expect("haiku", cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/haiku")));
   expect("opus", "same cost");
-  expect("fable", "2× pricier");
+  expect("fable", pricierLabel(tableRate("anthropic/opus"), tableRate("anthropic/fable")));
 });
 
 // ---------------------------------------------------------------------------
@@ -769,7 +788,7 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
   // treating them as unpriced; distinguishing this from subscription/local
   // (which still render "flat-rate"/"local") is the entire point of the
   // phase, so this must never collapse to those labels.
-  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.equal(text, cheaperLabel(tableRate("anthropic/opus"), UNKNOWN_RATE), `expected the (opus/DEFAULT_PRICE_KEY table ratio), got '${text}'`);
   assert.doesNotMatch(String(text), /flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -783,7 +802,7 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "3.3× cheaper", `expected '3.3× cheaper' (raw 10/3 opus/DEFAULT_PRICE_KEY rate ratio), got '${text}'`);
+  assert.equal(text, cheaperLabel(tableRate("anthropic/opus"), UNKNOWN_RATE), `expected the (opus/DEFAULT_PRICE_KEY table ratio), got '${text}'`);
   assert.doesNotMatch(String(text), /flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });

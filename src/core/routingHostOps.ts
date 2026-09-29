@@ -261,8 +261,9 @@ function safeParseAgentBackend(fm: Record<string, unknown>): Backend {
  * the same underlying model. A short top-level `model:` alias (opus/sonnet/
  * haiku/fable) shows its resolved full id, with the alias noted in
  * parentheses only when the resolved id actually differs from the alias
- * (fable resolves to "claude-fable-5"; opus/sonnet/haiku resolve to
- * themselves in MODEL_ALIASES today).
+ * (fable resolves to its LATEST_MODEL_IDS entry, currently
+ * "claude-fable-5-1"; opus/sonnet/haiku resolve to themselves in
+ * MODEL_ALIASES).
  */
 function buildPresets(): RoutingPresets {
   const vendors = new Set<string>(["anthropic"]);

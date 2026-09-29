@@ -251,17 +251,19 @@ function releaseLock(lockPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Model defaults (sourced from CLAUDE.md model assignments)
+// Model defaults (sourced from CLAUDE.md model assignments). Telemetry labels
+// only, and bare aliases on purpose: the same value an agent .md with
+// `model: sonnet` yields, so a default never pins a version.
 // ---------------------------------------------------------------------------
 const MODEL_DEFAULTS = {
-  "orchestrator":      "claude-opus-4-6",
-  "search-retrieval":  "claude-haiku-4-5-20251001",
-  "primary-agent":     "claude-sonnet-4-6",
-  "coding-specialist": "claude-sonnet-4-6",
-  "testing-specialist":"claude-sonnet-4-6",
-  "vscode-integration":"claude-sonnet-4-6",
-  "ux-ui-designer":    "claude-sonnet-4-6",
-  "workspace-monitor": "claude-sonnet-4-6",
+  "orchestrator":      "opus",
+  "search-retrieval":  "haiku",
+  "primary-agent":     "sonnet",
+  "coding-specialist": "sonnet",
+  "testing-specialist":"sonnet",
+  "vscode-integration":"sonnet",
+  "ux-ui-designer":    "sonnet",
+  "workspace-monitor": "sonnet",
 };
 
 // SHORTHAND_MODEL is telemetry-only: resolveModel() applies it to the value
@@ -282,7 +284,7 @@ const SHORTHAND_MODEL = {
   "opus":   "opus",
   "sonnet": "sonnet",
   "haiku":  "haiku",
-  "fable":  "claude-fable-5",
+  "fable":  "claude-fable-5-1", // must equal LATEST_MODEL_IDS.fable (asserted by test/modelAliasesLatest.test.ts)
 };
 
 // ---------------------------------------------------------------------------
