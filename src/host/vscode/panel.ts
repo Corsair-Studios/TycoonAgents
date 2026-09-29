@@ -10182,6 +10182,12 @@ export class TycoonPanel {
       vscode.Uri.joinPath(this._extensionUri, "media", "sprites", "disco_ball.png")
     );
 
+    // Boot-loader logo (media/handbook/tycoonagents_logo_sm.png) — served via
+    // the same webview.cspSource img-src the other media URIs use.
+    const logoUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, "media", "handbook", "tycoonagents_logo_sm.png")
+    );
+
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} data:`,
@@ -10210,6 +10216,7 @@ export class TycoonPanel {
   <div id="boot-loader" role="status" aria-live="polite">
     <div class="boot-loader-glow" aria-hidden="true"></div>
     <div class="boot-loader-inner">
+      <img class="boot-loader-logo" src="${logoUri}" alt="" width="112" height="112" decoding="async" />
       <div class="boot-loader-title">TycoonAgents</div>
       <div class="boot-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="boot-loader-track">

@@ -3716,6 +3716,7 @@ function buildHostHtml(token) {
   <div id="boot-loader" role="status" aria-live="polite">
     <div class="boot-loader-glow" aria-hidden="true"></div>
     <div class="boot-loader-inner">
+      <img class="boot-loader-logo" src="/media/handbook/tycoonagents_logo_sm.png" alt="" width="112" height="112" decoding="async" />
       <div class="boot-loader-title">TycoonAgents</div>
       <div class="boot-loader-dots" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="boot-loader-track">

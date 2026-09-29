@@ -179,6 +179,20 @@ body {
   padding: 0 24px;
 }
 
+.boot-loader-logo {
+  display: block;
+  width: 112px;
+  height: 112px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 14px rgba(255, 176, 32, 0.35));
+  animation: boot-loader-logo-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes boot-loader-logo-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.03); }
+}
+
 .boot-loader-title {
   font-size: 20px;
   font-weight: 700;
@@ -235,6 +249,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .boot-loader-glow,
+  .boot-loader-logo,
   .boot-loader-dots span {
     animation: none;
   }

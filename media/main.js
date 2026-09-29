@@ -17836,15 +17836,21 @@ function themeAnimPreviewDraw(player) {
 
   /**
    * Blended $ per MILLION tokens and relative cost WEIGHT, keyed by
-   * "provider/family". Anthropic rows are derived from Anthropic's current
-   * published API token rates using a 3:1 input:output blend (agentic work
-   * is input-heavy), i.e. (3*input + output) / 4, taking the latest
-   * non-deprecated model per family (version numbers omitted — see
-   * prettyModel()'s docs for why this project never hardcodes them):
-   *   opus    $5 in / $25 out  -> (3*5  + 25)/4 = $10
-   *   sonnet  $2 in / $10 out  -> (3*2  + 10)/4 = $4   [intro rate thru 2026-08-31; standard $3/$15 -> $6 from 2026-09-01]
-   *   haiku   $1 in / $5  out  -> (3*1  +  5)/4 = $2
-   *   fable   $10 in / $50 out -> (3*10 + 50)/4 = $20
+   * "provider/family" or "provider/<exact model id>". Anthropic rows are
+   * derived from Anthropic's published API token rates using a 3:1
+   * input:output blend (agentic work is input-heavy), i.e.
+   * (3*input + output) / 4.
+   *
+   * The bare-alias rows (anthropic/opus|sonnet|haiku|fable) price the model
+   * each alias resolves to TODAY, so an agent on `model: sonnet` is always
+   * priced as the newest Sonnet. Exact-id rows (anthropic/claude-...) pin
+   * the rate of that specific model and win over the alias row; older
+   * exact-id rows are kept so historical metrics keep their original rate.
+   * Alias rows, current as of 2026-09:
+   *   opus    $4 in / $20 out  -> (3*4  + 20)/4 = $8    [Opus 5.5; older opus-4-x rows keep $5/$25 -> $10]
+   *   sonnet  $2 in / $10 out  -> (3*2  + 10)/4 = $4    [Sonnet 5.5]
+   *   haiku   $1 in / $5  out  -> (3*1  +  5)/4 = $2    [Haiku 4.5]
+   *   fable   $10 in / $50 out -> (3*10 + 50)/4 = $20   [Fable 5.1]
    * Only TOTAL tokens are tracked per agent (no input/output/cache split), so
    * treat this as a rough estimate — RATIOS between models matter more than
    * absolute accuracy. These are API rates and do NOT reflect Claude
@@ -17860,10 +17866,25 @@ function themeAnimPreviewDraw(player) {
    * @type {Record<string, {perMtok:number, weight:number}>}
    */
   const PRICE_TABLE = {
-    "anthropic/opus": { perMtok: 10, weight: 15 },
+    "anthropic/opus": { perMtok: 8, weight: 12 },
     "anthropic/sonnet": { perMtok: 4, weight: 3 },
     "anthropic/haiku": { perMtok: 2, weight: 0.8 },
     "anthropic/fable": { perMtok: 20, weight: 30 },
+    // Exact current model ids (Claude docs models overview, 2026-09); these
+    // win over the alias rows above. Refresh via the update-pricing skill.
+    "anthropic/claude-fable-5-1": { perMtok: 20, weight: 30 }, // $10 in / $50 out
+    "anthropic/claude-opus-5-5": { perMtok: 8, weight: 12 }, // $4 in / $20 out -> (12+20)/4
+    // Historical Opus rows ($5 in / $25 out -> 10) so recorded metrics keep their real price.
+    "anthropic/claude-opus-4-6": { perMtok: 10, weight: 15 },
+    "anthropic/claude-opus-4-5": { perMtok: 10, weight: 15 },
+    "anthropic/claude-opus-4": { perMtok: 30, weight: 45 }, // $15 in / $75 out -> (45+75)/4
+    "anthropic/claude-opus-4-1": { perMtok: 30, weight: 45 },
+    "anthropic/claude-opus-4-7": { perMtok: 10, weight: 15 },
+    "anthropic/claude-opus-4-8": { perMtok: 10, weight: 15 },
+    "anthropic/claude-opus-5": { perMtok: 10, weight: 15 },
+    "anthropic/claude-sonnet-5": { perMtok: 4, weight: 3 }, // $2 in / $10 out, same as sonnet-5-5
+    "anthropic/claude-sonnet-5-5": { perMtok: 4, weight: 3 }, // $2 in / $10 out
+    "anthropic/claude-haiku-4-5": { perMtok: 2, weight: 0.8 }, // $1 in / $5 out
     // placeholders — refresh via the update-pricing skill
     "openai/gpt-5": { perMtok: 8, weight: 12 },
     "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
@@ -17904,6 +17925,25 @@ function themeAnimPreviewDraw(player) {
   const LEGACY_CLAUDE_MODEL_ID_RE = /^claude-(opus|sonnet|haiku|fable)(-\d+)+$/i;
 
   /**
+   * Longest exact-id PRICE_TABLE row ("anthropic/claude-...") that `modelId`
+   * equals or extends with a dated suffix (e.g. "claude-haiku-4-5-20251001"
+   * -> "anthropic/claude-haiku-4-5"), or null when only a family row applies.
+   * @param {string} modelId lower-cased, without the "anthropic/" prefix
+   * @returns {string|null}
+   */
+  function exactAnthropicKey(modelId) {
+    let best = null;
+    for (const key of Object.keys(PRICE_TABLE)) {
+      if (!key.startsWith("anthropic/claude-")) continue;
+      const suffix = key.slice("anthropic/".length);
+      if ((modelId === suffix || modelId.startsWith(`${suffix}-`)) && (!best || suffix.length > best.length)) {
+        best = suffix;
+      }
+    }
+    return best ? `anthropic/${best}` : null;
+  }
+
+  /**
    * Resolve a model id/alias/vendor-qualified string (plus optional
    * costModelClass) to a PRICE_TABLE key. Never throws, never returns a
    * missing key.
@@ -17928,6 +17968,8 @@ function themeAnimPreviewDraw(player) {
 
     // Legacy bare Claude ids: "claude-sonnet-4-6", or a bare alias like "sonnet".
     if (LEGACY_CLAUDE_MODEL_ID_RE.test(id)) {
+      const exact = exactAnthropicKey(id);
+      if (exact) return exact;
       const m = /^claude-(opus|sonnet|haiku|fable)/i.exec(id);
       return `anthropic/${m[1].toLowerCase()}`;
     }
@@ -17939,6 +17981,8 @@ function themeAnimPreviewDraw(player) {
       const modelPart = rest.join("/");
 
       if (provider === "anthropic") {
+        const exact = exactAnthropicKey(modelPart);
+        if (exact) return exact;
         const famMatch = /(opus|sonnet|haiku|fable)/i.exec(modelPart);
         if (famMatch) return `anthropic/${famMatch[1].toLowerCase()}`;
       }
@@ -19941,7 +19985,7 @@ function themeAnimPreviewDraw(player) {
   let lastPathHealthSnapshot = null;
 
   /** Cost weight by model (relative price); used for savings estimates. */
-  const COST_WEIGHT = { opus: 15, sonnet: 3, haiku: 0.8 };
+  const COST_WEIGHT = { opus: 12, sonnet: 3, haiku: 0.8 };
 
   /** Relative capability/cost rank of each model (lower = cheaper/lighter). */
   const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };

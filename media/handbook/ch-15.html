@@ -8,6 +8,7 @@
 </head>
 <body class="page">
 <aside class="side-rail">
+<a class="side-rail-brand" href="index.html"><img src="tycoonagents_logo_sm.png" alt="TycoonAgents" width="36" height="36"><span>TycoonAgents</span></a>
 <details class="side-rail-toggle" open>
 <summary class="side-rail-summary">Chapters</summary>
 <nav class="side-rail-nav" aria-label="Handbook chapters">
@@ -291,7 +292,8 @@ Reference env var names only, never a value.</pre>
     unreachable, it tries the Codex reviewer next; if that also fails
     (and <code>useDefaultFallback</code> is checked, as it is by default),
     it finally falls back to the project's default &mdash; here, a plain
-    Claude Sonnet run.
+    Claude Sonnet run. The <code>sonnet</code> alias always resolves to the
+    newest Sonnet; write a specific model id there only if you want to pin it.
   </p>
 
   <h3>How it shows in the panel</h3>

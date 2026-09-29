@@ -390,6 +390,34 @@ pre code {
 
 .chapter-card:hover .cc-title { text-decoration: underline; }
 
+/* ---------- Logo (side-rail brand + index hero) ---------- */
+.side-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.6rem;
+  padding: 0.2rem 0.25rem;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: bold;
+  font-size: 1.05rem;
+  text-decoration: none;
+}
+.side-rail-brand:hover { color: var(--coral); text-decoration: none; }
+.side-rail-brand img { width: 36px; height: 36px; flex: none; object-fit: contain; }
+
+.hero-logo {
+  display: block;
+  width: 120px;
+  height: 120px;
+  margin: 0 0 1rem;
+  object-fit: contain;
+}
+
+@media (max-width: 600px) {
+  .hero-logo { width: 96px; height: 96px; }
+}
+
 /* ---------- Side rail (wiki-style chapter nav) ---------- */
 .side-rail {
   margin: 0 0 1.75rem;
