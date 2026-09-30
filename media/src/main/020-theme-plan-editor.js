@@ -1949,6 +1949,27 @@
   }
 
   /**
+   * Text for the refunded-attempt notice. The backend's 502 body reports no
+   * refunded amount, so the amount is the attempt's quoted cost: the current
+   * pricing for this board type, else the item's recorded attemptCost when
+   * positive (it is 0 after a refunded attempt, so that is not a real amount).
+   * Never guesses a number: with no known amount the text omits it.
+   * @param {any} item
+   */
+  function themeRefundNoticeText(item) {
+    const status = typeof themeServiceStatusWithCachedBalance !== "undefined"
+      ? themeServiceStatusWithCachedBalance()
+      : (typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null);
+    const byBoard = status && status.pricing && status.pricing.attemptCostByBoardType;
+    const quoted = byBoard && typeof byBoard[item.boardType] === "number" ? byBoard[item.boardType] : undefined;
+    let n = quoted;
+    if (typeof n !== "number" && typeof item.attemptCost === "number" && item.attemptCost > 0) n = item.attemptCost;
+    if (n === 0) return "Attempt failed — you were not charged";
+    if (typeof n !== "number") return "Attempt failed, your credits were refunded";
+    return `Attempt failed, ${n} ${n === 1 ? "credit" : "credits"} refunded`;
+  }
+
+  /**
    * Per-item refund/error notice shown above Generate/Retry (p43-t3). Each
    * state gets its own class and plain-text message; the not_signed_in and
    * insufficient_credits states also get a button that opens the Theme
@@ -1963,8 +1984,7 @@
     if (item.lastAttemptRefunded || item.error_kind === "provider_failed") {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-refunded";
-      const n = typeof item.attemptCost === "number" ? item.attemptCost : 1;
-      notice.textContent = `Attempt failed, ${n} credit(s) refunded`;
+      notice.textContent = themeRefundNoticeText(item);
       return notice;
     }
     if (item.error_kind === "not_signed_in" || item.error_kind === "insufficient_credits") {

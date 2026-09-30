@@ -1372,7 +1372,7 @@ test('lastAttemptRefunded shows the refunded notice and keeps Retry available', 
   }));
   const notice = attemptNotice(h);
   assert.ok(notice.classList.contains('theme-attempt-refunded'));
-  assert.equal(notice.textContent, 'Attempt failed, 2 credit(s) refunded');
+  assert.equal(notice.textContent, 'Attempt failed, 2 credits refunded');
   const retryBtn = h.doc.querySelector('[data-item-id="env1"] .theme-review-retry');
   assert.ok(retryBtn && !retryBtn.disabled, 'Retry must remain available after a refund');
   h.win.close();
@@ -1387,7 +1387,33 @@ test('provider_failed without a refund flag still renders the refunded notice', 
   }));
   const notice = attemptNotice(h);
   assert.ok(notice.classList.contains('theme-attempt-refunded'));
-  assert.equal(notice.textContent, 'Attempt failed, 1 credit(s) refunded');
+  assert.equal(notice.textContent, 'Attempt failed, 1 credit refunded');
+  h.win.close();
+});
+
+test('refunded notice uses the quoted board cost, not a stale attemptCost', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { character_sheet: 3 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ boardType: 'character_sheet', error_kind: 'provider_failed', attemptCost: 1 })],
+  }));
+  assert.equal(attemptNotice(h).textContent, 'Attempt failed, 3 credits refunded');
+  h.win.close();
+});
+
+test('refunded notice never invents an amount when none is known', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'provider_failed', lastAttemptRefunded: true, attemptCost: 0 })],
+  }));
+  assert.equal(attemptNotice(h).textContent, 'Attempt failed, your credits were refunded');
   h.win.close();
 });
 
