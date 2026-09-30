@@ -61,6 +61,8 @@ to either version, but the official MCP needs **Blender 5.1 or newer**.
    sent to a remote location. Use a virtual machine or a system without sensitive
    data, and save or back up your `.blend` first.
 
+**Port conflict:** the official and community add-ons both listen on TCP port 9876, so enable only ONE add-on in Blender and install only ONE of the two MCP entries; `BLENDER_MCP_PORT` changes the official server's port if needed.
+
 ### Alternative: community `blender-mcp` (catalog entry `blender-community`)
 
 A community bridge ("MCP for Blender" by BlenderMCP), not published by Blender
