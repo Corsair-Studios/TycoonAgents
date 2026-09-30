@@ -7668,7 +7668,7 @@ if (typeof module !== "undefined" && module.exports) {
    * Never guesses a number: with no known amount the text omits it.
    * @param {any} item
    */
-  function themeRefundNoticeText(item) {
+  function themeRefundAmount(item) {
     const status = typeof themeServiceStatusWithCachedBalance !== "undefined"
       ? themeServiceStatusWithCachedBalance()
       : (typeof themeServiceStatus !== "undefined" ? themeServiceStatus : null);
@@ -7676,6 +7676,11 @@ if (typeof module !== "undefined" && module.exports) {
     const quoted = byBoard && typeof byBoard[item.boardType] === "number" ? byBoard[item.boardType] : undefined;
     let n = quoted;
     if (typeof n !== "number" && typeof item.attemptCost === "number" && item.attemptCost > 0) n = item.attemptCost;
+    return n;
+  }
+
+  function themeRefundNoticeText(item) {
+    const n = themeRefundAmount(item);
     if (n === 0) return "Attempt failed — you were not charged";
     if (typeof n !== "number") return "Attempt failed, your credits were refunded";
     return `Attempt failed, ${n} ${n === 1 ? "credit" : "credits"} refunded`;
@@ -7693,7 +7698,8 @@ if (typeof module !== "undefined" && module.exports) {
     // "Refunded" is claimed only when the server confirmed it
     // (lastAttemptRefunded === true). A provider_failed with refunded:false
     // or no flag never says so.
-    if (item.lastAttemptRefunded === true) {
+    // content_blocked is excluded: it has its own refund-aware wording below.
+    if (item.lastAttemptRefunded === true && item.error_kind !== "content_blocked") {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-refunded";
       notice.textContent = themeRefundNoticeText(item);
@@ -7773,7 +7779,28 @@ if (typeof module !== "undefined" && module.exports) {
       // path at all (see themeServiceClient.ts's 422 handling) — that must
       // still name the category, not fall all the way back to the generic
       // copy just because fieldLabel is unavailable.
-      if (categoryLabel && fieldLabel) {
+      // The charge outcome comes from lastAttemptRefunded: undefined is the
+      // pre-screen block (nothing was charged); true/false is the provider
+      // policy refusal that ran after the debit (refunded / refund failed).
+      const refundedFlag = item.lastAttemptRefunded;
+      if (refundedFlag === true || refundedFlag === false) {
+        const reason = categoryLabel && fieldLabel
+          ? ` (${categoryLabel}): ${fieldLabel}`
+          : (categoryLabel ? ` (${categoryLabel})` : "");
+        let outcome;
+        if (refundedFlag === true) {
+          const n = themeRefundAmount(item);
+          if (n === 0) outcome = "You were not charged.";
+          else if (typeof n !== "number") outcome = "Your credits were refunded.";
+          else outcome = `Your ${n} ${n === 1 ? "credit was" : "credits were"} refunded.`;
+        } else {
+          notice.className = "theme-attempt-notice theme-attempt-unavailable";
+          outcome = "This attempt was charged and the refund did not go through — check your balance.";
+        }
+        notice.appendChild(document.createTextNode(
+          `Blocked by the image provider's content policy${reason}. ${outcome} Rephrase it and retry. `,
+        ));
+      } else if (categoryLabel && fieldLabel) {
         notice.appendChild(document.createTextNode(
           `Blocked by content screening (${categoryLabel}): ${fieldLabel}. No credit was spent. Rephrase it and retry. `,
         ));

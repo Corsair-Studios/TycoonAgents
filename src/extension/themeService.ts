@@ -3575,14 +3575,15 @@ export async function recordUserCorrectableGenerationError(
   error: unknown,
 ): Promise<boolean> {
   if (isThemeGenerationServiceError(error)) {
-    // content_blocked and account_locked are pre-debit failures — the ledger
+    // account_locked and a content_blocked pre-screen are pre-debit failures — the ledger
     // was never charged (no credit_ledger row at all, see docs/theme-service-api.md
     // "Content screening" / "Strikes and account lock"), so the attempt cost
     // recorded here is 0 and it is never a "refund" (nothing to refund).
     const isBlockedOrLocked = error.kind === 'content_blocked' || error.kind === 'account_locked';
     // refunded === false means the backend debited and did not (or could not)
     // refund; absent/true means nothing net was charged (pre-screen blocks
-    // carry no refunded flag at all).
+    // carry no refunded flag at all). A content_blocked carrying a refunded
+    // flag is the provider policy refusal that ran after the debit.
     let chargedCost: number | undefined;
     if (error.refunded === false) {
       const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -3595,7 +3596,7 @@ export async function recordUserCorrectableGenerationError(
       themeId,
       itemId,
       mapToReviewErrorKind(error.kind),
-      isBlockedOrLocked ? false : error.refunded,
+      error.kind === 'account_locked' ? false : error.refunded,
       isBlockedOrLocked ? 0 : undefined,
       error.code,
       error.categories,

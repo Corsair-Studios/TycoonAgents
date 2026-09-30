@@ -1656,6 +1656,70 @@ test('content_blocked with a likeness category (no reason/fields, per the backen
   h.win.close();
 });
 
+test('content_blocked with lastAttemptRefunded:true says the credits were refunded', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeBuilderOpened(signedInStatus({
+    credits: 12,
+    pricing: { ...PRICING, attemptCostByBoardType: { character_sheet: 2 } },
+  })));
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({
+      boardType: 'character_sheet',
+      error_kind: 'content_blocked',
+      lastAttemptRefunded: true,
+      attemptCost: 0,
+      error_categories: ['likeness'],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(!notice.classList.contains('theme-attempt-unavailable'));
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by the image provider's content policy (a real person's likeness). Your 2 credits were refunded. Rephrase it and retry.",
+  );
+  assert.ok(notice.querySelector('a.tsp-link'), 'Acceptable use link stays');
+  h.win.close();
+});
+
+test('content_blocked with lastAttemptRefunded:false says the refund did not go through', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 2,
+    items: [baseReviewItem({
+      error_kind: 'content_blocked',
+      lastAttemptRefunded: false,
+      attemptCost: 0,
+      error_categories: ['likeness'],
+    })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-unavailable'));
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by the image provider's content policy (a real person's likeness). This attempt was charged and the refund did not go through — check your balance. Rephrase it and retry.",
+  );
+  h.win.close();
+});
+
+test('content_blocked with no refunded flag (pre-screen) still says no credit was spent', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'content_blocked', attemptCost: 0, error_categories: ['likeness'] })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(notice.classList.contains('theme-attempt-contentblocked'));
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (a real person's likeness). No credit was spent. Rephrase it and retry.",
+  );
+  h.win.close();
+});
+
 test('content_blocked with a category but no fields (likeness/IP precheck shape) still names the category', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeImageReview({

@@ -1098,6 +1098,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
               kind: "content_blocked",
               status: 422,
               message: errorField ?? "content blocked",
+              refunded,
               categories: categories && categories.length > 0 ? categories : undefined,
               fields: fields && fields.length > 0 ? fields : undefined,
             },

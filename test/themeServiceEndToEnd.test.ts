@@ -445,7 +445,7 @@ test('content_blocked, policy-refusal strikes, auto-lock, and 24h strike expiry 
       let environment = review.entries.find((e) => e.item.id === 'environment')!;
       assert.equal(environment.item.error_kind, 'content_blocked');
       assert.equal(environment.item.attemptCost, 0);
-      assert.equal(environment.item.lastAttemptRefunded, false);
+      assert.equal(environment.item.lastAttemptRefunded, undefined, 'a pre-screen block carries no refunded flag');
 
       // ---- (2) failNextGenerateWithPolicy -> refunded attempt, strikes 1 ----
       const balanceBeforePolicy = fake.state.balances.get(accountId)!;
