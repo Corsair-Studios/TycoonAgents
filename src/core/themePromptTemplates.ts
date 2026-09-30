@@ -14,7 +14,7 @@ import { WALK_POSE_GUIDE_PARAGRAPHS } from './walkPoseGuidePrompts';
  * arguments to a StructuredGenerateRequest, and call assembleThemePrompt so
  * the actual prompt text lives in exactly one place.
  */
-export const PROMPT_TEMPLATE_VERSION = '2026-09-30.1';
+export const PROMPT_TEMPLATE_VERSION = '2026-09-30.2';
 
 /** See BoardBackgroundMode in themeAssetPrompts.ts (re-declared here to stay import-free). */
 export type PromptBoardBackgroundMode = 'magenta';
@@ -30,6 +30,8 @@ export interface PromptRowSpec {
   visual_description?: string;
   motion_hint?: string;
   is_ranged_rack?: boolean;
+  /** Rival rows only: 'quadruped' switches that row to the four-legged prompt rules; absent means 'biped'. */
+  body_plan?: BodyPlan;
 }
 
 export interface PromptObjectBoard2Slot {
@@ -204,17 +206,59 @@ function objectSizingAndCameraLines(): string[] {
   ];
 }
 
+/** Shared four-legged wording, used by both the character board and four-legged rival rows. */
+function quadrupedWidthMeasureSentence(): string {
+  return `Measure that ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% against each individual cell's width, never against the full canvas.`;
+}
+
+function quadrupedGutterSentence(spaceWord: string): string {
+  return `Keep a clear ${spaceWord} gutter of at least ${CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT}% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.`;
+}
+
+const QUADRUPED_COMPACT_STRIDE_SENTENCE = 'Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.';
+
+function rowListPhrase(rowNumbers: number[]): string {
+  if (rowNumbers.length === 1) return `Row ${rowNumbers[0]} is`;
+  const head = rowNumbers.slice(0, -1).join(', ');
+  return `Rows ${head} and ${rowNumbers[rowNumbers.length - 1]} are`;
+}
+
 function buildRivalAtlas(
   creativeDirection: string,
   themeName: string,
   rows: PromptRowSpec[],
   background: PromptBoardBackgroundMode,
 ): string {
+  const quadrupedRowNumbers = rows
+    .map((row, index) => (row.body_plan === 'quadruped' ? index + 1 : 0))
+    .filter((rowNumber) => rowNumber > 0);
+  const hasQuadrupedRow = quadrupedRowNumbers.length > 0;
   const rowLines = rows.map((row, index) =>
     `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`
-    + (row.visual_description ? ` Appearance — depict this exact design: ${row.visual_description}` : ''),
+    + (row.visual_description ? ` Appearance — depict this exact design: ${row.visual_description}` : '')
+    // Boards with no four-legged row keep their exact pre-body-plan text; once
+    // any row is four-legged, every row states its body explicitly.
+    + (hasQuadrupedRow
+      ? (row.visual_description && !/[.!?]$/.test(row.visual_description) ? '.' : '')
+        + (row.body_plan === 'quadruped'
+          ? ' Body: FOUR-LEGGED — the walk is a four-legged trot and all five cells use the four-legged size budget below.'
+          : ' Body: two-legged.')
+      : ''),
   );
   const spaceWord = 'magenta';
+  const quadrupedRivalLines = hasQuadrupedRow
+    ? [
+      '# FOUR-LEGGED RIVAL ROWS (STRICT — WHOLE ROW, WALK AND ATTACK)',
+      `${rowListPhrase(quadrupedRowNumbers)} FOUR-LEGGED; every other row is two-legged and keeps the silhouette budget above unchanged.`,
+      `In all five cells of a four-legged row — the two walk cells AND the three attack cells — the complete silhouette, including tail, ears, horns, whiskers, and fully extended legs mid-stride, stays within the central ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% of the cell WIDTH, replacing the ${RIVAL_TARGET_CONTENT_PERCENT}% width-and-height budget above for that row.`,
+      quadrupedWidthMeasureSentence(),
+      quadrupedGutterSentence(spaceWord),
+      'Cells 1 and 2 of a four-legged row are a four-legged trot (diagonal pairs move together, all four feet on the ground line).',
+      QUADRUPED_COMPACT_STRIDE_SENTENCE,
+      'Cells 3-5 of a four-legged row keep the same attack actions (wind-up, strike/lunge, recovery), but the animal stays on all four legs in every frame: it never rears up or stands on its hind legs, and never uses its front paws or forelimbs like hands. Attack by lunging, pouncing, biting, butting, or charging from a low four-legged stance.',
+      'No part of a four-legged enemy, including tail, ears, whiskers, and legs, may touch or cross a cell edge in any frame of its row, attack frames included.',
+    ]
+    : [];
   return [
     creativeDirectionHeader(creativeDirection),
     '',
@@ -245,6 +289,7 @@ function buildRivalAtlas(
     `Keep a clear ${spaceWord} gutter of at least ${RIVAL_MIN_GUTTER_PERCENT}% of the cell size on every side — top, bottom, left, and right — in every frame.`,
     'Keep poses compact: curl appendages, limbs, tentacles, and weapons INWARD toward the body rather than extending them outward, so a wind-up or strike pose stays inside the same budget as the walk cycle.',
     'No part of the enemy, in any frame, may touch or cross a cell edge. A frame where any part reaches the gutter or the cell boundary is an incorrect result.',
+    ...quadrupedRivalLines,
     `Use crisp retro pixel art. ${finalUnusedPixelSentence(background)}`,
   ].join('\n');
 }
@@ -314,9 +359,9 @@ function buildCharacterAtlas(
     ...(bodyPlan === 'quadruped'
       ? [
         `For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.`,
-        `Measure that ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% against each individual cell's width, never against the full canvas.`,
-        `Keep a clear ${spaceWord} gutter of at least ${CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT}% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.`,
-        'Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.',
+        quadrupedWidthMeasureSentence(),
+        quadrupedGutterSentence(spaceWord),
+        QUADRUPED_COMPACT_STRIDE_SENTENCE,
         'No part of the body — including tail, ears, whiskers, and legs — may touch or cross a cell edge in any frame. A frame where any part reaches the gutter or the cell boundary is an incorrect result.',
       ]
       : [

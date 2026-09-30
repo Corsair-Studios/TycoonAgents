@@ -74,6 +74,16 @@ export type ThemeRivalBoardRow = {
   display_name: string;
   /** Concrete visual-appearance spec from the plan, threaded from ThemeRivalPromptSpec. */
   visual_description?: string;
+  /**
+   * Effective body plan for this rival: the explicit plan.enemy_body_plans
+   * value, else inferBodyPlan on name + description, else 'biped'. Always set
+   * on rows built from a plan; absent on rows saved before body plans existed
+   * (treated as 'biped'). Drives the prompt's per-row body statement and the
+   * slicer's per-row size budget.
+   */
+  body_plan?: 'biped' | 'quadruped';
+  /** The user-set plan.enemy_body_plans value only (undefined = auto). Lets the review UI show "auto" vs an explicit pick. */
+  explicit_body_plan?: 'biped' | 'quadruped';
 };
 
 /**

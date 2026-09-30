@@ -746,6 +746,10 @@
             itemKind: "rival",
             label: "Rival " + rivalIndex,
             original: row.visual_description || "",
+            // "biped" | "quadruped" | undefined (auto — inferred client-side
+            // from name + description, mirroring the host).
+            bodyPlan: row.explicit_body_plan === "biped" || row.explicit_body_plan === "quadruped" ? row.explicit_body_plan : undefined,
+            subject: row.display_name || "",
           };
         });
     }
@@ -1133,12 +1137,12 @@
         }
         descInputs.push(textarea);
 
-        // p58-t2: character-only "Body" control — two-option toggle (two-
+        // p58-t2: character- and rival-only "Body" control — two-option toggle (two-
         // legged / four-legged) plus a neutral "auto" state that shows the
         // client-side inferred value (inferBodyPlan) until the user picks
         // one explicitly. Draft persists via savedDraft.bodyPlans, mirroring
         // the names/descriptions draft maps above.
-        if (row.descRow.itemKind === "character") {
+        if (row.descRow.itemKind === "character" || row.descRow.itemKind === "rival") {
           const rowId = row.descRow.rowId;
           const original = row.descRow.bodyPlan || "";
           const draftHasEntry = savedDraft?.bodyPlans && Object.prototype.hasOwnProperty.call(savedDraft.bodyPlans, rowId);
@@ -1147,7 +1151,7 @@
           const bodyControl = document.createElement("div");
           bodyControl.className = "theme-body-plan-control";
           bodyControl.dataset.rowId = rowId;
-          bodyControl.dataset.itemKind = "character";
+          bodyControl.dataset.itemKind = row.descRow.itemKind;
           bodyControl.dataset.original = original;
           bodyControl.dataset.value = currentValue;
 
@@ -1175,7 +1179,11 @@
           resetBtn.textContent = "Reset to auto";
 
           const refreshBodyControl = () => {
-            const inferred = inferBodyPlan(textarea.value || row.descRow.subject);
+            // Rivals infer from name + description (host: effectiveRivalBodyPlan);
+            // characters from the description, falling back to the name.
+            const inferred = inferBodyPlan(row.descRow.itemKind === "rival"
+              ? (row.descRow.subject + " " + textarea.value)
+              : (textarea.value || row.descRow.subject));
             const isAuto = !currentValue;
             const effective = currentValue || inferred;
             [[bipedBtn, "biped"], [quadrupedBtn, "quadruped"]].forEach(([btn, value]) => {

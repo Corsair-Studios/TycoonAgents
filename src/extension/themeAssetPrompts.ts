@@ -188,6 +188,10 @@ export interface ThemeRivalPromptSpec {
   display_name: string;
   /** Concrete visual-appearance spec from the plan (silhouette, colors, materials, signature features). */
   visual_description?: string;
+  /** Effective body plan (explicit plan.enemy_body_plans value, else inferred, else 'biped'). */
+  body_plan?: BodyPlan;
+  /** The user-set plan.enemy_body_plans value only; undefined means auto. */
+  explicit_body_plan?: BodyPlan;
 }
 
 export interface ThemeObjectPromptSpec {
@@ -358,6 +362,8 @@ export function createRivalBoardRows(rivals: ThemeRivalPromptSpec[]): ThemeRival
       ...(rival.visual_description
         ? { visual_description: stripLeadingName(rival.display_name, rival.visual_description) }
         : {}),
+      ...(rival.body_plan ? { body_plan: rival.body_plan } : {}),
+      ...(rival.explicit_body_plan ? { explicit_body_plan: rival.explicit_body_plan } : {}),
     })));
   }
   return boards;
@@ -398,7 +404,13 @@ export function buildRivalAtlasRequest(
   return {
     ...baseRequest(creativeDirection, themeName, background, 'rival_group'),
     boardType: 'rival_group',
-    slot: rows.map(toRowSpec),
+    // body_plan is sent only for four-legged rows: two-legged is the default
+    // the assembler assumes for an absent field, and omitting it keeps
+    // all-two-legged boards wire-identical to pre-body-plan clients.
+    slot: rows.map((row) => ({
+      ...toRowSpec(row),
+      ...(row.body_plan === 'quadruped' ? { body_plan: 'quadruped' as const } : {}),
+    })),
   };
 }
 

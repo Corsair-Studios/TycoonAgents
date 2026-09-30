@@ -1816,8 +1816,8 @@ export interface ThemeItemDescriptionChange {
   id: string;
   description: string;
   /**
-   * 'character' rows only (p58-t2): explicit user-set body plan for this
-   * roster slot, from the webview's slot-edit payload (snake_case to match
+   * 'character' and 'rival' rows only (p58-t2): explicit user-set body plan for this
+   * roster slot or rival (plan.enemy_body_plans), from the webview's slot-edit payload (snake_case to match
    * the sibling `item_kind`/`description` wire fields). `undefined` leaves
    * the slot's stored body plan untouched — the webview sends `undefined`
    * (Reset to auto) explicitly when the user clears it, but a change entry
@@ -1863,6 +1863,18 @@ export function effectiveCharacterBodyPlan(plan: Pick<ThemePlan, 'character_body
   const explicit = plan.character_body_plans?.[slotId];
   if (explicit === 'biped' || explicit === 'quadruped') return explicit;
   return inferBodyPlan(plan.character_descriptions?.[slotId]);
+}
+
+/** Effective body plan for a rival: the user-set plan.enemy_body_plans[index]
+ * always wins; otherwise infer from the rival's name plus its description,
+ * else two-legged. A plan with no enemy_body_plans at all means auto. */
+export function effectiveRivalBodyPlan(
+  explicit: BodyPlan | undefined,
+  name: string,
+  description: string | undefined,
+): BodyPlan {
+  if (explicit === 'biped' || explicit === 'quadruped') return explicit;
+  return inferBodyPlan(`${name} ${description ?? ''}`);
 }
 
 /**
@@ -1918,6 +1930,10 @@ export function applyThemeItemDescriptionChanges(
         continue;
       }
       plan.enemy_descriptions = setPlanDescriptionAt(plan.enemy_descriptions, index, description);
+      // Same presence-means-touched rule as the character branch below.
+      if (Object.prototype.hasOwnProperty.call(change, 'body_plan')) {
+        plan.enemy_body_plans = setPlanBodyPlanAt(plan.enemy_body_plans, index, change.body_plan);
+      }
     } else if (change.item_kind === 'character') {
       const agentMatch = /^agent_(\d+)$/.exec(change.id);
       const slotId = agentMatch ? Number(agentMatch[1]) : -1;
@@ -3830,7 +3846,7 @@ async function processObjectAtlas(
  * mini-atlas ([walk0, walk1, walk2, attack0, attack1]). Group each row's five cells
  * so its frames share a common crop/anchor, mirroring the object-board approach.
  */
-async function processRivalAtlas(
+export async function processRivalAtlas(
   generated: Buffer,
   manifest: ThemeManifest,
   rows: ThemeRivalBoardRow[],
@@ -3840,9 +3856,26 @@ async function processRivalAtlas(
   const rowGroups = Array.from({ length: rows.length }, (_row, rowIndex) =>
     Array.from({ length: 5 }, (_col, colIndex) => rowIndex * 5 + colIndex),
   );
+  // Four-legged rows are fit by WIDTH exactly like four-legged characters
+  // (characterAtlasGrid): their own shared scale, target and cap, applied to
+  // the whole row including the attack frames. Two-legged rows keep the
+  // height fit below; a board with no four-legged row is configured exactly
+  // as before (no overrides).
+  const quadrupedRowIndexes = rows
+    .map((row, index) => (row.body_plan === 'quadruped' ? index : -1))
+    .filter((index) => index >= 0);
   const spritePackage = await sliceAndNormalizeAtlas(generated, manifest, {
     columns: 5,
     rows: rows.length,
+    ...(quadrupedRowIndexes.length
+      ? {
+        rowScaleOverrides: [{
+          rows: quadrupedRowIndexes,
+          targetContentWidth: CHARACTER_QUADRUPED_TARGET_CONTENT_WIDTH,
+          maxContentExtent: 120,
+        }],
+      }
+      : {}),
     scaleReferenceSlots: Array.from({ length: rows.length * 5 }, (_unused, cell) => cell),
     targetContentHeight: CHARACTER_TARGET_CONTENT_HEIGHT,
     // Lowered from the character/126 value to 120: rivals' wide appendages
@@ -4000,7 +4033,7 @@ export function createReviewItems(
   });
   let enemyItems: Array<Omit<ThemeImageReviewItem, 'updated_at'>> = [];
   try {
-    const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest, plan.enemy_descriptions));
+    const rivalBoards = createRivalBoardRows(themeRivalSpecs(manifest, plan.enemy_descriptions, plan.enemy_body_plans));
     enemyItems = rivalBoards.map((rows, index) => {
       const firstEnemy = index * rows.length + 1;
       const lastEnemy = firstEnemy + rows.length - 1;
@@ -4284,7 +4317,7 @@ async function generateRivalAsset(
   const attempt = await generateBoardImage(plan.theme_id, item, structuredRequest, spriteBoardOptions(options), item.prompt);
   const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);
-  const rows = rivalRowsForItem(item, manifest);
+  const rows = rivalRowsForItem(item, manifest, plan);
   const rivalAtlas = await processRivalAtlas(generated, manifest, rows);
   throwIfCancelled(undefined, options?.signal);
   await saveReviewImage(globalStorageUri, plan.theme_id, item.filename, rivalAtlas.output);
@@ -4308,17 +4341,32 @@ async function generateRivalAsset(
 function rivalRowsForItem(
   item: Pick<ThemeImageReviewItem, 'id' | 'rival_rows'>,
   manifest: ThemeManifest,
-  descriptions?: string[],
+  plan?: Pick<ThemePlan, 'enemy_descriptions' | 'enemy_body_plans'>,
 ): ThemeRivalBoardRow[] {
   let boards: ThemeRivalBoardRow[][];
   try {
-    boards = createRivalBoardRows(themeRivalSpecs(manifest, descriptions));
+    boards = createRivalBoardRows(themeRivalSpecs(manifest, plan?.enemy_descriptions, plan?.enemy_body_plans));
   } catch (err) {
     console.warn('TycoonAgents: unable to reconstruct rival board rows:', err);
     return item.rival_rows?.length ? item.rival_rows : [];
   }
-  const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id)?.[1] ?? '1') || 1) - 1);
-  const rows = boards[boardIndex] ?? boards[0] ?? [];
+  const boardIndex = Math.max(0, (Number(/rivals_(\d+)/.exec(item.id || '')?.[1] ?? '1') || 1) - 1);
+  let rows = boards[boardIndex] ?? boards[0] ?? [];
+  if (!plan && item.rival_rows?.length) {
+    // Slicing/re-slice paths have no plan in hand: carry each row's persisted
+    // body plan over so the slicer applies the same per-row size budget the
+    // board was generated under.
+    const saved = new Map(item.rival_rows.map((row) => [row.rival_id, row]));
+    rows = rows.map((row) => {
+      const prior = saved.get(row.rival_id);
+      if (!prior?.body_plan) return row;
+      return {
+        ...row,
+        body_plan: prior.body_plan,
+        ...(prior.explicit_body_plan ? { explicit_body_plan: prior.explicit_body_plan } : {}),
+      };
+    });
+  }
   return rows.length ? rows : (item.rival_rows?.length ? item.rival_rows : []);
 }
 
@@ -4787,7 +4835,7 @@ export function buildReplacementPrompt(
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasPrompt(creativeDirection, manifest.display_name, backgroundMode);
   if (item.kind === 'rival_atlas') {
-    const rows = rivalRowsForItem(item, manifest, plan?.enemy_descriptions);
+    const rows = rivalRowsForItem(item, manifest, plan);
     return buildRivalAtlasPrompt(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] || item.id);
@@ -4851,7 +4899,7 @@ export function buildReplacementRequest(
   }
   if (item.kind === 'emote_atlas') return buildEmoteAtlasRequest(creativeDirection, manifest.display_name, backgroundMode);
   if (item.kind === 'rival_atlas') {
-    const rows = rivalRowsForItem(item, manifest, plan?.enemy_descriptions);
+    const rows = rivalRowsForItem(item, manifest, plan);
     return buildRivalAtlasRequest(creativeDirection, manifest.display_name, rows, backgroundMode);
   }
   const agentSlotId = agentSlotIdFromFrameKey(item.frame_keys[0] || item.id);
@@ -5031,10 +5079,17 @@ function themeObjectSpecsFromPlan(
   });
 }
 
-function themeRivalSpecs(manifest: ThemeManifest, descriptions?: string[]): ThemeRivalPromptSpec[] {
+function themeRivalSpecs(
+  manifest: ThemeManifest,
+  descriptions?: string[],
+  bodyPlans?: Array<BodyPlan | undefined>,
+): ThemeRivalPromptSpec[] {
   return manifest.roster_rivals.map((rival, index) => {
     const description = (descriptions?.[index] ?? '').trim();
+    const explicit = bodyPlans?.[index];
     return {
+      body_plan: effectiveRivalBodyPlan(explicit, rival.name, description),
+      ...(explicit ? { explicit_body_plan: explicit } : {}),
       // rival_id already carries the `rival_` prefix (see themePlan.ts); strip it so
       // frame keys built as `rival_<id>` don't double-prefix.
       rival_id: rival.rival_id.replace(/^rival_/, ''),

@@ -1,0 +1,49 @@
+Art direction (governs everything below): Brass gears, warm lantern light, playful mischief
+
+Create one compact rival (enemy) sprite board for the "Steampunk Carnival" theme.
+The outer image canvas is one perfect SQUARE (1:1 aspect ratio). Do not crop or change the canvas aspect ratio.
+Divide the full canvas into an exact 5-column by 4-row grid of 20 equal cells: every cell is exactly 1/5 of the canvas width wide and 1/4 of the canvas height tall.
+Each cell is taller than it is wide (about 1.25:1); compose every subject to fit that cell shape.
+Keep every subject fully inside its own cell with clear empty padding on ALL FOUR sides — top, bottom, left, and right. The subject must never touch or cross any cell edge; anything drawn past a cell boundary is sliced off flat by the game, so a subject that touches its cell's bottom edge is an incorrect result.
+Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.
+Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind ANY subject. Each subject sits directly on the flat background with nothing framing, enclosing, or backing it. The background is ONE single uniform color filling the ENTIRE canvas edge to edge — identical behind every subject and in all padding — never a per-subject colored tile or panel.
+Paint every unused pixel solid #FF00FF magenta with no texture or gradient.
+Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.
+Each of the 4 ROWS is ONE distinct named enemy, shown as a 5-frame mini-atlas:
+  Cells 1 and 2 of each row form one complete, seamless two-frame locomotion cycle, arranged in playback order and looping cell 2 back to cell 1. Animate the enemy moving in place, facing right in a consistent side view.
+
+  Choose the gait appropriate to its anatomy: For a two-legged enemy, use a natural walk with alternating feet and opposing arm swings, if it has arms. For a four-legged enemy, use a gentle trot in which diagonal pairs move together: near-side front with far-side hind, and far-side front with near-side hind.
+
+  Cell 1 — First contact: The first foot or diagonal pair reaches forward and contacts the ground. The opposite foot or pair trails behind, finishing its push-off. Use a comfortable, short stride.
+
+  Cell 2 — Opposite contact: Reverse the roles from cell 1. The opposite foot or diagonal pair now reaches forward and contacts the ground, while the first trails behind and finishes pushing off. The two cells must show the legs swapped, never the same leg forward twice.
+
+  Consistency and anatomy: Keep character design, proportions, facing direction, camera, scale, and ground line identical between the two cells. Keep the torso centered, allowing only a subtle, consistent rise and fall. Bend all joints according to the enemy's anatomy. Supporting feet make firm ground contact; trailing feet finish their push-off. Distinguish near-side and far-side limbs clearly. Maintain equal strides and balanced weight so the loop reads as continuous stepping, not gliding. Do not duplicate cell 1 as cell 2.
+  Cells 3-5 of the row: a 3-frame ATTACK — cell 3 is the wind-up/anticipation, cell 4 is the strike/lunge (peak), cell 5 is the recovery/settle.
+Row 1 (Cells 1-5): the enemy **"Rustbolt Goon"** from the "Steampunk Carnival" theme. Appearance — depict this exact design: a rusty scrap-metal thug. Body: two-legged.
+Row 2 (Cells 6-10): the enemy **"Clockwork Hound"** from the "Steampunk Carnival" theme. Appearance — depict this exact design: a mechanical guard dog. Body: FOUR-LEGGED — the walk is a four-legged trot and all five cells use the four-legged size budget below.
+Row 3 (Cells 11-15): the enemy **"Steam Sentry"** from the "Steampunk Carnival" theme. Appearance — depict this exact design: a hissing steam-powered guard. Body: two-legged.
+Row 4 (Cells 16-20): the enemy **"Brass Panther"** from the "Steampunk Carnival" theme. Appearance — depict this exact design: a sleek prowling cat of riveted brass. Body: FOUR-LEGGED — the walk is a four-legged trot and all five cells use the four-legged size budget below.
+
+Keep each enemy identical across its own five cells: identical face, body, costume, colors, equipment, rendering style, and pixel scale — change only the pose.
+The first frame of each row (the walk-contact pose in cell 1) defines that enemy's horizontal center, ground-contact baseline, and overall body scale. Every later frame in the same row keeps that same horizontal center, the same feet baseline, and the same overall body scale. Limbs, pose, and expression may change freely between frames, but the whole body must never slide, re-center, or change size across the row — walking and running are animated IN PLACE, exactly as the game itself moves the sprite across the screen. An enemy that drifts, re-centers, or changes scale between frames of the same row is an incorrect result.
+Use one consistent side / three-quarter camera for every enemy so the walk and attack read clearly and the sprite flips cleanly left-to-right.
+The attack is a playful, non-graphic, non-contact motion suitable for a general-audience video game: the enemy swings/lunges through empty magenta space and never touches another subject.
+On ranged-attack frames, do NOT draw any muzzle flash, gunfire, muzzle smoke, tracer, projectile, spark, or weapon-discharge effect. Show only the enemy's firing pose and recoil — the projectile is rendered separately by the game, so a drawn flash is wrong and must be omitted.
+The ENTIRE weapon — including any melee blade, sword, swing arc, gun barrel, or muzzle — must stay fully INSIDE the enemy's own cell with clear magenta padding on every side. No part of the weapon, blade, swing arc, or effect may extend to the cell edge or cross into an adjacent cell in ANY frame, including the strike/lunge peak (cell 4). If a swing would reach the cell boundary, shorten or angle it so it stays within the cell.
+Center each enemy in its cell with its feet just above the cell bottom (leave a thin strip of empty magenta background below the feet — never touching the cell's bottom edge) and generous magenta padding; nothing crosses a cell boundary.
+# RIVAL SILHOUETTE BUDGET (STRICT — WIDTH AND HEIGHT)
+In EVERY frame, the entire silhouette — body, legs, claws, tentacles, antennae, orbs, particle trails, and weapon — stays within the central 70% of the cell in BOTH width and height, measured against that individual cell, never the full canvas.
+Keep a clear magenta gutter of at least 15% of the cell size on every side — top, bottom, left, and right — in every frame.
+Keep poses compact: curl appendages, limbs, tentacles, and weapons INWARD toward the body rather than extending them outward, so a wind-up or strike pose stays inside the same budget as the walk cycle.
+No part of the enemy, in any frame, may touch or cross a cell edge. A frame where any part reaches the gutter or the cell boundary is an incorrect result.
+# FOUR-LEGGED RIVAL ROWS (STRICT — WHOLE ROW, WALK AND ATTACK)
+Rows 2 and 4 are FOUR-LEGGED; every other row is two-legged and keeps the silhouette budget above unchanged.
+In all five cells of a four-legged row — the two walk cells AND the three attack cells — the complete silhouette, including tail, ears, horns, whiskers, and fully extended legs mid-stride, stays within the central 60% of the cell WIDTH, replacing the 70% width-and-height budget above for that row.
+Measure that 60% against each individual cell's width, never against the full canvas.
+Keep a clear magenta gutter of at least 20% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.
+Cells 1 and 2 of a four-legged row are a four-legged trot (diagonal pairs move together, all four feet on the ground line).
+Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.
+Cells 3-5 of a four-legged row keep the same attack actions (wind-up, strike/lunge, recovery), but the animal stays on all four legs in every frame: it never rears up or stands on its hind legs, and never uses its front paws or forelimbs like hands. Attack by lunging, pouncing, biting, butting, or charging from a low four-legged stance.
+No part of a four-legged enemy, including tail, ears, whiskers, and legs, may touch or cross a cell edge in any frame of its row, attack frames included.
+Use crisp retro pixel art. Every unused pixel must be flat solid #FF00FF magenta.

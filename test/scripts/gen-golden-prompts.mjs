@@ -32,6 +32,16 @@ const requests = {
       { display_name: 'Steam Sentry', visual_description: 'a hissing steam-powered guard' },
     ],
   },
+  'rival_group-mixed': {
+    promptTemplateVersion: PROMPT_TEMPLATE_VERSION, theme, themeName,
+    boardType: 'rival_group',
+    slot: [
+      { display_name: 'Rustbolt Goon', visual_description: 'a rusty scrap-metal thug' },
+      { display_name: 'Clockwork Hound', visual_description: 'a mechanical guard dog', body_plan: 'quadruped' },
+      { display_name: 'Steam Sentry', visual_description: 'a hissing steam-powered guard', body_plan: 'biped' },
+      { display_name: 'Brass Panther', visual_description: 'a sleek prowling cat of riveted brass', body_plan: 'quadruped' },
+    ],
+  },
   objects_01: {
     promptTemplateVersion: PROMPT_TEMPLATE_VERSION, theme, themeName,
     boardType: 'objects_01',

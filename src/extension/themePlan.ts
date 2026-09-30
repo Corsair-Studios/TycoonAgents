@@ -241,6 +241,15 @@ export interface ThemePlan {
    * Internal plan field only — NOT part of the immutable shared/types contract.
    */
   enemy_descriptions?: string[];
+  /**
+   * Optional per-enemy explicit body plan (same length/order as `enemies`,
+   * positional). Undefined at an index (or a missing array) means auto: the
+   * effective body plan is inferred from the enemy's name + description via
+   * src/core/bodyPlan.ts's inferBodyPlan, else two-legged. A user-set value
+   * here is never overwritten by the heuristic. Mirrors `character_body_plans`.
+   * Internal plan field only — NOT part of the immutable shared/types contract.
+   */
+  enemy_body_plans?: Array<'biped' | 'quadruped' | undefined>;
   expressions: string[];
   /**
    * Optional per-expression concrete visual-appearance spec. Like
@@ -357,10 +366,11 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     input.object_motion_hints,
     input.object_descriptions,
   );
-  const { enemies, enemyAttackStyles, enemyDescriptions } = normalizeEnemies(
+  const { enemies, enemyAttackStyles, enemyDescriptions, enemyBodyPlans } = normalizeEnemies(
     input.enemies,
     input.enemy_attack_styles,
     input.enemy_descriptions,
+    input.enemy_body_plans,
   );
   const characters = normalizeNames(input.characters, THEME_CHARACTER_COUNT, 'Character');
   const decor = normalizeDecorNames(input.decor);
@@ -387,6 +397,7 @@ export function normalizeThemePlan(input: Partial<ThemePlan>, fallbackName = 'Cu
     enemies,
     enemy_attack_styles: enemyAttackStyles,
     enemy_descriptions: enemyDescriptions,
+    ...(enemyBodyPlans ? { enemy_body_plans: enemyBodyPlans } : {}),
     expressions: applyFixedExpressionLabels(
       normalizeNames(input.expressions, THEME_EXPRESSION_COUNT, 'Expression'),
     ),
@@ -719,19 +730,25 @@ function normalizeEnemies(
   values: unknown,
   styles: unknown,
   descriptions?: unknown,
+  bodyPlans?: unknown,
 ): {
   enemies: string[];
   enemyAttackStyles?: Array<'melee' | 'ranged' | undefined>;
   enemyDescriptions?: string[];
+  enemyBodyPlans?: Array<'biped' | 'quadruped' | undefined>;
 } {
   const rawNames = Array.isArray(values) ? values : [];
   const rawStyles = Array.isArray(styles) ? styles : [];
   const rawDescriptions = Array.isArray(descriptions) ? descriptions.map((value) => cleanValue(value)) : [];
+  const rawBodyPlans = Array.isArray(bodyPlans) ? bodyPlans : [];
   const paired = rawNames
     .map((value, index) => ({
       name: cleanValue(value),
       style: normalizeAttackStyle(rawStyles[index]),
       description: rawDescriptions[index] ?? '',
+      bodyPlan: rawBodyPlans[index] === 'biped' || rawBodyPlans[index] === 'quadruped'
+        ? rawBodyPlans[index] as 'biped' | 'quadruped'
+        : undefined,
     }))
     .filter((entry) => entry.name.length > 0);
 
@@ -743,10 +760,15 @@ function normalizeEnemies(
     .map((description, index) => stripLeadingName(enemies[index] ?? '', description));
   while (descriptionsAligned.length < enemies.length) descriptionsAligned.push('');
   const hasAnyDescription = descriptionsAligned.some((description) => description.length > 0);
+  const bodyPlansAligned: Array<'biped' | 'quadruped' | undefined> = paired
+    .map((entry) => entry.bodyPlan).slice(0, THEME_ENEMY_COUNT);
+  while (bodyPlansAligned.length < enemies.length) bodyPlansAligned.push(undefined);
+  const hasAnyBodyPlan = bodyPlansAligned.some((value) => value !== undefined);
   return {
     enemies,
     enemyAttackStyles: hasAnyStyle ? stylesAligned : undefined,
     enemyDescriptions: hasAnyDescription ? descriptionsAligned : undefined,
+    enemyBodyPlans: hasAnyBodyPlan ? bodyPlansAligned : undefined,
   };
 }
 

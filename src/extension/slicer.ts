@@ -52,9 +52,27 @@ export function measureFrameContent(image: Jimp): FrameContentMeta {
   return { centroidX: sumX / count, footY: maxY, topY: minY, left: minX, right: maxX, opaqueCount: count };
 }
 
+/**
+ * Per-row size budget for boards whose rows need different fits (rival boards
+ * mixing two-legged and four-legged enemies). The listed rows share ONE board
+ * scale derived from their own cells (limited to the grid's
+ * scaleReferenceSlots when set), using the override's own target and cap; the
+ * remaining rows keep the grid-level scale, derived from THEIR cells only.
+ * Unset on every other board, which keeps the single board-wide scale.
+ */
+export interface AtlasRowScaleOverride {
+  /** Zero-based grid rows this override governs. */
+  rows: number[];
+  targetContentWidth?: number;
+  targetContentHeight?: number;
+  maxContentExtent?: number;
+}
+
 export interface AtlasGrid {
   columns: number;
   rows: number;
+  /** See AtlasRowScaleOverride. */
+  rowScaleOverrides?: AtlasRowScaleOverride[];
   /** Normalize every slot with one scale derived from these zero-based slots. */
   scaleReferenceSlots?: number[];
   /** Desired opaque-content height for the median reference slot. */
@@ -456,30 +474,69 @@ export async function sliceAndNormalizeAtlas(
     }
   }
 
-  const referenceSlotCells = (grid.scaleReferenceSlots ?? [])
-    .map((slotId) => cells[slotId])
-    .filter((cell): cell is typeof cells[number] => Boolean(cell?.count));
-  const referenceHeights = referenceSlotCells
-    .map((cell) => cell.maxY - cell.minY + 1)
-    .sort((a, b) => a - b);
-  const medianReferenceHeight = referenceHeights.length
-    ? referenceHeights[Math.floor(referenceHeights.length / 2)]
-    : undefined;
-  const referenceWidths = referenceSlotCells
-    .map((cell) => cell.maxX - cell.minX + 1)
-    .sort((a, b) => a - b);
-  const medianReferenceWidth = referenceWidths.length
-    ? referenceWidths[Math.floor(referenceWidths.length / 2)]
-    : undefined;
-  let boardScale = grid.targetContentWidth && medianReferenceWidth
-    ? grid.targetContentWidth / medianReferenceWidth
-    : grid.targetContentHeight && medianReferenceHeight
-      ? grid.targetContentHeight / medianReferenceHeight
-      : 1;
-  if (grid.noUpscale) {
-    boardScale = Math.min(boardScale, 1);
-  }
   const maxContentExtent = grid.maxContentExtent ?? Number.POSITIVE_INFINITY;
+  const computeBoardScale = (
+    referenceSlots: number[],
+    targetContentWidth: number | undefined,
+    targetContentHeight: number | undefined,
+  ): number => {
+    const referenceSlotCells = referenceSlots
+      .map((slotId) => cells[slotId])
+      .filter((cell): cell is typeof cells[number] => Boolean(cell?.count));
+    const referenceHeights = referenceSlotCells
+      .map((cell) => cell.maxY - cell.minY + 1)
+      .sort((a, b) => a - b);
+    const medianReferenceHeight = referenceHeights.length
+      ? referenceHeights[Math.floor(referenceHeights.length / 2)]
+      : undefined;
+    const referenceWidths = referenceSlotCells
+      .map((cell) => cell.maxX - cell.minX + 1)
+      .sort((a, b) => a - b);
+    const medianReferenceWidth = referenceWidths.length
+      ? referenceWidths[Math.floor(referenceWidths.length / 2)]
+      : undefined;
+    let scale = targetContentWidth && medianReferenceWidth
+      ? targetContentWidth / medianReferenceWidth
+      : targetContentHeight && medianReferenceHeight
+        ? targetContentHeight / medianReferenceHeight
+        : 1;
+    if (grid.noUpscale) {
+      scale = Math.min(scale, 1);
+    }
+    return scale;
+  };
+  // Per-row overrides (rival boards mixing body plans): each override's rows
+  // get their own scale/cap; the rest use the grid-level values, derived from
+  // the non-overridden cells only. Without overrides this is exactly the
+  // single board-wide scale.
+  const slotProfiles = new Map<number, {
+    boardScale: number;
+    maxContentExtent: number;
+    targetContentWidth: number | undefined;
+  }>();
+  const overriddenSlots = new Set<number>();
+  for (const override of grid.rowScaleOverrides ?? []) {
+    const rowSlots = override.rows.flatMap((row) =>
+      Array.from({ length: grid.columns }, (_unused, col) => row * grid.columns + col));
+    const referenceSlots = grid.scaleReferenceSlots
+      ? rowSlots.filter((slotId) => grid.scaleReferenceSlots!.includes(slotId))
+      : rowSlots;
+    const profile = {
+      boardScale: computeBoardScale(referenceSlots, override.targetContentWidth, override.targetContentHeight),
+      maxContentExtent: override.maxContentExtent ?? maxContentExtent,
+      targetContentWidth: override.targetContentWidth,
+    };
+    for (const slotId of rowSlots) {
+      overriddenSlots.add(slotId);
+      slotProfiles.set(slotId, profile);
+    }
+  }
+  const gridReferenceSlots = (grid.scaleReferenceSlots ?? []).filter((slotId) => !overriddenSlots.has(slotId));
+  const gridProfile = {
+    boardScale: computeBoardScale(gridReferenceSlots, grid.targetContentWidth, grid.targetContentHeight),
+    maxContentExtent,
+    targetContentWidth: grid.targetContentWidth,
+  };
   const groupedBounds = new Map<number, { minX: number; maxX: number; minY: number; maxY: number }>();
   for (const group of grid.normalizationGroups ?? []) {
     const members = group
@@ -533,10 +590,11 @@ export async function sliceAndNormalizeAtlas(
       // clip at the cell edge -- exactly the clipping this budget exists to
       // prevent. So the width caps always apply when targetContentWidth is
       // set, even if clipWidthOverflow is also true.
-      const applyWidthCaps = !grid.clipWidthOverflow || grid.targetContentWidth !== undefined;
+      const profile = slotProfiles.get(cellInfo.slot_id) ?? gridProfile;
+      const applyWidthCaps = !grid.clipWidthOverflow || profile.targetContentWidth !== undefined;
       const scale = applyWidthCaps
-        ? Math.min(boardScale, maxContentExtent / bw, maxContentExtent / bh, 128 / bw, 128 / bh)
-        : Math.min(boardScale, maxContentExtent / bh, 128 / bh);
+        ? Math.min(profile.boardScale, profile.maxContentExtent / bw, profile.maxContentExtent / bh, 128 / bw, 128 / bh)
+        : Math.min(profile.boardScale, profile.maxContentExtent / bh, 128 / bh);
       const resizedWidth = Math.max(1, Math.round(bw * scale));
       const resizedHeight = Math.max(1, Math.round(bh * scale));
       // Grouped bounds (normalizationGroups) union minX/maxX/minY/maxY across every
