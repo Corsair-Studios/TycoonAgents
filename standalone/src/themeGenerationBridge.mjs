@@ -99,8 +99,8 @@ function translatorModule() {
  * when host options are injected by tests (the returned client is a fake in
  * that case, and this wiring is what makes the fake reachable at all).
  */
-export function wireThemeServiceGeneration(client) {
-  themeServiceModule().setThemeImageGenerator(themeServiceModule().createServiceImageGenerator(client));
+export function wireThemeServiceGeneration(client, onCredits) {
+  themeServiceModule().setThemeImageGenerator(themeServiceModule().createServiceImageGenerator(client, onCredits));
   translatorModule().setThemePlanRequester(translatorModule().createServicePlanRequester(client));
 }
 

@@ -431,6 +431,7 @@ export function createThemeServiceHost(opts) {
     // refreshStatusInBackground/cancelBackgroundStatusRetry drive the
     // "waking" retry-with-backoff via inner's own postStatus wiring above.
     getCachedOrPendingStatus: () => withEndpointHost(inner.getCachedOrPendingStatus()),
+    applyCreditsFromAttempt: (credits) => inner.applyCreditsFromAttempt(credits),
     refreshStatusInBackground: () => inner.refreshStatusInBackground(),
     cancelBackgroundStatusRetry: () => inner.cancelBackgroundStatusRetry(),
     handleRequestMagicLink: (email) => inner.handleRequestMagicLink(email),

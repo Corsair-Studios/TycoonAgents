@@ -1611,3 +1611,34 @@ test("follow-up: a restarted host with NO stored session omits cachedCredits eve
   const snapshot = host.getCachedOrPendingStatus();
   assert.equal(snapshot.cachedCredits, undefined, "with no persisted identity to confirm against, cachedCredits stays omitted, same as before this fix");
 });
+
+test("applyCreditsFromAttempt posts the new balance immediately, keeps pricing, and persists it", async () => {
+  const cache = fakeCreditsCache();
+  const { host, posted } = setup(undefined, undefined, cache);
+  await host.handleRequestMagicLink("me@example.com");
+  await host.handleVerify("me@example.com", "123456");
+  await host.handleGetStatus();
+  const before = posted[posted.length - 1];
+  assert.equal(before.signedIn, true);
+  const postedBefore = posted.length;
+
+  host.applyCreditsFromAttempt(199);
+
+  assert.equal(posted.length, postedBefore + 1, "exactly one immediate status post");
+  const after = posted[posted.length - 1];
+  assert.equal(after.signedIn, true);
+  assert.equal(after.credits, 199);
+  assert.deepEqual(after.pricing, before.pricing, "pricing must survive the balance refresh");
+  assert.equal(cache.raw()?.credits, 199);
+  assert.equal(host.getCachedOrPendingStatus().credits, 199);
+});
+
+test("applyCreditsFromAttempt is a no-op when signed out or given a non-finite balance", async () => {
+  const { host, posted } = setup();
+  host.applyCreditsFromAttempt(50);
+  assert.equal(posted.length, 0, "no signed-in snapshot: nothing to update");
+  await host.handleGetStatus();
+  const count = posted.length;
+  host.applyCreditsFromAttempt(Number.NaN);
+  assert.equal(posted.length, count);
+});

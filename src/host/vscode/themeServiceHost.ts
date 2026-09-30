@@ -319,6 +319,14 @@ export interface ThemeServiceHost {
   refreshStatusInBackground(): void;
   /** p75-t1: cancels a pending background retry — called on THEME_BUILDER_CLOSED or panel dispose. */
   cancelBackgroundStatusRetry(): void;
+  /**
+   * Applies the authoritative post-attempt balance (`credits` from a
+   * successful /api/generate or /api/plan response) immediately: updates the
+   * last snapshot, the durable balance cache and posts THEME_SERVICE_STATUS,
+   * instead of waiting for the next /api/account poll. A no-op when no
+   * signed-in snapshot exists yet or `credits` is not a finite number.
+   */
+  applyCreditsFromAttempt(credits: number): void;
   handleRequestMagicLink(email: string): Promise<void>;
   handleVerify(email: string, code: string): Promise<void>;
   handleGoogleStart(): Promise<void>;
@@ -984,6 +992,15 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
             ...(typeof cachedHasStoredSession === "boolean" ? { hasStoredSession: cachedHasStoredSession } : {}),
             ...cachedCreditsField(),
           };
+    },
+
+    applyCreditsFromAttempt(credits) {
+      if (disposed || typeof credits !== "number" || !Number.isFinite(credits)) return;
+      if (!lastSnapshot || lastSnapshot.signedIn !== true) return;
+      lastKnownCredits = credits;
+      persistCredits(currentUserId, credits);
+      lastSnapshot = { ...lastSnapshot, credits };
+      opts.postStatus(lastSnapshot);
     },
 
     refreshStatusInBackground() {

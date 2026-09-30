@@ -134,6 +134,8 @@ export interface ThemeImageReviewItem {
   attemptCost?: number;
   /** Whether that last attempt was auto-refunded (provider_failed). */
   lastAttemptRefunded?: boolean;
+  /** Running total of credits actually charged for this item across every successful, non-refunded attempt (a retry adds to it rather than replacing it). Absent on items saved before this field existed; see themeCreditsSpent. */
+  creditsCharged?: number;
   /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
   error_kind?: 'not_signed_in' | 'insufficient_credits' | 'content_blocked' | 'account_locked' | 'unavailable' | 'unreachable' | 'provider_failed' | 'rate_limited' | 'bad_request';
   /** p85: the backend's `code` field on a bad_request failure (e.g. "board_not_priced"), surfaced alongside error_kind so the UI can show a specific message instead of a generic one. */
@@ -254,6 +256,29 @@ export async function loadThemeImageReviewDocument(
     }
   }
   return undefined;
+}
+
+/**
+ * The fields a successful Theme Service attempt records on its item: the last
+ * attempt's cost (0 when refunded), the refund flag, and the running
+ * `creditsCharged` total. A refunded attempt adds 0; a legacy item without
+ * `creditsCharged` seeds the total from its recorded attemptCost.
+ */
+export function recordAttemptCharge(
+  item: { attemptCost?: number; creditsCharged?: number },
+  attempt: { attemptCost: number; refunded: boolean },
+): { attemptCost: number; lastAttemptRefunded: boolean; creditsCharged: number } {
+  const charged = attempt.refunded ? 0 : attempt.attemptCost;
+  return {
+    attemptCost: charged,
+    lastAttemptRefunded: attempt.refunded,
+    creditsCharged: (item.creditsCharged ?? item.attemptCost ?? 0) + charged,
+  };
+}
+
+/** Credits actually charged on a theme: the sum of each item's running creditsCharged (falling back to attemptCost for legacy items). */
+export function themeCreditsSpent(items: ReadonlyArray<{ attemptCost?: number; creditsCharged?: number }>): number {
+  return items.reduce((sum, item) => sum + (item.creditsCharged ?? item.attemptCost ?? 0), 0);
 }
 
 export async function upsertThemeImageReviewItem(

@@ -1134,7 +1134,10 @@ export class TycoonPanel {
     // status/checkout already use, so a generation call reuses the current
     // session and refresh-in-flight coordination rather than building a
     // second client.
-    setThemeImageGenerator(createServiceImageGenerator(this._themeServiceHost.getClient()));
+    setThemeImageGenerator(createServiceImageGenerator(
+      this._themeServiceHost.getClient(),
+      (credits) => this._themeServiceHost?.applyCreditsFromAttempt(credits),
+    ));
     // p59-t3: surfaces generateBoardImage's local-vs-service prompt-template
     // drift notice (sha256 mismatch) as a one-way webview message.
     setThemePromptMismatchNotifier((message, templateVersion) => {
@@ -3839,6 +3842,7 @@ export class TycoonPanel {
           // descriptions were last (re)generated — see themeDescriptionsStale.
           descriptionsStale: currentPlan ? themeDescriptionsStale(currentPlan) : false,
           descriptionsDirection: currentPlan?.descriptions_direction,
+          creditsSpent: review.creditsSpent,
           items,
           ...themeBoardCountsFromFrames(loadedTheme?.frames),
         },

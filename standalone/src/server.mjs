@@ -4508,7 +4508,10 @@ export async function startServer({
   // injects a fake client (tests): wiring must point at whatever client
   // getClient() actually returns, real or fake, so PLAN_THEME/GENERATE_THEME
   // reach it either way.
-  wireThemeServiceGeneration(themeServiceHostInstance.getClient());
+  wireThemeServiceGeneration(
+    themeServiceHostInstance.getClient(),
+    (credits) => themeServiceHostInstance.applyCreditsFromAttempt?.(credits),
+  );
 
   // Theme GENERATION bridge wiring (pC-t1 step 2) — configure the REAL
   // themeService.ts generation pipeline (out/src/extension/themeService.js,

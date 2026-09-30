@@ -75,7 +75,9 @@ import {
   inferLegacyReviewItem,
   initializeThemeImageReviewDocument,
   loadThemeImageReviewDocument,
+  recordAttemptCharge,
   setThemeImageGenerationError,
+  themeCreditsSpent,
   setThemeImageReviewErrorKind,
   setThemeImageReviewStatus,
   setThemeGenerationStatus,
@@ -184,11 +186,20 @@ export interface ThemeImageGenerator {
 }
 
 /** Build a {@link ThemeImageGenerator} backed by a real ThemeServiceClient's generateAttempt. */
-export function createServiceImageGenerator(client: ThemeServiceClient): ThemeImageGenerator {
+export function createServiceImageGenerator(
+  client: ThemeServiceClient,
+  /** Called with the response's authoritative post-attempt balance so the host can refresh its balance immediately. */
+  onCredits?: (credits: number) => void,
+): ThemeImageGenerator {
   return {
     async generate(req) {
       const res = await client.generateAttempt(req);
       if (!res.ok) return res;
+      try {
+        onCredits?.(res.value.credits);
+      } catch {
+        // a balance-refresh failure must never fail a generation that succeeded
+      }
       const base64 = res.value.image.includes(',') ? res.value.image.slice(res.value.image.indexOf(',') + 1) : res.value.image;
       return {
         ok: true,
@@ -1332,7 +1343,7 @@ export async function getThemeImageReview(
   return {
     theme_id: themeId,
     display_name: document?.display_name ?? displayName,
-    creditsSpent: items.reduce((sum, item) => sum + (item.attemptCost ?? 0), 0),
+    creditsSpent: themeCreditsSpent(items),
     generation: document?.generation,
     entries: items.map((item) => {
       const imageUri = imagesByFilename.get(item.filename);
@@ -3343,8 +3354,7 @@ export async function retryThemeImage(
     status: 'pending',
     generation_error: undefined,
     error_kind: undefined,
-    attemptCost: attempt.refunded ? 0 : attempt.attemptCost,
-    lastAttemptRefunded: attempt.refunded,
+    ...recordAttemptCharge(item, attempt),
     prompt,
     revision: item.revision + 1,
     frame_keys: frameKeys,
@@ -5168,7 +5178,7 @@ async function markGenerated(
     ...item,
     status: 'pending',
     updated_at: new Date().toISOString(),
-    ...(attempt ? { attemptCost: attempt.refunded ? 0 : attempt.attemptCost, lastAttemptRefunded: attempt.refunded, error_kind: undefined } : {}),
+    ...(attempt ? { ...recordAttemptCharge(item, attempt), error_kind: undefined } : {}),
   });
 }
 

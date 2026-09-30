@@ -622,6 +622,8 @@ export async function handleGetThemeImageReview(store, broadcast, themeId, { ima
         creative_direction: currentPlan?.creative_direction,
         descriptionsStale: currentPlan ? themePlanModule().themeDescriptionsStale(currentPlan) : false,
         descriptionsDirection: currentPlan?.descriptions_direction,
+        // Mirrors themeImageReviewState.ts's themeCreditsSpent.
+        creditsSpent: outItems.reduce((sum, item) => sum + (item.creditsCharged ?? item.attemptCost ?? 0), 0),
         items: outItems,
         ...themeBoardCounts(framesMap),
       },

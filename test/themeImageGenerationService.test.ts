@@ -102,8 +102,10 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 const themeService = require('../src/extension/themeService') as typeof import('../src/extension/themeService');
 const {
   generateTheme, retryThemeImage, resliceThemeImageFromRaw, getThemeImageReview,
-  setThemeImageGenerator, boardTypeForItem,
+  setThemeImageGenerator, boardTypeForItem, createServiceImageGenerator,
 } = themeService;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { recordAttemptCharge, themeCreditsSpent } = require('../src/extension/themeImageReviewState') as typeof import('../src/extension/themeImageReviewState');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeThemePlan } = require('../src/extension/themePlan') as typeof import('../src/extension/themePlan');
 
@@ -448,4 +450,37 @@ test('every review payload item carries its Theme Service boardType, matching bo
       setThemeImageGenerator(undefined);
     }
   });
+});
+
+test('createServiceImageGenerator hands the response balance to onCredits on success only', async () => {
+  const seen: number[] = [];
+  const okClient = {
+    async generateAttempt() {
+      return { ok: true as const, value: { image: 'data:image/png;base64,AAAA', attemptCost: 3, credits: 199, refunded: false } };
+    },
+  };
+  const failClient = {
+    async generateAttempt() {
+      return { ok: false as const, error: { kind: 'provider_failed' as const, message: 'x', refunded: true, credits: 5 } };
+    },
+  };
+  const req = {} as never;
+  const ok = await createServiceImageGenerator(okClient as never, (c) => seen.push(c)).generate(req);
+  assert.equal(ok.ok, true);
+  await createServiceImageGenerator(failClient as never, (c) => seen.push(c)).generate(req);
+  assert.deepEqual(seen, [199]);
+  const throwing = await createServiceImageGenerator(okClient as never, () => { throw new Error('boom'); }).generate(req);
+  assert.equal(throwing.ok, true, 'a balance-refresh failure must not fail a successful attempt');
+});
+
+test('recordAttemptCharge accumulates across retries; refunded attempts add 0; themeCreditsSpent sums the running totals', () => {
+  const first = recordAttemptCharge({}, { attemptCost: 3, refunded: false });
+  assert.deepEqual(first, { attemptCost: 3, lastAttemptRefunded: false, creditsCharged: 3 });
+  const second = recordAttemptCharge(first, { attemptCost: 3, refunded: false });
+  assert.equal(second.creditsCharged, 6);
+  const refunded = recordAttemptCharge(second, { attemptCost: 3, refunded: true });
+  assert.deepEqual(refunded, { attemptCost: 0, lastAttemptRefunded: true, creditsCharged: 6 });
+  // legacy item (no creditsCharged) seeds from its recorded attemptCost
+  assert.equal(recordAttemptCharge({ attemptCost: 2 }, { attemptCost: 3, refunded: false }).creditsCharged, 5);
+  assert.equal(themeCreditsSpent([{ creditsCharged: 6, attemptCost: 0 }, { attemptCost: 2 }, {}]), 8);
 });
