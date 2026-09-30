@@ -157,8 +157,8 @@ export const CHARACTER_TARGET_CONTENT_PERCENT = 72;
  * budget for four-legged bodies (replaces the height rule, not additive to
  * it) and used only for the 'quadruped' BodyPlan.
  */
-export const CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT = 70;
-export const CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT = 15;
+export const CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT = 60;
+export const CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT = 20;
 
 /**
  * Slicer-side (src/extension/themeService.ts characterAtlasGrid) mirror of
@@ -321,9 +321,9 @@ function buildCharacterAtlas(
     'Use the same camera distance and character scale used for every other character board in this theme.',
     ...(bodyPlan === 'quadruped'
       ? [
-        `For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central 60% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.`,
-        `Measure that 60% against each individual cell's width, never against the full canvas.`,
-        `Keep a clear ${spaceWord} gutter of at least 20% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.`,
+        `For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.`,
+        `Measure that ${CHARACTER_QUADRUPED_TARGET_CONTENT_PERCENT}% against each individual cell's width, never against the full canvas.`,
+        `Keep a clear ${spaceWord} gutter of at least ${CHARACTER_QUADRUPED_MIN_GUTTER_PERCENT}% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.`,
         'Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.',
         'No part of the body — including tail, ears, whiskers, and legs — may touch or cross a cell edge in any frame. A frame where any part reaches the gutter or the cell boundary is an incorrect result.',
       ]
