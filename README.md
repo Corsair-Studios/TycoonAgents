@@ -160,7 +160,7 @@ A teammate who clones the project and opens TycoonAgents sees a **"Team setup ch
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
 
-Supported harnesses: Claude Code, OpenCode (Experimental), Codex (Experimental). Gemini / Antigravity harness: planned (not yet available).
+Supported harnesses: Claude Code, OpenCode (Experimental), Codex (Experimental). Gemini / Antigravity agent as harness: planned (not yet available); the Antigravity editor itself is supported.
 
 ### Using OpenCode as the provider
 

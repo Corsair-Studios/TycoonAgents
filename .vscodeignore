@@ -23,6 +23,8 @@ scale-references/**
 # Work-in-progress staging area for assets (e.g. screenshots) dropped in by hand
 # that are not ready to ship — must never be committed or packaged
 .wip/**
+# Spike evidence (e.g. harness probes) — never ship
+spikes/**
 CLAUDE.md
 HANDOFF.md
 AGENTS-CONFIG-REPORT.md
