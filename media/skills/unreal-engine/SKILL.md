@@ -69,6 +69,10 @@ protected:
 - `GENERATED_BODY()` and UHT-generated `.generated.h` includes are mandatory for any `UCLASS`/`USTRUCT`/`UENUM` — deleting or misordering the include breaks compilation in ways that look unrelated to the actual edit.
 - Garbage-collected `UObject`/`AActor` pointers must be held via `UPROPERTY()` (even on non-editor-exposed fields) or they can be GC'd out from under you.
 
+## Version note
+
+Unreal Engine 5.8 is the current release. Epic's built-in Unreal MCP server needs UE 5.8+ with both the Unreal MCP and All Toolsets plugins enabled.
+
 ## TycoonAgents integration
 
 TycoonAgents shows a live **Unreal connection chip** in the agent visualization panel when the Unreal MCP bridge is active. Route Unreal-specific implementation work (Actors, Components, Blueprint graphs, C++ gameplay classes) to coding-specialist rather than editing `Source/`/`Content/` files from the orchestrator directly. For UEFN/Fortnite-specific work, use the `uefn`/`uefn-bridge` skills instead.

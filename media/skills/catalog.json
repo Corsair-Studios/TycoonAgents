@@ -31,7 +31,7 @@
     "name": "Unity",
     "description": "Unity C# MonoBehaviour components, prefabs, and scene workflows.",
     "summary": "Unity C# MonoBehaviour components, prefabs, and scene workflows.",
-    "mcpNote": "More effective with a Unity editor MCP for live scene/asset control."
+    "mcpNote": "More effective with Unity's official AI Assistant MCP (Unity 6000.0+; MCP tab) for live scene/asset control."
   },
   {
     "id": "roblox",
@@ -45,7 +45,7 @@
     "name": "Blender",
     "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting.",
     "summary": "Blender modeling, materials, shading, animation, and Python scripting.",
-    "mcpNote": "Pairs with the official Blender MCP (uvx blender-mcp) + add-on for live viewport/scene control."
+    "mcpNote": "Pairs with Blender's official Blender Lab MCP (Blender 5.1+) for live scene control; the community `uvx blender-mcp` bridge is the alternative. Blender warns the server runs LLM-generated code unguarded."
   },
   {
     "id": "unreal-engine",

@@ -71,17 +71,15 @@
     "docsUrl": "https://github.com/upstash/context7",
     "thirdParty": true,
     "vendor": "Upstash",
-    "package": "@upstash/context7-mcp (run via npx)",
+    "package": "Context7 hosted remote MCP server (no local install); local fallback: @upstash/context7-mcp via npx",
     "homepage": "https://github.com/upstash/context7",
     "network": true,
     "dataNote": "Sends the library names/queries you look up to Context7's hosted service.",
     "config": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@upstash/context7-mcp"
-      ]
-    }
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "note": "Default: Context7's hosted remote HTTP endpoint (https://mcp.context7.com/mcp). Optionally pass a Context7 API key for higher limits via an `Authorization: Bearer <key>` header - set it in your own .mcp.json from an environment variable (headers: {\"Authorization\": \"Bearer ${CONTEXT7_API_KEY}\"}); never commit the key. Fallback if you prefer a local process: replace the entry with command `npx`, args [\"-y\", \"@upstash/context7-mcp\"]. Source: https://github.com/upstash/context7."
   },
   {
     "id": "sequential-thinking",
@@ -111,17 +109,42 @@
     "description": "Connect an AI client to a live Roblox Studio session — explore the data model, write Luau, and run/test in play mode.",
     "summary": "Connects an AI client to a live Roblox Studio session to explore and script it.",
     "requiresEnv": [],
-    "note": "Official Roblox Studio MCP is a local bridge (Studio plugin + a standalone Rust server, or Studio's built-in server) and needs separate setup. Installing here adds a template entry to .mcp.json — replace the command with your built server path per Roblox's docs.",
-    "homepage": "https://github.com/Roblox/studio-rust-mcp-server",
+    "note": "Uses Roblox's built-in Studio MCP server (the community Rust server, Roblox/studio-rust-mcp-server, was archived 2026-04-03). In Studio: Assistant > ... > Manage MCP Servers > turn on \"Enable Studio as MCP server\", then restart Studio. The installed entry is the Windows command (`cmd.exe /c %LOCALAPPDATA%\\Roblox\\mcp.bat`; cmd.exe expands %LOCALAPPDATA% at launch, so no user path is stored). On macOS edit .mcp.json to use the command `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` with no args. Studio's Assistant Settings > MCP Servers also offers quick connect for Claude Code.",
+    "homepage": "https://create.roblox.com/docs/studio/mcp",
     "docsUrl": "https://create.roblox.com/docs/studio/mcp",
     "thirdParty": true,
     "vendor": "Roblox",
-    "package": "Roblox/studio-rust-mcp-server (standalone Rust server) or Roblox Studio's built-in MCP server",
+    "package": "Roblox Studio's built-in MCP server (no separate install)",
     "network": true,
     "dataNote": "Bridges an AI client to your local Roblox Studio session; the AI can read your place's data model and write/run Luau code in it.",
     "config": {
-      "command": "<path-to-roblox-studio-mcp-server>",
-      "args": []
+      "command": "cmd.exe",
+      "args": [
+        "/c",
+        "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+      ]
+    }
+  },
+  {
+    "id": "unity-ai-assistant",
+    "name": "Unity AI Assistant MCP (Official · Unity 6+)",
+    "description": "Unity's official MCP bridge, provided by the Unity AI Assistant package (com.unity.ai.assistant). Lets an MCP client such as Claude Code drive the Unity Editor: manage scenes, GameObjects, and assets.",
+    "summary": "Unity's official editor MCP bridge via the Unity AI Assistant package (Unity 6000.0+).",
+    "requiresEnv": [],
+    "needsSetup": true,
+    "note": "Requires Unity 6 (6000.0) or later with the com.unity.ai.assistant package installed. In Unity, open Edit > Project Settings > AI > Unity MCP Server and confirm the bridge shows Running. Unity's setup page does not state account requirements; check Unity's AI Assistant terms for any Unity Cloud project or beta opt-in your account needs. The first connection shows Pending Connection in that settings page - choose Accept. The installed entry is the Windows relay (`%USERPROFILE%\\.unity\\relay\\relay_win.exe --mcp`, expanded from the USERPROFILE environment variable at launch). On macOS/Linux edit .mcp.json: command `~/.unity/relay/relay_linux` (Linux) or, on Apple Silicon, the relay_mac_arm64 binary at .unity/relay/relay_mac_arm64.app/Contents/MacOS/relay_mac_arm64 under your home folder, args [\"--mcp\"].",
+    "docsUrl": "https://docs.unity3d.com/Packages/com.unity.ai.assistant@2.7/manual/integration/unity-mcp-get-started.html",
+    "thirdParty": false,
+    "vendor": "Unity Technologies",
+    "package": "Unity AI Assistant package com.unity.ai.assistant (relay binary installed under ~/.unity/relay/)",
+    "homepage": "https://docs.unity3d.com/Packages/com.unity.ai.assistant@2.7/manual/integration/unity-mcp-get-started.html",
+    "network": false,
+    "dataNote": "Local relay between your MCP client and your open Unity Editor; the AI can read and modify the open project's scenes and assets. Unity approves each new client connection inside the editor.",
+    "config": {
+      "command": "${USERPROFILE}\\.unity\\relay\\relay_win.exe",
+      "args": [
+        "--mcp"
+      ]
     }
   },
   {
@@ -154,10 +177,10 @@
   {
     "id": "unreal-engine-mcp",
     "name": "Unreal Engine MCP (Official · UE 5.8+)",
-    "description": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+. Enable the \"Unreal MCP\" plugin and toggle Auto Start Server in Editor Preferences, then connect over HTTP/SSE. For general Unreal Engine projects — distinct from the UEFN Bridge above, which targets UEFN/Fortnite.",
+    "description": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+. Enable the \"Unreal MCP\" and \"All Toolsets\" plugins and toggle Auto Start Server in Editor Preferences, then connect over HTTP/SSE. For general Unreal Engine projects — distinct from the UEFN Bridge above, which targets UEFN/Fortnite.",
     "summary": "Epic's official in-editor MCP server, built into Unreal Editor 5.8+.",
     "requiresEnv": [],
-    "note": "Built into the Unreal Editor — no external bridge process. Enable via Edit > Plugins > \"Unreal MCP\", then Edit > Editor Preferences > General > Model Context Protocol > toggle \"Auto Start Server\". The editor can also auto-generate a client config via the console command: ModelContextProtocol.GenerateClientConfig ClaudeCode. Endpoint, port, and path are configurable in Editor Preferences.",
+    "note": "Built into the Unreal Editor — no external bridge process. Enable via Edit > Plugins > \"Unreal MCP\" AND \"All Toolsets\" (both are required; the Toolset Registry dependency enables itself), then Edit > Editor Preferences > General > Model Context Protocol > toggle \"Auto Start Server\". The editor can also auto-generate a client config via the console command: ModelContextProtocol.GenerateClientConfig ClaudeCode. Endpoint, port, and path are configurable in Editor Preferences.",
     "docsUrl": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
     "thirdParty": false,
     "vendor": "Epic Games",
@@ -172,17 +195,17 @@
   {
     "id": "blender",
     "name": "Blender",
-    "description": "Live Blender viewport/scene control from Claude — read and modify objects, materials, and run Python (bpy) in your open Blender session.",
-    "summary": "Live Blender viewport/scene control from Claude over a local socket.",
+    "description": "Live Blender scene control from Claude - read and modify objects, materials, and run Python (bpy) in your open Blender session. Primary path: Blender Foundation's official Blender Lab MCP server (Blender 5.1+).",
+    "summary": "Live Blender scene control; official Blender Lab server, community uvx bridge installed.",
     "requiresEnv": [],
-    "note": "Local stdio MCP server launched via `uvx blender-mcp`. Prereqs: Blender 4.x with the official Blender MCP add-on installed (drag-and-drop the add-on from https://www.blender.org/lab/mcp-server/ into Blender, enable it, and start the MCP panel inside Blender), plus the `uv` package manager (provides `uvx`) and Python 3.10+. The server connects to the Blender add-on over a local socket (env vars BLENDER_HOST, default localhost; BLENDER_PORT, default 9876).",
+    "note": "Primary path: Blender Foundation's official Blender Lab MCP server - a Blender extension for Blender 5.1 or newer (https://www.blender.org/lab/mcp-server/). Drag and drop the extension into Blender (twice: the first drop adds the Blender Lab repository, the second installs the add-on) or use Install from Disk, then follow Blender's Setup wiki (https://projects.blender.org/lab/blender_mcp/wiki/Setup) for the MCP client connection; the official page does not publish the Claude Code command/URL, so it is not guessed here. SECURITY: Blender warns the MCP server executes LLM-generated code in Blender without any guards against data removal or exfiltration; use a VM or a machine without sensitive data. The config installed by this entry is the community alternative `uvx blender-mcp` (community bridge, not published by Blender Foundation; needs the `uv` package manager; env BLENDER_HOST default localhost, BLENDER_PORT default 9876). It talks to its own add-on, not necessarily the official extension - follow that project's setup if you use it.",
     "homepage": "https://www.blender.org/lab/mcp-server/",
     "docsUrl": "https://projects.blender.org/lab/blender_mcp/wiki/Setup",
     "thirdParty": true,
-    "vendor": "Blender Foundation",
-    "package": "blender-mcp (run via uvx)",
+    "vendor": "Blender Foundation (official Blender Lab server); community alternative: blender-mcp",
+    "package": "Official: Blender Lab MCP extension (Blender 5.1+). Installed config: community `blender-mcp` (run via uvx)",
     "network": false,
-    "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket (default port 9876). No external/network calls.",
+    "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket. No external/network calls from the bridge itself. The MCP server runs LLM-generated code in Blender unguarded.",
     "config": {
       "command": "uvx",
       "args": [
@@ -225,7 +248,7 @@
     "description": "Route model calls through the user's own `claude` CLI login (a Claude Max/Pro subscription) instead of a metered Anthropic API key — a zero-dependency local MCP server wrapping `claude -p`. Exposes a single `claude` tool.",
     "summary": "Routes model calls through the user's own Claude CLI subscription instead of a metered API key.",
     "requiresEnv": [],
-    "note": "Local stdio MCP server (hooks/claude-cli-mcp.cjs, run via `node`). Auth is entirely the user's existing `claude` CLI login — TycoonAgents never sees, stores, or forwards credentials; it just shells out to the CLI the user already signed into. This uses Anthropic's own supported CLI surface, never a third-party OAuth client impersonating one — Anthropic's terms restrict third-party OAuth against Claude, and this deliberately stays on the vendor's official path instead (not legal advice). Defaults: permission-mode 'plan' (read-only planning, no unattended edits) and a fresh scratch working directory per call so the caller's project CLAUDE.md is NOT auto-loaded (and its prompt-cache-creation cost avoided) unless `cwd` is set on purpose. Optional env overrides: CLAUDE_CLI_BIN (explicit binary path, skips discovery), CLAUDE_CLI_MODEL (default model id, default 'claude-haiku-4-5'), CLAUDE_CLI_PERMISSION_MODE (default 'plan'), CLAUDE_CLI_CWD (default working directory), CLAUDE_CLI_TIMEOUT_MS (default 180000). Verified against `claude --help` (Claude Code 2.1.258) for --model/--permission-mode/--allowedTools/--append-system-prompt/--output-format; --max-turns is not listed in that help output but is accepted and honored (checked by direct invocation) — re-verify before relying on further undocumented flags.",
+    "note": "Local stdio MCP server (hooks/claude-cli-mcp.cjs, run via `node`). Auth is entirely the user's existing `claude` CLI login — TycoonAgents never sees, stores, or forwards credentials; it just shells out to the CLI the user already signed into. This uses Anthropic's own supported CLI surface, never a third-party OAuth client impersonating one — Anthropic's terms restrict third-party OAuth against Claude, and this deliberately stays on the vendor's official path instead (not legal advice). Defaults: permission-mode 'plan' (read-only planning, no unattended edits) and a fresh scratch working directory per call so the caller's project CLAUDE.md is NOT auto-loaded (and its prompt-cache-creation cost avoided) unless `cwd` is set on purpose. Optional env overrides: CLAUDE_CLI_BIN (explicit binary path, skips discovery), CLAUDE_CLI_MODEL (default model id, default 'claude-haiku-4-5'), CLAUDE_CLI_PERMISSION_MODE (default 'plan'), CLAUDE_CLI_CWD (default working directory), CLAUDE_CLI_TIMEOUT_MS (default 180000). Verified against `claude --help` (Claude Code 2.1.258) for --model/--permission-mode/--allowedTools/--append-system-prompt/--output-format.",
     "docsUrl": "https://docs.claude.com/en/docs/claude-code/cli-reference",
     "thirdParty": false,
     "vendor": "Anthropic",
@@ -247,7 +270,7 @@
     "description": "Analyze and fix Dart & Flutter code, resolve symbols, fetch API docs, search pub.dev, manage pubspec.yaml dependencies, run tests, and format code — via Google's official dart mcp-server.",
     "summary": "Analyzes and fixes Dart & Flutter code via Google's official dart mcp-server.",
     "requiresEnv": [],
-    "note": "Provided by the Dart SDK — no separate install if `dart` (3.9+) is on your PATH. Experimental and evolving. Best used inside a Flutter/Dart project (a directory with pubspec.yaml). If your MCP client has trouble with workspace roots, add \"--force-roots-fallback\" to args.",
+    "note": "Provided by the Dart SDK — no separate install if `dart` (3.9+) is on your PATH. Best used inside a Flutter/Dart project (a directory with pubspec.yaml). If your MCP client has trouble with workspace roots, add \"--force-roots-fallback\" to args.",
     "docsUrl": "https://docs.flutter.dev/ai/mcp-server",
     "thirdParty": true,
     "vendor": "Google (Dart & Flutter)",
@@ -270,14 +293,14 @@
     "requiresEnv": [
       "GEMINI_API_KEY"
     ],
-    "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio via `npx -y gemini-mcp-tool`. Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH.",
+    "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio via `npx -y gemini-mcp-tool`. Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH. UPDATE 2026-06-18: Google retired the Gemini CLI for individual users; gemini-mcp-tool now defaults to the Antigravity CLI (`agy`) backend. Set GEMINI_MCP_BACKEND=gemini to keep using the Gemini CLI (paid API key / enterprise), or GEMINI_MCP_BACKEND=agy for Antigravity (source: https://github.com/jamubc/gemini-mcp-tool). Install whichever CLI matches the backend you choose.",
     "docsUrl": "https://github.com/jamubc/gemini-mcp-tool",
     "thirdParty": true,
     "vendor": "Google",
     "package": "gemini-mcp-tool (community bridge over Google's gemini CLI, run via `npx`)",
     "homepage": "https://github.com/jamubc/gemini-mcp-tool",
     "network": true,
-    "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local `gemini` CLI's own auth (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
+    "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local backend CLI's own auth (Antigravity `agy` by default, or `gemini` when GEMINI_MCP_BACKEND=gemini) (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
     "config": {
       "command": "npx",
       "args": [
@@ -308,6 +331,82 @@
       "args": [
         "${EXTENSION_DIR}/hooks/openai-compatible-mcp.cjs"
       ]
+    }
+  },
+  {
+    "id": "supabase",
+    "name": "Supabase (Official)",
+    "description": "Manage Supabase projects from Claude - query databases, apply migrations, and inspect logs via Supabase's official hosted MCP server.",
+    "summary": "Supabase's official hosted MCP server for projects, databases, and migrations.",
+    "requiresEnv": [],
+    "note": "Official Supabase-hosted remote server - nothing to install locally. Authenticates with OAuth (dynamic client registration) in the browser on first use; no token to create. Optional URL query parameters: read_only=true (run queries as a read-only Postgres user) and project_ref=<id> (scope to one project). Prefer read_only=true and a non-production project. Source: https://supabase.com/docs/guides/getting-started/mcp",
+    "docsUrl": "https://supabase.com/docs/guides/getting-started/mcp",
+    "thirdParty": false,
+    "vendor": "Supabase",
+    "package": "Supabase-hosted remote MCP server (no local install)",
+    "homepage": "https://supabase.com/docs/guides/getting-started/mcp",
+    "network": true,
+    "dataNote": "Connects to Supabase's hosted MCP server using your authorized Supabase account; the model can read and change the projects and databases you grant.",
+    "config": {
+      "type": "http",
+      "url": "https://mcp.supabase.com/mcp"
+    }
+  },
+  {
+    "id": "sentry",
+    "name": "Sentry (Official)",
+    "description": "Search errors, inspect issues and performance data, and manage issues from Claude via Sentry's official hosted MCP server.",
+    "summary": "Sentry's official hosted MCP server for errors, issues, and performance.",
+    "requiresEnv": [],
+    "note": "Official Sentry-hosted remote server - nothing to install locally. All connections use OAuth; the first connection triggers a browser sign-in to your Sentry account. To scope to one project, use https://mcp.sentry.dev/mcp/<organizationSlug>/<projectSlug> in your own .mcp.json. Source: https://mcp.sentry.dev/",
+    "docsUrl": "https://mcp.sentry.dev/",
+    "thirdParty": false,
+    "vendor": "Sentry",
+    "package": "Sentry-hosted remote MCP server (no local install)",
+    "homepage": "https://mcp.sentry.dev/",
+    "network": true,
+    "dataNote": "Connects to Sentry's hosted MCP server using your authorized Sentry account; the model can read and manage the organizations and projects you grant.",
+    "config": {
+      "type": "http",
+      "url": "https://mcp.sentry.dev/mcp"
+    }
+  },
+  {
+    "id": "stripe",
+    "name": "Stripe (Official)",
+    "description": "Interact with the Stripe API and search Stripe's docs from Claude via Stripe's official hosted MCP server.",
+    "summary": "Stripe's official hosted MCP server for API access and docs search.",
+    "requiresEnv": [],
+    "note": "Official Stripe-hosted remote server - nothing to install locally. Authenticate with OAuth: run /mcp in Claude Code and authenticate Stripe. Use a sandbox while testing; Stripe asks for human confirmation before sensitive writes such as refunds. For non-interactive use, Stripe documents an agent API key sent as `Authorization: Bearer ${AGENT_API_KEY}` from an environment variable in your own .mcp.json (never commit the key); full-access secret keys and restricted keys without the Agent tag stop working on 2026-10-31. Source: https://docs.stripe.com/mcp",
+    "docsUrl": "https://docs.stripe.com/mcp",
+    "thirdParty": false,
+    "vendor": "Stripe",
+    "package": "Stripe-hosted remote MCP server (no local install)",
+    "homepage": "https://docs.stripe.com/mcp",
+    "network": true,
+    "dataNote": "Connects to Stripe's hosted MCP server using your authorized Stripe account; the model can read and, with confirmation for sensitive actions, change payments, customers, and billing data.",
+    "config": {
+      "type": "http",
+      "url": "https://mcp.stripe.com"
+    }
+  },
+  {
+    "id": "figma",
+    "name": "Figma (Official)",
+    "description": "Bring Figma design context into Claude and write to the canvas via Figma's official hosted MCP server.",
+    "summary": "Figma's official hosted MCP server for design context.",
+    "requiresEnv": [],
+    "note": "Official Figma-hosted remote server - nothing to install locally. Authenticates with OAuth: run /mcp in Claude Code, select figma, choose Authenticate, and click Allow Access. Figma lists the remote server as available on all seats and plans. Source: https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/",
+    "docsUrl": "https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/",
+    "thirdParty": false,
+    "vendor": "Figma",
+    "package": "Figma-hosted remote MCP server (no local install)",
+    "homepage": "https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/",
+    "network": true,
+    "dataNote": "Connects to Figma's hosted MCP server using your authorized Figma account; the model can read the design files you grant and write to the canvas.",
+    "config": {
+      "type": "http",
+      "url": "https://mcp.figma.com/mcp"
     }
   }
 ]

@@ -74,6 +74,10 @@ public class PlayerMovement : MonoBehaviour
 - Renaming/moving a script class name must match the filename, or Unity refuses to compile/attach it.
 - Domain reload on every script recompile resets non-serialized static state — don't rely on statics surviving a recompile during Play mode.
 
+## Live editor control
+
+Unity's official MCP bridge ships in the **Unity AI Assistant** package (`com.unity.ai.assistant`, Unity 6000.0+). Enable it under Edit > Project Settings > AI > Unity MCP Server and accept the pending client connection in that page. The catalog entry is `unity-ai-assistant` (MCP tab).
+
 ## TycoonAgents integration
 
 TycoonAgents shows a live **Unity connection chip** in the agent visualization panel when the Unity MCP bridge is active. Route Unity-specific implementation work (scenes, prefabs, C# components, Inspector wiring) to coding-specialist rather than editing `.unity`/`.prefab`/`.cs` files from the orchestrator directly.

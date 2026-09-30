@@ -1,12 +1,12 @@
 ---
 name: blender
-description: Blender 4 modeling, materials, shading, animation, and Python (bpy) scripting; live-editor control via the official Blender MCP.
+description: Blender 4/5 modeling, materials, shading, animation, and Python (bpy) scripting; live-editor control via the official Blender Lab MCP (Blender 5.1+).
 ---
 
 # Blender
 
-Guidance for Blender 4 modeling, shading, and `bpy` Python scripting, plus live
-control of a running Blender session via the official **Blender MCP** server.
+Guidance for Blender 4/5 modeling, shading, and `bpy` Python scripting, plus live
+control of a running Blender session via the official **Blender Lab MCP** server (Blender 5.1+).
 
 ## bpy scripting conventions
 
@@ -40,21 +40,30 @@ control of a running Blender session via the official **Blender MCP** server.
   scene references rather than `bpy.context`-dependent operators. Useful for
   batch renders, asset export, and CI validation.
 
-## Official Blender MCP setup
+## Official Blender MCP setup (Blender Lab, Blender 5.1+)
 
-1. Install the **`uv`** package manager (provides `uvx`).
-2. MCP server command (stdio): `uvx blender-mcp`
-3. Client config entry:
-   ```json
-   "blender": { "command": "uvx", "args": ["blender-mcp"] }
-   ```
-4. Install the official **Blender MCP** add-on: drag-and-drop the add-on file
-   from https://www.blender.org/lab/mcp-server/ into a running Blender window,
-   enable it in Preferences, then start the MCP panel inside Blender.
-5. The `uvx blender-mcp` server connects to the Blender add-on over a socket.
-   Env vars: `BLENDER_HOST` (default `localhost`), `BLENDER_PORT` (default `9876`).
-6. Docs: https://www.blender.org/lab/mcp-server/
-   Setup wiki: https://projects.blender.org/lab/blender_mcp/wiki/Setup
+1. Use **Blender 5.1 or newer** (the official server is not available on 4.x).
+2. Install the Blender Lab MCP extension from https://www.blender.org/lab/mcp-server/:
+   drag and drop it into a running Blender window (twice - the first drop adds the
+   Blender Lab extension repository, the second installs the add-on) or use
+   Install from Disk, then enable it and start the MCP server from inside Blender.
+3. Connect your MCP client as described in Blender's Setup wiki:
+   https://projects.blender.org/lab/blender_mcp/wiki/Setup. The official page does
+   not publish a Claude Code command or URL, so do not guess one.
+4. **Security warning (from Blender):** the MCP server executes LLM-generated code
+   in Blender with no guards against data removal or sending data to a remote
+   location. Use a virtual machine or a system without sensitive data, and save
+   or back up your `.blend` first.
+
+### Community alternative: `blender-mcp` (not the official server)
+
+A community bridge, not published by Blender Foundation, that uses its own add-on:
+
+- Install the **`uv`** package manager (provides `uvx`).
+- Server command (stdio): `uvx blender-mcp`; client entry
+  `"blender": { "command": "uvx", "args": ["blender-mcp"] }`.
+- Follow that project's own add-on install; it connects over a socket (env
+  `BLENDER_HOST` default `localhost`, `BLENDER_PORT` default `9876`).
 
 The MCP exposes: scene inspection/modification, object/material/lighting
 control, and arbitrary `bpy` Python execution against the live session.

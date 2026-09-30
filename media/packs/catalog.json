@@ -65,12 +65,12 @@
   {
     "id": "unity",
     "name": "Unity",
-    "description": "Unity C# agent with the Unity skill + Understand Anything for visual code exploration. Add a Unity MCP to wire editor tools.",
-    "summary": "Unity C# agent with the Unity skill and optional live-editor MCP.",
+    "description": "Unity C# agent with the Unity skill + Understand Anything for visual code exploration. Includes Unity's official AI Assistant MCP bridge (Unity 6000.0+) for live editor tools.",
+    "summary": "Unity C# agent with the Unity skill and Unity's official editor MCP.",
     "skills": [
       "unity"
     ],
-    "mcp": null,
+    "mcp": "unity-ai-assistant",
     "agent": {
       "id": "unity",
       "name": "Unity",
@@ -82,7 +82,7 @@
   {
     "id": "roblox",
     "name": "Roblox",
-    "description": "Roblox Studio + Luau agent with the Roblox skill + Understand Anything for visual code exploration and the Roblox Studio MCP (requires Studio MCP setup).",
+    "description": "Roblox Studio + Luau agent with the Roblox skill + Understand Anything for visual code exploration and the Roblox Studio MCP (Roblox's built-in Studio MCP; enable it in Studio's Assistant > Manage MCP Servers).",
     "summary": "Roblox Studio + Luau agent with the Roblox skill and Roblox Studio MCP.",
     "skills": [
       "roblox"
@@ -99,7 +99,7 @@
   {
     "id": "blender",
     "name": "Blender",
-    "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting agent with the Blender skill + Understand Anything for visual code exploration, plus the Blender MCP for live viewport/scene control.",
+    "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting agent with the Blender skill + Understand Anything for visual code exploration, plus the Blender MCP for live scene control (official Blender Lab server on Blender 5.1+).",
     "summary": "Blender modeling/animation agent with the Blender skill and live viewport MCP.",
     "skills": [
       "blender"
