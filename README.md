@@ -160,6 +160,8 @@ A teammate who clones the project and opens TycoonAgents sees a **"Team setup ch
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
 
+Supported harnesses: Claude Code, OpenCode (Experimental), Codex (Experimental). Gemini / Antigravity harness: planned (not yet available).
+
 ### Using OpenCode as the provider
 
 TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction. This depends on the `.claude/agents/*.md` agent roster existing first — it is not committed (`.claude/` is gitignored); seed it via the VS Code panel's Install/Repair hooks, or `node standalone/src/cli.mjs install-hook <dir>` / `seed-agents <dir>` on OpenCode-only setups — see "Prerequisite: the agent roster" in [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
