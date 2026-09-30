@@ -324,11 +324,12 @@ function regroupDecorRows(rows: ThemeDecorBoardRow[]): ThemeDecorBoardRow[][] {
  * direction text) and, for character boards, to resolve the effective body
  * plan for the agent slot.
  */
-function structuredRequestForItem(
+export function structuredRequestForItem(
   item: ThemeImageReviewItem | Omit<ThemeImageReviewItem, 'updated_at'>,
   plan: ThemePlan,
   creativeDirection: string,
   background: BoardBackgroundMode,
+  manifest?: ThemeManifest,
 ): StructuredGenerateRequest {
   switch (item.kind) {
     case 'character_atlas': {
@@ -345,7 +346,13 @@ function structuredRequestForItem(
       );
     }
     case 'rival_atlas':
-      return buildRivalAtlasRequest(creativeDirection, plan.display_name, item.rival_rows ?? [], background);
+      // Rebuild rows from the current plan so a failed review-item resync can't
+      // leave a stale body plan in the request; stored rows are the fallback.
+      return buildRivalAtlasRequest(
+        creativeDirection, plan.display_name,
+        manifest ? rivalRowsForItem(item, manifest, plan) : (item.rival_rows ?? []),
+        background,
+      );
     case 'object_atlas':
       return buildObjectAtlasRequest(creativeDirection, plan.display_name, item.object_rows ?? [], background);
     case 'background_decor_atlas':
@@ -4313,7 +4320,7 @@ async function generateRivalAsset(
 ): Promise<void> {
   onProgress(item.label);
   const previousFrameKeys = await persistedFrameKeysFor(globalStorageUri, plan.theme_id, item.id);
-  const structuredRequest = structuredRequestForItem(item, plan, themePlanCreativeDirection(plan), boardBackgroundModeForProvider());
+  const structuredRequest = structuredRequestForItem(item, plan, themePlanCreativeDirection(plan), boardBackgroundModeForProvider(), manifest);
   const attempt = await generateBoardImage(plan.theme_id, item, structuredRequest, spriteBoardOptions(options), item.prompt);
   const generated = attempt.image;
   throwIfCancelled(undefined, options?.signal);

@@ -257,3 +257,19 @@ test('sliceAndNormalizeAtlas without rowScaleOverrides is unchanged: empty overr
   const emptyOverrides = await sliceAndNormalizeAtlas(buffer, {} as Partial<ThemeManifest>, { ...grid, rowScaleOverrides: [] });
   assert.deepEqual(plain.slots.map((slot) => slot.data), emptyOverrides.slots.map((slot) => slot.data));
 });
+
+test('structuredRequestForItem builds rival rows from the current plan, not stale stored rows', () => {
+  const manifest = testManifest();
+  const stalePlan = testPlan();
+  const item = rivalItem(stalePlan);
+  assert.equal(item.rival_rows![1].body_plan, 'biped');
+
+  const freshPlan = testPlan({ enemy_body_plans: [undefined, 'quadruped', undefined] });
+  const request = service.structuredRequestForItem(item, freshPlan, 'dir', 'magenta', manifest);
+  const slot = request.slot as Array<{ body_plan?: string }>;
+  assert.equal(slot[1].body_plan, 'quadruped');
+
+  // Without a manifest it falls back to the stored rows.
+  const fallback = service.structuredRequestForItem(item, freshPlan, 'dir', 'magenta');
+  assert.equal((fallback.slot as Array<{ body_plan?: string }>)[1].body_plan, undefined);
+});
