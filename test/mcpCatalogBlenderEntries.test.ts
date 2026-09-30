@@ -4,8 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-// The default "blender" entry is the official Blender Lab server; the community
-// bridge is a separate, labelled entry that tells users to disable telemetry.
+// Only the official Blender Lab server ships; the community bridge was removed.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -37,13 +36,11 @@ test("blender entry launches the official Blender Lab server with no absolute pa
   assert.match(e!.note!, /without any guards/);
 });
 
-test("blender-community entry is labelled and carries the telemetry-off instruction", () => {
-  const e = catalog.find((x) => x.id === "blender-community");
-  assert.ok(e);
-  assert.equal(e!.thirdParty, true);
-  assert.deepEqual(e!.config, { command: "uvx", args: ["blender-mcp"] });
-  assert.match(e!.note!, /Allow Telemetry/);
-  assert.match(e!.note!, /Edit > Preferences > Add-ons > MCP for Blender > Telemetry & Privacy/);
+test("the community blender entry is absent and the official one is present", () => {
+  assert.equal(catalog.find((x) => x.id === "blender-community"), undefined);
+  assert.ok(catalog.find((x) => x.id === "blender"));
+  assert.ok(!JSON.stringify(catalog).includes("blender-community"));
+  assert.match(catalog.find((x) => x.id === "blender")!.note!, /community 'MCP for Blender' add-on/);
 });
 
 test("the blender pack keeps pointing at the official blender entry", () => {

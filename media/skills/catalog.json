@@ -45,7 +45,7 @@
     "name": "Blender",
     "description": "Blender modeling, materials, shading, animation, and Python (bpy) scripting.",
     "summary": "Blender modeling, materials, shading, animation, and Python scripting.",
-    "mcpNote": "Pairs with Blender's official Blender Lab MCP (Blender 5.1+) for live scene control; the community `uvx blender-mcp` bridge is the alternative. Blender warns the server runs LLM-generated code unguarded."
+    "mcpNote": "Pairs with Blender's official Blender Lab MCP (Blender 5.1+) for live scene control. Blender warns the server runs LLM-generated code unguarded."
   },
   {
     "id": "unreal-engine",

@@ -61,20 +61,7 @@ to either version, but the official MCP needs **Blender 5.1 or newer**.
    sent to a remote location. Use a virtual machine or a system without sensitive
    data, and save or back up your `.blend` first.
 
-**Port conflict:** the official and community add-ons both listen on TCP port 9876, so enable only ONE add-on in Blender and install only ONE of the two MCP entries; `BLENDER_MCP_PORT` changes the official server's port if needed.
-
-### Alternative: community `blender-mcp` (catalog entry `blender-community`)
-
-A community bridge ("MCP for Blender" by BlenderMCP), not published by Blender
-Foundation, with its own add-on. Use it only if you cannot run Blender 5.1+.
-
-- Install the **`uv`** package manager; server command (stdio): `uvx blender-mcp`.
-- Follow that project's own add-on install; it connects over a socket (env
-  `BLENDER_HOST` default `localhost`, `BLENDER_PORT` default `9876`).
-- **Turn telemetry off.** The community add-on has "Allow Telemetry" on by default,
-  which sends anonymized prompts, code, screenshots and scene data to its
-  maintainers. In Blender: Edit > Preferences > Add-ons > MCP for Blender >
-  Telemetry & Privacy.
+If you previously installed the community 'MCP for Blender' add-on, disable it in Blender, since it uses the same port 9876, and turn off its telemetry. `BLENDER_MCP_PORT` changes the official server's port if needed.
 
 The MCP exposes: scene inspection/modification, object/material/lighting
 control, and arbitrary `bpy` Python execution against the live session.
