@@ -7682,13 +7682,21 @@ if (typeof module !== "undefined" && module.exports) {
    * @param {any} item
    */
   function buildThemeAttemptStatusNotice(item) {
-    // provider_failed without an explicit refund flag is still treated as a
-    // refund — the backend always refunds a provider failure, it just may
-    // not have set lastAttemptRefunded on this payload.
-    if (item.lastAttemptRefunded || item.error_kind === "provider_failed") {
+    // "Refunded" is claimed only when the server confirmed it
+    // (lastAttemptRefunded === true). A provider_failed with refunded:false
+    // or no flag never says so.
+    if (item.lastAttemptRefunded === true) {
       const notice = document.createElement("div");
       notice.className = "theme-attempt-notice theme-attempt-refunded";
       notice.textContent = themeRefundNoticeText(item);
+      return notice;
+    }
+    if (item.error_kind === "provider_failed") {
+      const notice = document.createElement("div");
+      notice.className = "theme-attempt-notice theme-attempt-unavailable";
+      notice.textContent = item.lastAttemptRefunded === false
+        ? "Attempt failed — you were not refunded for this attempt; check your balance"
+        : "Attempt failed — check your balance";
       return notice;
     }
     if (item.error_kind === "not_signed_in" || item.error_kind === "insufficient_credits") {

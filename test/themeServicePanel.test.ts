@@ -1378,7 +1378,7 @@ test('lastAttemptRefunded shows the refunded notice and keeps Retry available', 
   h.win.close();
 });
 
-test('provider_failed without a refund flag still renders the refunded notice', async () => {
+test('provider_failed without a refund flag renders neutral wording, not a refund claim', async () => {
   const h = await bootThemePanelHarness();
   h.dispatch(themeImageReview({
     theme_id: 't1',
@@ -1386,8 +1386,21 @@ test('provider_failed without a refund flag still renders the refunded notice', 
     items: [baseReviewItem({ error_kind: 'provider_failed', attemptCost: 1 })],
   }));
   const notice = attemptNotice(h);
-  assert.ok(notice.classList.contains('theme-attempt-refunded'));
-  assert.equal(notice.textContent, 'Attempt failed, 1 credit refunded');
+  assert.ok(!notice.classList.contains('theme-attempt-refunded'));
+  assert.equal(notice.textContent, 'Attempt failed — check your balance');
+  h.win.close();
+});
+
+test('provider_failed with refunded:false says the user was not refunded', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 3,
+    items: [baseReviewItem({ error_kind: 'provider_failed', lastAttemptRefunded: false, attemptCost: 3 })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(!notice.classList.contains('theme-attempt-refunded'));
+  assert.equal(notice.textContent, 'Attempt failed — you were not refunded for this attempt; check your balance');
   h.win.close();
 });
 
@@ -1400,7 +1413,7 @@ test('refunded notice uses the quoted board cost, not a stale attemptCost', asyn
   h.dispatch(themeImageReview({
     theme_id: 't1',
     creditsSpent: 0,
-    items: [baseReviewItem({ boardType: 'character_sheet', error_kind: 'provider_failed', attemptCost: 1 })],
+    items: [baseReviewItem({ boardType: 'character_sheet', error_kind: 'provider_failed', lastAttemptRefunded: true, attemptCost: 1 })],
   }));
   assert.equal(attemptNotice(h).textContent, 'Attempt failed, 3 credits refunded');
   h.win.close();
