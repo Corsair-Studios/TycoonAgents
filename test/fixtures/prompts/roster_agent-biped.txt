@@ -22,7 +22,7 @@ Do NOT draw:
 
 Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.
 
-Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind any character. Each character stands directly on the flat background with nothing framing, enclosing, or backing it — the background is ONE single uniform color/transparency filling the ENTIRE canvas edge to edge, identical behind every character and in all padding.
+Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind any character. Each character stands directly on the flat background with nothing framing, enclosing, or backing it — the background is ONE single uniform #FF00FF magenta filling the ENTIRE canvas edge to edge, identical behind every character and in all padding.
 
 NO BORDERS OR GRID ARTIFACTS (ABSOLUTE): the sheet contains ONLY the 20 character sprites on one flat solid-#FF00FF-magenta background. Do NOT draw an outer border or frame around the sheet, cell outlines, grid lines, gutter dividers, selection boxes or rectangles around any sprite, numbering, labels, or text, drop shadows outside the figure, or any backdrop other than that single flat magenta background. The magenta background runs edge to edge with NO framing of any kind.
 

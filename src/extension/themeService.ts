@@ -148,12 +148,6 @@ export interface ThemeImageGenerationOptions {
     mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
     filename: string;
   }>;
-  /**
-   * Dormant — see boardBackgroundModeForProvider's doc comment. Kept only so
-   * spriteBoardOptions/normalizeThemeCharacterAtlas's shape stays stable;
-   * the Theme Service request never reads it.
-   */
-  transparentBackground?: boolean;
 }
 
 /**
@@ -487,20 +481,16 @@ export type BoardKind =
  * background mode its prompts should request. All providers currently use the
  * legacy magenta chroma-key contract.
  *
- * 2026-07-08: gpt-image-2 rejects `background: "transparent"` outright (API
- * 400 "Transparent background is not supported for this model") — gpt-image-1
- * supported native alpha but gpt-image-2 dropped it. The transparent-background
- * plumbing (BoardBackgroundMode, the transparent prompt variants, and the
- * transparentBackground request option) is kept dormant rather than removed —
- * re-enable it here for a specific provider if a future model supports alpha.
+ * Magenta #FF00FF is the only background ever requested; image providers
+ * (gpt-image-2 in particular) reject or mishandle transparent backgrounds.
  */
 export function boardBackgroundModeForProvider(): BoardBackgroundMode {
   return 'magenta';
 }
 
 /**
- * Layers the native-transparency request flag onto generation options for a
- * magenta/transparent-keyed sprite board call (agents, rivals, decor, objects,
+ * Passes generation options through for a
+ * magenta-keyed sprite board call (agents, rivals, decor, objects,
  * expressions, achievements, and their retries). The environment board is
  * opaque scenery and must never set this — its own call sites build their
  * options separately and never pass through this helper.
@@ -511,7 +501,6 @@ function spriteBoardOptions(
   if (!options) return options;
   return {
     ...options,
-    transparentBackground: boardBackgroundModeForProvider() === 'transparent',
   };
 }
 
@@ -2244,7 +2233,7 @@ export async function normalizeThemeCharacterAtlas(
   // Match the padding language of the board that will actually be regenerated
   // (the merged 'augment' prompt appends these notes onto the ORIGINAL saved
   // prompt, so contradicting its background contract — e.g. demanding magenta
-  // padding on a board originally baked transparent for OpenAI — would confuse
+  // padding on a board originally baked with a different background — would confuse
   // the model).
   const paddingAdjective = boardBackgroundPaddingAdjective(
     boardBackgroundModeForProvider(),
@@ -3684,7 +3673,7 @@ export function characterAtlasGrid(rebuildBoard = false, bodyPlan: BodyPlan = 'b
     // the nominal boundary. This mirrors how afbf825 enabled it
     // unconditionally for all rivals rather than gating it per-enemy-type.
     snapGutterBoundaries: true,
-    gutterKeyColor: boardBackgroundModeForProvider() === 'transparent' ? 'transparent' : 'magenta',
+    gutterKeyColor: 'magenta',
     rebuildBoard,
     squareReviewBoard: rebuildBoard,
   } satisfies AtlasGrid;
@@ -3837,7 +3826,7 @@ async function processRivalAtlas(
     // occur on a magenta board and make snapping a silent no-op. Never
     // enabled for other boards.
     snapGutterBoundaries: true,
-    gutterKeyColor: backgroundMode === 'transparent' ? 'transparent' : 'magenta',
+    gutterKeyColor: 'magenta',
   });
   const output = await optimizeSpriteBoardCanvas(generated, 5, rows.length);
   return { output, spritePackage };

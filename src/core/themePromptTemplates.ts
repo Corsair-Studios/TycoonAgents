@@ -14,10 +14,10 @@ import { WALK_POSE_GUIDE_PARAGRAPHS } from './walkPoseGuidePrompts';
  * arguments to a StructuredGenerateRequest, and call assembleThemePrompt so
  * the actual prompt text lives in exactly one place.
  */
-export const PROMPT_TEMPLATE_VERSION = '2026-09-29.1';
+export const PROMPT_TEMPLATE_VERSION = '2026-09-30.1';
 
 /** See BoardBackgroundMode in themeAssetPrompts.ts (re-declared here to stay import-free). */
-export type PromptBoardBackgroundMode = 'magenta' | 'transparent';
+export type PromptBoardBackgroundMode = 'magenta';
 
 export interface PromptThemeSpec {
   description: string;
@@ -81,7 +81,7 @@ export type StructuredGenerateRequest = {
     seed?: number;
     retryOf?: string;
     /** Not part of the v3.4 wire contract; carried so the shared builder can
-     * reproduce the extension's magenta/transparent chroma-key modes. Flag
+     * reproduce the extension's magenta chroma-key background. Flag
      * for the contract owner — see report. */
     backgroundMode?: PromptBoardBackgroundMode;
     /**
@@ -107,13 +107,11 @@ export type StructuredGenerateRequest = {
  * was baked with.
  */
 export function boardBackgroundPaddingAdjective(background: PromptBoardBackgroundMode): string {
-  return background === 'transparent' ? 'fully transparent' : 'solid-magenta';
+  return 'solid-magenta';
 }
 
 function finalUnusedPixelSentence(background: PromptBoardBackgroundMode): string {
-  return background === 'transparent'
-    ? 'Every unused pixel must be fully transparent (alpha 0). Do not paint any background color, checkerboard pattern, or solid fill in unused areas.'
-    : 'Every unused pixel must be flat solid #FF00FF magenta.';
+  return 'Every unused pixel must be flat solid #FF00FF magenta.';
 }
 
 function creativeDirectionHeader(creativeDirection: string): string {
@@ -133,12 +131,8 @@ function boardContract(columns: number, rows: number, background: PromptBoardBac
     'Keep every subject fully inside its own cell with clear empty padding on ALL FOUR sides — top, bottom, left, and right. The subject must never touch or cross any cell edge; anything drawn past a cell boundary is sliced off flat by the game, so a subject that touches its cell\'s bottom edge is an incorrect result.',
     'Do not draw grid lines, labels, numbers, captions, borders, scenery, shadows, or extra subjects.',
     'Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind ANY subject. Each subject sits directly on the flat background with nothing framing, enclosing, or backing it. The background is ONE single uniform color filling the ENTIRE canvas edge to edge — identical behind every subject and in all padding — never a per-subject colored tile or panel.',
-    background === 'transparent'
-      ? 'Paint every unused pixel fully transparent (alpha 0) — no texture, gradient, or background fill of any kind.'
-      : 'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
-    background === 'transparent'
-      ? 'Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully transparent — never a blend. Give each subject a clean solid dark outline.'
-      : 'Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.',
+    'Paint every unused pixel solid #FF00FF magenta with no texture or gradient.',
+    'Render every subject with crisp, hard pixel-art edges: NO anti-aliasing, feathering, glow, or soft blending where the subject meets the background. Every edge pixel is either fully subject-colored or fully background — never a blend. Give each subject a clean solid dark outline, and never tint any subject pixel with the background magenta.',
   ].join('\n');
 }
 
@@ -220,7 +214,7 @@ function buildRivalAtlas(
     `Row ${index + 1} (Cells ${index * 5 + 1}-${index * 5 + 5}): the enemy **"${row.display_name}"** from the "${themeName}" theme.`
     + (row.visual_description ? ` Appearance — depict this exact design: ${row.visual_description}` : ''),
   );
-  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
+  const spaceWord = 'magenta';
   return [
     creativeDirectionHeader(creativeDirection),
     '',
@@ -264,7 +258,7 @@ function buildCharacterAtlas(
   walkPoseGuide: BodyPlan | undefined,
   bodyPlan: BodyPlan,
 ): string {
-  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
+  const spaceWord = 'magenta';
   return [
     'Create one production sprite board, not a poster, illustration, concept sheet, or character lineup.',
     '',
@@ -288,13 +282,11 @@ function buildCharacterAtlas(
     '* UI elements',
     '* speech bubbles',
     '',
-    background === 'transparent'
-      ? 'Every unused pixel on the canvas must be fully transparent (alpha 0) — no gradients, lighting, texture, fog, reflections, scenery, background color, or environmental effects.'
-      : 'Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.',
+    'Every unused pixel on the canvas must be a perfectly flat solid **#FF00FF** magenta with no gradients, lighting, texture, fog, reflections, scenery, or environmental effects.',
     '',
-    'Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind any character. Each character stands directly on the flat background with nothing framing, enclosing, or backing it — the background is ONE single uniform color/transparency filling the ENTIRE canvas edge to edge, identical behind every character and in all padding.',
+    'Do NOT draw any box, frame, border, panel, card, plate, rounded rectangle, colored backdrop, vignette, sticker outline, or containing shape around or behind any character. Each character stands directly on the flat background with nothing framing, enclosing, or backing it — the background is ONE single uniform #FF00FF magenta filling the ENTIRE canvas edge to edge, identical behind every character and in all padding.',
     '',
-    `NO BORDERS OR GRID ARTIFACTS (ABSOLUTE): the sheet contains ONLY the 20 character sprites on one flat ${background === 'transparent' ? 'fully transparent' : 'solid-#FF00FF-magenta'} background. Do NOT draw an outer border or frame around the sheet, cell outlines, grid lines, gutter dividers, selection boxes or rectangles around any sprite, numbering, labels, or text, drop shadows outside the figure, or any backdrop other than that single flat ${spaceWord} background. The ${spaceWord} background runs edge to edge with NO framing of any kind.`,
+    `NO BORDERS OR GRID ARTIFACTS (ABSOLUTE): the sheet contains ONLY the 20 character sprites on one flat solid-#FF00FF-magenta background. Do NOT draw an outer border or frame around the sheet, cell outlines, grid lines, gutter dividers, selection boxes or rectangles around any sprite, numbering, labels, or text, drop shadows outside the figure, or any backdrop other than that single flat ${spaceWord} background. The ${spaceWord} background runs edge to edge with NO framing of any kind.`,
     '',
     'Every cell contains the EXACT SAME character:',
     '',
@@ -331,7 +323,7 @@ function buildCharacterAtlas(
         `In walking and neutral-standing cells, the complete character from head to feet occupies exactly ${CHARACTER_TARGET_CONTENT_PERCENT}% of the cell height.`,
         `Measure that ${CHARACTER_TARGET_CONTENT_PERCENT}% against each individual cell, never against the full canvas.`,
         'A standing character below 68% or above 76% of its cell height is an incorrect result.',
-        `Reserve the remaining approximately 28% as ${background === 'transparent' ? 'fully transparent' : 'solid-magenta'} safety padding split above the head and below the feet.`,
+        `Reserve the remaining approximately 28% as solid-magenta safety padding split above the head and below the feet.`,
       ]),
     `Keep a visible ${spaceWord} gutter at every horizontal row boundary and below the entire fourth row.`,
     `Do not leave oversized ${spaceWord} margins around a small character.`,
@@ -557,9 +549,7 @@ function buildCharacterAtlas(
     '',
     'If an object would normally exist, omit it completely.',
     '',
-    background === 'transparent'
-      ? 'The tool must terminate in empty fully-transparent space.'
-      : 'The tool must terminate in empty #FF00FF magenta space.',
+    'The tool must terminate in empty #FF00FF magenta space.',
     '',
     'No visible object may ever touch the tool.',
     '',
@@ -615,9 +605,7 @@ function buildCharacterAtlas(
     '',
     'Characters only.',
     '',
-    background === 'transparent'
-      ? 'Every unused pixel remains fully transparent (alpha 0). Do not paint any background color.'
-      : 'Every unused pixel remains solid **#FF00FF** magenta.',
+    'Every unused pixel remains solid **#FF00FF** magenta.',
   ].join('\n');
 }
 
@@ -731,7 +719,7 @@ function buildBackgroundDecor(
       const base = `  Cell ${startCell + index}: ${item.display_name}`;
       return item.visual_description ? `${base} — ${item.visual_description}` : base;
     });
-  const spaceWord = background === 'transparent' ? 'transparent' : 'magenta';
+  const spaceWord = 'magenta';
   return [
     creativeDirectionHeader(creativeDirection),
     '',
@@ -803,9 +791,7 @@ function buildExpressionAtlas(
     'These are ICONS, NOT characters. Do NOT draw any face, head, eyes, mouth, hair, portrait, or full character in ANY cell — even if a description hints at one. Expression icons render very small, where a face or character will not read; keep every cell a bold, simple, high-contrast pictogram/symbol drawn LARGE and centered to fill most of its cell.',
     'Cell 8 ("Dazed / hit"): when NO description is given, default to the classic comic "seeing stars" motif (a small cluster of stars and/or a spiral). When a description IS given, follow that description instead (for example a bandage / Band-Aid) — do NOT fall back to stars or a swirl; just keep it a bold, simple icon with no face or head that still reads as hurt or dazed.',
     'Do NOT draw any speech bubble, balloon, callout, chat bubble, frame, border, panel, outline, or container around the icon — the app displays it inside its own bubble, so render ONLY the bare icon itself.',
-    background === 'transparent'
-      ? 'Flat, bold, high-contrast icon art on a fully transparent background; centered in its cell.'
-      : 'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
+    'Flat, bold, high-contrast icon art on solid magenta; centered in its cell.',
     'No words, letters, numbers, or punctuation glyphs.',
   ].join('\n');
 }

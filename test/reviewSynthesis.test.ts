@@ -613,53 +613,30 @@ test('removeStaleBoardFrameKeys: no-op when there are no previous frame keys (fi
 
 // --- Provider-aware sprite-board backgrounds: gpt-image-2 rejects
 // background: "transparent" outright (API 400, verified 2026-07-08), so every
-// provider currently keeps the legacy magenta chroma-key contract. The
-// transparent-mode prompt builders below remain exercised directly since the
-// plumbing is kept dormant, not removed. ---
+// provider keeps the legacy magenta chroma-key contract. ---
 
 test('boardBackgroundModeForProvider always returns magenta (p43-t1: no provider input anymore)', () => {
   assert.equal(boardBackgroundModeForProvider(), 'magenta');
 });
 
-test('createReviewItems threads a transparent backgroundMode into every sprite-board prompt it builds', () => {
+test('createReviewItems and buildReplacementPrompt never request a transparent background', () => {
   const manifest = legacyManifest();
   const plan = minimalPlan();
-  const items = createReviewItems(plan, manifest, plan.creative_direction, 'transparent');
-
+  const items = createReviewItems(plan, manifest, plan.creative_direction);
   const spriteBoardItems = items.filter((item) => item.kind !== 'environment');
   assert.ok(spriteBoardItems.length > 0, 'expected at least one sprite-board item to check');
   for (const item of spriteBoardItems) {
-    assert.doesNotMatch(item.prompt, /magenta/i, `${item.id} prompt must not mention magenta in transparent mode`);
-    assert.doesNotMatch(item.prompt, /#FF00FF/i, `${item.id} prompt must not mention #FF00FF in transparent mode`);
-    assert.match(item.prompt, /fully transparent \(alpha 0\)/i, `${item.id} prompt must carry the alpha directive`);
+    assert.match(item.prompt, /#FF00FF/i, `${item.id} prompt must carry the magenta directive`);
+    assert.doesNotMatch(item.prompt, /transparen|alpha/i, `${item.id} prompt must not request transparency`);
   }
-
-  // The environment board has no magenta/transparent keying at all (out of scope).
-  const environmentItem = items.find((item) => item.id === 'environment');
-  assert.ok(environmentItem);
-  assert.doesNotMatch(environmentItem!.prompt, /magenta/i);
-
-  // Default call (no backgroundMode argument) keeps the legacy magenta contract.
-  const defaultItems = createReviewItems(plan, manifest, plan.creative_direction);
-  const defaultCharacterItem = defaultItems.find((item) => item.kind === 'character_atlas');
-  assert.ok(defaultCharacterItem);
-  assert.match(defaultCharacterItem!.prompt, /magenta/i);
-});
-
-test('buildReplacementPrompt threads a transparent backgroundMode through to the underlying builder', () => {
-  const manifest = legacyManifest();
   const characterItem = {
     id: 'agent_0', filename: 'agent_0.png', label: 'Agent One', kind: 'character_atlas' as const,
     status: 'pending' as const, prompt: '', revision: 0, frame_keys: [], updated_at: '',
     subject: 'Agent One',
   };
-  const magentaPrompt = buildReplacementPrompt(characterItem, 'gritty wasteland', manifest);
-  assert.match(magentaPrompt, /magenta/i);
-
-  const transparentPrompt = buildReplacementPrompt(characterItem, 'gritty wasteland', manifest, undefined, 'transparent');
-  assert.doesNotMatch(transparentPrompt, /magenta/i);
-  assert.doesNotMatch(transparentPrompt, /#FF00FF/i);
-  assert.match(transparentPrompt, /fully transparent \(alpha 0\)/i);
+  const replacement = buildReplacementPrompt(characterItem, 'gritty wasteland', manifest);
+  assert.match(replacement, /#FF00FF/i);
+  assert.doesNotMatch(replacement, /transparen|alpha/i);
 });
 
 // --- Regression: renaming a buildable object/decor/rival via the theme-review

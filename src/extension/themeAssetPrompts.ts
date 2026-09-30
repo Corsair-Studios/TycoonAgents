@@ -18,10 +18,8 @@ export { CHARACTER_TARGET_CONTENT_HEIGHT, CHARACTER_TARGET_CONTENT_PERCENT, CHAR
 /**
  * Board background fill mode. 'magenta' is the legacy #FF00FF chroma-key
  * contract (the only format Gemini/"nano banana" can produce, since it can't
- * emit alpha). 'transparent' asks for true alpha-0 pixels, used only when the
- * OpenAI provider (gpt-image-1/2, which supports native transparent
- * backgrounds) will run the generation. Defaults to 'magenta' everywhere so
- * existing callers and tests keep their current behavior unless they opt in.
+ * emit alpha). It is the only background mode; transparent backgrounds are
+ * never requested.
  */
 export type BoardBackgroundMode = PromptBoardBackgroundMode;
 
