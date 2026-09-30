@@ -96,3 +96,58 @@ export function removeMcpServer(
   result.mcpServers = servers;
   return result;
 }
+
+/** Per-OS `{command, args}` override for a catalog entry (key = `process.platform`). */
+export interface McpPlatformOverride {
+  command: string;
+  args?: string[];
+}
+
+/**
+ * Optional catalog-entry field: `platforms: { win32?, darwin?, linux? }`.
+ * Each present key overrides the entry's base `config` command/args on that OS
+ * (other base keys such as `type`/`env` are kept). An entry whose base config
+ * has no command or url and no override for the current OS is unsupported there.
+ */
+export interface McpPlatformsEntry {
+  config: unknown;
+  platforms?: Partial<Record<"win32" | "darwin" | "linux", McpPlatformOverride>>;
+}
+
+export type ResolvedMcpConfig =
+  | { ok: true; config: unknown }
+  | { ok: false; error: string };
+
+/**
+ * Pure: pick the install config for `platform` (a `process.platform` value).
+ * No `platforms` map -> the base config unchanged. With one, the platform's
+ * command/args are merged over the base; if there is no override and the base
+ * has neither a command nor a url, the result is an explicit unsupported error.
+ */
+export function resolveConfigForPlatform(
+  entry: McpPlatformsEntry & { id?: string },
+  platform: string
+): ResolvedMcpConfig {
+  const platforms = entry.platforms;
+  if (platforms === undefined || platforms === null) {
+    return { ok: true, config: entry.config };
+  }
+  const base =
+    entry.config !== null && typeof entry.config === "object"
+      ? (entry.config as Record<string, unknown>)
+      : {};
+  const override = Object.prototype.hasOwnProperty.call(platforms, platform)
+    ? (platforms as Record<string, McpPlatformOverride | undefined>)[platform]
+    : undefined;
+  if (override !== undefined) {
+    return {
+      ok: true,
+      config: { ...base, command: override.command, args: [...(override.args ?? [])] },
+    };
+  }
+  if (typeof base.command === "string" || typeof base.url === "string") {
+    return { ok: true, config: entry.config };
+  }
+  const name = entry.id ?? "This server";
+  return { ok: false, error: `${name} is not supported on this OS (${platform}); no command is defined for it.` };
+}

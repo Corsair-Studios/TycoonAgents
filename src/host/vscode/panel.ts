@@ -29,7 +29,7 @@ import {
   isSafeAgentId,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
-import { mergeMcpServer, hasMcpServer, removeMcpServer } from "./mcpCatalog";
+import { mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, type McpPlatformsEntry } from "./mcpCatalog";
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
 import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
@@ -4070,6 +4070,7 @@ export class TycoonPanel {
     dataNote?: string;
     needsSetup?: boolean;
     config: unknown;
+    platforms?: McpPlatformsEntry["platforms"];
   }> {
     const catalogPath = path.join(
       this._extensionUri.fsPath,
@@ -4241,7 +4242,17 @@ export class TycoonPanel {
         return;
       }
 
-      const resolvedConfig = this._resolveConfigTokens(entry.config);
+      const platformConfig = resolveConfigForPlatform(entry, process.platform);
+      if (!platformConfig.ok) {
+        void this._panel.webview.postMessage({
+          type: MSG.MCP_INSTALLED,
+          id,
+          ok: false,
+          error: platformConfig.error,
+        });
+        return;
+      }
+      const resolvedConfig = this._resolveConfigTokens(platformConfig.config);
       if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
         void this._panel.webview.postMessage({
           type: MSG.MCP_INSTALLED,
@@ -4637,8 +4648,11 @@ export class TycoonPanel {
         if (hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
         } else {
-          const resolvedConfig = this._resolveConfigTokens(entry.config);
-          if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
+          const platformConfig = resolveConfigForPlatform(entry, process.platform);
+          const resolvedConfig = platformConfig.ok ? this._resolveConfigTokens(platformConfig.config) : undefined;
+          if (!platformConfig.ok) {
+            results.mcp = { status: "skipped", error: platformConfig.error };
+          } else if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
             results.mcp = {
               status: "skipped",
               error:

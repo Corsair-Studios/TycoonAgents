@@ -109,7 +109,7 @@
     "description": "Connect an AI client to a live Roblox Studio session — explore the data model, write Luau, and run/test in play mode.",
     "summary": "Connects an AI client to a live Roblox Studio session to explore and script it.",
     "requiresEnv": [],
-    "note": "Uses Roblox's built-in Studio MCP server (the community Rust server, Roblox/studio-rust-mcp-server, was archived 2026-04-03). In Studio: Assistant > ... > Manage MCP Servers > turn on \"Enable Studio as MCP server\", then restart Studio. The installed entry is the Windows command (`cmd.exe /c %LOCALAPPDATA%\\Roblox\\mcp.bat`; cmd.exe expands %LOCALAPPDATA% at launch, so no user path is stored). On macOS edit .mcp.json to use the command `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` with no args. Studio's Assistant Settings > MCP Servers also offers quick connect for Claude Code.",
+    "note": "Uses Roblox's built-in Studio MCP server (the community Rust server, Roblox/studio-rust-mcp-server, was archived 2026-04-03). In Studio: Assistant > ... > Manage MCP Servers > turn on \"Enable Studio as MCP server\", then restart Studio. Per-OS commands: Windows `cmd.exe /c %LOCALAPPDATA%\\Roblox\\mcp.bat` (cmd.exe expands %LOCALAPPDATA% at launch, so no user path is stored) and macOS `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP`. Roblox documents no Linux command, so install is skipped on Linux. Studio's Assistant Settings > MCP Servers also offers quick connect for Claude Code. A committed .mcp.json keeps the OS command of whoever installed it, so teammates on another OS should reinstall this server from the panel.",
     "homepage": "https://create.roblox.com/docs/studio/mcp",
     "docsUrl": "https://create.roblox.com/docs/studio/mcp",
     "thirdParty": true,
@@ -117,12 +117,19 @@
     "package": "Roblox Studio's built-in MCP server (no separate install)",
     "network": true,
     "dataNote": "Bridges an AI client to your local Roblox Studio session; the AI can read your place's data model and write/run Luau code in it.",
-    "config": {
-      "command": "cmd.exe",
-      "args": [
-        "/c",
-        "%LOCALAPPDATA%\\Roblox\\mcp.bat"
-      ]
+    "config": {},
+    "platforms": {
+      "win32": {
+        "command": "cmd.exe",
+        "args": [
+          "/c",
+          "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+        ]
+      },
+      "darwin": {
+        "command": "/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP",
+        "args": []
+      }
     }
   },
   {
@@ -132,7 +139,7 @@
     "summary": "Unity's official editor MCP bridge via the Unity AI Assistant package (Unity 6000.0+).",
     "requiresEnv": [],
     "needsSetup": true,
-    "note": "Requires Unity 6 (6000.0) or later with the com.unity.ai.assistant package installed. In Unity, open Edit > Project Settings > AI > Unity MCP Server and confirm the bridge shows Running. Unity's setup page does not state account requirements; check Unity's AI Assistant terms for any Unity Cloud project or beta opt-in your account needs. The first connection shows Pending Connection in that settings page - choose Accept. The installed entry is the Windows relay (`%USERPROFILE%\\.unity\\relay\\relay_win.exe --mcp`, expanded from the USERPROFILE environment variable at launch). On macOS/Linux edit .mcp.json: command `~/.unity/relay/relay_linux` (Linux) or, on Apple Silicon, the relay_mac_arm64 binary at .unity/relay/relay_mac_arm64.app/Contents/MacOS/relay_mac_arm64 under your home folder, args [\"--mcp\"].",
+    "note": "Requires Unity 6 (6000.0) or later with the com.unity.ai.assistant package installed. In Unity, open Edit > Project Settings > AI > Unity MCP Server and confirm the bridge shows Running. Unity's setup page does not state account requirements; check Unity's AI Assistant terms for any Unity Cloud project or beta opt-in your account needs. The first connection shows Pending Connection in that settings page - choose Accept. Per-OS relay (Claude Code expands USERPROFILE/HOME at launch): Windows `${USERPROFILE}\\.unity\\relay\\relay_win.exe`, macOS Apple Silicon `${HOME}/.unity/relay/relay_mac_arm64.app/Contents/MacOS/relay_mac_arm64`, Linux `${HOME}/.unity/relay/relay_linux`, all with `--mcp`. Unity's page lists only an Apple Silicon macOS binary; Intel Macs are UNVERIFIED (no documented binary), and the page shows the Linux path as `~/.unity/relay/relay_linux` (converted to ${HOME} here; Unity's explicit Linux config block is UNVERIFIED). A committed .mcp.json keeps the OS command of whoever installed it, so teammates on another OS should reinstall this server from the panel.",
     "docsUrl": "https://docs.unity3d.com/Packages/com.unity.ai.assistant@2.7/manual/integration/unity-mcp-get-started.html",
     "thirdParty": false,
     "vendor": "Unity Technologies",
@@ -140,11 +147,26 @@
     "homepage": "https://docs.unity3d.com/Packages/com.unity.ai.assistant@2.7/manual/integration/unity-mcp-get-started.html",
     "network": false,
     "dataNote": "Local relay between your MCP client and your open Unity Editor; the AI can read and modify the open project's scenes and assets. Unity approves each new client connection inside the editor.",
-    "config": {
-      "command": "${USERPROFILE}\\.unity\\relay\\relay_win.exe",
-      "args": [
-        "--mcp"
-      ]
+    "config": {},
+    "platforms": {
+      "win32": {
+        "command": "${USERPROFILE}\\.unity\\relay\\relay_win.exe",
+        "args": [
+          "--mcp"
+        ]
+      },
+      "darwin": {
+        "command": "${HOME}/.unity/relay/relay_mac_arm64.app/Contents/MacOS/relay_mac_arm64",
+        "args": [
+          "--mcp"
+        ]
+      },
+      "linux": {
+        "command": "${HOME}/.unity/relay/relay_linux",
+        "args": [
+          "--mcp"
+        ]
+      }
     }
   },
   {

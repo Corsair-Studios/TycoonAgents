@@ -2254,7 +2254,7 @@ function handleInstallPack(payload) {
       results.commands = installPackCommandsStandalone(root, packCommands);
     }
     if (pack.mcp) {
-      const { hasMcpServer, mergeMcpServer } = mcpCatalogModule();
+      const { hasMcpServer, mergeMcpServer, resolveConfigForPlatform } = mcpCatalogModule();
       let mcpCatalog = [];
       try {
         mcpCatalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
@@ -2276,8 +2276,11 @@ function handleInstallPack(payload) {
       if (hasMcpServer(existing, pack.mcp)) {
         results.mcp = 'exists';
       } else {
-        const resolvedConfig = resolveConfigTokensStandalone(entry.config);
-        if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
+        const platformConfig = resolveConfigForPlatform(entry, process.platform);
+        const resolvedConfig = platformConfig.ok ? resolveConfigTokensStandalone(platformConfig.config) : undefined;
+        if (!platformConfig.ok) {
+          results.mcp = { status: 'skipped', error: platformConfig.error };
+        } else if (/<[^<>]*>/.test(JSON.stringify(resolvedConfig))) {
           results.mcp = {
             status: 'skipped',
             error:
