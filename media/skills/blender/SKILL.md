@@ -42,28 +42,37 @@ control of a running Blender session via the official **Blender Lab MCP** server
 
 ## Official Blender MCP setup (Blender Lab, Blender 5.1+)
 
-1. Use **Blender 5.1 or newer** (the official server is not available on 4.x).
-2. Install the Blender Lab MCP extension from https://www.blender.org/lab/mcp-server/:
-   drag and drop it into a running Blender window (twice - the first drop adds the
-   Blender Lab extension repository, the second installs the add-on) or use
-   Install from Disk, then enable it and start the MCP server from inside Blender.
-3. Connect your MCP client as described in Blender's Setup wiki:
-   https://projects.blender.org/lab/blender_mcp/wiki/Setup. The official page does
-   not publish a Claude Code command or URL, so do not guess one.
+The official server is the default. Blender 4/5 scripting guidance above applies
+to either version, but the official MCP needs **Blender 5.1 or newer**.
+
+1. Install the **`uv`** package manager (provides `uvx`). The catalog entry `blender`
+   launches the official server with
+   `uvx --from "git+https://projects.blender.org/lab/blender_mcp.git@v1.0.3#subdirectory=mcp" blender-mcp`
+   (stdio; the same command on Windows, macOS and Linux).
+2. In Blender 5.1+, install the official MCP add-on from the Blender Lab extensions
+   repository (https://lab.blender.org/): drag and drop the add-on into a running
+   Blender window (twice - the first drop adds the repository, the second installs
+   the add-on) or use Install from Disk. See https://www.blender.org/lab/mcp-server/.
+3. Enable the add-on and start its server inside Blender. It listens on local TCP
+   port 9876 by default; set `BLENDER_MCP_HOST` / `BLENDER_MCP_PORT` for the MCP
+   process if you changed it.
 4. **Security warning (from Blender):** the MCP server executes LLM-generated code
-   in Blender with no guards against data removal or sending data to a remote
-   location. Use a virtual machine or a system without sensitive data, and save
-   or back up your `.blend` first.
+   in Blender with no guards in place to protect your data from removal or being
+   sent to a remote location. Use a virtual machine or a system without sensitive
+   data, and save or back up your `.blend` first.
 
-### Community alternative: `blender-mcp` (not the official server)
+### Alternative: community `blender-mcp` (catalog entry `blender-community`)
 
-A community bridge, not published by Blender Foundation, that uses its own add-on:
+A community bridge ("MCP for Blender" by BlenderMCP), not published by Blender
+Foundation, with its own add-on. Use it only if you cannot run Blender 5.1+.
 
-- Install the **`uv`** package manager (provides `uvx`).
-- Server command (stdio): `uvx blender-mcp`; client entry
-  `"blender": { "command": "uvx", "args": ["blender-mcp"] }`.
+- Install the **`uv`** package manager; server command (stdio): `uvx blender-mcp`.
 - Follow that project's own add-on install; it connects over a socket (env
   `BLENDER_HOST` default `localhost`, `BLENDER_PORT` default `9876`).
+- **Turn telemetry off.** The community add-on has "Allow Telemetry" on by default,
+  which sends anonymized prompts, code, screenshots and scene data to its
+  maintainers. In Blender: Edit > Preferences > Add-ons > MCP for Blender >
+  Telemetry & Privacy.
 
 The MCP exposes: scene inspection/modification, object/material/lighting
 control, and arbitrary `bpy` Python execution against the live session.

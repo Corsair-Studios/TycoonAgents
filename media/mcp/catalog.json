@@ -217,17 +217,40 @@
   {
     "id": "blender",
     "name": "Blender",
-    "description": "Live Blender scene control from Claude - read and modify objects, materials, and run Python (bpy) in your open Blender session. Primary path: Blender Foundation's official Blender Lab MCP server (Blender 5.1+).",
-    "summary": "Live Blender scene control; official Blender Lab server, community uvx bridge installed.",
+    "description": "Live Blender scene control from Claude - inspect the open scene, run Python (bpy) in your Blender session, render, and read the bundled Blender API and manual docs. Official Blender Foundation (Blender Lab) MCP server; needs Blender 5.1+.",
+    "summary": "Live Blender scene control via the official Blender Lab MCP server (Blender 5.1+).",
     "requiresEnv": [],
-    "note": "Primary path: Blender Foundation's official Blender Lab MCP server - a Blender extension for Blender 5.1 or newer (https://www.blender.org/lab/mcp-server/). Drag and drop the extension into Blender (twice: the first drop adds the Blender Lab repository, the second installs the add-on) or use Install from Disk, then follow Blender's Setup wiki (https://projects.blender.org/lab/blender_mcp/wiki/Setup) for the MCP client connection; the official page does not publish the Claude Code command/URL, so it is not guessed here. SECURITY: Blender warns the MCP server executes LLM-generated code in Blender without any guards against data removal or exfiltration; use a VM or a machine without sensitive data. The config installed by this entry is the community alternative `uvx blender-mcp` (community bridge, not published by Blender Foundation; needs the `uv` package manager; env BLENDER_HOST default localhost, BLENDER_PORT default 9876). It talks to its own add-on, not necessarily the official extension - follow that project's setup if you use it.",
+    "note": "Official Blender Foundation (Blender Lab) MCP server, source-installed via uvx from projects.blender.org (pinned to release v1.0.3; needs the `uv` package manager and Python 3.10+). Requires Blender 5.1 or newer. In Blender, install the official MCP add-on from the Blender Lab extensions repository (https://lab.blender.org/; drag and drop the add-on into Blender, twice - first drop adds the repository, second installs the add-on - or use Install from Disk, see https://www.blender.org/lab/mcp-server/), enable it, and make sure its server is started (Preferences > Add-ons > MCP; it listens on local TCP port 9876 by default; the MCP process reads optional env BLENDER_MCP_HOST / BLENDER_MCP_PORT to match). SECURITY (Blender's own warning): the MCP server will execute LLM-generated code in Blender without any guards in place to protect your data from removal or being sent to a remote location. Use a virtual machine or a system without sensitive data, and back up your .blend first. A community alternative is available as `blender-community`.",
     "homepage": "https://www.blender.org/lab/mcp-server/",
     "docsUrl": "https://projects.blender.org/lab/blender_mcp/wiki/Setup",
+    "thirdParty": false,
+    "vendor": "Blender Foundation (Blender Lab)",
+    "package": "blender-mcp (Blender Lab, git+https://projects.blender.org/lab/blender_mcp.git@v1.0.3#subdirectory=mcp, run via uvx)",
+    "network": true,
+    "dataNote": "Runs locally over stdio and talks to the Blender add-on on localhost:9876. The first launch downloads the server and its Python dependencies from projects.blender.org and PyPI. The MCP server runs LLM-generated code in Blender unguarded.",
+    "config": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://projects.blender.org/lab/blender_mcp.git@v1.0.3#subdirectory=mcp",
+        "blender-mcp"
+      ]
+    }
+  },
+  {
+    "id": "blender-community",
+    "name": "Blender (community)",
+    "description": "Community alternative for live Blender scene control (uvx blender-mcp, 'MCP for Blender' by BlenderMCP). Not published by Blender Foundation; works on Blender versions older than 5.1.",
+    "summary": "Community Blender MCP bridge (not official); turn its telemetry off.",
+    "requiresEnv": [],
+    "note": "Community bridge, not published by Blender Foundation; needs the `uv` package manager and its own Blender add-on (follow that project's setup). The community add-on ('MCP for Blender' by BlenderMCP) has 'Allow Telemetry' on by default, which sends anonymized prompts, code, screenshots and scene data to its maintainers. Turn it off in Blender: Edit > Preferences > Add-ons > MCP for Blender > Telemetry & Privacy. Env BLENDER_HOST default localhost, BLENDER_PORT default 9876. It executes Python in Blender unguarded.",
+    "homepage": "https://pypi.org/project/blender-mcp/",
+    "docsUrl": "https://pypi.org/project/blender-mcp/",
     "thirdParty": true,
-    "vendor": "Blender Foundation (official Blender Lab server); community alternative: blender-mcp",
-    "package": "Official: Blender Lab MCP extension (Blender 5.1+). Installed config: community `blender-mcp` (run via uvx)",
-    "network": false,
-    "dataNote": "Runs locally; bridges Claude to your open Blender session over a local socket. No external/network calls from the bridge itself. The MCP server runs LLM-generated code in Blender unguarded.",
+    "vendor": "Community (blender-mcp / BlenderMCP)",
+    "package": "blender-mcp (run via uvx)",
+    "network": true,
+    "dataNote": "Runs locally over a socket to your Blender session, but the community add-on's telemetry (on by default) sends anonymized prompts, code, screenshots and scene data to its maintainers until disabled.",
     "config": {
       "command": "uvx",
       "args": [
