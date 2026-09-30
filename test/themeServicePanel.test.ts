@@ -1669,6 +1669,7 @@ test('content_blocked with lastAttemptRefunded:true says the credits were refund
       boardType: 'character_sheet',
       error_kind: 'content_blocked',
       lastAttemptRefunded: true,
+      refundState: 'refunded',
       attemptCost: 0,
       error_categories: ['likeness'],
     })],
@@ -1691,6 +1692,7 @@ test('content_blocked with lastAttemptRefunded:false says the refund did not go 
     items: [baseReviewItem({
       error_kind: 'content_blocked',
       lastAttemptRefunded: false,
+      refundState: 'not_refunded',
       attemptCost: 0,
       error_categories: ['likeness'],
     })],
@@ -1700,6 +1702,22 @@ test('content_blocked with lastAttemptRefunded:false says the refund did not go 
   assert.equal(
     notice.textContent.replace(/\s+Acceptable use$/, ''),
     "Blocked by the image provider's content policy (a real person's likeness). This attempt was charged and the refund did not go through — check your balance. Rephrase it and retry.",
+  );
+  h.win.close();
+});
+
+test('legacy content_blocked item (lastAttemptRefunded:false, no refundState) still says no credit was spent', async () => {
+  const h = await bootThemePanelHarness();
+  h.dispatch(themeImageReview({
+    theme_id: 't1',
+    creditsSpent: 0,
+    items: [baseReviewItem({ error_kind: 'content_blocked', lastAttemptRefunded: false, attemptCost: 0, error_categories: ['likeness'] })],
+  }));
+  const notice = attemptNotice(h);
+  assert.ok(!notice.classList.contains('theme-attempt-unavailable'));
+  assert.equal(
+    notice.textContent.replace(/\s+Acceptable use$/, ''),
+    "Blocked by content screening (a real person's likeness). No credit was spent. Rephrase it and retry.",
   );
   h.win.close();
 });

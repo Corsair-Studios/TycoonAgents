@@ -144,6 +144,8 @@ export interface ThemeImageReviewItem {
   attemptCost?: number;
   /** Whether that last attempt was auto-refunded (provider_failed). */
   lastAttemptRefunded?: boolean;
+  /** content_blocked only: explicit charge outcome. Absent (legacy items) reads as 'none'. */
+  refundState?: 'refunded' | 'not_refunded' | 'none';
   /** Running total of credits actually charged for this item across every successful, non-refunded attempt (a retry adds to it rather than replacing it). Absent on items saved before this field existed; see themeCreditsSpent. */
   creditsCharged?: number;
   /** Distinct Theme Service error kind for the item's most recent failed attempt — see ThemeServiceErrorKind in core/themeServiceClient.ts. Cleared on the next successful attempt. */
@@ -409,6 +411,7 @@ export async function clearThemeImageReviewItemError(
     item.error_categories = undefined;
     item.error_fields = undefined;
     item.error_session = undefined;
+    item.refundState = undefined;
     item.updated_at = new Date().toISOString();
     await writeReviewDocument(globalStorageUri, document);
     return document;
@@ -452,6 +455,9 @@ export async function setThemeImageReviewErrorKind(
     item.error_session = errorSession;
     // content_blocked always overwrites: a pre-screen block (undefined) must not inherit an earlier attempt's flag.
     if (refunded !== undefined || errorKind === 'content_blocked') item.lastAttemptRefunded = refunded;
+    if (errorKind === 'content_blocked') {
+      item.refundState = refunded === true ? 'refunded' : refunded === false ? 'not_refunded' : 'none';
+    }
     // Seed the running total from the legacy attemptCost BEFORE it is
     // overwritten below, then add this failure's charge (if any).
     const seed = item.creditsCharged ?? item.attemptCost;

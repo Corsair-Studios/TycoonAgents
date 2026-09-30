@@ -7779,16 +7779,18 @@ if (typeof module !== "undefined" && module.exports) {
       // path at all (see themeServiceClient.ts's 422 handling) — that must
       // still name the category, not fall all the way back to the generic
       // copy just because fieldLabel is unavailable.
-      // The charge outcome comes from lastAttemptRefunded: undefined is the
-      // pre-screen block (nothing was charged); true/false is the provider
-      // policy refusal that ran after the debit (refunded / refund failed).
-      const refundedFlag = item.lastAttemptRefunded;
-      if (refundedFlag === true || refundedFlag === false) {
+      // refundState 'none' is the pre-screen block (nothing was charged);
+      // refunded/not_refunded is the provider policy refusal that ran after
+      // the debit.
+      // Keyed off the explicit refundState only: legacy items saved with a
+      // forced lastAttemptRefunded:false have no refundState and read as 'none'.
+      const refundState = item.refundState;
+      if (refundState === "refunded" || refundState === "not_refunded") {
         const reason = categoryLabel && fieldLabel
           ? ` (${categoryLabel}): ${fieldLabel}`
           : (categoryLabel ? ` (${categoryLabel})` : "");
         let outcome;
-        if (refundedFlag === true) {
+        if (refundState === "refunded") {
           const n = themeRefundAmount(item);
           if (n === 0) outcome = "You were not charged.";
           else if (typeof n !== "number") outcome = "Your credits were refunded.";
