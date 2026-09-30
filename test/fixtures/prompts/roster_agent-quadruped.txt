@@ -48,9 +48,9 @@ Maintain absolute consistency across all 20 frames:
 
 Character scale is a hard production-layout requirement, not a suggestion.
 Use the same camera distance and character scale used for every other character board in this theme.
-For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central 70% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.
-Measure that 70% against each individual cell's width, never against the full canvas.
-Keep a clear magenta gutter of at least 15% of the cell width on the LEFT and RIGHT of the body in every frame.
+For a four-legged body, the complete silhouette — including tail, ears, whiskers, and fully extended legs mid-stride — stays within the central 60% of the cell WIDTH in every frame, replacing the head-to-feet height rule used for two-legged characters.
+Measure that 60% against each individual cell's width, never against the full canvas.
+Keep a clear magenta gutter of at least 20% of the cell width on the LEFT and RIGHT of the body in every frame. This applies equally to the leftmost and rightmost columns: the gutter between the body and the outer edge of the canvas is required too, so tails in column 1 must not touch the left edge of the image.
 Keep strides compact and keep the tail curled or held close to the body rather than fully extended, so a mid-stride walking pose stays inside the same width budget as the standing pose.
 No part of the body — including tail, ears, whiskers, and legs — may touch or cross a cell edge in any frame. A frame where any part reaches the gutter or the cell boundary is an incorrect result.
 Keep a visible magenta gutter at every horizontal row boundary and below the entire fourth row.

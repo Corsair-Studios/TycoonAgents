@@ -28,8 +28,8 @@ function rosterRequest(bodyPlan: 'biped' | 'quadruped'): StructuredGenerateReque
 
 test('four-legged character prompt carries a width-based silhouette budget', () => {
   const { prompt } = assembleThemePrompt(rosterRequest('quadruped'), { walkPoseGuideAttached: true });
-  assert.match(prompt, /stays within the central 70% of the cell WIDTH/i);
-  assert.match(prompt, /gutter of at least 15% of the cell width/i);
+  assert.match(prompt, /stays within the central 60% of the cell WIDTH/i);
+  assert.match(prompt, /gutter of at least 20% of the cell width/i);
   assert.match(prompt, /tail curled or held close to the body/i);
   // Replaces, not adds to, the height rule.
   assert.doesNotMatch(prompt, /occupies exactly 72% of the cell height/i);
