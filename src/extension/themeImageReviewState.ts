@@ -426,6 +426,8 @@ export async function setThemeImageReviewErrorKind(
    * existed.
    */
   errorSession?: string,
+  /** Quoted cost of a failed attempt the backend charged and did not refund (refunded === false); added to creditsCharged. Omit for refunded/pre-debit failures. */
+  chargedCost?: number,
 ): Promise<ThemeImageReviewDocument | undefined> {
   return withThemeReviewDocumentLock(themeId, async () => {
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
@@ -439,6 +441,10 @@ export async function setThemeImageReviewErrorKind(
     item.error_fields = errorFields;
     item.error_session = errorSession;
     if (refunded !== undefined) item.lastAttemptRefunded = refunded;
+    // Seed the running total from the legacy attemptCost BEFORE it is
+    // overwritten below, then add this failure's charge (if any).
+    const seed = item.creditsCharged ?? item.attemptCost;
+    if (seed !== undefined || chargedCost) item.creditsCharged = (seed ?? 0) + (chargedCost ?? 0);
     if (attemptCost !== undefined) item.attemptCost = attemptCost;
     item.updated_at = new Date().toISOString();
     await writeReviewDocument(globalStorageUri, document);

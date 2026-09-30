@@ -1642,3 +1642,41 @@ test("applyCreditsFromAttempt is a no-op when signed out or given a non-finite b
   host.applyCreditsFromAttempt(Number.NaN);
   assert.equal(posted.length, count);
 });
+
+async function signedInHost() {
+  const cache = fakeCreditsCache();
+  const ctx = setup(undefined, undefined, cache);
+  await ctx.host.handleRequestMagicLink("me@example.com");
+  await ctx.host.handleVerify("me@example.com", "123456");
+  await ctx.host.handleGetStatus();
+  return ctx;
+}
+
+test("applyCreditsFromAttempt ignores a response whose attempt began under a different account", async () => {
+  const { host, posted } = await signedInHost();
+  const token = host.beginAttempt();
+  await host.handleSignOut();
+  await host.handleRequestMagicLink("other@example.com");
+  await host.handleVerify("other@example.com", "123456");
+  await host.handleGetStatus();
+  const count = posted.length;
+  host.applyCreditsFromAttempt(9999, token);
+  assert.equal(posted.length, count, "stale-account balance must not be posted");
+  assert.notEqual(posted[posted.length - 1].credits, 9999);
+});
+
+test("applyCreditsFromAttempt ignores an out-of-order older response", async () => {
+  const { host, posted } = await signedInHost();
+  const older = host.beginAttempt();
+  const newer = host.beginAttempt();
+  host.applyCreditsFromAttempt(190, newer);
+  host.applyCreditsFromAttempt(193, older);
+  assert.equal(posted[posted.length - 1].credits, 190, "the older attempt's balance must not overwrite the newer one");
+  assert.equal(host.getCachedOrPendingStatus().credits, 190);
+});
+
+test("getQuotedAttemptCost reads the fetched pricing", async () => {
+  const { host } = await signedInHost();
+  assert.equal(typeof host.getQuotedAttemptCost("roster_agent"), "number");
+  assert.equal(host.getQuotedAttemptCost("no_such_board"), undefined);
+});

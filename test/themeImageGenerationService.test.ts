@@ -452,8 +452,9 @@ test('every review payload item carries its Theme Service boardType, matching bo
   });
 });
 
-test('createServiceImageGenerator hands the response balance to onCredits on success only', async () => {
-  const seen: number[] = [];
+test('createServiceImageGenerator reports the response balance (success and balance-carrying errors) with the attempt token', async () => {
+  const seen: Array<[number, unknown]> = [];
+  const hooks = { begin: () => 'tok', credits: (c: number, t: unknown) => { seen.push([c, t]); } };
   const okClient = {
     async generateAttempt() {
       return { ok: true as const, value: { image: 'data:image/png;base64,AAAA', attemptCost: 3, credits: 199, refunded: false } };
@@ -464,12 +465,17 @@ test('createServiceImageGenerator hands the response balance to onCredits on suc
       return { ok: false as const, error: { kind: 'provider_failed' as const, message: 'x', refunded: true, credits: 5 } };
     },
   };
+  const noBalanceClient = {
+    async generateAttempt() {
+      return { ok: false as const, error: { kind: 'content_blocked' as const, message: 'x' } };
+    },
+  };
   const req = {} as never;
-  const ok = await createServiceImageGenerator(okClient as never, (c) => seen.push(c)).generate(req);
-  assert.equal(ok.ok, true);
-  await createServiceImageGenerator(failClient as never, (c) => seen.push(c)).generate(req);
-  assert.deepEqual(seen, [199]);
-  const throwing = await createServiceImageGenerator(okClient as never, () => { throw new Error('boom'); }).generate(req);
+  assert.equal((await createServiceImageGenerator(okClient as never, hooks).generate(req)).ok, true);
+  assert.equal((await createServiceImageGenerator(failClient as never, hooks).generate(req)).ok, false);
+  await createServiceImageGenerator(noBalanceClient as never, hooks).generate(req);
+  assert.deepEqual(seen, [[199, 'tok'], [5, 'tok']]);
+  const throwing = await createServiceImageGenerator(okClient as never, { credits: () => { throw new Error('boom'); } }).generate(req);
   assert.equal(throwing.ok, true, 'a balance-refresh failure must not fail a successful attempt');
 });
 
@@ -483,4 +489,55 @@ test('recordAttemptCharge accumulates across retries; refunded attempts add 0; t
   // legacy item (no creditsCharged) seeds from its recorded attemptCost
   assert.equal(recordAttemptCharge({ attemptCost: 2 }, { attemptCost: 3, refunded: false }).creditsCharged, 5);
   assert.equal(themeCreditsSpent([{ creditsCharged: 6, attemptCost: 0 }, { attemptCost: 2 }, {}]), 8);
+});
+
+test('a charged failure (refunded:false) adds the quoted cost to creditsCharged; refunded:true and pre-screen (no flag) add 0; the legacy seed survives', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const root = globalStorageUri as unknown as import('vscode').Uri;
+    const themeId = 'charged_failure_theme';
+    const plan = buildPlan(themeId);
+    plan.theme_id = themeId;
+    const { generator } = makeCountingGenerator();
+    setThemeImageGenerator(generator);
+    themeService.setThemeAttemptCostResolver((boardType) => (boardType === 'environment' ? 4 : undefined));
+    try {
+      await generateTheme(root, plan, () => {});
+      const before = await getThemeImageReview(root, themeId);
+      const envBefore = before.entries.find((e) => e.item.id === 'environment')!.item;
+      assert.equal(envBefore.creditsCharged, 1);
+      const fail = (refunded: boolean | undefined) => themeService.recordUserCorrectableGenerationError(
+        root, themeId, 'environment',
+        new themeService.ThemeGenerationServiceError({ kind: 'provider_failed', message: 'x', refunded }),
+      );
+      const total = async () => (await getThemeImageReview(root, themeId)).entries.find((e) => e.item.id === 'environment')!.item.creditsCharged;
+      await fail(true);
+      assert.equal(await total(), 1, 'refunded:true counts 0 and the seed survives');
+      await fail(undefined);
+      assert.equal(await total(), 1, 'no refunded flag counts 0');
+      await themeService.recordUserCorrectableGenerationError(
+        root, themeId, 'environment',
+        new themeService.ThemeGenerationServiceError({ kind: 'content_blocked', message: 'x' }),
+      );
+      assert.equal(await total(), 1, 'pre-screen content_blocked counts 0');
+      await fail(false);
+      assert.equal(await total(), 5, 'refunded:false adds the quoted cost (4)');
+    } finally {
+      themeService.setThemeAttemptCostResolver(undefined);
+      setThemeImageGenerator(undefined);
+    }
+  });
+});
+
+test('setThemeImageReviewErrorKind seeds creditsCharged from a legacy attemptCost before overwriting it', async () => {
+  await withTempStore(async (globalStorageUri) => {
+    const state = require('../src/extension/themeImageReviewState') as typeof import('../src/extension/themeImageReviewState');
+    const root = globalStorageUri as unknown as import('vscode').Uri;
+    await state.upsertThemeImageReviewItem(root, 'legacy_seed', 'Legacy', {
+      id: 'environment', filename: 'environment.png', label: 'Env', kind: 'environment', status: 'pending', prompt: '', revision: 1, frame_keys: [], attemptCost: 3,
+    });
+    const doc = await state.setThemeImageReviewErrorKind(root, 'legacy_seed', 'environment', 'content_blocked', false, 0);
+    const item = doc!.items[0];
+    assert.equal(item.attemptCost, 0);
+    assert.equal(item.creditsCharged, 3, 'the legacy seed must survive the attemptCost overwrite');
+  });
 });

@@ -4510,7 +4510,11 @@ export async function startServer({
   // reach it either way.
   wireThemeServiceGeneration(
     themeServiceHostInstance.getClient(),
-    (credits) => themeServiceHostInstance.applyCreditsFromAttempt?.(credits),
+    {
+      begin: () => themeServiceHostInstance.beginAttempt?.(),
+      credits: (credits, token) => themeServiceHostInstance.applyCreditsFromAttempt?.(credits, token),
+    },
+    (boardType) => themeServiceHostInstance.getQuotedAttemptCost?.(boardType),
   );
 
   // Theme GENERATION bridge wiring (pC-t1 step 2) — configure the REAL

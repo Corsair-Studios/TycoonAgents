@@ -326,7 +326,17 @@ export interface ThemeServiceHost {
    * instead of waiting for the next /api/account poll. A no-op when no
    * signed-in snapshot exists yet or `credits` is not a finite number.
    */
-  applyCreditsFromAttempt(credits: number): void;
+  applyCreditsFromAttempt(credits: number, token?: unknown): void;
+  /**
+   * Tags an attempt at its start with the signed-in account and a monotonic
+   * sequence number; pass the result back to applyCreditsFromAttempt. Ordering
+   * guard (chosen over an /api/account re-fetch as the simpler, offline-safe
+   * option): a balance is applied only if its attempt started after the last
+   * applied one, so a slower older response can't overwrite a newer balance.
+   */
+  beginAttempt(): unknown;
+  /** Quoted credit cost for a board type from the last fetched pricing, else undefined. */
+  getQuotedAttemptCost(boardType: string): number | undefined;
   handleRequestMagicLink(email: string): Promise<void>;
   handleVerify(email: string, code: string): Promise<void>;
   handleGoogleStart(): Promise<void>;
@@ -520,6 +530,8 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
   // one, so a compromised/buggy webview can't redirect the browser open.
   let pendingGoogleBrowserUrl: string | null = null;
   let lastKnownCredits: number | undefined;
+  let attemptSeq = 0;
+  let lastAppliedAttemptSeq = 0;
   let pendingCheckout = false;
   let pollHandle: unknown | undefined;
   let pollDeadline = 0;
@@ -994,9 +1006,26 @@ export function createThemeServiceHost(opts: ThemeServiceHostOptions): ThemeServ
           };
     },
 
-    applyCreditsFromAttempt(credits) {
+    beginAttempt() {
+      return { seq: ++attemptSeq, userId: currentUserId };
+    },
+
+    getQuotedAttemptCost(boardType) {
+      const cost = lastCachedPricing?.attemptCostByBoardType?.[boardType];
+      return typeof cost === "number" ? cost : undefined;
+    },
+
+    applyCreditsFromAttempt(credits, token) {
       if (disposed || typeof credits !== "number" || !Number.isFinite(credits)) return;
       if (!lastSnapshot || lastSnapshot.signedIn !== true) return;
+      const tag = token as { seq?: number; userId?: string } | undefined;
+      if (tag && typeof tag.seq === "number") {
+        // Account guard: sign-out or an account switch since the attempt began.
+        if (tag.userId !== currentUserId) return;
+        // Ordering guard: only a later-started attempt may replace the balance.
+        if (tag.seq <= lastAppliedAttemptSeq) return;
+        lastAppliedAttemptSeq = tag.seq;
+      }
       lastKnownCredits = credits;
       persistCredits(currentUserId, credits);
       lastSnapshot = { ...lastSnapshot, credits };

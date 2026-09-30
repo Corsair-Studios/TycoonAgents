@@ -186,20 +186,35 @@ export interface ThemeImageGenerator {
 }
 
 /** Build a {@link ThemeImageGenerator} backed by a real ThemeServiceClient's generateAttempt. */
+export interface ThemeImageGeneratorBalanceHooks {
+  /** Called when an attempt starts; the returned token (account + start order) is handed back to `credits` so the host can drop a stale-account or out-of-order balance. */
+  begin?: () => unknown;
+  /** Called with a response's authoritative post-attempt balance (success or an error response that carries one) so the host can refresh its balance immediately. */
+  credits?: (credits: number, token: unknown) => void;
+}
+
 export function createServiceImageGenerator(
   client: ThemeServiceClient,
-  /** Called with the response's authoritative post-attempt balance so the host can refresh its balance immediately. */
-  onCredits?: (credits: number) => void,
+  hooks?: ThemeImageGeneratorBalanceHooks,
 ): ThemeImageGenerator {
   return {
     async generate(req) {
-      const res = await client.generateAttempt(req);
-      if (!res.ok) return res;
+      let token: unknown;
       try {
-        onCredits?.(res.value.credits);
+        token = hooks?.begin?.();
       } catch {
-        // a balance-refresh failure must never fail a generation that succeeded
+        token = undefined;
       }
+      const res = await client.generateAttempt(req);
+      const reported = res.ok ? res.value.credits : res.error.credits;
+      if (typeof reported === 'number') {
+        try {
+          hooks?.credits?.(reported, token);
+        } catch {
+          // a balance-refresh failure must never change the attempt's outcome
+        }
+      }
+      if (!res.ok) return res;
       const base64 = res.value.image.includes(',') ? res.value.image.slice(res.value.image.indexOf(',') + 1) : res.value.image;
       return {
         ok: true,
@@ -217,6 +232,12 @@ export function createServiceImageGenerator(
 }
 
 let currentThemeImageGenerator: ThemeImageGenerator | undefined;
+let currentAttemptCostResolver: ((boardType: string) => number | undefined) | undefined;
+
+/** Host wiring point: resolves the quoted attempt cost for a board type (the same pricing the "This attempt costs N credits" line uses), so a charged-but-not-refunded failure can be counted. */
+export function setThemeAttemptCostResolver(resolver: ((boardType: string) => number | undefined) | undefined): void {
+  currentAttemptCostResolver = resolver;
+}
 
 /** Host wiring point (panel.ts, standalone) — call once at startup with `createServiceImageGenerator(themeServiceHost.getClient())`; tests inject a fake directly. */
 export function setThemeImageGenerator(generator: ThemeImageGenerator | undefined): void {
@@ -3524,7 +3545,7 @@ function mapToReviewErrorKind(kind: ThemeServiceErrorKind): NonNullable<ThemeIma
   }
 }
 
-async function recordUserCorrectableGenerationError(
+export async function recordUserCorrectableGenerationError(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
@@ -3536,6 +3557,16 @@ async function recordUserCorrectableGenerationError(
     // "Content screening" / "Strikes and account lock"), so the attempt cost
     // recorded here is 0 and it is never a "refund" (nothing to refund).
     const isBlockedOrLocked = error.kind === 'content_blocked' || error.kind === 'account_locked';
+    // refunded === false means the backend debited and did not (or could not)
+    // refund; absent/true means nothing net was charged (pre-screen blocks
+    // carry no refunded flag at all).
+    let chargedCost: number | undefined;
+    if (error.refunded === false) {
+      const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
+      const failedItem = document?.items.find((candidate) => candidate.id === itemId);
+      const quoted = failedItem ? currentAttemptCostResolver?.(boardTypeForItem(failedItem)) : undefined;
+      if (typeof quoted === 'number') chargedCost = quoted;
+    }
     await setThemeImageReviewErrorKind(
       globalStorageUri,
       themeId,
@@ -3552,6 +3583,7 @@ async function recordUserCorrectableGenerationError(
       // no prior THEME_IMAGE_REVIEW post to gate on — and a retry failure)
       // from one merely loaded from disk after a reload/restart.
       THEME_SERVICE_HOST_SESSION_ID,
+      chargedCost,
     );
     console.error('TycoonAgents: Theme Service generation attempt failed.', {
       themeId,

@@ -112,6 +112,7 @@ import {
   resumeThemeGeneration,
   saveThemePlan,
   saveThemeTuning,
+  setThemeAttemptCostResolver,
   setThemeImageGenerator,
   setThemePromptMismatchNotifier,
   updateThemeCreativeDirection,
@@ -1134,10 +1135,11 @@ export class TycoonPanel {
     // status/checkout already use, so a generation call reuses the current
     // session and refresh-in-flight coordination rather than building a
     // second client.
-    setThemeImageGenerator(createServiceImageGenerator(
-      this._themeServiceHost.getClient(),
-      (credits) => this._themeServiceHost?.applyCreditsFromAttempt(credits),
-    ));
+    setThemeImageGenerator(createServiceImageGenerator(this._themeServiceHost.getClient(), {
+      begin: () => this._themeServiceHost?.beginAttempt(),
+      credits: (credits, token) => this._themeServiceHost?.applyCreditsFromAttempt(credits, token),
+    }));
+    setThemeAttemptCostResolver((boardType) => this._themeServiceHost?.getQuotedAttemptCost(boardType));
     // p59-t3: surfaces generateBoardImage's local-vs-service prompt-template
     // drift notice (sha256 mismatch) as a one-way webview message.
     setThemePromptMismatchNotifier((message, templateVersion) => {
