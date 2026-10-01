@@ -95,3 +95,65 @@ test("media/packs/catalog.json ships a multi-llm pack with the 4 foreign-LLM age
     assert.equal(backend.model, expected.model);
   }
 });
+
+// Plan p99-t3: foreign reviewers call the dispatcher `delegate` tool. These
+// phrases are the pre-existing delegation/orchestration/verdict language that
+// must survive the rewrite; the check guards against any later trim.
+const REVIEWER_IDS = ["codex-reviewer", "gemini-reviewer", "kimi-reviewer", "grok-reviewer"];
+const RETAINED_LINES = [
+  "It must never review a change it authored itself (project rule: a change is always verified by someone other than its author).",
+  "the orchestrator (or a wiring layer) owns any retry policy.",
+  "## Recognizing a provider failure vs. a review outcome",
+  "## Structured verdict shape",
+  "verdict: approve | changes-requested | provider-unavailable",
+  "`findings` is empty when `verdict` is `approve`.",
+  "never silently upgrade an unreachable or quota-exhausted",
+  "Under 250 words. Do not invite a follow-up review round — this is one pass.",
+];
+
+for (const id of REVIEWER_IDS) {
+  test(`${id} body calls mcp__tycoon__delegate with a documented fallback and keeps its verdict/failure sections`, () => {
+    const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === id)!;
+    const md = buildAgentMarkdown(agent, "multi-llm");
+    assert.ok(md.includes("## Calling through the dispatcher (preferred)"));
+    assert.ok(md.includes("`mcp__tycoon__delegate`"));
+    assert.ok(md.includes(`\`specialist: "${id}"\``), "must pass its own id as specialist");
+    assert.ok(md.includes("`task`"), "must carry the review request in task");
+    assert.ok(md.includes("is not available in this session (dispatcher not installed)"), "documented fallback to the vendor tool");
+    assert.ok(md.includes("never calls reviewer MCP tools directly"), "orchestrator rule stated");
+    for (const status of ["provider_error", "timeout", "empty", "chain_exhausted"]) {
+      assert.ok(md.includes(status), `failure section must name ${status}`);
+    }
+    assert.ok(md.includes("never re-dispatch"), "must forbid re-dispatch after the chain was exhausted");
+    for (const line of RETAINED_LINES) {
+      assert.ok(md.includes(line), `retained delegation/verdict language missing: ${line}`);
+    }
+    // Hook attribution (hooks/tycoon-claude-hook.cjs isDispatcherRoutedAgent) reads this file.
+    assert.ok(/mcp__tycoon(?:-dispatcher)?__delegate/.test(md));
+    // Direct-tool backend frontmatter stays valid for the fallback path.
+    const backend = parseAgentBackend(readAgentFrontmatter(md));
+    assert.equal(backend.vendor, EXPECTED_BACKEND[id].vendor);
+  });
+}
+
+test("codex-reviewer keeps the explicit read-only sandbox and approval-policy requirement on the direct path", () => {
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+  const md = buildAgentMarkdown(agent, "multi-llm");
+  assert.ok(md.includes('- `sandbox: "read-only"`'));
+  assert.ok(md.includes('- `approval-policy: "never"`'));
+});
+
+for (const id of ["codex-reviewer", "gemini-reviewer", "kimi-reviewer"]) {
+  test(`.claude/agents/${id}.md (when present) references the delegate tool and keeps retained language`, (t) => {
+    const p = path.join(REPO_ROOT, ".claude", "agents", `${id}.md`);
+    if (!fs.existsSync(p)) {
+      t.skip(".claude/ is gitignored; local agent file absent");
+      return;
+    }
+    const md = fs.readFileSync(p, "utf8");
+    assert.ok(md.includes("`mcp__tycoon__delegate`"));
+    for (const line of RETAINED_LINES) {
+      assert.ok(md.includes(line), `retained language missing in ${id}.md: ${line}`);
+    }
+  });
+}
