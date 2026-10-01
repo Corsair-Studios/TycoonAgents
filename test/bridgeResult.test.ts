@@ -296,8 +296,21 @@ test("classifyProviderError: a bare RESOURCE_EXHAUSTED is quota and permission d
   assert.equal(classify("RESOURCE_EXHAUSTED"), "quota");
   assert.equal(classify("status: resource_exhausted"), "quota");
   assert.equal(classify("429 RESOURCE_EXHAUSTED"), "rate_limit", "an explicit 429 still reads as rate_limit");
-  assert.equal(classify("permission denied"), "auth");
-  assert.equal(classify("PERMISSION_DENIED: caller lacks access"), "auth");
+  assert.equal(classify("PERMISSION_DENIED: API key lacks access"), "auth");
+  assert.equal(classify("permission denied: invalid token"), "auth");
+});
+
+test("classifyProviderError: narrowed cli_missing / not_found / auth edge cases", () => {
+  assert.notEqual(classify("package left-pad not installed"), "cli_missing");
+  assert.equal(classify("package left-pad not installed"), "unknown");
+  assert.equal(classify("npx is not installed"), "cli_missing");
+  assert.equal(classify("codex CLI not installed"), "cli_missing");
+  assert.equal(classify('model "gemini" not found'), "not_found");
+  assert.equal(classify("model: 'x' not found"), "not_found");
+  assert.equal(classify('model: "agy" not found'), "not_found");
+  assert.equal(classify("EACCES: permission denied, open '/tmp/x'"), "unknown");
+  assert.equal(classify("permission denied"), "unknown");
+  assert.equal(classify("spawn /usr/bin/claude EACCES"), "cli_missing");
 });
 
 test("classifyProviderError lets an HTTP status win over text, and does not match digits inside other numbers", () => {

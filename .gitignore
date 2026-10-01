@@ -100,3 +100,7 @@ design-doc/grant.txt
 .opencode/tycoon-routing.generated.json
 .opencode/plugin/
 /opencode.json
+
+# Written when Codex runs the codex-hooks fixtures (notify.js, record.js)
+test/fixtures/codex-hooks/raw-notify.jsonl
+test/fixtures/codex-hooks/raw-hooks.jsonl
