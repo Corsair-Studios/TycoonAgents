@@ -109,7 +109,7 @@ test('handleRestorePlanBackup: an empty root broadcasts the disabled/no-root PLA
   });
 });
 
-test('postPlanState: projectPlanEnabled absent/false reports enabled:false with a null plan (feature off)', (t) => {
+test('postPlanState: explicit projectPlanEnabled:false reports enabled:false with a null plan (feature off)', (t) => {
   const root = mkTempRoot();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   seedTycoonDir(root, { enabled: false });
@@ -119,6 +119,22 @@ test('postPlanState: projectPlanEnabled absent/false reports enabled:false with 
   const planState = calls.find((c) => c.data.type === 'PLAN_STATE');
   assert.equal(planState.data.enabled, false);
   assert.equal(planState.data.plan, null);
+});
+
+test('postPlanState: projectPlanEnabled absent (never touched) defaults ON and reports enabled:true', (t) => {
+  const root = mkTempRoot();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // No execution.json at all, and one with the key missing.
+  const calls = [];
+  postPlanState(root, fakeBroadcast(calls));
+  assert.equal(calls.find((c) => c.data.type === 'PLAN_STATE').data.enabled, true);
+
+  const dir = path.join(root, '.claude', 'tycoon');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'execution.json'), JSON.stringify({ delegation_mode: 'flat' }));
+  const calls2 = [];
+  postPlanState(root, fakeBroadcast(calls2));
+  assert.equal(calls2.find((c) => c.data.type === 'PLAN_STATE').data.enabled, true);
 });
 
 test('postPlanState: a good plan.json read backs it up to plan.json.bak (best-effort side effect)', (t) => {

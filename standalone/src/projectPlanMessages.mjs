@@ -39,14 +39,16 @@ import { MSG_WIRE } from './themeMessages.mjs';
  * Mirrors panel.ts's `readProjectPlanEnabled` verbatim — that function is a
  * local, unexported helper in panel.ts (not part of projectPlan.ts's
  * bridgeable surface), so it is reimplemented here (missing file/dir/field
- * all default to `false`, matching the doc comment on the original). */
+ * all default to `true`, matching panel.ts's default-on read). */
 function readProjectPlanEnabled(root) {
   try {
     const raw = fs.readFileSync(path.join(root, '.claude', 'tycoon', 'execution.json'), 'utf8');
     const parsed = JSON.parse(raw);
-    return parsed !== null && typeof parsed === 'object' && parsed.projectPlanEnabled === true;
+    // Default ON: only an explicit `false` disables Project Plan.
+    if (parsed !== null && typeof parsed === 'object') return parsed.projectPlanEnabled !== false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }
 

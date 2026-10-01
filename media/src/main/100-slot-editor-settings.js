@@ -3528,7 +3528,7 @@
     delegSection.appendChild(journalRow);
 
     // ── 1.6. Project Plan (optional) ──
-    // Opt-in toggle for the Project Plan tab in the metrics panel (see
+    // On-by-default toggle for the Project Plan tab in the metrics panel (see
     // #project-plan-body / renderProjectPlanSection()).
     // Reuses the same checkbox-row visual language as the theme builder's
     // "Pause after each image" toggle.
@@ -3548,26 +3548,15 @@
     projectPlanCheckboxEl = planCheckbox;
     const planTextWrap = document.createElement("span");
     const planTitle = document.createElement("span");
-    planTitle.textContent = "Project Plan (optional, experimental)";
+    planTitle.textContent = "Project Plan (optional)";
     const planNote = document.createElement("small");
-    planNote.textContent = "Opt-in phase/task planning workflow with approve/retry controls. Off by default.";
+    planNote.textContent = "Phase/task planning workflow with approve/retry controls. On by default — uncheck to turn it off.";
     planTextWrap.appendChild(planTitle);
     planTextWrap.appendChild(planNote);
     planLabel.appendChild(planCheckbox);
     planLabel.appendChild(planTextWrap);
     planRow.appendChild(planLabel);
     planSection.appendChild(planRow);
-    const planInstallHint = document.createElement("p");
-    planInstallHint.className = "settings-empty";
-    planInstallHint.textContent = "Auto-installed and kept up to date whenever Project Plan is enabled above — use this only to repair a damaged install.";
-    planSection.appendChild(planInstallHint);
-    const planInstallBtn = document.createElement("button");
-    planInstallBtn.className = "skill-btn settings-btn";
-    planInstallBtn.textContent = "Reinstall / Repair skill";
-    planInstallBtn.addEventListener("click", () => {
-      vscode.postMessage({ type: "projectPlanAction" });
-    });
-    planSection.appendChild(planInstallBtn);
     setupConfigEl.appendChild(planSection);
 
     // ── 1.7. Team setup export (p48-t3) ──

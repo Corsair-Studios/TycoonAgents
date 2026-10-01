@@ -271,7 +271,7 @@ import {
 } from "./progressScope";
 
 /**
- * Optional "Project Plan" feature (opt-in, default OFF): resolve
+ * Optional "Project Plan" feature (default ON, uncheck to disable): resolve
  * `.claude/tycoon/plan.json` and read/write the `projectPlanEnabled` flag
  * inside `.claude/tycoon/execution.json` — the SAME file
  * `delegationDoctrine.ts`'s `readExecutionConfig`/`writeExecutionConfig`
@@ -287,11 +287,26 @@ function projectPlanExecutionConfigPath(root: string): string {
   return path.join(root, ".claude", "tycoon", "execution.json");
 }
 
-/** Read the opt-in flag; missing file/dir/field all default to `false`. */
+/**
+ * Read the Project Plan flag. Default ON: a missing file/dir/field (a user who
+ * never touched the setting) reads as `true`; only an explicit `false`
+ * written by the checkbox turns it off.
+ */
 function readProjectPlanEnabled(root: string): boolean {
   try {
     const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
-    return parsed !== null && typeof parsed === "object" && parsed.projectPlanEnabled === true;
+    if (parsed !== null && typeof parsed === "object") return parsed.projectPlanEnabled !== false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** True when execution.json carries an explicit `projectPlanEnabled` value. */
+function projectPlanFlagIsExplicit(root: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
+    return parsed !== null && typeof parsed === "object" && typeof parsed.projectPlanEnabled === "boolean";
   } catch {
     return false;
   }
@@ -1713,8 +1728,6 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.DESIGN_DOC_ACTION) {
           await this._handleDesignDocAction((message as any).mode);
-        } else if (message.type === MSG.PROJECT_PLAN_ACTION) {
-          await this._handleInstallProjectPlanSkill();
         } else if (message.type === MSG.EXPORT_TEAM_SETUP) {
           this._handleExportTeamSetup();
         } else if (message.type === MSG.APPLY_TEAM_SETUP) {
@@ -4944,8 +4957,7 @@ export class TycoonPanel {
    * is needed. Each file's copy is independently try/catched (logged via
    * `console.error`) so one bad file never aborts the rest, and this method
    * never throws outward — callers may run it as a best-effort side effect
-   * (e.g. from the checkbox handler) as well as from the explicit
-   * "Reinstall / Repair skill" button.
+   * (e.g. from the checkbox handler and the panel-open auto-heal).
    *
    * Returns per-file failures explicitly (mirroring `_stageBridgeTo`'s
    * honesty) instead of collapsing them into a single "does the destination
@@ -5102,41 +5114,6 @@ export class TycoonPanel {
 
     copyRecursive(src, dest);
     return { staged, updated, unchanged, failed };
-  }
-
-  private async _handleInstallProjectPlanSkill(): Promise<void> {
-    const root = this._projectRoot();
-    if (!root) {
-      vscode.window.showWarningMessage("No project root — open a folder first.");
-      return;
-    }
-    let result: { ok: boolean; failed: { path: string; error: string }[] };
-    try {
-      result = this._installProjectPlanSkill(root);
-    } catch (e) {
-      vscode.window.showErrorMessage("Failed to install project-plan skill: " + String(e));
-      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error: String(e) });
-      return;
-    }
-    if (!result.ok) {
-      // Never report success on a partial copy — name the failing file(s)
-      // and their classified error (see describeFsError) rather than a
-      // generic "destination empty" message when SOME files landed but
-      // others didn't.
-      const error =
-        result.failed.length > 0
-          ? `Failed to copy: ${result.failed.map((f) => `${f.path} (${f.error})`).join("; ")}`
-          : "destination empty after copy";
-      vscode.window.showErrorMessage("Failed to install project-plan skill: " + error);
-      void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: false, error });
-      return;
-    }
-    const prompt = "Use the project-plan skill (.claude/skills/project-plan) to decompose the design doc / goals for this project into an approvable plan of phases and tasks with human gate checkpoints.";
-    await vscode.env.clipboard.writeText(prompt);
-    vscode.window.showInformationMessage(
-      "Project-plan skill installed and its starter prompt was copied to your clipboard."
-    );
-    void this._panel.webview.postMessage({ type: MSG.PROJECT_PLAN_DONE, ok: true });
   }
 
   /**
@@ -6257,19 +6234,21 @@ export class TycoonPanel {
   }
 
   /**
-   * Auto-heal a stale `.claude/skills/project-plan` directory once per panel
-   * open, but ONLY when the opt-in `projectPlanEnabled` flag is already set
-   * — mirrors `_ensureHookScriptFresh`'s "never auto-create, only refresh
-   * what's already opted in" posture, except here the skill directory MAY
-   * be created (via `_installProjectPlanSkill`) because enabling the
-   * checkbox is itself the opt-in signal; a project that never enabled
-   * Project Plan is left untouched.
+   * Auto-heal `.claude/skills/project-plan` once per panel open whenever
+   * Project Plan is enabled (default ON; only an explicit `false` disables).
+   * `_installProjectPlanSkill` content-diffs every shipped file, so a MISSING,
+   * OUTDATED, or edited/truncated file is restored — this is why the old
+   * "Reinstall / Repair skill" button was removed. A project with no explicit
+   * flag AND no TycoonAgents hooks installed is left untouched.
    */
   private _ensureProjectPlanSkillFresh(): void {
     try {
       const root = this._projectRoot();
       if (root === "") return;
       if (!readProjectPlanEnabled(root)) return;
+      // Default-on means an untouched project reads as enabled; don't create
+      // .claude/skills in a project that never ran TycoonAgents' Install/Repair.
+      if (!projectPlanFlagIsExplicit(root) && !this._hooksInstalledForRoot(root)) return;
       const result = this._installProjectPlanSkill(root);
       // No staleness stamp guards this call (it re-runs, cheaply, on every
       // panel open) so there is nothing to keep "stale" for a retry — the

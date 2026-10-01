@@ -217,8 +217,6 @@ export const MSG = {
   OPEN_HANDBOOK: "OPEN_HANDBOOK",
   DESIGN_DOC_ACTION: "designDocAction",
   DESIGN_DOC_DONE: "designDocDone",
-  PROJECT_PLAN_ACTION: "projectPlanAction",
-  PROJECT_PLAN_DONE: "projectPlanDone",
 
   // ---- team setup export (p48-t3) ----------------------------------------
   // Webview -> host, no payload: assemble roster/routing/skills/mcp/

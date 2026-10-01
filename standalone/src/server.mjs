@@ -1576,14 +1576,6 @@ function handleBrowserMessage(msg) {
       // (~line 2575).
       handleSetProjectPlanEnabledStandalone(Boolean(msg.enabled));
       break;
-    case 'projectPlanAction':
-      // Standalone analog of panel.ts's _handleInstallProjectPlanSkill
-      // (~line 4349) — the Settings screen's "Reinstall / Repair skill"
-      // button. Re-stages media/skills/project-plan into
-      // <project>/.claude/skills/project-plan via the SAME content-diff
-      // copy handleInstallPack's skills step uses (stageSkillTreeStandalone).
-      handleProjectPlanActionStandalone();
-      break;
     case 'EXPORT_TEAM_SETUP': {
       // Standalone analog of panel.ts's _handleExportTeamSetup (p48-t3) —
       // assembles roster/routing/skills/mcp/delegation state and writes
@@ -2514,11 +2506,23 @@ function removeReviewerAgentStandalone(root) {
   removeAgentFilesStandalone(root, packCatalogModule().REVIEWER_AGENTS, 'reviewer');
 }
 
-/** Standalone analog of panel.ts's (unexported) `readProjectPlanEnabled`. */
+/** Standalone analog of panel.ts's (unexported) `readProjectPlanEnabled` (default ON). */
 function readProjectPlanEnabledStandalone(root) {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'tycoon', 'execution.json'), 'utf8'));
-    return parsed !== null && typeof parsed === 'object' && parsed.projectPlanEnabled === true;
+    // Default ON: only an explicit `false` disables Project Plan.
+    if (parsed !== null && typeof parsed === 'object') return parsed.projectPlanEnabled !== false;
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** True when execution.json carries an explicit boolean `projectPlanEnabled`. */
+function projectPlanFlagIsExplicitStandalone(root) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(root, '.claude', 'tycoon', 'execution.json'), 'utf8'));
+    return parsed !== null && typeof parsed === 'object' && typeof parsed.projectPlanEnabled === 'boolean';
   } catch {
     return false;
   }
@@ -3073,46 +3077,6 @@ function handleSetProjectPlanEnabledStandalone(enabled) {
   }
 
   postPlanState(root, broadcast);
-}
-
-/**
- * Standalone analog of panel.ts's _handleInstallProjectPlanSkill (~line
- * 4349) — the Settings screen's "Reinstall / Repair skill" button. Reuses
- * `stageSkillTreeStandalone` (the SAME content-diff recursive copy
- * `handleInstallPack`'s skills step uses) to copy media/skills/project-plan
- * into `<root>/.claude/skills/project-plan`. Never shows a native modal or
- * writes to the clipboard (no such channel in a headless server) — those
- * are documented no-ops, not silent omissions.
- */
-function handleProjectPlanActionStandalone() {
-  const root = primaryProjectRoot;
-  if (!root) {
-    broadcast('message', { type: 'projectPlanDone', ok: false, error: 'No project root resolved' });
-    return;
-  }
-  try {
-    const { staged, updated, failed } = stageSkillTreeStandalone('project-plan', root);
-    const dest = path.join(root, '.claude', 'skills', 'project-plan');
-    let destOk;
-    try {
-      destOk = fs.existsSync(dest) && fs.readdirSync(dest).length > 0;
-    } catch {
-      destOk = false;
-    }
-    if (!destOk || failed.length > 0) {
-      const error =
-        failed.length > 0
-          ? `Failed to copy: ${failed.map((f) => `${f.path} (${f.error})`).join('; ')}`
-          : 'destination empty after copy';
-      broadcast('message', { type: 'projectPlanDone', ok: false, error });
-      return;
-    }
-    void staged;
-    void updated;
-    broadcast('message', { type: 'projectPlanDone', ok: true });
-  } catch (err) {
-    broadcast('message', { type: 'projectPlanDone', ok: false, error: String(err) });
-  }
 }
 
 /**
@@ -4453,6 +4417,44 @@ export async function startServer({
       }
     } catch (err) {
       console.error(`[tycoonagents-standalone] core skill auto-heal failed for ${root}:`, err);
+    }
+  }
+
+  // Project Plan is ON by default: at startup, for every root with hooks
+  // installed (or an explicit flag), content-diff the project-plan skill
+  // (restores missing/outdated/edited files) and refresh the managed CLAUDE.md
+  // block so the Project Plan routing section appears. Analog of panel.ts's
+  // _ensureProjectPlanSkillFresh + _ensureDelegationDoctrineCurrent.
+  for (const { root } of roots) {
+    try {
+      const hooks = hooksInstalledForRootStandalone(root);
+      if (!readProjectPlanEnabledStandalone(root)) continue;
+      if (!hooks && !projectPlanFlagIsExplicitStandalone(root)) continue;
+      const { failed } = stageSkillTreeStandalone('project-plan', root);
+      if (failed.length > 0) {
+        console.error(`[tycoonagents-standalone] project-plan skill auto-heal failed in ${root}:`, failed);
+      }
+      if (hooks) {
+        const { readExecutionConfig } = delegationDoctrineModule();
+        const { delegation_mode, reviewEnabled, sessionJournalEntries } = readExecutionConfig(path.join(root, '.claude'));
+        const claudeMdPath = path.join(root, 'CLAUDE.md');
+        let existingClaudeMd = null;
+        try {
+          existingClaudeMd = fs.readFileSync(claudeMdPath, 'utf8');
+        } catch {
+          existingClaudeMd = null;
+        }
+        const updated = buildClaudeMdDoctrineStandalone(
+          existingClaudeMd,
+          delegation_mode,
+          reviewEnabled ?? true,
+          root,
+          sessionJournalEntries ?? 0,
+        );
+        if (existingClaudeMd === null || updated !== existingClaudeMd) fs.writeFileSync(claudeMdPath, updated);
+      }
+    } catch (err) {
+      console.error(`[tycoonagents-standalone] project-plan auto-heal failed for ${root}:`, err);
     }
   }
 

@@ -1211,40 +1211,52 @@ test('REQUEST_PLAN reflects a real .claude/tycoon/plan.json fixture (phases/task
   }
 });
 
-test('POST /message {type: "projectPlanAction"} -> re-stages media/skills/project-plan and replies projectPlanDone {ok:true}', async () => {
+function writeHooksInstalled(projectRoot) {
+  const dir = path.join(projectRoot, '.claude');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'settings.local.json'),
+    JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node .claude/hooks/tycoon-claude-hook.cjs' }] }] } }),
+  );
+}
+
+test('startup: Project Plan defaults ON - restores a truncated project-plan skill file and adds the managed CLAUDE.md block (no repair button message)', async () => {
   const projectRoot = mkTempProject();
   const dataDir = path.join(mkTempProject(), 'appdata');
+  writeHooksInstalled(projectRoot);
+  const srcSkill = path.join(REPO_ROOT, 'media', 'skills', 'project-plan', 'SKILL.md');
+  const destSkill = path.join(projectRoot, '.claude', 'skills', 'project-plan', 'SKILL.md');
+  fs.mkdirSync(path.dirname(destSkill), { recursive: true });
+  fs.writeFileSync(destSkill, 'truncated');
   const runtime = await startServer({
     argv: [projectRoot],
     env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
     cwd: projectRoot,
   });
-  const controller = new AbortController();
   try {
-    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
-    const reader = eventsRes.body.getReader();
-    const donePromise = collectSseEvent(reader, 'projectPlanDone');
-    const messageRes = await fetch(`${runtime.url}/message`, {
-      method: 'POST',
-      headers: { 'X-Tycoon-Token': runtime.sessionToken },
-      body: JSON.stringify({ type: 'projectPlanAction' }),
-    });
-    assert.equal(messageRes.status, 202);
-    const done = await donePromise;
-    assert.equal(done.ok, true, `repair must succeed: ${done.error}`);
-
-    const srcDir = path.join(REPO_ROOT, 'media', 'skills', 'project-plan');
-    const destDir = path.join(projectRoot, '.claude', 'skills', 'project-plan');
-    const srcFiles = fs.readdirSync(srcDir).filter((f) => fs.statSync(path.join(srcDir, f)).isFile());
-    for (const f of srcFiles) {
-      assert.equal(
-        fs.readFileSync(path.join(destDir, f), 'utf8'),
-        fs.readFileSync(path.join(srcDir, f), 'utf8'),
-        `${f} must be byte-identical after repair`,
-      );
-    }
+    assert.equal(fs.readFileSync(destSkill, 'utf8'), fs.readFileSync(srcSkill, 'utf8'), 'damaged SKILL.md restored');
+    assert.match(fs.readFileSync(path.join(projectRoot, 'CLAUDE.md'), 'utf8'), /Project Plan routing/);
   } finally {
-    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('startup: an explicit projectPlanEnabled:false is respected - no skill, no routing block', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  writeHooksInstalled(projectRoot);
+  fs.mkdirSync(path.join(projectRoot, '.claude', 'tycoon'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), JSON.stringify({ projectPlanEnabled: false }));
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  try {
+    assert.equal(fs.existsSync(path.join(projectRoot, '.claude', 'skills', 'project-plan')), false);
+    const md = path.join(projectRoot, 'CLAUDE.md');
+    assert.equal(fs.existsSync(md) && /Project Plan routing/.test(fs.readFileSync(md, 'utf8')), false);
+  } finally {
     await runtime.close();
   }
 });

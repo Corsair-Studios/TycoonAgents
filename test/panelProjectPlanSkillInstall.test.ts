@@ -129,3 +129,61 @@ test("_installProjectPlanSkill is idempotent and refreshes a modified dest file 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Project Plan is default ON: the panel-open auto-heal must restore a missing
+// or damaged skill without any user action (this is why the "Reinstall /
+// Repair skill" button was removed).
+function callEnsureFresh(root: string, hooksInstalled: boolean): void {
+  const fakeThis = {
+    _extensionUri: { fsPath: REPO_ROOT },
+    _projectRoot: () => root,
+    _hooksInstalledForRoot: () => hooksInstalled,
+    _installProjectPlanSkill: (r: string) => callInstallProjectPlanSkill(r),
+  };
+  (TycoonPanel.prototype as any)._ensureProjectPlanSkillFresh.call(fakeThis);
+}
+
+function writeExec(root: string, body: unknown): void {
+  const dir = path.join(root, ".claude", "tycoon");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "execution.json"), JSON.stringify(body));
+}
+
+test("auto-heal (default ON, flag never set, hooks installed): installs a missing skill and restores a truncated SKILL.md", () => {
+  const root = tmpRoot();
+  try {
+    callEnsureFresh(root, true);
+    const skillMd = path.join(destDir(root), "SKILL.md");
+    const shipped = fs.readFileSync(path.join(SKILL_SRC, "SKILL.md"), "utf8");
+    assert.equal(fs.readFileSync(skillMd, "utf8"), shipped, "missing skill installed");
+    fs.writeFileSync(skillMd, shipped.slice(0, 10));
+    callEnsureFresh(root, true);
+    assert.equal(fs.readFileSync(skillMd, "utf8"), shipped, "truncated SKILL.md restored with no repair button");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-heal: an explicit projectPlanEnabled:false is respected (nothing installed)", () => {
+  const root = tmpRoot();
+  try {
+    writeExec(root, { projectPlanEnabled: false });
+    callEnsureFresh(root, true);
+    assert.equal(fs.existsSync(destDir(root)), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-heal: flag never set and no hooks installed leaves the project untouched; explicit true still installs", () => {
+  const root = tmpRoot();
+  try {
+    callEnsureFresh(root, false);
+    assert.equal(fs.existsSync(destDir(root)), false);
+    writeExec(root, { projectPlanEnabled: true });
+    callEnsureFresh(root, false);
+    assert.equal(fs.existsSync(path.join(destDir(root), "SKILL.md")), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
