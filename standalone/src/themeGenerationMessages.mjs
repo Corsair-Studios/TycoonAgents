@@ -515,6 +515,56 @@ export async function handleResliceThemeImage(store, broadcast, payload) {
   }
 }
 
+// ── UPLOAD_THEME_IMAGE -> THEME_IMAGE_REVIEW / THEME_INITIALIZED /
+//    BACKGROUND_REPLACE_RESULT
+// Mirrors panel.ts's MSG.UPLOAD_THEME_IMAGE branch. The standalone has no
+// native open dialog, so the browser shim (server.mjs) picks the file and
+// sends its bytes as payload.image_base64. Uploading is free: no credits.
+// Base64 length cap derived from the 25 MB decoded cap (4 chars per 3 bytes,
+// plus padding slack) so an oversized body is rejected BEFORE decoding.
+const MAX_UPLOAD_IMAGE_BASE64_CHARS = Math.ceil((25 * 1024 * 1024) / 3) * 4 + 4;
+export async function handleUploadThemeImage(store, broadcast, payload) {
+  const themeId = payload?.theme_id ?? '';
+  const itemId = payload?.item_id ?? '';
+  const fail = (error) =>
+    broadcast('message', { type: MSG_WIRE.BACKGROUND_REPLACE_RESULT, payload: error ? { ok: false, error } : { ok: false } });
+  if (!/^[a-z0-9_]+$/.test(themeId) || !/^[a-z0-9_-]+$/.test(itemId)) {
+    fail();
+    return;
+  }
+  if (payload?.cancelled === true) {
+    broadcast('message', { type: MSG_WIRE.BACKGROUND_REPLACE_RESULT, payload: { ok: false, cancelled: true } });
+    return;
+  }
+  const encoded = typeof payload?.image_base64 === 'string' ? payload.image_base64 : '';
+  if (encoded.length > MAX_UPLOAD_IMAGE_BASE64_CHARS) {
+    fail('That image is larger than 25 MB. Choose a smaller PNG, JPEG or WEBP.');
+    return;
+  }
+  const bytes = encoded ? Buffer.from(encoded, 'base64') : Buffer.alloc(0);
+  const rejection = bridge().uploadImageRejection(bytes);
+  if (rejection) {
+    fail(rejection);
+    return;
+  }
+  try {
+    const result = await bridge().uploadThemeImage(store, themeId, itemId, bytes);
+    if (!result) {
+      fail();
+      return;
+    }
+    await handleGetThemeImageReview(store, broadcast, themeId);
+    broadcast('message', {
+      type: MSG_WIRE.THEME_INITIALIZED,
+      payload: buildThemeInitPayload(result.manifest, result.frames, true),
+    });
+    broadcast('message', { type: MSG_WIRE.BACKGROUND_REPLACE_RESULT, payload: { ok: true } });
+  } catch (err) {
+    console.error('[tycoonagents-standalone] UPLOAD_THEME_IMAGE failed:', err);
+    fail(err && err.message ? String(err.message) : undefined);
+  }
+}
+
 // ── NORMALIZE_THEME_CHARACTER -> THEME_CHARACTER_NORMALIZE_STATE* /
 //    THEME_IMAGE_REVIEW / THEME_INITIALIZED
 // Mirrors panel.ts's MSG.NORMALIZE_THEME_CHARACTER branch.

@@ -79,6 +79,7 @@ import {
   handleGenerateTheme,
   handleRetryThemeImage,
   handleResliceThemeImage,
+  handleUploadThemeImage,
   handleNormalizeThemeCharacter,
   handleSetThemeImageReviewStatus,
   handleSetThemePauseForReview,
@@ -789,6 +790,11 @@ function handleBrowserMessage(msg) {
     case THEME_MSG_WIRE.RESLICE_THEME_IMAGE:
       handleResliceThemeImage(themeStore, broadcast, payload).catch((err) => {
         console.error('[tycoonagents-standalone] RESLICE_THEME_IMAGE failed:', err);
+      });
+      break;
+    case THEME_MSG_WIRE.UPLOAD_THEME_IMAGE:
+      handleUploadThemeImage(themeStore, broadcast, payload).catch((err) => {
+        console.error('[tycoonagents-standalone] UPLOAD_THEME_IMAGE failed:', err);
       });
       break;
     case THEME_MSG_WIRE.NORMALIZE_THEME_CHARACTER:
@@ -3615,6 +3621,62 @@ function buildHostHtml(token) {
         input.click();
       }
 
+      // UPLOAD_THEME_IMAGE: no vscode open-dialog in the standalone, so a
+      // hidden <input type="file"> stands in for it (same focus-based cancel
+      // detection as triggerThemeImport). The chosen image's bytes are sent
+      // to the server as base64 on the UPLOAD_THEME_IMAGE message itself,
+      // which replies with BACKGROUND_REPLACE_RESULT (ok/cancelled).
+      function triggerThemeImageUpload(message) {
+        var base = (message && message.payload) || {};
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp';
+        input.style.display = 'none';
+        var settled = false;
+        var focusTimer = null;
+        function cleanup() {
+          window.removeEventListener('focus', onFocus);
+          if (focusTimer !== null) { clearTimeout(focusTimer); focusTimer = null; }
+          if (input.parentNode) input.parentNode.removeChild(input);
+        }
+        function onFocus() {
+          focusTimer = setTimeout(function () {
+            focusTimer = null;
+            if (settled) return;
+            settled = true;
+            cleanup();
+            deliverSyntheticMessage('BACKGROUND_REPLACE_RESULT', { ok: false, cancelled: true });
+          }, 300);
+        }
+        input.addEventListener('change', function () {
+          var file = input.files && input.files[0];
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (!file) {
+            deliverSyntheticMessage('BACKGROUND_REPLACE_RESULT', { ok: false, cancelled: true });
+            return;
+          }
+          file.arrayBuffer().then(function (buf) {
+            var bytes = new Uint8Array(buf);
+            var binary = '';
+            for (var i = 0; i < bytes.length; i += 0x8000) {
+              binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            }
+            postToServer({
+              type: 'UPLOAD_THEME_IMAGE',
+              payload: Object.assign({}, base, { image_base64: btoa(binary) }),
+            });
+          }).catch(function (err) {
+            console.error('[tycoonagents-standalone] UPLOAD_THEME_IMAGE read failed:', err);
+            deliverSyntheticMessage('BACKGROUND_REPLACE_RESULT', { ok: false });
+          });
+        });
+        window.addEventListener('focus', onFocus);
+        document.body.appendChild(input);
+        input.click();
+      }
+
       // postMessage entry point used by the acquireVsCodeApi() singleton
       // below: EXPORT_THEME/IMPORT_THEME are special-cased into the browser
       // download/file-pick flows above (the server has no /message handler
@@ -3627,6 +3689,10 @@ function buildHostHtml(token) {
         }
         if (message && message.type === 'IMPORT_THEME') {
           triggerThemeImport();
+          return;
+        }
+        if (message && message.type === 'UPLOAD_THEME_IMAGE') {
+          triggerThemeImageUpload(message);
           return;
         }
         postToServer(message);

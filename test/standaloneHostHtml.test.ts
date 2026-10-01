@@ -19,9 +19,11 @@ function extractBuildHostHtmlBody(): string {
   const match = /function buildHostHtml\s*\([^)]*\)\s*\{/.exec(src);
   const start = match ? match.index : -1;
   assert.ok(start >= 0, 'buildHostHtml() should exist in standalone/src/server.mjs');
-  // Grab a generous slice past the function start — the template literal
-  // that builds the HTML lives entirely within a few hundred lines of it.
-  return src.slice(start, start + 20000);
+  // Slice to the end of buildHostHtml (the next top-level function), so the
+  // test does not depend on a fixed character window as the inline script grows.
+  const rest = src.slice(start + match![0].length);
+  const next = /\n(?:async )?function \w+\s*\(/.exec(rest);
+  return src.slice(start, start + match![0].length + (next ? next.index : rest.length));
 }
 
 test('standalone buildHostHtml includes the rebirth trophy row markup', () => {

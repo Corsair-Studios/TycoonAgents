@@ -1420,7 +1420,16 @@ export class TycoonPanel {
             return;
           }
           const bytes = await vscode.workspace.fs.readFile(picked[0]);
-          const result = await uploadThemeImage(this._globalStorageUri, theme_id, item_id, bytes);
+          let result: Awaited<ReturnType<typeof uploadThemeImage>>;
+          try {
+            result = await uploadThemeImage(this._globalStorageUri, theme_id, item_id, bytes);
+          } catch (err) {
+            void this._panel.webview.postMessage({
+              type: MSG.BACKGROUND_REPLACE_RESULT,
+              payload: { ok: false, error: err instanceof Error ? err.message : String(err) },
+            });
+            return;
+          }
           if (result) {
             await this._postThemeImageReview(theme_id);
             void this._panel.webview.postMessage({

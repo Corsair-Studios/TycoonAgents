@@ -2480,6 +2480,20 @@
         if (!ok) {
           pendingUploadBtn.disabled = false;
           pendingUploadBtn.textContent = "Upload";
+          const uploadError = msg.payload && msg.payload.error;
+          if (uploadError) {
+            pendingUploadBtn.title = String(uploadError);
+            let note = pendingUploadBtn.parentNode && pendingUploadBtn.parentNode.querySelector(".theme-review-upload-error");
+            if (!note && pendingUploadBtn.parentNode) {
+              note = document.createElement("div");
+              note.className = "theme-review-upload-error";
+              note.setAttribute("role", "alert");
+              note.style.color = "#ff9f9f";
+              note.style.fontSize = "11px";
+              pendingUploadBtn.parentNode.appendChild(note);
+            }
+            if (note) note.textContent = String(uploadError);
+          }
         }
         pendingUploadBtn = null;
       }

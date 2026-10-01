@@ -196,6 +196,16 @@ export function retryThemeImage(storageRoot, themeId, itemId, feedback, mode, im
   );
 }
 
+/** Same magic-byte/size check the extension host applies; returns a message or undefined. */
+export function uploadImageRejection(imageBytes) {
+  return themeServiceModule().uploadImageRejection(imageBytes);
+}
+
+/** Manual per-board upload: thin pass-through to themeService.js's uploadThemeImage. */
+export function uploadThemeImage(storageRoot, themeId, itemId, imageBytes) {
+  return themeServiceModule().uploadThemeImage(storageRoot, themeId, itemId, imageBytes);
+}
+
 export function resliceThemeImageFromRaw(storageRoot, themeId, itemId) {
   return themeServiceModule().resliceThemeImageFromRaw(storageRoot, themeId, itemId);
 }

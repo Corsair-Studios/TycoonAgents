@@ -968,22 +968,59 @@ export async function replaceThemeBackground(
  * whether the image is sliced as a multi-frame character/rival atlas or stored
  * as a single image (background/object/badge/etc.).
  */
+export const MAX_UPLOAD_IMAGE_BYTES = 25 * 1024 * 1024;
+
+/** User-facing reason an upload's bytes are unacceptable, or undefined when they look like a PNG/JPEG/WEBP within the size cap. */
+export function uploadImageRejection(imageBytes: Uint8Array): string | undefined {
+  if (imageBytes.length === 0) return 'The chosen file is empty.';
+  if (imageBytes.length > MAX_UPLOAD_IMAGE_BYTES) {
+    return `That image is larger than ${MAX_UPLOAD_IMAGE_BYTES / (1024 * 1024)} MB. Choose a smaller PNG, JPEG or WEBP.`;
+  }
+  const b = imageBytes;
+  const png = b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47
+    && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
+  const jpeg = b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  const webp = b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50;
+  return png || jpeg || webp ? undefined : 'That file is not a PNG, JPEG or WEBP image.';
+}
+
 export async function uploadThemeImage(
   globalStorageUri: ThemeStorageRoot,
   themeId: string,
   itemId: string,
   imageBytes: Uint8Array,
 ): Promise<{ manifest: ThemeManifest; frames: Record<string, string[]> } | undefined> {
+  const rejection = uploadImageRejection(imageBytes);
+  if (rejection) throw new Error(rejection);
   try {
     const loaded = await loadTheme(globalStorageUri, themeId);
     if (!loaded) return undefined;
     const { manifest, frames } = loaded;
 
     const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
-    const item = document?.items.find((candidate) => candidate.id === itemId);
+    let item = document?.items.find((candidate) => candidate.id === itemId);
+    if (!item) {
+      // The board cards shown in the plan editor are the plan's EXPECTED
+      // contract merged over the saved review.json (getThemeImageReview), so a
+      // not-yet-generated board can exist on screen without a saved item.
+      // Resolve it from that same merged view; otherwise the upload would only
+      // touch frames.json, write no image file and the card would keep showing
+      // "not generated".
+      const merged = (await getThemeImageReview(globalStorageUri, themeId)).entries
+        .find((entry) => entry.item.id === itemId)?.item;
+      if (merged) {
+        const { boardType: _boardType, ...rest } = merged as ThemeImageReviewItem & { boardType?: unknown };
+        item = rest as ThemeImageReviewItem;
+      }
+    }
     const buffer = Buffer.from(imageBytes);
     let output: Buffer = buffer;
     let frameKeys = item?.frame_keys ?? [];
+    // An uploaded agent board is written under its slot-only name; a legacy
+    // name-based file is retired once the new board is saved (as regenerate does).
+    const priorBoardFilename = item?.filename;
+    if (item) item.filename = slotOnlyAgentBoardFilename(item) ?? item.filename;
 
     if (item?.kind === 'character_atlas') {
       const characterAtlas = await processCharacterAtlas(buffer, manifest, item.body_plan ?? 'biped');
@@ -1018,20 +1055,27 @@ export async function uploadThemeImage(
       output = decorAtlas.output;
       frameKeys = applyDecorBoardFrames(frames, decorAtlas.spritePackage.slots, rows);
       manifest.viewport.projectile_asset = 'frames.json#projectile';
+    } else if (item?.kind === 'environment') {
+      // Same normalization a generated environment board gets.
+      output = await normalizeEnvironmentImage(buffer);
+      frames.environment_background = [dataUri(output)];
+      manifest.viewport.background_asset = 'frames.json#environment_background';
+      frameKeys = ['environment_background'];
     } else {
       const frameKey = item?.frame_keys[0] || itemId;
       frames[frameKey] = [dataUri(buffer)];
       frameKeys = [frameKey];
     }
 
-    if (item && document) {
+    if (item) {
       const store = resolveThemeFileStore(globalStorageUri);
       const reviewDirectoryPath = themeImagesDirectoryPath(themeId);
       await store.mkdirp(reviewDirectoryPath);
       await store.writeFile(`${reviewDirectoryPath}/${item.filename}`, output);
+      await retireSupersededBoard(globalStorageUri, themeId, priorBoardFilename, item.filename);
       // Keep the raw pre-slice atlas so this board can be re-sliced later without regenerating.
       await persistRawAtlas(globalStorageUri, themeId, item.filename, buffer);
-      await upsertThemeImageReviewItem(globalStorageUri, themeId, document.display_name, {
+      await upsertThemeImageReviewItem(globalStorageUri, themeId, document?.display_name ?? manifest.display_name, {
         ...item,
         status: 'pending',
         generation_error: undefined,
