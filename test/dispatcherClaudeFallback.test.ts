@@ -462,11 +462,12 @@ function runHook(root: string, payload: Record<string, unknown>): string {
     fs.copyFileSync(path.join(REPO_ROOT, "out", "src", "core", "modelAliases.js"), path.join(dir, "modelAliases.js"));
     fs.copyFileSync(path.join(REPO_ROOT, "hooks", "fallbackChain.js"), path.join(dir, "fallbackChain.js"));
     fs.copyFileSync(path.join(REPO_ROOT, "hooks", "bridge-result.cjs"), path.join(dir, "bridge-result.cjs"));
-    const r = spawnSync(process.execPath, [path.join(dir, "tycoon-claude-hook.cjs")], {
-      input: JSON.stringify(payload),
-      encoding: "utf8",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root, CLAUDE_CONFIG_DIR: path.join(root, "no-user-config"), TYCOON_MANAGED_SETTINGS_DIR: process.env.TEST_MANAGED_DIR || path.join(root, "no-managed") },
-    });
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PROJECT_DIR: root, CLAUDE_CONFIG_DIR: path.join(root, "no-user-config"), TYCOON_MANAGED_SETTINGS_DIR: process.env.TEST_MANAGED_DIR || path.join(root, "no-managed") };
+    if (process.env.TEST_NO_PROGRAMFILES) {
+      delete env.TYCOON_MANAGED_SETTINGS_DIR;
+      for (const k of Object.keys(env)) if (/^programfiles$|^programw6432$/i.test(k)) delete env[k];
+    }
+    const r = spawnSync(process.execPath, [path.join(dir, "tycoon-claude-hook.cjs")], { input: JSON.stringify(payload), encoding: "utf8", env });
     assert.equal(r.status, 0, `hook exited non-zero: ${r.stderr}`);
     return r.stdout;
   } finally {
@@ -606,6 +607,24 @@ test("hook: managed settings present, or a non-prompting/unknown permission mode
       assert.equal(hso.updatedInput, undefined);
     } finally {
       delete process.env.TEST_MANAGED_DIR;
+    }
+    assert.equal(delegatePreToolUse(root).permissionDecision, "allow");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook: on Windows with ProgramFiles unset, managed settings cannot be ruled out, so no injection", { skip: process.platform !== "win32" }, () => {
+  const root = hookProject();
+  try {
+    writeSettings(root, { allow: ["mcp__tycoon__delegate"] });
+    process.env.TEST_NO_PROGRAMFILES = "1";
+    try {
+      const hso = delegatePreToolUse(root);
+      assert.equal(hso.permissionDecision, undefined);
+      assert.equal(hso.updatedInput, undefined);
+    } finally {
+      delete process.env.TEST_NO_PROGRAMFILES;
     }
     assert.equal(delegatePreToolUse(root).permissionDecision, "allow");
   } finally {

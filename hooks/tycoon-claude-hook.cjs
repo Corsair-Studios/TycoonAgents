@@ -428,14 +428,20 @@ function readUserPermissions(projectRoot) {
 // admin may deny/ask this tool or restrict rules to managed-only, which the
 // hook cannot evaluate, so injection fails closed. TYCOON_MANAGED_SETTINGS_DIR
 // replaces the system dirs (used by tests so no real system path is touched).
+const MANAGED_DIR_UNKNOWN = null;
 function managedSettingsDirs() {
   if (process.env.TYCOON_MANAGED_SETTINGS_DIR) return [process.env.TYCOON_MANAGED_SETTINGS_DIR];
-  if (process.platform === "win32") return ["C:/Program Files/ClaudeCode"];
+  if (process.platform === "win32") {
+    const pf = process.env.ProgramFiles || process.env.ProgramW6432;
+    // No Program Files location discoverable: cannot rule out managed settings, so fail closed.
+    return pf ? [path.join(pf, "ClaudeCode")] : [MANAGED_DIR_UNKNOWN];
+  }
   if (process.platform === "darwin") return ["/Library/Application Support/ClaudeCode"];
   return ["/etc/claude-code", "/mnt/c/Program Files/ClaudeCode"];
 }
 function managedSettingsPresent() {
   for (const dir of managedSettingsDirs()) {
+    if (dir === MANAGED_DIR_UNKNOWN) return true;
     for (const name of ["managed-settings.json", "managed-settings.d"]) {
       try {
         fs.statSync(path.join(dir, name));
