@@ -82,7 +82,7 @@ const https = require("https");
 const readline = require("readline");
 const path = require("path");
 const fs = require("fs");
-const { formatBridgeResult } = require("./bridge-result.cjs");
+const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
 
 // ---------------------------------------------------------------------------
 // p13-t6: local-store fallback for OPENAI_COMPAT_BASE_URL /
@@ -199,25 +199,8 @@ function resolveTimeoutMs() {
 
 const PROVIDER = "openai-compatible";
 
-/** Short error.kind from an HTTP status and/or error text. */
-function classifyError(text, statusCode) {
-  const t = String(text || "");
-  if (statusCode === 401 || statusCode === 403 || /\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication/i.test(t)) return "auth";
-  if (statusCode === 429 || /\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
-  if (statusCode === 402 || /quota|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
-  if (statusCode === 404 || /\b404\b|not found|model_not_found|does not exist/i.test(t)) return "not_found";
-  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|network/i.test(t)) return "network";
-  return "unknown";
-}
-
 function errorResult(model, text, statusCode, kindOverride) {
-  return formatBridgeResult({
-    status: "provider_error",
-    provider: PROVIDER,
-    model: model || "",
-    text,
-    error: { kind: kindOverride || classifyError(text, statusCode), message: text },
-  });
+  return providerErrorResult({ provider: PROVIDER, model, text, kind: kindOverride, httpStatus: statusCode });
 }
 
 function postJson(urlString, body, apiKey) {

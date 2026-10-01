@@ -147,7 +147,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const readline = require("readline");
-const { formatBridgeResult } = require("./bridge-result.cjs");
+const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
 
 const SERVER_NAME = "claude-cli-mcp";
 const SERVER_VERSION = "1.0.0";
@@ -199,27 +199,9 @@ function respondError(id, code, message) {
 
 const PROVIDER = "claude-cli";
 
-/** Short error.kind from CLI error text. */
-function classifyError(text) {
-  const t = String(text || "");
-  if (/ENOENT|could not find the claude cli|failed to spawn|could not resolve a \.js entry/i.test(t)) return "cli_missing";
-  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|\/login|oauth/i.test(t)) return "auth";
-  if (/\b429\b|rate.?limit|too many requests|overloaded/i.test(t)) return "rate_limit";
-  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
-  if (/\b404\b|not found|model_not_found|does not exist|issue with the selected model/i.test(t)) return "not_found";
-  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
-  return "unknown";
-}
-
 /** A provider_error bridge result; `kind` overrides the text-based classification. */
 function isErrorResult(text, kind, model) {
-  return formatBridgeResult({
-    status: "provider_error",
-    provider: PROVIDER,
-    model: model || "",
-    text,
-    error: { kind: kind || classifyError(text), message: text },
-  });
+  return providerErrorResult({ provider: PROVIDER, model, text, kind });
 }
 
 /** CLAUDE_CLI_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else the 180s default. */

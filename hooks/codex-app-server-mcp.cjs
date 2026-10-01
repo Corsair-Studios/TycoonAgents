@@ -65,7 +65,7 @@
 const readline = require("readline");
 const { spawn } = require("child_process");
 const { discoverCodexBinary, needsShell } = require("./codex-mcp-launcher.cjs");
-const { formatBridgeResult } = require("./bridge-result.cjs");
+const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
@@ -170,26 +170,8 @@ function respondError(id, code, message) {
 }
 const PROVIDER = "codex-app-server";
 
-/** Short error.kind from error text. */
-function classifyError(text) {
-  const t = String(text || "");
-  if (/ENOENT|failed to spawn|app-server child exited|not recognized as an internal/i.test(t)) return "cli_missing";
-  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|login/i.test(t)) return "auth";
-  if (/\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
-  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
-  if (/\b404\b|not found|model_not_found|does not exist|unsupported model/i.test(t)) return "not_found";
-  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
-  return "unknown";
-}
-
 function isErrorResult(text, kind, model) {
-  return formatBridgeResult({
-    status: "provider_error",
-    provider: PROVIDER,
-    model: model || "",
-    text,
-    error: { kind: kind || classifyError(text), message: text },
-  });
+  return providerErrorResult({ provider: PROVIDER, model, text, kind });
 }
 
 /**
@@ -221,6 +203,8 @@ class AppServerClient {
     // consumed/merged when the listener is registered.
     this.pendingTurnState = new Map(); // key -> {text, completed, turn}
     this.initialized = null;
+    // `${threadId}:${turnId}` -> grace timer for a timed-out turn we asked the child to interrupt.
+    this.interrupting = new Map();
   }
 
   ensureSpawned() {
@@ -236,11 +220,12 @@ class AppServerClient {
     // shell:false, throwing ENOENT (p69-t2,
     // docs/codex-reviewer-onboarding-friction-2026-09-18.md #6).
     const shell = needsShell(this.binaryPath);
-    this.child = spawn(this.binaryPath, args, {
+    const child = spawn(this.binaryPath, args, {
       shell,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    this.child = child;
     this.child.on("error", (err) => {
       const message = `[codex-app-server-mcp] failed to spawn app-server child "${this.binaryPath}": ${err && err.message}`;
       process.stderr.write(`${message}\n`);
@@ -257,7 +242,7 @@ class AppServerClient {
       }
       this.turnListeners.clear();
       this.pendingTurnState.clear();
-      this.child = null;
+      if (this.child === child) this.child = null;
     });
     this.child.on("exit", (code, signal) => {
       process.stderr.write(`[codex-app-server-mcp] app-server child exited (code=${code}, signal=${signal})\n`);
@@ -270,7 +255,8 @@ class AppServerClient {
       }
       this.turnListeners.clear();
       this.pendingTurnState.clear();
-      this.child = null;
+      this.clearInterrupts();
+      if (this.child === child) this.child = null;
     });
     this.child.stderr.on("data", (chunk) => {
       process.stderr.write(`[codex-app-server-mcp:child] ${chunk}`);
@@ -368,6 +354,14 @@ class AppServerClient {
     }
 
     if (method === "turn/completed") {
+      const grace = this.interrupting.get(key);
+      if (grace) {
+        // The interrupted turn wound down: no need to kill the child.
+        clearTimeout(grace);
+        this.interrupting.delete(key);
+        this.pendingTurnState.delete(key);
+        return;
+      }
       const listener = this.turnListeners.get(key);
       if (listener) {
         this.turnListeners.delete(key);
@@ -420,6 +414,7 @@ class AppServerClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.turnListeners.delete(key);
+        this.interruptTurn(threadId, turnId);
         const err = new Error(`app-server turn timed out after ${timeoutMs}ms (threadId=${threadId}, turnId=${turnId})`);
         err.bridgeTimeout = true;
         reject(err);
@@ -428,7 +423,36 @@ class AppServerClient {
     });
   }
 
+  /**
+   * Asks the app-server to stop a timed-out turn (`turn/interrupt`), so it
+   * stops spending tokens. If no turn/completed follows within the grace period
+   * (CODEX_APP_SERVER_INTERRUPT_GRACE_MS, default 5000) the child is killed;
+   * it respawns on the next call. Note this also ends any other turn running
+   * on the shared child.
+   */
+  interruptTurn(threadId, turnId) {
+    if (!this.child || !turnId) return;
+    const key = AppServerClient.key(threadId, turnId);
+    const graceRaw = Number(process.env.CODEX_APP_SERVER_INTERRUPT_GRACE_MS);
+    const graceMs = Number.isFinite(graceRaw) && graceRaw > 0 ? graceRaw : 5000;
+    const grace = setTimeout(() => {
+      this.interrupting.delete(key);
+      process.stderr.write(`[codex-app-server-mcp] turn ${turnId} did not stop after interrupt; terminating app-server child.\n`);
+      this.dispose();
+    }, graceMs);
+    if (grace.unref) grace.unref();
+    this.interrupting.set(key, grace);
+    this.request("turn/interrupt", { threadId, turnId }).catch(() => { /* child gone - the grace timer or exit handler cleans up */ });
+  }
+
+  clearInterrupts() {
+    for (const t of this.interrupting.values()) clearTimeout(t);
+    this.interrupting.clear();
+  }
+
   dispose() {
+    this.clearInterrupts();
+    this.initialized = null;
     if (this.child) {
       try {
         this.child.kill();

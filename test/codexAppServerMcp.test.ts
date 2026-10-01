@@ -88,6 +88,12 @@ rl.on("line", (line) => {
     send({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: "fake-thread-1" } } });
     return;
   }
+  if (msg.method === "turn/interrupt") {
+    if (process.env.FAKE_APP_SERVER_LOG) require("fs").appendFileSync(process.env.FAKE_APP_SERVER_LOG, "INTERRUPT:" + msg.params.threadId + ":" + msg.params.turnId + "\\n");
+    send({ jsonrpc: "2.0", id: msg.id, result: {} });
+    if (process.env.FAKE_IGNORE_INTERRUPT !== "1") send({ method: "turn/completed", params: { threadId: msg.params.threadId, turn: { id: msg.params.turnId, status: "interrupted" } } });
+    return;
+  }
   if (msg.method === "turn/start") {
     turnCounter += 1;
     const turnId = "fake-turn-" + turnCounter;
@@ -323,6 +329,40 @@ test("(bridge) a turn that never completes returns status timeout", async () => 
     assert.equal(result.isError, true);
     assert.equal(env?.status, "timeout");
     assert.equal(env?.error?.kind, "timeout");
+  } finally {
+    client.dispose();
+  }
+});
+
+async function timedOutTurn(env: Record<string, string>) {
+  const log = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-interrupt-")), "log.txt");
+  const client = makeClient(writeFakeAppServer());
+  const result = await withEnv({ CODEX_APP_SERVER_TIMEOUT_MS: "150", FAKE_APP_SERVER_LOG: log, ...env }, async () => {
+    const r = await shim.handleCodexTool({ prompt: "NEVER_COMPLETE", cwd: process.cwd() }, client);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    return r;
+  });
+  const logged = fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "";
+  return { client: client as unknown as { child: unknown; dispose: () => void }, result, logged };
+}
+
+test("(bridge) a timed-out turn is sent turn/interrupt; a cooperative child is left running", async () => {
+  const { client, result, logged } = await timedOutTurn({ CODEX_APP_SERVER_INTERRUPT_GRACE_MS: "300" });
+  try {
+    assert.equal(bridge.parseBridgeResult(result)?.status, "timeout");
+    assert.ok(/INTERRUPT:fake-thread-1:fake-turn-1/.test(logged), `expected turn/interrupt, got: ${logged}`);
+    assert.notEqual(client.child, null, "a child that completed the interrupted turn must not be killed");
+  } finally {
+    client.dispose();
+  }
+});
+
+test("(bridge) a child that ignores turn/interrupt is terminated after the grace period", async () => {
+  const { client, result, logged } = await timedOutTurn({ CODEX_APP_SERVER_INTERRUPT_GRACE_MS: "200", FAKE_IGNORE_INTERRUPT: "1" });
+  try {
+    assert.equal(bridge.parseBridgeResult(result)?.status, "timeout");
+    assert.ok(/INTERRUPT:fake-thread-1:fake-turn-1/.test(logged), `expected turn/interrupt, got: ${logged}`);
+    assert.equal(client.child, null, "the app-server child must be terminated when the turn does not stop");
   } finally {
     client.dispose();
   }

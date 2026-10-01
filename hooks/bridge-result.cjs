@@ -229,6 +229,42 @@ function parseBridgeResult(toolResponse, opts) {
   }
 }
 
+/**
+ * Short error.kind for a provider/CLI failure message: auth | quota |
+ * rate_limit | not_found | network | cli_missing | unknown. An HTTP status
+ * (opts.httpStatus) wins over text matching. Shared by every bridge.
+ */
+function classifyProviderError(message, opts) {
+  const t = String(message === undefined || message === null ? "" : message);
+  const status = opts && Number(opts.httpStatus);
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate_limit";
+  if (status === 402) return "quota";
+  if (status === 404) return "not_found";
+  if (/ENOENT|could not find the claude cli|failed to spawn|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found/i.test(t)) return "cli_missing";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth/i.test(t)) return "auth";
+  if (/\b429\b|rate.?limit|too many requests|overloaded/i.test(t)) return "rate_limit";
+  if (/\b402\b|quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (/\b404\b|not found|model_not_found|does not exist|unsupported model|issue with the selected model/i.test(t)) return "not_found";
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|network|fetch failed|socket hang up/i.test(t)) return "network";
+  return "unknown";
+}
+
+/**
+ * A provider_error bridge result. opts: { provider, model, text, kind?,
+ * httpStatus? }; kind overrides classification.
+ */
+function providerErrorResult(opts) {
+  const o = opts || {};
+  return formatBridgeResult({
+    status: "provider_error",
+    provider: o.provider,
+    model: o.model || "",
+    text: o.text,
+    error: { kind: o.kind || classifyProviderError(o.text, { httpStatus: o.httpStatus }), message: o.text },
+  });
+}
+
 module.exports = {
   ENVELOPE_VERSION,
   STATUSES,
@@ -239,4 +275,6 @@ module.exports = {
   formatBridgeResult,
   withTimeout,
   parseBridgeResult,
+  classifyProviderError,
+  providerErrorResult,
 };

@@ -254,3 +254,50 @@ test("withTimeout propagates a rejection and clears the timer on every path", as
   }
   assert.equal(cleared, 3);
 });
+
+// p98-t2 review: the shared provider-error classifier and result helper.
+const classify = (require("../../hooks/bridge-result.cjs") as {
+  classifyProviderError: (m: unknown, o?: { httpStatus?: number }) => string;
+  providerErrorResult: (o: Record<string, unknown>) => { isError: boolean; structuredContent: Record<string, any> };
+}).classifyProviderError;
+const providerErrorResult = (require("../../hooks/bridge-result.cjs") as {
+  providerErrorResult: (o: Record<string, unknown>) => { isError: boolean; structuredContent: Record<string, any> };
+}).providerErrorResult;
+
+test("classifyProviderError maps text to the documented kinds", () => {
+  const cases: Array<[string, string]> = [
+    ["spawn claude ENOENT", "cli_missing"],
+    ["Could not find the claude CLI. Tried:", "cli_missing"],
+    ["app-server child exited unexpectedly", "cli_missing"],
+    ["HTTP 401 Unauthorized", "auth"],
+    ["Invalid API key provided", "auth"],
+    ["please log in again", "auth"],
+    ["429 Too Many Requests", "rate_limit"],
+    ["model is overloaded", "rate_limit"],
+    ["You exceeded your current quota", "quota"],
+    ["usage limit reached", "quota"],
+    ["model_not_found", "not_found"],
+    ["HTTP 404 page", "not_found"],
+    ["connect ECONNREFUSED 127.0.0.1:1", "network"],
+    ["something odd", "unknown"],
+  ];
+  for (const [text, kind] of cases) assert.equal(classify(text), kind, text);
+  assert.equal(classify(undefined), "unknown");
+});
+
+test("classifyProviderError lets an HTTP status win over text, and does not match digits inside other numbers", () => {
+  assert.equal(classify("boom", { httpStatus: 401 }), "auth");
+  assert.equal(classify("boom", { httpStatus: 403 }), "auth");
+  assert.equal(classify("boom", { httpStatus: 429 }), "rate_limit");
+  assert.equal(classify("boom", { httpStatus: 402 }), "quota");
+  assert.equal(classify("boom", { httpStatus: 404 }), "not_found");
+  assert.equal(classify("request id 14013 failed"), "unknown");
+});
+
+test("providerErrorResult builds a provider_error envelope with an overridable kind", () => {
+  const r = providerErrorResult({ provider: "p", model: "m", text: "401 Unauthorized" });
+  assert.equal(r.isError, true);
+  assert.equal(r.structuredContent.status, "provider_error");
+  assert.equal(r.structuredContent.error.kind, "auth");
+  assert.equal(providerErrorResult({ provider: "p", text: "401", kind: "unknown" }).structuredContent.error.kind, "unknown");
+});

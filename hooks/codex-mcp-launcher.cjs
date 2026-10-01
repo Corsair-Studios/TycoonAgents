@@ -103,7 +103,7 @@ const path = require("path");
 const os = require("os");
 const readline = require("readline");
 const { spawnSync, spawn } = require("child_process");
-const { formatBridgeResult } = require("./bridge-result.cjs");
+const { formatBridgeResult, classifyProviderError } = require("./bridge-result.cjs");
 
 const CODEX_VERSION_PREFIX = "codex-cli ";
 
@@ -689,6 +689,7 @@ function applyReasoningEffortOverride(args, env) {
 }
 
 const BRIDGE_PROVIDER = "codex";
+const MAX_ABANDONED_IDS = 1000;
 const DEFAULT_MCP_TIMEOUT_MS = 600000;
 
 /** CODEX_MCP_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else 600s. */
@@ -699,17 +700,6 @@ function resolveMcpTimeoutMs(env) {
     if (e[name] && Number.isFinite(n) && n > 0) return n;
   }
   return DEFAULT_MCP_TIMEOUT_MS;
-}
-
-/** Short error.kind from codex error text. */
-function classifyBridgeError(text) {
-  const t = String(text || "");
-  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|log ?in/i.test(t)) return "auth";
-  if (/\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
-  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
-  if (/\b404\b|not found|model_not_found|does not exist|unsupported model/i.test(t)) return "not_found";
-  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
-  return "unknown";
 }
 
 /** The model from a `-c model="..."` launcher arg pair, else "". */
@@ -754,7 +744,7 @@ function createMcpResultProxy(opts) {
       provider: BRIDGE_PROVIDER,
       model: model || "",
       text,
-      error: isError ? { kind: classifyBridgeError(text), message: text } : { kind: "empty", message: "codex returned an empty answer" },
+      error: isError ? { kind: classifyProviderError(text), message: text } : { kind: "empty", message: "codex returned an empty answer" },
       extra,
     });
     // codex's outputSchema `content` mirrors the (capped) summary, never the raw text.
@@ -774,6 +764,7 @@ function createMcpResultProxy(opts) {
         const timer = setTimeout(() => {
           pending.delete(id);
           abandoned.add(id);
+          if (abandoned.size > MAX_ABANDONED_IDS) abandoned.delete(abandoned.values().next().value); // FIFO bound
           const message = "codex mcp-server call timed out after " + timeoutMs + "ms (set CODEX_MCP_TIMEOUT_MS or TYCOON_BRIDGE_TIMEOUT_MS to override)";
           opts.writeClient(bridgeResponse(id, formatBridgeResult({ status: "timeout", provider: BRIDGE_PROVIDER, model, error: { kind: "timeout", message } })));
           opts.writeChild(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "bridge timeout" } }));
@@ -807,7 +798,7 @@ function createMcpResultProxy(opts) {
             provider: BRIDGE_PROVIDER,
             model: entry.model,
             text,
-            error: { kind: classifyBridgeError(text), message: text },
+            error: { kind: classifyProviderError(text), message: text },
           })));
         }
         return;
@@ -832,6 +823,14 @@ function attachMcpResultProxy(child, model) {
     writeChild: (line) => { try { child.stdin.write(line + "\n"); } catch { /* child gone */ } },
   });
   child.stdin.on("error", () => { /* EPIPE once the child exits - the close handler reports it */ });
+  // The client went away (EPIPE on our stdout): stop proxying, end the child's
+  // stdin so it winds down, and let its close handler exit; kill it if it lingers.
+  process.stdout.on("error", () => {
+    proxy.dispose();
+    try { child.stdin.end(); } catch { /* already closed */ }
+    const killer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 2000);
+    if (killer.unref) killer.unref();
+  });
   const fromClient = readline.createInterface({ input: process.stdin, terminal: false });
   fromClient.on("line", proxy.onClientLine);
   fromClient.on("close", () => { try { child.stdin.end(); } catch { /* already closed */ } });
