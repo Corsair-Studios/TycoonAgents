@@ -469,6 +469,43 @@ async function persistRawAtlas(
   }
 }
 
+/**
+ * Slot-only board filename (`agent_NN.png`) for a character board that still
+ * carries a legacy name-based filename (`agent_NN_<name>.png`), or undefined
+ * when the filename is already slot-only / not an agent board. NN is taken from
+ * the existing filename so the zero-padding convention is preserved.
+ */
+export function slotOnlyAgentBoardFilename(item: { kind: string; filename: string }): string | undefined {
+  if (item.kind !== 'character_atlas') return undefined;
+  const match = /^agent_(\d+)_.+\.png$/i.exec(item.filename);
+  return match ? `agent_${match[1]}.png` : undefined;
+}
+
+/**
+ * Move a board image that a regenerate replaced (its review item now points at
+ * a different filename) into images/raw/superseded/ — a folder already
+ * excluded from export — so nothing is lost but it no longer travels with the
+ * theme. Best-effort: a failure only logs and never breaks regeneration.
+ */
+export async function retireSupersededBoard(
+  globalStorageUri: ThemeStorageRoot,
+  themeId: string,
+  oldFilename: string | undefined,
+  newFilename: string,
+): Promise<void> {
+  if (!oldFilename || oldFilename === newFilename) return;
+  try {
+    const store = resolveThemeFileStore(globalStorageUri);
+    const from = `${themeImagesDirectoryPath(themeId)}/${oldFilename}`;
+    if (!(await store.exists(from))) return;
+    const supersededDirectoryPath = `${themeRawImagesDirectoryPath(themeId)}/superseded`;
+    await store.mkdirp(supersededDirectoryPath);
+    await store.rename(from, `${supersededDirectoryPath}/${oldFilename}`, { overwrite: true });
+  } catch (err) {
+    console.warn('TycoonAgents: failed to move superseded board image', oldFilename, err);
+  }
+}
+
 export interface ThemeReviewImages {
   directoryUri: ThemeFileHandle;
   imageUris: ThemeFileHandle[];
@@ -3140,6 +3177,10 @@ export async function retryThemeImage(
   const document = await loadThemeImageReviewDocument(globalStorageUri, themeId);
   const item = document?.items.find((candidate) => candidate.id === itemId);
   if (!document || !item) throw new Error('Review image metadata was not found.');
+  // A regenerated agent board is written under its slot-only name; a legacy
+  // name-based file is retired (moved aside) once the new board is saved.
+  const priorBoardFilename = item.filename;
+  item.filename = slotOnlyAgentBoardFilename(item) ?? item.filename;
   // Follow-up fix: clear this item's PREVIOUS error the moment a new
   // attempt starts (persisted, not just in the in-memory `item` used below)
   // — otherwise a reload mid-generation, or the webview's next
@@ -3404,6 +3445,7 @@ export async function retryThemeImage(
     frame_keys: frameKeys,
     updated_at: new Date().toISOString(),
   });
+  await retireSupersededBoard(globalStorageUri, themeId, priorBoardFilename, item.filename);
   onProgress?.(`${item.label} regenerated and ready for review.`);
   return { manifest, frames };
 }
@@ -4020,7 +4062,7 @@ export function createReviewItems(
     const walkPoseGuide = bodyPlan;
     return {
       id: `agent_${agent.slot_id}`,
-      filename: `agent_${String(agent.slot_id + 1).padStart(2, '0')}_${toSafeFileStem(agent.name)}.png`,
+      filename: `agent_${String(agent.slot_id + 1).padStart(2, '0')}.png`,
       label: agent.name,
       kind: 'character_atlas' as const,
       status: 'pending' as const,
@@ -4509,6 +4551,10 @@ export function mergeResumedReviewItems(
     if (!saved) return expected;
     return {
       ...expected,
+      // A character board's saved filename is where its image already lives
+      // (a legacy theme's is still name-based); keep it so resuming never
+      // mistakes an existing board for a missing one.
+      ...(expected.kind === 'character_atlas' && saved.filename ? { filename: saved.filename } : {}),
       status: saved.status,
       revision: saved.revision,
       updated_at: saved.updated_at,

@@ -111,6 +111,73 @@ async function collectDirectoryFiles(
   }
 }
 
+// Source board PNGs whose names are slot-derived (agent_NN[_name].png,
+// rivals_NN.png, objects_NN.png). Only these are ever candidates for the
+// orphan filter; every other file is exported untouched.
+const BOARD_FILE_PATTERN = /^images\/((?:agent|rivals|objects)_\d+)(?:_[^/]+)?\.png$/i;
+const LEGACY_AGENT_BOARD_PATTERN = /^agent_(\d+)_[^/]+\.png$/i;
+
+function boardKeyOf(path: string): string | undefined {
+  return BOARD_FILE_PATTERN.exec(path)?.[1].toLowerCase();
+}
+
+/**
+ * Trim an export's file set to the CURRENT sprite boards and give agent
+ * boards slot-only names. The review document (`review.json`) is the
+ * authoritative record of which board file each item uses. A board-pattern
+ * PNG that no review item references is dropped as an orphan, but only when
+ * the same slot/board still has a referenced file present (so the sole image
+ * for a slot is never lost). Legacy `agent_NN_<name>.png` files are written
+ * as `agent_NN.png`, and the review items' `filename` is rewritten to match.
+ * Nothing is renamed on disk; this only reshapes the in-memory export map.
+ */
+export function selectCurrentBoardFiles(files: Map<string, Uint8Array>): { skipped: string[]; renamed: number } {
+  const result = { skipped: [] as string[], renamed: 0 };
+  const reviewBytes = files.get('review.json');
+  if (!reviewBytes) return result;
+  let review: { items?: Array<{ filename?: unknown }> };
+  try {
+    review = JSON.parse(Buffer.from(reviewBytes).toString('utf8')) as typeof review;
+  } catch {
+    return result;
+  }
+  if (!review || !Array.isArray(review.items)) return result;
+
+  const referenced = new Set<string>();
+  for (const item of review.items) {
+    if (item && typeof item.filename === 'string' && item.filename) referenced.add(`images/${item.filename}`);
+  }
+  const keysWithCurrentFile = new Set<string>();
+  for (const path of referenced) {
+    const key = boardKeyOf(path);
+    if (key && files.has(path)) keysWithCurrentFile.add(key);
+  }
+  for (const path of [...files.keys()]) {
+    const key = boardKeyOf(path);
+    if (!key || referenced.has(path) || !keysWithCurrentFile.has(key)) continue;
+    files.delete(path);
+    result.skipped.push(path);
+  }
+
+  let reviewChanged = false;
+  for (const item of review.items) {
+    if (!item || typeof item.filename !== 'string') continue;
+    const match = LEGACY_AGENT_BOARD_PATTERN.exec(item.filename);
+    if (!match) continue;
+    const source = `images/${item.filename}`;
+    const target = `images/agent_${match[1]}.png`;
+    const bytes = files.get(source);
+    if (!bytes || files.has(target)) continue;
+    files.delete(source);
+    files.set(target, bytes);
+    item.filename = `agent_${match[1]}.png`;
+    result.renamed += 1;
+    reviewChanged = true;
+  }
+  if (reviewChanged) files.set('review.json', jsonBuffer(review));
+  return result;
+}
+
 function logThemeIntegrityIssues(themeId: string, manifest: ThemeManifest, frames: Record<string, string[]>): void {
   try {
     const issues = validateThemeIntegrity(manifest, frames);
@@ -211,6 +278,13 @@ export async function exportThemeArchiveFromStore(store: ThemeFileStore, themeId
     await addFileIfPresent(store, files, 'review.json', legacyReviewPath(themeId));
     await addFileIfPresent(store, files, 'review.json', legacyImageReviewPath(themeId));
     await collectDirectoryFiles(store, legacyImagesDirectoryPath(themeId), 'images', files);
+  }
+
+  const { skipped, renamed } = selectCurrentBoardFiles(files);
+  if (skipped.length || renamed) {
+    console.log(
+      `TycoonAgents: exporting ${themeId}: skipped ${skipped.length} orphaned board file(s), renamed ${renamed} agent board(s) to slot-only names.`,
+    );
   }
 
   return createThemeArchive(files);
