@@ -346,6 +346,82 @@ function getFallbackChainModule() {
   return _fallbackChainModule;
 }
 
+// p99-t1: structured bridge-status detection. hooks/bridge-result.cjs ships
+// next to this hook (RUNTIME_HOOK_FILES); a missing module must never crash
+// the hook — detection then degrades to regex-on-error only.
+let _bridgeResultModule;
+function getBridgeResultModule() {
+  if (_bridgeResultModule === undefined) {
+    try {
+      _bridgeResultModule = require(path.join(__dirname, "bridge-result.cjs"));
+    } catch {
+      _bridgeResultModule = null;
+    }
+  }
+  return _bridgeResultModule;
+}
+
+// MCP server names of the bridges TycoonAgents ships (media/mcp/catalog.json
+// ids codex / claude-cli / openai-compatible / gemini, plus the dispatcher's
+// "tycoon" registration). Only these may have their text header trusted by
+// parseBridgeResult; test/fallbackStatusDetection.test.ts pins this list
+// against the catalog so it cannot drift silently.
+const TYCOON_BRIDGE_SERVERS = ["codex", "claude-cli", "openai-compatible", "gemini", "tycoon", "tycoon-dispatcher"];
+function isTycoonBridgeTool(toolName) {
+  const m = /^mcp__(.+?)__/.exec(String(toolName || ""));
+  return !!m && TYCOON_BRIDGE_SERVERS.indexOf(m[1]) !== -1;
+}
+
+function stringifyToolOutput(v) {
+  if (typeof v === "string") return v;
+  if (v === undefined || v === null) return "";
+  try { return JSON.stringify(v) || ""; } catch { return ""; }
+}
+
+/**
+ * p99-t1: decides whether an mcp__* result is a provider failure.
+ * PostToolUseFailure carries the failure text in payload.error (string; the
+ * live spike also saw tool_response absent) — Claude Code fires it, not
+ * PostToolUse, for isError:true MCP results.
+ *  - envelope present: ok never falls back; provider_error/timeout/empty do.
+ *  - no envelope: regex backstop only when the result is an error
+ *    (PostToolUseFailure, or tool_response.isError === true).
+ * Returns { failed, text, status?, kind? }.
+ */
+function detectMcpFailure(payload, hookEvent, toolName, fallbackChain) {
+  const resp = payload.tool_response;
+  const isFailureEvent = hookEvent === "PostToolUseFailure";
+  const text = isFailureEvent
+    ? stringifyToolOutput(typeof payload.error === "string" && payload.error !== "" ? payload.error : resp)
+    : stringifyToolOutput(resp);
+  const isError =
+    isFailureEvent ||
+    (!!resp && typeof resp === "object" && !Array.isArray(resp) && resp.isError === true);
+  const trusted = isTycoonBridgeTool(toolName);
+  const bridge = getBridgeResultModule();
+  let envelope = null;
+  if (bridge && typeof bridge.parseBridgeResult === "function") {
+    try {
+      envelope = bridge.parseBridgeResult(resp, { trustedTextHeader: trusted });
+      if (!envelope && isFailureEvent) {
+        // Failure text may arrive as payload.error rather than tool_response.
+        envelope = bridge.parseBridgeResult(payload.error, { trustedTextHeader: trusted });
+      }
+    } catch {
+      envelope = null;
+    }
+  }
+  if (envelope) {
+    if (envelope.status === "ok") return { failed: false, text };
+    const kind = envelope.error && envelope.error.kind ? envelope.error.kind : envelope.status;
+    const msg = (envelope.error && envelope.error.message) || envelope.summary || "";
+    return { failed: true, text: msg, status: envelope.status, kind };
+  }
+  if (!isError) return { failed: false, text };
+  const failed = fallbackChain.isProviderFailure(text) || isCodexModelSlugError(text);
+  return { failed, text, status: failed ? "error_text" : undefined };
+}
+
 // p69-t2 (docs/codex-reviewer-onboarding-friction-2026-09-18.md #5, #8):
 // Codex's own model-slug rejection ("The 'codex-astra' model is not
 // supported when using Codex with a ChatGPT account.") is a distinct
@@ -2202,19 +2278,17 @@ function main(raw) {
   // this addition, so nothing here can regress an existing byte-identical
   // output (see test/tycoonClaudeHook*.test.ts, unchanged by this task).
   // -------------------------------------------------------------------------
-  if (hookEvent === "PostToolUse") {
+  if (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") {
     try {
       const fallbackChain = getFallbackChainModule();
       if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0) {
         const mcpRouting = buildMcpBackendRouting(agentsDir);
         const mcpBackend = lookupMcpBackend(mcpRouting, toolName);
         if (mcpBackend && mcpBackend.agentId) {
-          const toolResponseText =
-            typeof payload.tool_response === "string"
-              ? payload.tool_response
-              : (payload.tool_response && JSON.stringify(payload.tool_response)) || "";
-          const codexModelSlugError = isCodexModelSlugError(toolResponseText);
-          if (fallbackChain.isProviderFailure(toolResponseText) || codexModelSlugError) {
+          const detection = detectMcpFailure(payload, hookEvent, toolName, fallbackChain);
+          const toolResponseText = detection.text;
+          const codexModelSlugError = detection.failed && isCodexModelSlugError(toolResponseText);
+          if (detection.failed) {
             const slotId = mcpBackend.agentId;
             const sessionId = typeof payload.session_id === "string" ? payload.session_id : "unknown-session";
             const resolvedRouting = readJsonSafe(
@@ -2247,9 +2321,12 @@ function main(raw) {
                   : true,
               failingSlot: { vendor: mcpBackend.vendor, model: mcpBackend.model },
             });
+            const reasonBase = detection.kind
+              ? `${detection.status}/${detection.kind}: ${toolResponseText}`
+              : toolResponseText;
             const reasonText = codexModelSlugError
-              ? `${toolResponseText.slice(0, 300)} ${CODEX_MODEL_SLUG_ERROR_HINT}`
-              : toolResponseText.slice(0, 300);
+              ? `${reasonBase.slice(0, 300)} ${CODEX_MODEL_SLUG_ERROR_HINT}`
+              : reasonBase.slice(0, 300);
             const instruction = fallbackChain.buildFallbackInstruction({
               workerId: slotId,
               failedProvider: mcpBackend.vendor,
@@ -2270,6 +2347,8 @@ function main(raw) {
               reason: reasonText,
               at,
             };
+            if (detection.status) fallbackRecord.bridgeStatus = detection.status;
+            if (detection.kind) fallbackRecord.bridgeErrorKind = detection.kind;
             if (payload.session_id) fallbackRecord.sessionId = payload.session_id;
             try {
               fs.appendFileSync(activityFile, JSON.stringify(fallbackRecord) + "\n", "utf8");
@@ -2278,14 +2357,14 @@ function main(raw) {
             try {
               process.stdout.write(JSON.stringify({
                 hookSpecificOutput: {
-                  hookEventName: "PostToolUse",
+                  hookEventName: hookEvent,
                   additionalContext: instruction,
                 },
               }));
             } catch { /* never let output construction break the hook */ }
           }
         }
-      } else if (toolName === "Task" || toolName === "Agent") {
+      } else if (hookEvent === "PostToolUse" && (toolName === "Task" || toolName === "Agent")) {
         // Surface unseen plan-gate approvals/rejections (plan p29-t2). Only
         // this hook's own PostToolUse output for the Task/Agent tool ("Task"
         // is a deprecated alias for "Agent") - the mcp__ branch above is

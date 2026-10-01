@@ -64,6 +64,11 @@ test("empty settings produces all 10 hook slots", () => {
   assert.ok(ptu5, "PostToolUse Task|Agent entry must exist");
   assert.ok(ptu5!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
 
+  // p99-t1: PostToolUseFailure mcp__.* (isError:true bridge results)
+  const ptf = hooks["PostToolUseFailure"]?.find((e) => e.matcher === "mcp__.*");
+  assert.ok(ptf, "PostToolUseFailure mcp__.* entry must exist");
+  assert.ok(ptf!.hooks[0].command.includes("tycoon-claude-hook.cjs"));
+
   // SubagentStop
   const sas = hooks["SubagentStop"]?.find((e) => e.matcher === "");
   assert.ok(sas, "SubagentStop entry must exist");
@@ -832,6 +837,7 @@ test("RUNTIME_HOOK_FILES includes the hook script and its known runtime companio
   assert.ok(RUNTIME_HOOK_FILES.includes("modelAliases.js"));
   assert.ok(RUNTIME_HOOK_FILES.includes("delegationEnforcement.js"));
   assert.ok(RUNTIME_HOOK_FILES.includes("fallbackChain.js"));
+  assert.ok(RUNTIME_HOOK_FILES.includes("bridge-result.cjs"));
 });
 
 function makeTmpEnableMcpDir(): string {

@@ -6762,6 +6762,8 @@ export class TycoonPanel {
         syncCompanion(modelAliasesSrc, "modelAliases.js");
         syncCompanion(delegationEnforcementSrc, "delegationEnforcement.js");
         syncCompanion(fallbackChainSrc, "fallbackChain.js");
+        // p99-t1: structured bridge-status parser required by the hook.
+        syncCompanion(resolveRuntimeFile("bridge-result.cjs"), "bridge-result.cjs");
       } catch {
         /* best-effort; hook falls back to legacy behavior when absent */
       }

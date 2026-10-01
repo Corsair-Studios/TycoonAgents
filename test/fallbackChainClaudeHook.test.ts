@@ -332,7 +332,7 @@ test("PostToolUse mcp__codex__* result with a usage-limit failure text emits a F
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure",
     tool_name: "mcp__codex__codex",
     tool_input: {},
     tool_response: "Error: usage limit reached for this account",

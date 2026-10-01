@@ -58,6 +58,11 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   // re-dispatch instruction — see hooks/tycoon-claude-hook.cjs's PostToolUse
   // branch and src/core/fallbackChain.ts.
   { event: "PostToolUse", matcher: "mcp__.*" },
+  // p99-t1: Claude Code fires PostToolUseFailure (NOT PostToolUse) for an MCP
+  // result with isError:true — the primary provider-failure shape. Wired to
+  // the same mcp__.* detection; mergeTycoonHooks adds it to existing installs
+  // on the next panel open / repair.
+  { event: "PostToolUseFailure", matcher: "mcp__.*" },
   // Runs after a Task/Agent spawn completes so the hook can surface unseen
   // plan-gate approvals/rejections back to the orchestrator (see
   // hooks/tycoon-claude-hook.cjs's PostToolUse Task/Agent branch). "Task" is
@@ -397,6 +402,9 @@ export const RUNTIME_HOOK_FILES: ReadonlyArray<string> = [
   "modelAliases.js",
   "delegationEnforcement.js",
   "fallbackChain.js",
+  // p99-t1: required by the hook for structured bridge-status detection; the
+  // hook fails open to regex-on-error if this copy is missing.
+  "bridge-result.cjs",
 ];
 
 /**

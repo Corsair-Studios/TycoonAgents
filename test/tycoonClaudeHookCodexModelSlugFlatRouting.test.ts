@@ -98,10 +98,10 @@ test("PostToolUse: a Codex model-slug rejection text triggers FallbackTriggered 
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "The 'codex-astra' model is not supported when using Codex with a ChatGPT account.",
+    error: "The 'codex-astra' model is not supported when using Codex with a ChatGPT account.",
     session_id: "test-session-slug1",
   });
 
@@ -127,10 +127,10 @@ test("PostToolUse: a model-slug rejection text is case-insensitively matched", (
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "THE MODEL IS NOT SUPPORTED WHEN USING CODEX WITH A CHATGPT ACCOUNT.",
+    error: "THE MODEL IS NOT SUPPORTED WHEN USING CODEX WITH A CHATGPT ACCOUNT.",
     session_id: "test-session-slug2",
   });
 
@@ -150,10 +150,10 @@ test("PostToolUse: ordinary non-matching failure text gets no 'codex debug model
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "Error: usage limit reached for this account",
+    error: "Error: usage limit reached for this account",
     session_id: "test-session-slug3",
   });
 
@@ -196,10 +196,10 @@ test("PostToolUse: routing.resolved.json present but missing the failing agent f
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "Error: usage limit reached for this account",
+    error: "Error: usage limit reached for this account",
     session_id: "test-session-flat1",
   });
 
@@ -225,10 +225,10 @@ test("PostToolUse: flat routing.json entry's own defaultFallback is used when th
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "Error: usage limit reached for this account",
+    error: "Error: usage limit reached for this account",
     session_id: "test-session-flat2",
   });
 
@@ -254,10 +254,10 @@ test("PostToolUse: flat entry's useDefaultFallback:false suppresses the flat def
   );
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "Error: usage limit reached for this account",
+    error: "Error: usage limit reached for this account",
     session_id: "test-session-flat3",
   });
 
@@ -279,10 +279,10 @@ test("PostToolUse: no routing.resolved.json AND no routing.json at all -> fail-o
   // Neither routing.resolved.json nor routing.json written at all.
 
   runHookWithBackendModule(root, {
-    hook_event_name: "PostToolUse",
+    hook_event_name: "PostToolUseFailure", // p99-t1: error results arrive as PostToolUseFailure
     tool_name: "mcp__codex__codex",
     tool_input: {},
-    tool_response: "Error: usage limit reached for this account",
+    error: "Error: usage limit reached for this account",
     session_id: "test-session-flat4",
   });
 
