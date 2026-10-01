@@ -135,7 +135,7 @@ test("PostToolUseFailure carrying a bridge envelope header uses the envelope sta
 
 test("PostToolUseFailure with non-provider error text and no envelope does not trigger", () => {
   const root = setupProject();
-  runHook(root, post("PostToolUseFailure", { error: "Invalid arguments: missing field prompt" }));
+  runHook(root, { ...post("PostToolUseFailure", { error: "Invalid arguments: missing field prompt" }), tool_name: "mcp__thirdparty__codex" });
   assert.equal(triggered(root).length, 0);
 });
 
@@ -159,4 +159,19 @@ test("trusted bridge server list covers every catalog bridge entry", () => {
   assert.ok(m, "TYCOON_BRIDGE_SERVERS not found");
   const list = JSON.parse(m![1]) as string[];
   for (const id of bridgeIds) assert.ok(list.includes(id), `catalog bridge ${id} missing from TYCOON_BRIDGE_SERVERS`);
+});
+
+test("PostToolUseFailure from a TycoonAgents bridge with unmatched, headerless error text still triggers fallback", () => {
+  const root = setupProject();
+  runHook(root, post("PostToolUseFailure", { error: "something opaque went sideways" }));
+  const t = triggered(root);
+  assert.equal(t.length, 1);
+  assert.equal(t[0].bridgeStatus, "bridge_failure_event");
+  assert.match(String(t[0].reason), /^bridge_failure_event\/bridge_failure_event/);
+});
+
+test("PostToolUseFailure from a third-party MCP with unmatched text does not trigger fallback", () => {
+  const root = setupProject();
+  runHook(root, { ...post("PostToolUseFailure", { error: "something opaque went sideways" }), tool_name: "mcp__thirdparty__codex" });
+  assert.equal(triggered(root).length, 0);
 });

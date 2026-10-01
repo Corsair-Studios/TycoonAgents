@@ -418,8 +418,13 @@ function detectMcpFailure(payload, hookEvent, toolName, fallbackChain) {
     return { failed: true, text: msg, status: envelope.status, kind };
   }
   if (!isError) return { failed: false, text };
-  const failed = fallbackChain.isProviderFailure(text) || isCodexModelSlugError(text);
-  return { failed, text, status: failed ? "error_text" : undefined };
+  const textMatch = fallbackChain.isProviderFailure(text) || isCodexModelSlugError(text);
+  // A failure event from one of our own bridges always counts as a failure.
+  const failed = (isFailureEvent && trusted) || textMatch;
+  if (!failed) return { failed: false, text };
+  return textMatch
+    ? { failed: true, text, status: "error_text" }
+    : { failed: true, text, status: "bridge_failure_event", kind: "bridge_failure_event" };
 }
 
 // p69-t2 (docs/codex-reviewer-onboarding-friction-2026-09-18.md #5, #8):
