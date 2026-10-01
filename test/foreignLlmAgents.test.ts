@@ -157,3 +157,23 @@ for (const id of ["codex-reviewer", "gemini-reviewer", "kimi-reviewer"]) {
     }
   });
 }
+
+const WRAPPER_CLASS: Record<string, { cls: "relay" | "judge"; model: string }> = {
+  "codex-reviewer": { cls: "relay", model: "haiku" },
+  "gemini-reviewer": { cls: "relay", model: "haiku" },
+  "kimi-reviewer": { cls: "relay", model: "haiku" },
+  "grok-reviewer": { cls: "relay", model: "haiku" },
+  "claude-worker": { cls: "judge", model: "sonnet" },
+};
+
+test("every foreign wrapper agent records a relay/judge classification and its wrapper model matches it", () => {
+  for (const agent of FOREIGN_LLM_AGENTS) {
+    const expected = WRAPPER_CLASS[agent.id];
+    assert.ok(expected, `unclassified foreign agent ${agent.id}`);
+    assert.equal(agent.model, expected.model, `${agent.id} wrapper model`);
+    assert.ok(
+      (agent.body ?? "").includes(`<!-- wrapper-class: ${expected.cls} - `),
+      `${agent.id} body missing wrapper-class: ${expected.cls} comment`
+    );
+  }
+});

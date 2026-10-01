@@ -588,7 +588,7 @@ test("resyncAgentFrontmatterFields: top-level model:openai/gpt-6-astra with back
     `---\nname: codex-reviewer\ndescription: "x"\nmodel: openai/gpt-6-astra\nbackend:\n  vendor: openai\n  transport: mcp\n  mcpServer: codex\n---\n\n## Keywords (for task routing)\n${agent.keywords}\n`;
   const repaired = resyncAgentFrontmatterFields(legacy, agent);
   assert.notEqual(repaired, null);
-  assert.match(repaired!, /^model: sonnet$/m, "top-level model must become the Claude alias");
+  assert.match(repaired!, /^model: haiku$/m, "top-level model must become the Claude alias");
   assert.match(repaired!, /^\s{2}model: openai\/gpt-6-astra$/m, "stranded vendor slug must be preserved under backend.model");
   assert.ok(repaired!.endsWith(`## Keywords (for task routing)\n${agent.keywords}\n`), "body must be preserved byte-for-byte");
   assert.ok(workerAgentFingerprintMatches(repaired!, agent), "repaired file must be recognized as ours so activation does not loop");
@@ -600,7 +600,7 @@ test("resyncAgentFrontmatterFields: an existing explicit backend.model is preser
     "---\nname: codex-reviewer\ndescription: \"x\"\nmodel: openai/gpt-5-old\nbackend:\n  vendor: openai\n  transport: mcp\n  mcpServer: codex\n  model: openai/gpt-6-astra\n---\n\nBody.\n";
   const repaired = resyncAgentFrontmatterFields(legacy, agent);
   assert.notEqual(repaired, null);
-  assert.match(repaired!, /^model: sonnet$/m);
+  assert.match(repaired!, /^model: haiku$/m);
   assert.match(repaired!, /^\s{2}model: openai\/gpt-6-astra$/m, "the pre-existing backend.model must survive unchanged");
   assert.equal((repaired!.match(/^\s{2}model:/gm) || []).length, 1, "no duplicate backend.model line must be inserted");
 });
@@ -610,6 +610,17 @@ test("resyncAgentFrontmatterFields: a top-level model that is already a valid Cl
   const current = buildAgentMarkdown(agent);
   assert.equal(resyncAgentFrontmatterFields(current, agent), null, "already-current file (valid alias, backend.model set) must be a no-op");
   assert.ok(workerAgentFingerprintMatches(current, agent), "an already-current file must still be recognized as ours");
+});
+
+test("workerAgentFingerprintMatches: a legacy unmarked reviewer file with model: sonnet is still managed; an unrelated file is not", () => {
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "codex-reviewer")!;
+  const legacy = buildAgentMarkdown(agent).replace(/^model: haiku$/m, "model: sonnet");
+  assert.match(legacy, /^model: sonnet$/m);
+  assert.ok(workerAgentFingerprintMatches(legacy, agent), "legacy sonnet reviewer must still fingerprint as ours");
+  const unrelated = `---\nname: my-agent\nmodel: sonnet\n---\n\n## Keywords (for task routing)\nsomething|else\n`;
+  assert.equal(workerAgentFingerprintMatches(unrelated, agent), false);
+  const otherModel = legacy.replace(/^model: sonnet$/m, "model: opus");
+  assert.equal(workerAgentFingerprintMatches(otherModel, agent), false, "an unrelated model value is not accepted");
 });
 
 test("resyncAgentFrontmatterFields is a no-op (returns null) when frontmatter is already current", () => {
@@ -813,7 +824,7 @@ test("simulated _handleInstallPack repairs an old-format FOREIGN_LLM_AGENTS file
     const repaired = fs.readFileSync(path.join(agentsDir, "codex-reviewer.md"), "utf8");
     assert.match(repaired, /^name: codex-reviewer$/m);
     assert.match(repaired, /^description: "/m);
-    assert.match(repaired, /^model: sonnet$/m, "top-level model must become the canonical alias, not the vendor id");
+    assert.match(repaired, /^model: haiku$/m, "top-level model must become the canonical alias, not the vendor id");
     assert.equal(/^tycoon_pack:/m.test(repaired), false, "a fingerprint-repair must not fabricate the tycoon_pack marker");
     assert.ok(fs.existsSync(path.join(agentsDir, "codex-reviewer.md.bak")) === false, "no backup file must be created for a repaired (not replaced) file");
     assert.ok(repaired.endsWith(bodyMarker), "user-edited body must survive the repair untouched");
