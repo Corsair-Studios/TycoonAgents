@@ -19,10 +19,21 @@
  * Delivery: the envelope rides in the MCP CallToolResult's `structuredContent`
  * (supported since MCP protocol 2025-06-18; every bridge echoes the client's
  * protocolVersion, defaulting to 2025-06-18, and claude-cli-mcp already
- * returns structuredContent). `content[0].text` carries the human-readable
- * summary. isError is true for every non-ok status. parseBridgeResult() also
- * accepts a first-line JSON header in the text ("TYCOON_BRIDGE {json}"), so a
- * hook payload that drops structuredContent can still be read.
+ * returns structuredContent). content[0].text is a first-line header
+ * ("TYCOON_BRIDGE {envelope without summary}") followed by the human-readable
+ * summary, for clients that drop structuredContent. isError is true for every
+ * non-ok status.
+ *
+ * Trust rule (model output is untrusted and can contain any text):
+ *   - structuredContent on a tool_response object is authoritative.
+ *   - The text header is read ONLY when structuredContent is absent, ONLY from
+ *     content[0], and ONLY when the caller passes { trustedTextHeader: true }
+ *     (the hook does this solely for known TycoonAgents bridge tool names).
+ *   - A bare string or a top-level envelope-shaped object is never trusted
+ *     without that same opt-in.
+ *   - formatBridgeResult escapes any line of the model's text that begins with
+ *     "TYCOON_BRIDGE" (backslash prefix) so it can never read as a header.
+ * parseBridgeResult never throws; unreadable input yields null.
  *
  * Env vars (names only; bridges may pass their own defaults):
  *   TYCOON_BRIDGE_MAX_CHARS   summary cap in characters (default 12000)
@@ -40,9 +51,23 @@ const DEFAULT_TIMEOUT_MS = 180000;
 const ERROR_MESSAGE_MAX = 500;
 const TEXT_HEADER_PREFIX = "TYCOON_BRIDGE ";
 
+const MAX_TIMER_MS = 2147483647;
+const MAX_UNWRAP_DEPTH = 3;
+
+// Digits-only strict parse: "12abc", "1e3", "-5", "0" fall back.
 function positiveInt(raw, fallback) {
-  const n = Number.parseInt(String(raw === undefined || raw === null ? "" : raw), 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  const str = typeof raw === "number" ? (Number.isInteger(raw) ? String(raw) : "") : typeof raw === "string" ? raw.trim() : "";
+  if (!/^[0-9]+$/.test(str)) return fallback;
+  const n = Number(str);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
+
+function clampTimer(ms) {
+  return Math.min(ms, MAX_TIMER_MS);
+}
+
+function escapeHeaderLines(text) {
+  return text.replace(/^([ \t]*)TYCOON_BRIDGE/gm, "$1\\TYCOON_BRIDGE");
 }
 
 function maxChars(env) {
@@ -50,7 +75,7 @@ function maxChars(env) {
 }
 
 function timeoutMs(defaultMs, env) {
-  return positiveInt((env || process.env).TYCOON_BRIDGE_TIMEOUT_MS, defaultMs || DEFAULT_TIMEOUT_MS);
+  return clampTimer(positiveInt((env || process.env).TYCOON_BRIDGE_TIMEOUT_MS, positiveInt(defaultMs, DEFAULT_TIMEOUT_MS)));
 }
 
 function capText(text, cap) {
@@ -76,7 +101,7 @@ function formatBridgeResult(opts) {
   let status = STATUSES.includes(o.status) ? o.status : "ok";
   if (status === "ok" && raw.trim() === "") status = "empty";
 
-  const capped = capText(raw, maxChars(o.env));
+  const capped = capText(escapeHeaderLines(raw), maxChars(o.env));
   const envelope = {
     tycoonBridge: ENVELOPE_VERSION,
     status,
@@ -94,7 +119,10 @@ function formatBridgeResult(opts) {
   }
 
   const isError = status !== "ok";
-  const text = capped.text !== "" ? capped.text : envelope.error ? envelope.error.message : "";
+  const body = capped.text !== "" ? capped.text : envelope.error ? envelope.error.message : "";
+  const header = Object.assign({}, envelope);
+  delete header.summary;
+  const text = TEXT_HEADER_PREFIX + JSON.stringify(header) + "\n" + body;
   const structuredContent = Object.assign({}, o.extra && typeof o.extra === "object" ? o.extra : {}, envelope);
   return { content: [{ type: "text", text }], isError, structuredContent };
 }
@@ -108,7 +136,7 @@ function formatBridgeResult(opts) {
 function withTimeout(promise, ms, label, opts) {
   const o = opts || {};
   const fallbackMs = timeoutMs(o.defaultMs, o.env);
-  const limit = ms !== undefined && ms !== null ? positiveInt(ms, fallbackMs) : fallbackMs;
+  const limit = ms !== undefined && ms !== null ? clampTimer(positiveInt(ms, fallbackMs)) : fallbackMs;
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => {
@@ -143,47 +171,62 @@ function pickEnvelope(v) {
   return env;
 }
 
-function fromText(text) {
+function fromHeaderText(text) {
   if (typeof text !== "string") return null;
-  const first = text.split(/\r?\n/, 1)[0];
+  const nl = text.indexOf("\n");
+  const line = nl === -1 ? text : text.slice(0, nl);
+  const first = line.endsWith(String.fromCharCode(13)) ? line.slice(0, -1) : line;
   if (!first.startsWith(TEXT_HEADER_PREFIX)) return null;
   try {
     const v = JSON.parse(first.slice(TEXT_HEADER_PREFIX.length));
-    return isEnvelope(v) ? pickEnvelope(v) : null;
+    if (!isEnvelope(v)) return null;
+    const env = pickEnvelope(Object.assign({ summary: "" }, v));
+    env.summary = nl === -1 ? "" : text.slice(nl + 1);
+    return env;
   } catch {
     return null;
   }
 }
 
-/**
- * Reads an envelope out of a tool_response (CallToolResult object, content
- * array, or JSON string). Returns the envelope or null when none is present.
- */
-function parseBridgeResult(toolResponse) {
-  let resp = toolResponse;
-  if (typeof resp === "string") {
-    const t = resp.trim();
-    if (!t.startsWith("{")) return fromText(resp);
-    try {
-      resp = JSON.parse(t);
-    } catch {
-      return fromText(resp);
-    }
-  }
-  if (Array.isArray(resp)) resp = { content: resp };
-  if (!resp || typeof resp !== "object") return null;
-  if (isEnvelope(resp)) return pickEnvelope(resp);
-  if (isEnvelope(resp.structuredContent)) return pickEnvelope(resp.structuredContent);
-  if (resp.tool_response !== undefined) return parseBridgeResult(resp.tool_response);
-  if (Array.isArray(resp.content)) {
-    for (const block of resp.content) {
-      if (block && typeof block.text === "string") {
-        const found = fromText(block.text);
-        if (found) return found;
-      }
-    }
+function parseInner(resp, trusted, depth) {
+  if (depth > MAX_UNWRAP_DEPTH || !resp || typeof resp !== "object") return null;
+  if (Array.isArray(resp)) return trusted ? parseInner({ content: resp }, trusted, depth + 1) : null;
+  const sc = resp.structuredContent;
+  if (sc !== undefined && sc !== null) return isEnvelope(sc) ? pickEnvelope(sc) : null;
+  if (trusted && isEnvelope(resp)) return pickEnvelope(resp);
+  const wrapped = resp.tool_response;
+  if (wrapped !== undefined && wrapped !== null) return parseInner(wrapped, trusted, depth + 1);
+  if (trusted && Array.isArray(resp.content) && resp.content.length > 0) {
+    const block = resp.content[0];
+    if (block && typeof block.text === "string") return fromHeaderText(block.text);
   }
   return null;
+}
+
+/**
+ * Reads an envelope out of a tool_response object. structuredContent is
+ * authoritative; the text header, a top-level envelope-shaped object, a
+ * content array and a bare string are honoured only with
+ * opts.trustedTextHeader === true (see the trust rule above). Never throws.
+ */
+function parseBridgeResult(toolResponse, opts) {
+  try {
+    const trusted = !!(opts && opts.trustedTextHeader === true);
+    let resp = toolResponse;
+    if (typeof resp === "string") {
+      if (!trusted) return null;
+      const t = resp.trim();
+      if (!t.startsWith("{")) return fromHeaderText(resp);
+      try {
+        resp = JSON.parse(t);
+      } catch {
+        return fromHeaderText(resp);
+      }
+    }
+    return parseInner(resp, trusted, 0);
+  } catch {
+    return null;
+  }
 }
 
 module.exports = {
