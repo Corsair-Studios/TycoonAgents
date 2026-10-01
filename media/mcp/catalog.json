@@ -289,6 +289,30 @@
     }
   },
   {
+    "id": "tycoon",
+    "name": "TycoonAgents Dispatcher",
+    "description": "Gives foreign-LLM agents (Kimi, Codex, Gemini, Claude CLI) real in-process provider fallback: its `delegate` tool runs the agent's routing chain in code, calling the next provider in the same tool call when one fails.",
+    "summary": "Runs a foreign agent's provider fallback chain in code, in a single tool call.",
+    "requiresEnv": [],
+    "note": "Local stdio MCP server (.claude/hooks/tycoon-dispatcher-mcp.cjs, run via `node`). Reads the per-agent chain from .claude/tycoon/routing.resolved.json and launches each step's bridge from the other servers in this .mcp.json (openai-compatible, claude-cli, codex, gemini), so those entries must stay configured. TYCOON_DISPATCH_HOST=claude selects the Claude Code behavior. The project directory is TYCOON_PROJECT_DIR when set, else the directory Claude Code launches the server from.",
+    "docsUrl": "https://github.com/Corsair-Studios/TycoonAgents",
+    "thirdParty": false,
+    "vendor": "TycoonAgents",
+    "package": "hooks/tycoon-dispatcher-mcp.cjs (bundled with TycoonAgents; copied into .claude/hooks/ on hook install)",
+    "homepage": "https://github.com/Corsair-Studios/TycoonAgents",
+    "network": false,
+    "dataNote": "Runs locally and forwards each task only to the bridge servers already configured in this project's .mcp.json; it adds no network destination of its own.",
+    "config": {
+      "command": "node",
+      "args": [
+        ".claude/hooks/tycoon-dispatcher-mcp.cjs"
+      ],
+      "env": {
+        "TYCOON_DISPATCH_HOST": "claude"
+      }
+    }
+  },
+  {
     "id": "dart",
     "name": "Dart & Flutter",
     "description": "Analyze and fix Dart & Flutter code, resolve symbols, fetch API docs, search pub.dev, manage pubspec.yaml dependencies, run tests, and format code — via Google's official dart mcp-server.",

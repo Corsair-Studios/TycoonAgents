@@ -372,6 +372,27 @@ function isTycoonBridgeTool(toolName) {
   return !!m && TYCOON_BRIDGE_SERVERS.indexOf(m[1]) !== -1;
 }
 
+// p99-t2: the TycoonAgents dispatcher's `delegate` tool runs the whole provider
+// chain in-process (hooks/dispatcherClaudeChain.cjs), so by the time the hook
+// sees its result any fallback has already happened. The hook therefore never
+// injects a prose "re-dispatch" for these tools, and never swaps spawn
+// attribution for agents that route through them; the dispatcher writes its
+// own FallbackTriggered / fallback spawn records for the provider that
+// actually answered.
+const DISPATCHER_SERVERS = ["tycoon", "tycoon-dispatcher"];
+function isDispatcherTool(toolName) {
+  const m = /^mcp__(.+?)__/.exec(String(toolName || ""));
+  return !!m && DISPATCHER_SERVERS.indexOf(m[1]) !== -1;
+}
+function isDispatcherRoutedAgent(agentsDir, agentId) {
+  try {
+    const raw = fs.readFileSync(path.join(agentsDir, agentId + ".md"), "utf8");
+    return /mcp__tycoon(?:-dispatcher)?__delegate/.test(raw) || /^\s+mcpServer:\s*tycoon(?:-dispatcher)?\s*$/m.test(raw);
+  } catch {
+    return false;
+  }
+}
+
 function stringifyToolOutput(v) {
   if (typeof v === "string") return v;
   if (v === undefined || v === null) return "";
@@ -1991,7 +2012,7 @@ function main(raw) {
       try {
         const fallbackChain = getFallbackChainModule();
         const sessId = typeof payload.session_id === "string" ? payload.session_id : undefined;
-        if (fallbackChain && sessId) {
+        if (fallbackChain && sessId && !isDispatcherRoutedAgent(agentsDir, agentId)) {
           const stateData = loadFallbackStateFile(tycoonDir);
           const perSession = stateData[sessId] || {};
           const attemptsSoFar = (perSession[agentId] && perSession[agentId].attemptsSoFar) || 0;
@@ -2286,7 +2307,7 @@ function main(raw) {
   if (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") {
     try {
       const fallbackChain = getFallbackChainModule();
-      if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0) {
+      if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0 && !isDispatcherTool(toolName)) {
         const mcpRouting = buildMcpBackendRouting(agentsDir);
         const mcpBackend = lookupMcpBackend(mcpRouting, toolName);
         if (mcpBackend && mcpBackend.agentId) {

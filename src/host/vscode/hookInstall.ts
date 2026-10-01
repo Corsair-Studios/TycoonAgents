@@ -427,6 +427,17 @@ export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "codex-app-server-mcp.cjs",
   "bridge-result.cjs",
   "gemini-mcp-wrapper.cjs",
+  // p99-t2: the dispatcher MCP server (catalog id "tycoon") and every module it
+  // requires, so a project-relative .mcp.json entry can launch it.
+  "tycoon-dispatcher-mcp.cjs",
+  "dispatcherAdapters.cjs",
+  "dispatcherBridgeClient.cjs",
+  "dispatcherClaudeChain.cjs",
+  "codexRouting.cjs",
+  "codexRollout.cjs",
+  "gateEvents.cjs",
+  "delegationEnforcement.js",
+  "fallbackChain.js",
 ];
 
 /** Outcome of syncing one runtime file — see {@link syncRuntimeFile}. */

@@ -282,9 +282,15 @@ export function buildFallbackInstruction(input: BuildFallbackInstructionInput): 
   }
   const nextModel = input.result.slot.model ?? "an unspecified fallback model";
   const position = input.result.index + 1; // 1-based position within the chain
+  // Last-resort wording (p99-t2): no hook can re-run an agent on another
+  // provider, and an agent bound directly to its own MCP server will call
+  // that same server again. Agents that route through the TycoonAgents
+  // dispatcher's delegate tool fall back in-process and never reach this text.
   return (
     `agent ${input.workerId} failed on provider/model ${failedDesc}: ${input.reason}. ` +
-    `Re-dispatch the same task to ${input.workerId}; it now runs on ${nextModel} ` +
-    `(fallback ${position} of ${input.chainLength}).`
+    `Re-dispatch the same task to ${input.workerId}; the next provider in its fallback chain is ${nextModel} ` +
+    `(fallback ${position} of ${input.chainLength}). ` +
+    `This only takes effect if ${input.workerId} reaches that provider through the TycoonAgents dispatcher (mcp__tycoon__delegate); ` +
+    `an agent bound directly to its own MCP server calls the same provider again, so if it fails the same way, report the failure instead of retrying.`
   );
 }

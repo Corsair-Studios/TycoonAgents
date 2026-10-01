@@ -79,6 +79,7 @@ const codexRouting = require("./codexRouting.cjs");
 const codexRollout = require("./codexRollout.cjs");
 const { LEAF_WORKER_DENY_MESSAGE } = require("./delegationEnforcement.js");
 const dispatcherAdapters = require("./dispatcherAdapters.cjs");
+const dispatcherClaudeChain = require("./dispatcherClaudeChain.cjs");
 const gateEvents = require("./gateEvents.cjs");
 
 // Plan p29-t3: cursor file name this harness uses to track its own read
@@ -337,6 +338,35 @@ async function handleDelegateTool(args) {
   const vendor = info.vendor;
   const model = info.model;
   const costModelClass = costModelClassFromAgentFile(path.join(agentsDir, `${workerId}.md`), vendor);
+
+  // Plan p99-t2: on the Claude Code host (registered in .mcp.json with env
+  // TYCOON_DISPATCH_HOST=claude) the whole provider chain runs in-process
+  // inside this one tool call - see hooks/dispatcherClaudeChain.cjs. The
+  // Codex path below is untouched when the env var is absent.
+  if (process.env.TYCOON_DISPATCH_HOST === "claude") {
+    const primary = dispatcherClaudeChain.parseBackendFromAgentFile(path.join(agentsDir, `${workerId}.md`)) || {
+      vendor: vendor || "anthropic",
+      model,
+      transport: "claude-native",
+    };
+    if (!primary.vendor && vendor) primary.vendor = vendor;
+    if (!primary.model && model) primary.model = model;
+    const routingChain = readRoutingChainForSpecialist(projectDir, workerId);
+    return dispatcherClaudeChain.runProviderChain({
+      projectDir,
+      activityFile,
+      workerId,
+      task,
+      description: typeof args.description === "string" ? args.description : undefined,
+      primary,
+      chain: routingChain.chain,
+      defaultFallback: routingChain.defaultFallback,
+      useDefaultFallback: routingChain.useDefaultFallback,
+      fallbackChain: getFallbackChainModule(),
+      costModelClassOf: (slot) => (slot === primary ? costModelClass : slot.costModelClass || vendorCostModelClass(slot.vendor)),
+      stepTimeoutMs: Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) > 0 ? Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) : undefined,
+    });
+  }
 
   // Plan p23-t9: Codex's MCP server env never carries TYCOON_CODEX_THREAD_ID
   // (Codex doesn't set it for its own MCP-hosted tools), so a call made via
