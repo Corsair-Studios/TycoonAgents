@@ -241,10 +241,10 @@ function classifyProviderError(message, opts) {
   if (status === 429) return "rate_limit";
   if (status === 402) return "quota";
   if (status === 404) return "not_found";
-  if (/ENOENT|could not find the claude cli|failed to spawn|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found/i.test(t)) return "cli_missing";
-  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth/i.test(t)) return "auth";
+  if (/ENOENT|could not find the claude cli|failed to spawn|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found|(?<!model )(?<!model: )\b(?:agy|gemini)(?: cli| command| binary)?\s+(?:is\s+)?not (?:installed|found)\b|\bnot installed\b/i.test(t)) return "cli_missing";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth|permission[ _]denied/i.test(t)) return "auth";
   if (/\b429\b|rate.?limit|too many requests|overloaded/i.test(t)) return "rate_limit";
-  if (/\b402\b|quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (/\b402\b|quota|usage limit|limit reached|insufficient|billing|credit|exceeded your|resource_exhausted/i.test(t)) return "quota";
   if (/\b404\b|not found|model_not_found|does not exist|unsupported model|issue with the selected model/i.test(t)) return "not_found";
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|network|fetch failed|socket hang up/i.test(t)) return "network";
   return "unknown";

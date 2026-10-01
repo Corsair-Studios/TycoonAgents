@@ -285,6 +285,21 @@ test("classifyProviderError maps text to the documented kinds", () => {
   assert.equal(classify(undefined), "unknown");
 });
 
+test("classifyProviderError: missing agy/gemini CLI is cli_missing, but a missing model or resource stays not_found", () => {
+  const cli: string[] = ["agy not installed", "gemini CLI not found", "Error: gemini is not installed", "agy command not found", "gemini: command not found", "the agy binary is not installed"];
+  for (const text of cli) assert.equal(classify(text), "cli_missing", text);
+  const notFound: string[] = ["model gemini-2.5-pro not found", "model gemini not found", "Requested entity was not found", "The model was not found", "resource not found", "HTTP 404 page"];
+  for (const text of notFound) assert.equal(classify(text), "not_found", text);
+});
+
+test("classifyProviderError: a bare RESOURCE_EXHAUSTED is quota and permission denied is auth", () => {
+  assert.equal(classify("RESOURCE_EXHAUSTED"), "quota");
+  assert.equal(classify("status: resource_exhausted"), "quota");
+  assert.equal(classify("429 RESOURCE_EXHAUSTED"), "rate_limit", "an explicit 429 still reads as rate_limit");
+  assert.equal(classify("permission denied"), "auth");
+  assert.equal(classify("PERMISSION_DENIED: caller lacks access"), "auth");
+});
+
 test("classifyProviderError lets an HTTP status win over text, and does not match digits inside other numbers", () => {
   assert.equal(classify("boom", { httpStatus: 401 }), "auth");
   assert.equal(classify("boom", { httpStatus: 403 }), "auth");

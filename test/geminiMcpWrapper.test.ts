@@ -29,6 +29,9 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { parseBridgeResult } = require("../../hooks/bridge-result.cjs") as { parseBridgeResult: (r: unknown) => { status: string; provider: string; summary: string; truncated: boolean; error?: { kind: string } } | null };
+
 const FAKE = path.join(root, "fake-gemini-mcp.js");
 fs.writeFileSync(
   FAKE,
@@ -36,15 +39,23 @@ fs.writeFileSync(
 const readline = require("readline");
 const fs = require("fs");
 if (process.env.FAKE_PID_FILE) fs.writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
+let spawnIndex = 1;
+if (process.env.FAKE_COUNT_FILE) {
+  try { spawnIndex = Number(fs.readFileSync(process.env.FAKE_COUNT_FILE, "utf8")) + 1; } catch {}
+  fs.writeFileSync(process.env.FAKE_COUNT_FILE, String(spawnIndex));
+}
 const send = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (m.method === "initialize") return send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "0" } } });
+  if (m.method === "tools/list" && process.env.FAKE_MODE === "nolist") return;
   if (m.method === "tools/list") return send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "ask-gemini", inputSchema: { type: "object" } }] } });
   if (m.method !== "tools/call") return;
   const mode = process.env.FAKE_MODE;
   const text = (t, isError) => send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: t }], isError: !!isError } });
   if (mode === "hang") return;
+  if (mode === "hang-first") { if (spawnIndex === 1) return; return setTimeout(() => text("late child answer"), 250); }
+  if (mode === "agymissing") return text("Error: agy not installed", true);
   if (mode === "empty") return text("   ");
   if (mode === "big") return text("x".repeat(500));
   if (mode === "auth") return text("Error: 401 Unauthorized - please log in again", true);
@@ -103,9 +114,10 @@ async function drive(env: Record<string, string>, requests: object[], keepOpen =
       }
     }
   });
-  for (const req of requests as { id?: number }[]) {
+  for (const raw of requests as { id?: number; noWait?: boolean }[]) {
+    const { noWait, ...req } = raw;
     wrapper.stdin.write(JSON.stringify(req) + "\n");
-    if (req.id !== undefined) {
+    if (req.id !== undefined && !noWait) {
       await new Promise<void>((resolve) => {
         if (replies.has(req.id!)) return resolve();
         waiters.set(req.id!, () => resolve());
@@ -186,4 +198,95 @@ test("an unstartable command yields a clear provider_error instead of hanging", 
   const sc = replies.get(2)!.result.structuredContent;
   assert.equal(sc.status, "provider_error");
   assert.equal(sc.error.kind, "cli_missing");
+});
+
+/** Asserts the reply's envelope through parseBridgeResult (the same reader the hook uses) and that isError tracks status. */
+function envelopeFor(replies: Map<number, Msg>, id: number) {
+  const result = replies.get(id)!.result;
+  const env = parseBridgeResult(result);
+  assert.ok(env, "expected a parseable envelope: " + JSON.stringify(result));
+  assert.equal(result.isError, env!.status !== "ok", "isError must be true for every non-ok status");
+  return env!;
+}
+
+test("every status parses through parseBridgeResult with isError set for non-ok", async () => {
+  const ok = envelopeFor((await drive({ FAKE_MODE: "ok" }, [init, call(2)])).replies, 2);
+  assert.equal(ok.status, "ok");
+  assert.equal(ok.provider, "gemini");
+  const perr = envelopeFor((await drive({ FAKE_MODE: "auth" }, [init, call(2)])).replies, 2);
+  assert.equal(perr.status, "provider_error");
+  assert.equal(perr.error?.kind, "auth");
+  const empty = envelopeFor((await drive({ FAKE_MODE: "empty" }, [init, call(2)])).replies, 2);
+  assert.equal(empty.status, "empty");
+  const big = envelopeFor((await drive({ FAKE_MODE: "big", TYCOON_BRIDGE_MAX_CHARS: "50" }, [init, call(2)])).replies, 2);
+  assert.equal(big.status, "ok");
+  assert.equal(big.truncated, true);
+  const hung = await drive({ FAKE_MODE: "hang", TYCOON_BRIDGE_TIMEOUT_MS: "300" }, [init, call(2)], true);
+  try {
+    const t = envelopeFor(hung.replies, 2);
+    assert.equal(t.status, "timeout");
+    assert.equal(t.error?.kind, "timeout");
+  } finally {
+    hung.wrapper.stdin.end();
+    hung.wrapper.kill();
+  }
+});
+
+test("a missing agy/gemini CLI reported by the tool is cli_missing, a bare RESOURCE_EXHAUSTED is quota", async () => {
+  const missing = envelopeFor((await drive({ FAKE_MODE: "agymissing" }, [init, call(2)])).replies, 2);
+  assert.equal(missing.error?.kind, "cli_missing");
+  const quota = envelopeFor((await drive({ FAKE_MODE: "quota" }, [init, call(2)])).replies, 2);
+  assert.equal(quota.error?.kind, "quota");
+});
+
+test("a replaced child's late exit does not fail the new child's in-flight call", async () => {
+  const countFile = path.join(root, "count-" + Math.random().toString(36).slice(2));
+  const r = await drive({ FAKE_MODE: "hang-first", FAKE_COUNT_FILE: countFile, TYCOON_BRIDGE_TIMEOUT_MS: "500" }, [init, call(2), call(3)], true);
+  try {
+    const first = envelopeFor(r.replies, 2);
+    assert.equal(first.status, "timeout");
+    const second = envelopeFor(r.replies, 3);
+    assert.equal(second.status, "ok", "call on the respawned child must survive the old child's exit: " + JSON.stringify(r.replies.get(3)));
+    assert.equal(second.summary, "late child answer");
+    assert.equal(fs.readFileSync(countFile, "utf8"), "2", "exactly one respawn");
+  } finally {
+    r.wrapper.stdin.end();
+    r.wrapper.kill();
+  }
+});
+
+test("the pending map is capped at 64: the 65th in-flight call and a tools/list are rejected immediately", async () => {
+  const hangs = Array.from({ length: 64 }, (_, i) => ({ ...call(100 + i), noWait: true }));
+  const r = await drive(
+    { FAKE_MODE: "hang", TYCOON_BRIDGE_TIMEOUT_MS: "30000" },
+    [init, ...hangs, call(300), { jsonrpc: "2.0", id: 301, method: "tools/list" }],
+    true,
+  );
+  try {
+    const over = envelopeFor(r.replies, 300);
+    assert.equal(over.status, "provider_error");
+    assert.equal(over.error?.kind, "rate_limit");
+    assert.match(r.replies.get(300)!.result.content[0].text, /64/);
+    assert.equal(r.replies.get(301)!.error.code, -32000);
+    assert.match(r.replies.get(301)!.error.message, /Too many in-flight requests \(64\)/);
+    assert.equal(r.replies.has(100), false, "the hung calls themselves are still pending");
+  } finally {
+    r.wrapper.stdin.end();
+    r.wrapper.kill();
+  }
+  assert.ok(r.pid > 0 && (await waitDead(r.pid)), "child killed when the wrapper is closed");
+});
+
+test("a non-call request (tools/list) that never answers times out with a JSON-RPC error and kills the child", async () => {
+  const r = await drive({ FAKE_MODE: "nolist", TYCOON_BRIDGE_TIMEOUT_MS: "400" }, [init, { jsonrpc: "2.0", id: 2, method: "tools/list" }], true);
+  try {
+    const err = r.replies.get(2)!.error;
+    assert.equal(err.code, -32000);
+    assert.match(err.message, /tools\/list timed out after 400ms/);
+    assert.ok(r.pid > 0);
+    assert.ok(await waitDead(r.pid), "child killed after the request timed out");
+  } finally {
+    r.wrapper.stdin.end();
+    r.wrapper.kill();
+  }
 });
