@@ -156,9 +156,9 @@ test('initialize -> tools/list -> tools/call chat returns text and usage from a 
     const usageLine = line1.id === 3 ? line2 : line1;
 
     assert.equal(callLine.id, 3);
-    assert.equal(callLine.result.isError, undefined, `expected no error, got: ${JSON.stringify(callLine.result)}`);
+    assert.equal(callLine.result.isError, false, `expected no error, got: ${JSON.stringify(callLine.result)}`);
     assert.equal(callLine.result.content[0].type, 'text');
-    assert.equal(callLine.result.content[0].text, 'hi back');
+    assert.equal(callLine.result.structuredContent.summary, 'hi back');
     assert.deepEqual(callLine.result.structuredContent.usage, { input_tokens: 12, output_tokens: 5 });
     assert.deepEqual(usageLine, { usage: { input_tokens: 12, output_tokens: 5 } });
 
@@ -240,8 +240,8 @@ test('xai/ model: prefix is stripped for the upstream request, Authorization hea
     // emitted (see the server's contract) — exactly one line comes back.
     const callLine = JSON.parse(await nextLine());
     assert.equal(callLine.id, 3);
-    assert.equal(callLine.result.isError, undefined, `expected no error, got: ${JSON.stringify(callLine.result)}`);
-    assert.equal(callLine.result.content[0].text, 'grok says hi');
+    assert.equal(callLine.result.isError, false, `expected no error, got: ${JSON.stringify(callLine.result)}`);
+    assert.equal(callLine.result.structuredContent.summary, 'grok says hi');
 
     assert.ok(capturedRequest, 'mock endpoint should have received the chat completion request');
     // The project's "xai/" disambiguation prefix must be stripped before
@@ -320,13 +320,13 @@ test('xai/ request and a Kimi request stay on separate endpoints/keys even when 
 
     send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2', prompt: 'hi' } } });
     const kimiLine = JSON.parse(await nextLine());
-    assert.equal(kimiLine.result.content[0].text, 'kimi reply');
+    assert.equal(kimiLine.result.structuredContent.summary, 'kimi reply');
     assert.equal(kimiCapturedAuth, 'Bearer kimi-key');
     assert.equal(kimiCapturedModel, 'moonshot/kimi-k2');
 
     send(child, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'chat', arguments: { model: 'xai/grok-build-0.1', prompt: 'hi' } } });
     const grokLine = JSON.parse(await nextLine());
-    assert.equal(grokLine.result.content[0].text, 'grok reply');
+    assert.equal(grokLine.result.structuredContent.summary, 'grok reply');
     assert.equal(grokCapturedAuth, 'Bearer xai-key');
     assert.equal(grokCapturedModel, 'grok-build-0.1');
   } finally {

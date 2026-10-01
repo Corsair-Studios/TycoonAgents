@@ -2246,7 +2246,7 @@ function handleInstallPack(payload) {
       results.commands = installPackCommandsStandalone(root, packCommands);
     }
     if (pack.mcp) {
-      const { hasMcpServer, mergeMcpServer, resolveConfigForPlatform } = mcpCatalogModule();
+      const { hasMcpServer, mergeMcpServer, resolveConfigForPlatform, withDispatcherProjectDir } = mcpCatalogModule();
       let mcpCatalog = [];
       try {
         mcpCatalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
@@ -2280,7 +2280,7 @@ function handleInstallPack(payload) {
               'your own .mcp.json; see .mcp.json.example.',
           };
         } else {
-          const finalConfig = resolveCodexBinaryForInstallStandalone(pack.mcp, resolvedConfig);
+          const finalConfig = withDispatcherProjectDir(pack.mcp, resolveCodexBinaryForInstallStandalone(pack.mcp, resolvedConfig), primaryProjectRoot);
           const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
           fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
           results.mcp = 'installed';

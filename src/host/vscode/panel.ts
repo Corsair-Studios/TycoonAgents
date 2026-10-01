@@ -29,7 +29,7 @@ import {
   isSafeAgentId,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
-import { mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, type McpPlatformsEntry } from "./mcpCatalog";
+import { mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, withDispatcherProjectDir, type McpPlatformsEntry } from "./mcpCatalog";
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
 import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
@@ -4278,7 +4278,7 @@ export class TycoonPanel {
         return;
       }
 
-      const finalConfig = this._resolveCodexBinaryForInstall(id, resolvedConfig);
+      const finalConfig = withDispatcherProjectDir(id, this._resolveCodexBinaryForInstall(id, resolvedConfig), root);
       const merged = mergeMcpServer(existing, id, finalConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       // Auto-approve the newly-added server so `claude mcp list` doesn't
@@ -4673,7 +4673,7 @@ export class TycoonPanel {
                 "your own .mcp.json; see .mcp.json.example.",
             };
           } else {
-            const finalConfig = this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig);
+            const finalConfig = withDispatcherProjectDir(pack.mcp, this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig), root);
             const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
             fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
             // Auto-approve so `claude mcp list` doesn't leave the pack's

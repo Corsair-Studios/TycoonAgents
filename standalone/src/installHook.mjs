@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, syncRuntimeFile } from './sharedLogic.mjs';
+import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -290,6 +290,34 @@ export function refreshRuntimeHookCopies(targetDir, opts = {}) {
     }
   }
   return refreshed;
+}
+
+/**
+ * Copies the MCP bridge scripts (MCP_BRIDGE_HOOK_FILES: codex/gemini bridges,
+ * bridge-result, the dispatcher server and its modules) from this repo's
+ * `hooks/` into `<targetDir>/.claude/hooks/`, so project-relative `.mcp.json`
+ * entries (codex, gemini, tycoon) resolve - parity with panel.ts and
+ * teamSetupHost.ts. Content-compared via syncRuntimeFile; a source file that
+ * is not shipped in this checkout is skipped.
+ *
+ * @param {string} targetDir
+ * @param {{ hooksSourceDir?: string }} [opts] tests only.
+ * @returns {{ created: string[], refreshed: string[] }}
+ */
+export function installMcpBridgeHooks(targetDir, opts = {}) {
+  const absTarget = path.resolve(String(targetDir ?? ''));
+  const destDir = path.join(absTarget, '.claude', 'hooks');
+  const srcDir = opts.hooksSourceDir ?? hooksDir();
+  const created = [];
+  const refreshed = [];
+  for (const file of getMcpBridgeHookFiles()) {
+    const srcPath = path.join(srcDir, file);
+    if (!fs.existsSync(srcPath)) continue;
+    const status = syncRuntimeFile(srcPath, path.join(destDir, file));
+    if (status === 'created') created.push(file);
+    else if (status === 'refreshed') refreshed.push(file);
+  }
+  return { created, refreshed };
 }
 
 /**

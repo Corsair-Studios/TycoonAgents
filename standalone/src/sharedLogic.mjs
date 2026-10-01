@@ -264,6 +264,21 @@ export function getRuntimeHookFiles() {
   return files;
 }
 
+/** MCP bridge scripts (plus the dispatcher server and its modules) installed into
+ * `<project>/.claude/hooks/` - the exact `MCP_BRIDGE_HOOK_FILES` array from
+ * `src/host/vscode/hookInstall.ts`, reused via its compiled output.
+ * @returns {ReadonlyArray<string>} */
+export function getMcpBridgeHookFiles() {
+  const files = hookInstallModule().MCP_BRIDGE_HOOK_FILES;
+  if (!Array.isArray(files)) {
+    throw new Error(
+      '[tycoonagents-standalone] sharedLogic: expected "MCP_BRIDGE_HOOK_FILES" to be exported as an array from ' +
+        'out/src/host/vscode/hookInstall.js but it was not - run `npx tsc -p .` from the repo root.',
+    );
+  }
+  return files;
+}
+
 /** Content-hash sync of one runtime file — the exact `syncRuntimeFile`
  * function from `src/host/vscode/hookInstall.ts`, reused via its compiled
  * output. See that function's doc comment for the create/refresh/unchanged

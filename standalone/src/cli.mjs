@@ -19,7 +19,7 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { installHook, installOpenCodePlugin, InstallHookError } from './installHook.mjs';
+import { installHook, installMcpBridgeHooks, installOpenCodePlugin, InstallHookError } from './installHook.mjs';
 import { seedAgents, SeedAgentsError } from './seedAgents.mjs';
 import { startServer, ServerStartError } from './server.mjs';
 import { ProjectRootError } from './projectRoots.mjs';
@@ -315,6 +315,10 @@ export async function runCli(argv) {
       const { settingsPath, changed, refreshed, skillsStaged } = installHook(dir);
       for (const file of refreshed) {
         console.log(`TycoonAgents: refreshed ${file}`);
+      }
+      const bridgeHooks = installMcpBridgeHooks(dir);
+      for (const file of [...bridgeHooks.created, ...bridgeHooks.refreshed]) {
+        console.log(`TycoonAgents: installed MCP bridge .claude/hooks/${file}`);
       }
       for (const skillId of skillsStaged ?? []) {
         console.log(`TycoonAgents: staged skill ${skillId}`);

@@ -97,6 +97,8 @@ test(
     const fakeHooksDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-fake-hooks-'));
     fs.copyFileSync(LOCAL_ENV_STORE_JS, path.join(fakeHooksDir, 'localEnvStore.js'));
     fs.copyFileSync(HOOK_PATH, path.join(fakeHooksDir, 'openai-compatible-mcp.cjs'));
+    // The bridge requires its sibling bridge-result.cjs (p98); without it the child exits at load.
+    fs.copyFileSync(path.join(path.dirname(HOOK_PATH), 'bridge-result.cjs'), path.join(fakeHooksDir, 'bridge-result.cjs'));
 
     const child = spawn(process.execPath, [path.join(fakeHooksDir, 'openai-compatible-mcp.cjs')], {
       env: { ...process.env, TYCOON_STANDALONE_DATA_DIR: storeAppDataDir, OPENAI_COMPAT_BASE_URL: '', OPENAI_COMPAT_API_KEY: '' },
@@ -116,8 +118,8 @@ test(
       });
       const callResult = await waitFor(() => responses.find((r) => r.id === 2));
 
-      assert.equal(callResult.result.isError, undefined, `expected success, got: ${JSON.stringify(callResult.result)}`);
-      assert.equal(callResult.result.content[0].text, 'pong');
+      assert.equal(callResult.result.isError, false, `expected success, got: ${JSON.stringify(callResult.result)}`);
+      assert.equal(callResult.result.structuredContent.summary, 'pong');
       assert.equal(upstream.lastAuth, 'Bearer stored-secret-key', 'the stored API key must reach the upstream Authorization header');
     } finally {
       child.kill();

@@ -22,6 +22,7 @@ import {
   mergeHookIntoSettings,
   defaultHookScriptPath,
   refreshRuntimeHookCopies,
+  installMcpBridgeHooks,
   InstallHookError,
   TYCOON_HOOK_SLOTS,
 } from '../src/installHook.mjs';
@@ -465,6 +466,26 @@ test('installHook: second call reports no core skills staged (already current)',
     installHook(dir);
     const second = installHook(dir);
     assert.deepEqual(second.skillsStaged, [], 'idempotent re-run should stage nothing new');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- installMcpBridgeHooks (p99-t2 review: standalone parity with panel.ts) --
+
+test('installMcpBridgeHooks: copies every MCP_BRIDGE_HOOK_FILES entry into .claude/hooks/, then is idempotent', () => {
+  const dir = mkTempDir();
+  try {
+    const first = installMcpBridgeHooks(dir);
+    for (const f of ['tycoon-dispatcher-mcp.cjs', 'dispatcherClaudeChain.cjs', 'dispatcherBridgeClient.cjs', 'codex-mcp-launcher.cjs', 'gemini-mcp-wrapper.cjs', 'bridge-result.cjs', 'fallbackChain.js']) {
+      assert.ok(fs.existsSync(path.join(dir, '.claude', 'hooks', f)), `${f} must be installed`);
+      assert.ok(first.created.includes(f));
+    }
+    const second = installMcpBridgeHooks(dir);
+    assert.deepEqual(second.created, []);
+    assert.deepEqual(second.refreshed, []);
+    fs.writeFileSync(path.join(dir, '.claude', 'hooks', 'bridge-result.cjs'), 'stale');
+    assert.deepEqual(installMcpBridgeHooks(dir).refreshed, ['bridge-result.cjs']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

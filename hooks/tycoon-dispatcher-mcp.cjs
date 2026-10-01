@@ -100,6 +100,7 @@ const DELEGATE_TOOL = {
     properties: {
       specialist: { type: "string", description: "Explicit specialist/agent id to route to (e.g. \"coding-specialist\"). Wins over keyword matching when it names a known agent." },
       task: { type: "string", description: "The task text to send to the resolved specialist." },
+      _tycoon: { type: "object", description: "Injected by the TycoonAgents PreToolUse hook ({sessionId, callerAgentId}); never set by the model." },
       description: { type: "string", description: "Optional short description used for keyword routing when `specialist` doesn't name a known agent. Falls back to `task` when omitted." },
     },
     required: ["task"],
@@ -364,6 +365,8 @@ async function handleDelegateTool(args) {
       useDefaultFallback: routingChain.useDefaultFallback,
       fallbackChain: getFallbackChainModule(),
       costModelClassOf: (slot) => (slot === primary ? costModelClass : slot.costModelClass || vendorCostModelClass(slot.vendor)),
+      hinted: args && typeof args._tycoon === "object" && args._tycoon ? args._tycoon : undefined,
+      guardGraceMs: process.env.TYCOON_DISPATCH_GUARD_GRACE_MS !== undefined && Number(process.env.TYCOON_DISPATCH_GUARD_GRACE_MS) >= 0 ? Number(process.env.TYCOON_DISPATCH_GUARD_GRACE_MS) : undefined,
       stepTimeoutMs: Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) > 0 ? Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) : undefined,
     });
   }

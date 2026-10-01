@@ -97,6 +97,22 @@ export function removeMcpServer(
   return result;
 }
 
+/**
+ * p99-t2: the dispatcher catalog entry (id "tycoon") must still find its
+ * project when Claude Code launches it from a subdirectory, so at install time
+ * the resolved project root is written into its env as TYCOON_PROJECT_DIR
+ * (docs/PATH-DISCOVERY.md: resolved at install time, never hard-coded in the
+ * repo). Any other id, or a non-object config, is returned unchanged. Pure.
+ */
+export function withDispatcherProjectDir(id: string, config: unknown, projectRoot: string): unknown {
+  if (id !== "tycoon" || config === null || typeof config !== "object" || Array.isArray(config)) {
+    return config;
+  }
+  const cfg = config as Record<string, unknown>;
+  const env = cfg.env !== null && typeof cfg.env === "object" ? (cfg.env as Record<string, unknown>) : {};
+  return { ...cfg, env: { ...env, TYCOON_PROJECT_DIR: projectRoot.replace(/\\/g, "/") } };
+}
+
 /** Per-OS `{command, args}` override for a catalog entry (key = `process.platform`). */
 export interface McpPlatformOverride {
   command: string;

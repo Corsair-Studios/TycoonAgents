@@ -41,6 +41,8 @@ const dispatcherAdapters = require("./dispatcherAdapters.cjs");
 /** Mirrors MAX_FALLBACK_DEPTH in src/core/fallbackChain.ts / routingProfile.ts. */
 const MAX_FALLBACK_DEPTH = 3;
 const CONTEXT_TAIL_BYTES = 256 * 1024;
+/** MCP server names the dispatcher itself is registered under; a chain step naming one would recurse. */
+const DISPATCHER_SERVER_NAMES = ["tycoon", "tycoon-dispatcher"];
 
 function slotKey(slot) {
   return [slot.vendor || "", slot.model || "", slot.transport || "", slot.mcpServer || ""].join("|");
@@ -78,10 +80,21 @@ function parseBackendFromAgentFile(agentFilePath) {
   return out;
 }
 
-/** Newest non-fallback spawn record for workerId in activity.jsonl -> { sessionId?, parentId? } (best effort). */
-function findSpawnContext(activityFile, workerId) {
+/**
+ * Session/parent for the records this call writes. Preferred source: the
+ * `_tycoon: {sessionId, callerAgentId}` the Claude hook injects into every
+ * delegate call via PreToolUse updatedInput (`hinted`), which is exact even
+ * with concurrent runs. Fallback heuristic (no hint, e.g. hook not installed):
+ * the newest non-fallback spawn record for workerId in activity.jsonl. That
+ * heuristic can attach to the wrong run when several runs of the same agent
+ * overlap in different sessions; with a hinted session it only looks at
+ * records of that session.
+ */
+function findSpawnContext(activityFile, workerId, hinted) {
   const ctx = {};
-  if (process.env.TYCOON_SESSION_ID) ctx.sessionId = process.env.TYCOON_SESSION_ID;
+  const wantSession = hinted && typeof hinted.sessionId === "string" && hinted.sessionId ? hinted.sessionId : undefined;
+  if (wantSession) ctx.sessionId = wantSession;
+  else if (process.env.TYCOON_SESSION_ID) ctx.sessionId = process.env.TYCOON_SESSION_ID;
   try {
     const stat = fs.statSync(activityFile);
     const start = Math.max(0, stat.size - CONTEXT_TAIL_BYTES);
@@ -94,7 +107,7 @@ function findSpawnContext(activityFile, workerId) {
         if (!lines[i]) continue;
         let rec;
         try { rec = JSON.parse(lines[i]); } catch { continue; }
-        if (rec && rec.workerId === workerId && (rec.tool === "Agent" || rec.tool === "Task") && rec.event === "PreToolUse" && rec.fallbackOf === undefined) {
+        if (rec && rec.workerId === workerId && (rec.tool === "Agent" || rec.tool === "Task") && rec.event === "PreToolUse" && rec.fallbackOf === undefined && (!wantSession || rec.sessionId === wantSession)) {
           if (ctx.sessionId === undefined && typeof rec.sessionId === "string") ctx.sessionId = rec.sessionId;
           if (typeof rec.parentId === "string") ctx.parentId = rec.parentId;
           break;
@@ -117,6 +130,14 @@ function modelArgFor(slot) {
 async function runStep(slot, ctx) {
   const info = { provider: slot.vendor || slot.mcpServer || "", model: slot.model || "" };
   const childEnv = { TYCOON_DISPATCH_DEPTH: "1" };
+  if (ctx.stepTimeoutMs) childEnv.TYCOON_BRIDGE_TIMEOUT_MS = String(ctx.stepTimeoutMs);
+
+  if (slot.mcpServer && DISPATCHER_SERVER_NAMES.indexOf(slot.mcpServer) !== -1) {
+    return bridgeClient.normalizeAttempt(
+      { error: `Chain step names the dispatcher itself ("${slot.mcpServer}"); refusing to recurse.`, kind: "self_reference" },
+      info,
+    );
+  }
 
   if (slot.mcpServer) {
     const toolName = (Array.isArray(slot.tools) && slot.tools[0]) || bridgeClient.defaultToolForServer(slot.mcpServer);
@@ -135,6 +156,7 @@ async function runStep(slot, ctx) {
       toolName,
       toolArgs,
       timeoutMs: ctx.stepTimeoutMs,
+      graceMs: ctx.guardGraceMs,
       env: childEnv,
     });
     return bridgeClient.normalizeAttempt(call, info);
@@ -193,7 +215,7 @@ async function runProviderChain(ctx) {
   const append = (rec) => {
     try { fs.appendFileSync(ctx.activityFile, JSON.stringify(rec) + "\n", "utf8"); } catch { /* telemetry never breaks a dispatch */ }
   };
-  const spawnCtx = findSpawnContext(ctx.activityFile, ctx.workerId);
+  const spawnCtx = findSpawnContext(ctx.activityFile, ctx.workerId, ctx.hinted);
   const withCtx = (rec) => {
     if (spawnCtx.sessionId) rec.sessionId = spawnCtx.sessionId;
     return rec;

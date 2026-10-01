@@ -31,6 +31,7 @@ const bridgeResult = require("./bridge-result.cjs");
 
 const DEFAULT_STEP_TIMEOUT_MS = 180000;
 const SHUTDOWN_GRACE_MS = 2000;
+const DEFAULT_GUARD_GRACE_MS = 15000;
 
 /** Default MCP tool per catalog bridge server, used when a chain slot has no `tools`. */
 const DEFAULT_TOOL_BY_SERVER = {
@@ -63,6 +64,16 @@ function readServerEntry(projectDir, serverName) {
   return { entry };
 }
 
+/** Claude Code's .mcp.json expansion: ${VAR} and ${VAR:-default}; an unset VAR without default is left as written. */
+function expandVars(value, env) {
+  if (typeof value !== "string") return value;
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (whole, name, dflt) => {
+    const v = env[name];
+    if (v !== undefined && v !== "") return v;
+    return dflt !== undefined ? dflt : whole;
+  });
+}
+
 function resolveArg(arg, projectDir) {
   // Only project-relative script paths (e.g. ".claude/hooks/x.cjs") are rebased;
   // flags and other values pass through untouched.
@@ -75,14 +86,32 @@ function resolveArg(arg, projectDir) {
 }
 
 function spawnBridge(entry, projectDir, extraEnv) {
-  const args = (Array.isArray(entry.args) ? entry.args : []).map((a) => resolveArg(a, projectDir));
-  const env = Object.assign({}, process.env, entry.env && typeof entry.env === "object" ? entry.env : {}, extraEnv || {});
-  const isWinShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(entry.command);
+  const base = Object.assign({}, process.env);
+  const command = expandVars(entry.command, base);
+  const args = (Array.isArray(entry.args) ? entry.args : []).map((a) => resolveArg(expandVars(a, base), projectDir));
+  const entryEnv = {};
+  if (entry.env && typeof entry.env === "object") {
+    for (const [k, v] of Object.entries(entry.env)) entryEnv[k] = expandVars(v, base);
+  }
+  const env = Object.assign({}, base, entryEnv, extraEnv || {});
+  const isWinShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
   if (isWinShim) {
     const quote = (s) => (/[\s"&|<>^]/.test(s) ? '"' + String(s).replace(/"/g, '""') + '"' : s);
-    return spawn([quote(entry.command), ...args.map(quote)].join(" "), { cwd: projectDir, env, shell: true, stdio: ["pipe", "pipe", "pipe"] });
+    return spawn([quote(command), ...args.map(quote)].join(" "), { cwd: projectDir, env, shell: true, stdio: ["pipe", "pipe", "pipe"] });
   }
-  return spawn(entry.command, args, { cwd: projectDir, env, stdio: ["pipe", "pipe", "pipe"] });
+  return spawn(command, args, { cwd: projectDir, env, stdio: ["pipe", "pipe", "pipe"] });
+}
+
+/** Kills the child and, on Windows, its whole tree (a .cmd/shell shim or launcher leaves grandchildren otherwise). */
+function killTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    try {
+      const k = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      k.on("error", () => { try { child.kill(); } catch { /* gone */ } });
+      return;
+    } catch { /* fall through */ }
+  }
+  try { child.kill(); } catch { /* already gone */ }
 }
 
 /**
@@ -99,7 +128,11 @@ function callBridgeTool(opts) {
       resolve({ error: found.error, kind: "not_configured" });
       return;
     }
-    const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_STEP_TIMEOUT_MS;
+    // The bridge enforces its own timeout (TYCOON_BRIDGE_TIMEOUT_MS, passed by the caller);
+    // this guard only fires if the bridge itself is wedged, so it waits that long plus a grace.
+    const bridgeTimeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_STEP_TIMEOUT_MS;
+    const graceMs = Number(opts.graceMs) >= 0 ? Number(opts.graceMs) : DEFAULT_GUARD_GRACE_MS;
+    const timeoutMs = bridgeTimeoutMs + graceMs;
     let child;
     try {
       child = spawnBridge(found.entry, opts.projectDir, opts.env);
@@ -116,9 +149,7 @@ function callBridgeTool(opts) {
 
     const shutdown = () => {
       try { child.stdin.end(); } catch { /* already closed */ }
-      const killTimer = setTimeout(() => {
-        try { child.kill(); } catch { /* already gone */ }
-      }, SHUTDOWN_GRACE_MS);
+      const killTimer = setTimeout(() => killTree(child), SHUTDOWN_GRACE_MS);
       if (killTimer.unref) killTimer.unref();
       child.once("exit", () => clearTimeout(killTimer));
     };
@@ -132,7 +163,7 @@ function callBridgeTool(opts) {
       resolve(value);
     };
     const timer = setTimeout(() => {
-      finish({ error: `MCP server "${opts.serverName}" timed out after ${timeoutMs}ms`, kind: "timeout" });
+      finish({ error: `MCP server "${opts.serverName}" did not answer within ${timeoutMs}ms`, kind: "timeout" });
     }, timeoutMs);
 
     const send = (obj) => {
@@ -237,6 +268,7 @@ module.exports = {
   DEFAULT_STEP_TIMEOUT_MS,
   defaultToolForServer,
   readServerEntry,
+  expandVars,
   callBridgeTool,
   normalizeAttempt,
 };

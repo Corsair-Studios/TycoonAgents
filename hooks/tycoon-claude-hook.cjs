@@ -2278,14 +2278,32 @@ function main(raw) {
         fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
       } catch { /* ignore */ }
 
-      if (nudge) {
+      // p99-t2: tell the dispatcher exactly which session and agent made this
+      // delegate call (PreToolUse updatedInput is documented for MCP tools),
+      // so its fallback records attribute to the right run even when several
+      // are concurrent. permissionDecision "allow" is required alongside updatedInput
+      // (this is TycoonAgents' own tool; settings deny rules still apply). The dispatcher falls back to its activity-log heuristic when the
+      // field is absent.
+      const dispatcherUpdate =
+        isDispatcherTool(toolName) && toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
+          ? {
+              ...toolInput,
+              _tycoon: {
+                ...(typeof payload.session_id === "string" && payload.session_id ? { sessionId: payload.session_id } : {}),
+                callerAgentId: workerId,
+              },
+            }
+          : undefined;
+
+      if (nudge || dispatcherUpdate) {
         try {
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse",
-              additionalContext: nudge,
-            },
-          }));
+          const specific = { hookEventName: "PreToolUse" };
+          if (nudge) specific.additionalContext = nudge;
+          if (dispatcherUpdate) {
+            specific.permissionDecision = "allow";
+            specific.updatedInput = dispatcherUpdate;
+          }
+          process.stdout.write(JSON.stringify({ hookSpecificOutput: specific }));
         } catch { /* never let output construction break the hook */ }
       }
     }

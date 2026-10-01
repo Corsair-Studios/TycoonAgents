@@ -349,13 +349,14 @@ test("a hung primary times out and falls back; the hung child is cleaned up", as
     process.env.TYCOON_PROJECT_DIR = project.dir;
     process.env.TYCOON_DISPATCH_HOST = "claude";
     process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS = "1500";
+    process.env.TYCOON_DISPATCH_GUARD_GRACE_MS = "300";
     let res: ToolResult;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<ToolResult> };
       res = await mod.handleDelegateTool({ specialist: "fake-reviewer", task: "review" });
     } finally {
-      for (const [k, v] of [["TYCOON_PROJECT_DIR", prev.dir], ["TYCOON_DISPATCH_HOST", prev.host], ["TYCOON_DISPATCH_STEP_TIMEOUT_MS", prev.timeout]] as const) {
+      for (const [k, v] of [["TYCOON_PROJECT_DIR", prev.dir], ["TYCOON_DISPATCH_HOST", prev.host], ["TYCOON_DISPATCH_STEP_TIMEOUT_MS", prev.timeout], ["TYCOON_DISPATCH_GUARD_GRACE_MS", undefined]] as const) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
@@ -376,6 +377,72 @@ test("a chain step naming an unconfigured MCP server is a provider_error attempt
     const sc = res.structuredContent as Record<string, any>;
     assert.equal(sc.provider, "fake-b");
     assert.equal(sc.attempts[1].kind, "not_configured");
+    await assertNoLeakedBridges(project);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("a chain step naming the dispatcher itself is refused with kind self_reference, then the next step runs", async () => {
+  const project = makeProject({ modes: { "fake-a": "fail", "fake-b": "ok" }, chain: [slot("tycoon"), slot("fake-b")] });
+  try {
+    const res = await delegate(project);
+    const sc = res.structuredContent as Record<string, any>;
+    assert.equal(sc.provider, "fake-b");
+    assert.equal(sc.attempts[1].kind, "self_reference");
+    assert.deepEqual(project.calls().map((c) => c.server), ["fake-a", "fake-b"]);
+    await assertNoLeakedBridges(project);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("bridge env: ${VAR} / ${VAR:-default} are expanded in command, args and env; the step timeout is passed as TYCOON_BRIDGE_TIMEOUT_MS", async () => {
+  const project = makeProject({ modes: { "fake-a": "ok" }, chain: [] });
+  try {
+    const mcpPath = path.join(project.dir, ".mcp.json");
+    const cfg = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+    cfg.mcpServers["fake-a"].env.FAKE_NAME = "${P99_UNSET_VAR:-fake-a}";
+    cfg.mcpServers["fake-a"].env.FAKE_LOG = "${P99_LOGFILE}";
+    cfg.mcpServers["fake-a"].command = "${P99_NODE}";
+    fs.writeFileSync(mcpPath, JSON.stringify(cfg));
+    process.env.P99_LOGFILE = project.logFile;
+    process.env.P99_NODE = process.execPath;
+    try {
+      const res = await delegate(project);
+      assert.equal((res.structuredContent as Record<string, any>).provider, "fake-a");
+    } finally {
+      delete process.env.P99_LOGFILE;
+      delete process.env.P99_NODE;
+    }
+    assert.equal(project.calls().length, 1);
+    await assertNoLeakedBridges(project);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("hinted _tycoon session from the hook wins over the activity-log heuristic", async () => {
+  const project = makeProject({ modes: { "fake-a": "fail", "fake-b": "ok" }, chain: [slot("fake-b")] });
+  try {
+    fs.appendFileSync(
+      path.join(project.dir, ".claude", "tycoon", "activity.jsonl"),
+      JSON.stringify({ event: "PreToolUse", tool: "Agent", workerId: "fake-reviewer", sessionId: "sess-other", parentId: "orchestrator", at: 2 }) + "\n",
+    );
+    const modPath = require.resolve("../../hooks/tycoon-dispatcher-mcp.cjs");
+    delete require.cache[modPath];
+    process.env.TYCOON_PROJECT_DIR = project.dir;
+    process.env.TYCOON_DISPATCH_HOST = "claude";
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<ToolResult> };
+      await mod.handleDelegateTool({ specialist: "fake-reviewer", task: "t", _tycoon: { sessionId: "sess-1", callerAgentId: "fake-reviewer" } });
+    } finally {
+      delete process.env.TYCOON_PROJECT_DIR;
+      delete process.env.TYCOON_DISPATCH_HOST;
+    }
+    const trig = project.records().find((r) => r.event === "FallbackTriggered");
+    assert.equal(trig!.sessionId, "sess-1");
     await assertNoLeakedBridges(project);
   } finally {
     cleanup(project);
@@ -472,6 +539,27 @@ test("hook: spawning a dispatcher-routed agent never swaps attribution to a fall
   }
 });
 
+test("hook: PreToolUse on the delegate tool injects _tycoon {sessionId, callerAgentId} via updatedInput, keeping the original input", () => {
+  const root = hookProject();
+  try {
+    const out = runHook(root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "mcp__tycoon__delegate",
+      tool_input: { specialist: "fake-reviewer", task: "review" },
+      session_id: "sess-9",
+    });
+    const hso = JSON.parse(out).hookSpecificOutput;
+    assert.equal(hso.hookEventName, "PreToolUse");
+    assert.equal(hso.permissionDecision, "allow");
+    assert.equal(hso.updatedInput.task, "review");
+    assert.equal(hso.updatedInput.specialist, "fake-reviewer");
+    assert.equal(hso.updatedInput._tycoon.sessionId, "sess-9");
+    assert.equal(typeof hso.updatedInput._tycoon.callerAgentId, "string");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("hook: a direct (non-dispatcher) MCP failure still produces the last-resort prose, with accurate wording", () => {
   const root = hookProject();
   try {
@@ -492,4 +580,16 @@ test("hook: a direct (non-dispatcher) MCP failure still produces the last-resort
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("withDispatcherProjectDir writes the resolved project root into the tycoon entry's env only", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { withDispatcherProjectDir } = require("../src/host/vscode/mcpCatalog") as { withDispatcherProjectDir: (id: string, c: unknown, root: string) => any };
+  const cfg = { command: "node", args: [".claude/hooks/tycoon-dispatcher-mcp.cjs"], env: { TYCOON_DISPATCH_HOST: "claude" } };
+  const out = withDispatcherProjectDir("tycoon", cfg, "C:\\work\\proj");
+  assert.equal(out.env.TYCOON_PROJECT_DIR, "C:/work/proj");
+  assert.equal(out.env.TYCOON_DISPATCH_HOST, "claude");
+  assert.equal(cfg.env.TYCOON_DISPATCH_HOST, "claude");
+  assert.equal((cfg.env as Record<string, string>).TYCOON_PROJECT_DIR, undefined, "input is not mutated");
+  assert.equal(withDispatcherProjectDir("codex", cfg, "/p"), cfg);
 });

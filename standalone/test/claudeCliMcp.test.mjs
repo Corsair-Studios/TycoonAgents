@@ -176,9 +176,9 @@ test('tools/call claude (fake CLI launched directly as a .js file) returns text,
 
     const callLine = await callClaude(child, nextLine, { prompt: 'Reply with the single word OK.', model: 'claude-haiku-4-5', max_turns: 1 });
 
-    assert.equal(callLine.result.isError, undefined, `expected no error, got: ${JSON.stringify(callLine.result)}`);
+    assert.equal(callLine.result.isError, false, `expected no error, got: ${JSON.stringify(callLine.result)}`);
     assert.equal(callLine.result.content[0].type, 'text');
-    assert.equal(callLine.result.content[0].text, 'OK');
+    assert.ok(callLine.result.content[0].text.endsWith('OK'), callLine.result.content[0].text);
 
     const sc = callLine.result.structuredContent;
     assert.deepEqual(sc.usage, { input_tokens: 10, output_tokens: 51, cache_read_tokens: 21526, cache_creation_tokens: 6301 });
@@ -223,8 +223,8 @@ test('tools/call claude (fake CLI resolved via an npm-shim-shaped .cmd) resolves
     const callLine = await callClaude(child, nextLine, { prompt: 'hello via shim' });
 
     if (process.platform === 'win32') {
-      assert.equal(callLine.result.isError, undefined, `expected shim resolution to succeed, got: ${JSON.stringify(callLine.result)}`);
-      assert.equal(callLine.result.content[0].text, 'OK');
+      assert.equal(callLine.result.isError, false, `expected shim resolution to succeed, got: ${JSON.stringify(callLine.result)}`);
+      assert.ok(callLine.result.content[0].text.endsWith('OK'), callLine.result.content[0].text);
       const stdinText = fs.readFileSync(stdinLogPath, 'utf8');
       assert.equal(stdinText, 'hello via shim');
     } else {
@@ -262,7 +262,7 @@ test('SECURITY: a prompt containing shell metacharacters is delivered verbatim o
   try {
     await initializeAndListTools(child, nextLine);
     const callLine = await callClaude(child, nextLine, { prompt: injectionPrompt });
-    assert.equal(callLine.result.isError, undefined, `expected no error, got: ${JSON.stringify(callLine.result)}`);
+    assert.equal(callLine.result.isError, false, `expected no error, got: ${JSON.stringify(callLine.result)}`);
 
     const stdinText = fs.readFileSync(stdinLogPath, 'utf8');
     assert.equal(stdinText, injectionPrompt, 'the fake CLI must receive the prompt verbatim on stdin');
