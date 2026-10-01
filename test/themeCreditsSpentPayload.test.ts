@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
-const read = (...parts: string[]) => readFileSync(path.join(process.cwd(), ...parts), 'utf8');
+const read = (...parts: string[]) => readFileSync(path.join(process.cwd(), ...parts), 'utf8').replace(/\r\n/g, '\n');
 
 test('panel.ts _postThemeImageReview forwards review.creditsSpent in the THEME_IMAGE_REVIEW payload', () => {
   const src = read('src', 'host', 'vscode', 'panel.ts');
