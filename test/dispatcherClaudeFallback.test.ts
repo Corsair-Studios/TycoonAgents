@@ -465,7 +465,7 @@ function runHook(root: string, payload: Record<string, unknown>): string {
     const r = spawnSync(process.execPath, [path.join(dir, "tycoon-claude-hook.cjs")], {
       input: JSON.stringify(payload),
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root, CLAUDE_CONFIG_DIR: path.join(root, "no-user-config") },
     });
     assert.equal(r.status, 0, `hook exited non-zero: ${r.stderr}`);
     return r.stdout;
@@ -539,24 +539,65 @@ test("hook: spawning a dispatcher-routed agent never swaps attribution to a fall
   }
 });
 
-test("hook: PreToolUse on the delegate tool injects _tycoon {sessionId, callerAgentId} via updatedInput, keeping the original input", () => {
+function writeSettings(root: string, permissions: Record<string, string[]>, file = "settings.local.json"): void {
+  fs.writeFileSync(path.join(root, ".claude", file), JSON.stringify({ permissions }));
+}
+
+function delegatePreToolUse(root: string): any {
+  const out = runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "mcp__tycoon__delegate",
+    tool_input: { specialist: "fake-reviewer", task: "review" },
+    session_id: "sess-9",
+  });
+  return out.trim() ? JSON.parse(out).hookSpecificOutput : {};
+}
+
+test("hook: PreToolUse on an already-allowed delegate tool injects _tycoon {sessionId, callerAgentId} via updatedInput, keeping the original input", () => {
+  for (const rule of ["mcp__tycoon__delegate", "mcp__tycoon__*", "mcp__tycoon"]) {
+    const root = hookProject();
+    try {
+      writeSettings(root, { allow: [rule] });
+      const hso = delegatePreToolUse(root);
+      assert.equal(hso.hookEventName, "PreToolUse", rule);
+      assert.equal(hso.permissionDecision, "allow", rule);
+      assert.equal(hso.updatedInput.task, "review");
+      assert.equal(hso.updatedInput.specialist, "fake-reviewer");
+      assert.equal(hso.updatedInput._tycoon.sessionId, "sess-9");
+      assert.equal(typeof hso.updatedInput._tycoon.callerAgentId, "string");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("hook: a delegate call the user has not allowed gets no permissionDecision and no updatedInput", () => {
   const root = hookProject();
   try {
-    const out = runHook(root, {
-      hook_event_name: "PreToolUse",
-      tool_name: "mcp__tycoon__delegate",
-      tool_input: { specialist: "fake-reviewer", task: "review" },
-      session_id: "sess-9",
-    });
-    const hso = JSON.parse(out).hookSpecificOutput;
-    assert.equal(hso.hookEventName, "PreToolUse");
-    assert.equal(hso.permissionDecision, "allow");
-    assert.equal(hso.updatedInput.task, "review");
-    assert.equal(hso.updatedInput.specialist, "fake-reviewer");
-    assert.equal(hso.updatedInput._tycoon.sessionId, "sess-9");
-    assert.equal(typeof hso.updatedInput._tycoon.callerAgentId, "string");
+    const hso = delegatePreToolUse(root);
+    assert.equal(hso.permissionDecision, undefined);
+    assert.equal(hso.updatedInput, undefined);
+    writeSettings(root, { allow: ["mcp__other__*", "mcp__*", "Bash"] });
+    const hso2 = delegatePreToolUse(root);
+    assert.equal(hso2.permissionDecision, undefined);
+    assert.equal(hso2.updatedInput, undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook: a delegate call that is allowed but also denied or asked gets no injection", () => {
+  for (const blocker of <Array<Record<string, string[]>>>[{ deny: ["mcp__tycoon__delegate"] }, { deny: ["mcp__tycoon"] }, { deny: ["mcp__*"] }, { ask: ["mcp__tycoon__*"] }]) {
+    const root = hookProject();
+    try {
+      writeSettings(root, { allow: ["mcp__tycoon__delegate"] });
+      writeSettings(root, blocker, "settings.json");
+      const hso = delegatePreToolUse(root);
+      assert.equal(hso.permissionDecision, undefined, JSON.stringify(blocker));
+      assert.equal(hso.updatedInput, undefined, JSON.stringify(blocker));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

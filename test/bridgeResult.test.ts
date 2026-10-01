@@ -7,7 +7,7 @@
 // Tests hooks/bridge-result.cjs (plan p98-t1): the shared MCP bridge result
 // envelope, its truncation/error caps, withTimeout, and parseBridgeResult.
 
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -25,6 +25,17 @@ const bridge = require("../../hooks/bridge-result.cjs") as {
 };
 
 const { formatBridgeResult, withTimeout, parseBridgeResult } = bridge;
+
+// withTimeout unref()s its timer on purpose (bridges must not be held alive),
+// so tests that await a never-settling promise need a ref'd handle of their
+// own or a clean process exits before the timer fires and cancels the file.
+let keepAlive: NodeJS.Timeout | undefined;
+before(() => {
+  keepAlive = setInterval(() => undefined, 1000);
+});
+after(() => {
+  if (keepAlive) clearInterval(keepAlive);
+});
 
 test("ok result carries the envelope and isError false", () => {
   const r = formatBridgeResult({ provider: "openai-compatible", model: "kimi-k2", text: "LGTM, mentions 401 and quota only in prose" });

@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 
 // Per-spawn instance identifier, generated at push time (independent of
 // Claude Code's own payload.agent_id, which is only bound to a stack entry
@@ -383,6 +384,54 @@ const DISPATCHER_SERVERS = ["tycoon", "tycoon-dispatcher"];
 function isDispatcherTool(toolName) {
   const m = /^mcp__(.+?)__/.exec(String(toolName || ""));
   return !!m && DISPATCHER_SERVERS.indexOf(m[1]) !== -1;
+}
+// Permission-rule matching for the delegate session injection. Syntax per
+// https://code.claude.com/docs/en/permissions (MCP section): "mcp__server"
+// matches every tool of that server, "mcp__server__tool" one tool, and
+// "mcp__server__*" (glob after a literal mcp__<server>__ prefix) a family.
+// Evaluation is deny, then ask, then allow; any scope's deny/ask wins.
+// Rules containing parentheses are skipped by Claude Code for mcp__ tools.
+function globToRegExp(glob) {
+  return new RegExp("^" + glob.split("*").map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+}
+function ruleMatchesTool(rule, toolName, isAllow) {
+  if (typeof rule !== "string") return false;
+  const r = rule.trim();
+  if (!r || r.indexOf("(") !== -1) return false;
+  if (r === toolName) return true;
+  const server = /^(mcp__[^_*][^*]*?)__/.exec(toolName);
+  if (r.indexOf("*") === -1) return !!server && r === server[1];
+  if (isAllow) {
+    // Allow globs are honored only after a literal mcp__<server>__ prefix.
+    const m = /^(mcp__.+?)__/.exec(r);
+    if (!m || m[1].indexOf("*") !== -1) return false;
+  }
+  return globToRegExp(r).test(toolName);
+}
+function readUserPermissions(projectRoot) {
+  const userDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const files = [
+    path.join(projectRoot, ".claude", "settings.json"),
+    path.join(projectRoot, ".claude", "settings.local.json"),
+    path.join(userDir, "settings.json"),
+  ];
+  const out = { allow: [], deny: [], ask: [] };
+  for (const f of files) {
+    const perms = (readJsonSafe(f) || {}).permissions;
+    if (!perms || typeof perms !== "object") continue;
+    for (const k of ["allow", "deny", "ask"]) if (Array.isArray(perms[k])) out[k].push(...perms[k]);
+  }
+  return out;
+}
+function toolAllowedByUserSettings(projectRoot, toolName) {
+  try {
+    const p = readUserPermissions(projectRoot);
+    if (p.deny.some((r) => ruleMatchesTool(r, toolName, false))) return false;
+    if (p.ask.some((r) => ruleMatchesTool(r, toolName, false))) return false;
+    return p.allow.some((r) => ruleMatchesTool(r, toolName, true));
+  } catch {
+    return false;
+  }
 }
 function isDispatcherRoutedAgent(agentsDir, agentId) {
   try {
@@ -2282,10 +2331,12 @@ function main(raw) {
       // delegate call (PreToolUse updatedInput is documented for MCP tools),
       // so its fallback records attribute to the right run even when several
       // are concurrent. permissionDecision "allow" is required alongside updatedInput
-      // (this is TycoonAgents' own tool; settings deny rules still apply). The dispatcher falls back to its activity-log heuristic when the
-      // field is absent.
+      // and auto-approves the call, so it is injected ONLY when the user's own
+      // settings already allow this tool (and none deny or ask for it).
+      // Otherwise no decision and no input change are emitted, and the
+      // dispatcher falls back to its activity-log heuristic.
       const dispatcherUpdate =
-        isDispatcherTool(toolName) && toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
+        isDispatcherTool(toolName) && toolAllowedByUserSettings(projectRoot, toolName) && toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
           ? {
               ...toolInput,
               _tycoon: {
