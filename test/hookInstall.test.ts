@@ -912,8 +912,8 @@ test("mergeEnabledMcpJsonServer: blank id leaves settings unchanged", () => {
 // so the list can never silently point at a renamed/missing script.
 // ---------------------------------------------------------------------------
 
-test("MCP_BRIDGE_HOOK_FILES is exactly codex-mcp-launcher.cjs and codex-app-server-mcp.cjs, in that order", () => {
-  assert.deepEqual(MCP_BRIDGE_HOOK_FILES, ["codex-mcp-launcher.cjs", "codex-app-server-mcp.cjs"]);
+test("MCP_BRIDGE_HOOK_FILES is exactly codex-mcp-launcher.cjs, codex-app-server-mcp.cjs and bridge-result.cjs, in that order", () => {
+  assert.deepEqual(MCP_BRIDGE_HOOK_FILES, ["codex-mcp-launcher.cjs", "codex-app-server-mcp.cjs", "bridge-result.cjs"]);
 });
 
 test("every MCP_BRIDGE_HOOK_FILES entry exists as a real file under hooks/ (the copy loop's source)", () => {

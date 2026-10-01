@@ -417,6 +417,7 @@ export const RUNTIME_HOOK_FILES: ReadonlyArray<string> = [
 export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "codex-mcp-launcher.cjs",
   "codex-app-server-mcp.cjs",
+  "bridge-result.cjs",
 ];
 
 /** Outcome of syncing one runtime file — see {@link syncRuntimeFile}. */
