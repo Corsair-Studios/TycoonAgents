@@ -1,0 +1,280 @@
+/*
+ * TycoonAgents - https://x.com/thetrashbyrd
+ * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
+ * Attribution header - optional; end users may remove it.
+ *
+ * Thin MCP stdio wrapper around the community gemini-mcp-tool (jamubc). It
+ * launches a PINNED version of that package, proxies newline-delimited
+ * JSON-RPC both ways unchanged, and rewrites only tools/call results into the
+ * shared bridge envelope (hooks/bridge-result.cjs): ok / provider_error /
+ * timeout / empty, with a size cap. A timed-out call kills the child process
+ * tree (it is respawned on the next call); exit or stdin close kills it too.
+ *
+ * Command discovery (docs/PATH-DISCOVERY.md): TYCOON_GEMINI_MCP_CMD override
+ * (optional TYCOON_GEMINI_MCP_ARGS, a JSON array) wins; otherwise `npx` is
+ * found on PATH, then beside the running node binary, and failure lists every
+ * place tried and names the override.
+ *
+ * Env: TYCOON_GEMINI_MCP_CMD, TYCOON_GEMINI_MCP_ARGS, TYCOON_BRIDGE_TIMEOUT_MS
+ * (default 180000), TYCOON_BRIDGE_MAX_CHARS (default 12000), GEMINI_MCP_BACKEND
+ * (agy | gemini, read by gemini-mcp-tool itself), GEMINI_MODEL (label only).
+ */
+"use strict";
+
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+const readline = require("node:readline");
+const { formatBridgeResult, withTimeout } = require("./bridge-result.cjs");
+
+const PINNED_PACKAGE = "gemini-mcp-tool@1.1.8";
+const PROVIDER = "gemini";
+const IS_WIN = process.platform === "win32";
+
+const ERROR_KINDS = [
+  ["cli_missing", /ENOENT|command not found|not recognized as an internal|(?:agy|gemini)(?: cli)?[^\n]{0,40}(?:not (?:installed|found)|missing)|spawn [^\n]*(?:agy|gemini)/i],
+  ["auth", /\b40[13]\b|unauthori[sz]ed|unauthenticated|permission denied|not logged in|log ?in required|api[ _-]?key|invalid credentials|authentication/i],
+  ["rate_limit", /\b429\b|rate[ -]?limit|too many requests/i],
+  ["quota", /quota|resource[_ ]exhausted|billing|usage limit/i],
+  ["network", /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|network|socket hang up|getaddrinfo/i],
+];
+
+function classifyError(text) {
+  for (const [kind, re] of ERROR_KINDS) if (re.test(text)) return kind;
+  return "provider_error";
+}
+
+function pathCandidates(name) {
+  const dirs = (process.env.PATH || process.env.Path || "").split(path.delimiter).filter(Boolean);
+  const exts = IS_WIN ? [".cmd", ".exe", ".bat", ""] : [""];
+  const out = [];
+  const add = (p) => {
+    if (!out.includes(p)) out.push(p);
+  };
+  for (const d of dirs) for (const e of exts) add(path.join(d, name + e));
+  for (const e of exts) add(path.join(path.dirname(process.execPath), name + e));
+  return out;
+}
+
+function isFile(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Returns { command, args } or throws an Error listing every location tried. */
+function resolveCommand(env) {
+  const override = (env.TYCOON_GEMINI_MCP_CMD || "").trim();
+  if (override) {
+    let args = [];
+    if (env.TYCOON_GEMINI_MCP_ARGS) {
+      try {
+        args = JSON.parse(env.TYCOON_GEMINI_MCP_ARGS);
+      } catch {
+        args = null;
+      }
+      if (!Array.isArray(args)) throw new Error("TYCOON_GEMINI_MCP_ARGS must be a JSON array of strings");
+    }
+    return { command: override, args };
+  }
+  const tried = pathCandidates("npx");
+  const found = tried.find(isFile);
+  if (!found) {
+    throw new Error(
+      "npx was not found. Tried: " +
+        tried.join(", ") +
+        ". Install Node.js or set TYCOON_GEMINI_MCP_CMD (and optionally TYCOON_GEMINI_MCP_ARGS as a JSON array) to the command that starts the Gemini MCP server.",
+    );
+  }
+  return { command: found, args: ["-y", PINNED_PACKAGE] };
+}
+
+function killTree(child) {
+  if (!child || child.exitCode !== null || !child.pid) return;
+  try {
+    if (IS_WIN) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    else process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+function textOf(result) {
+  const blocks = result && Array.isArray(result.content) ? result.content : [];
+  return blocks
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/** Pure: maps a child's tools/call result (or JSON-RPC error) to a bridge result. */
+function normalizeCallResult(msg, model) {
+  if (msg.error) {
+    const m = (msg.error && msg.error.message) || "Gemini MCP server returned an error";
+    return formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind: classifyError(m), message: m } });
+  }
+  const text = textOf(msg.result);
+  if (msg.result && msg.result.isError === true) {
+    return formatBridgeResult({
+      status: "provider_error",
+      provider: PROVIDER,
+      model,
+      text,
+      error: { kind: classifyError(text), message: text.slice(0, 400) || "Gemini call failed" },
+    });
+  }
+  return formatBridgeResult({ status: "ok", provider: PROVIDER, model, text });
+}
+
+function run() {
+  const env = process.env;
+  const model = env.GEMINI_MODEL || "gemini";
+  const out = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
+
+  let child = null;
+  let startError = null;
+  let initRequest = null;
+  let reinitId = null;
+  const pending = new Map(); // id -> { isCall, resolve }
+
+  function failPending(message, kind) {
+    for (const [id, p] of pending) {
+      pending.delete(id);
+      if (p.isCall) p.resolve(formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind, message } }));
+      else out({ jsonrpc: "2.0", id, error: { code: -32000, message } });
+    }
+  }
+
+  function send(obj) {
+    if (child && child.stdin.writable) child.stdin.write(JSON.stringify(obj) + "\n");
+  }
+
+  function onChildLine(line) {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (msg && reinitId !== null && msg.id === reinitId && !msg.method) {
+      reinitId = null;
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      return;
+    }
+    const p = msg && msg.id !== undefined && !msg.method ? pending.get(msg.id) : null;
+    if (!p) {
+      out(msg);
+      return;
+    }
+    pending.delete(msg.id);
+    if (p.isCall) p.resolve(normalizeCallResult(msg, model));
+    else out(msg);
+  }
+
+  function ensureChild() {
+    if (child && child.exitCode === null) return true;
+    let cmd;
+    try {
+      cmd = resolveCommand(env);
+    } catch (e) {
+      startError = e.message;
+      return false;
+    }
+    const needsShell = IS_WIN && /\.(cmd|bat)$/i.test(cmd.command);
+    const c = spawn(cmd.command, cmd.args, { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: needsShell, windowsHide: true });
+    child = c;
+    startError = null;
+    c.on("error", (e) => {
+      startError = "Could not start the Gemini MCP server (" + cmd.command + "): " + e.message;
+      if (child === c) child = null;
+      failPending(startError, "cli_missing");
+    });
+    c.on("exit", (code, signal) => {
+      if (child === c) child = null;
+      failPending("Gemini MCP server exited (" + (signal || "code " + code) + ")", "provider_error");
+    });
+    c.stdin.on("error", () => {});
+    readline.createInterface({ input: c.stdout }).on("line", onChildLine);
+    if (initRequest) {
+      reinitId = "tycoon-reinit";
+      send(Object.assign({}, initRequest, { id: reinitId }));
+    }
+    return true;
+  }
+
+  function handleCall(msg) {
+    if (!ensureChild()) {
+      out({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind: "cli_missing", message: startError } }),
+      });
+      return;
+    }
+    let settled = false;
+    const work = new Promise((resolve) => {
+      pending.set(msg.id, {
+        isCall: true,
+        resolve: (v) => {
+          settled = true;
+          resolve(v);
+        },
+      });
+    });
+    send(msg);
+    withTimeout(work, undefined, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
+      if (!settled) {
+        pending.delete(msg.id);
+        killTree(child);
+        child = null;
+      }
+      out({ jsonrpc: "2.0", id: msg.id, result });
+    });
+  }
+
+  function onClientLine(line) {
+    if (!line.trim()) return;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      out({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      return;
+    }
+    if (msg && msg.method === "initialize") initRequest = msg;
+    if (msg && msg.method === "tools/call" && msg.id !== undefined) {
+      handleCall(msg);
+      return;
+    }
+    if (!ensureChild()) {
+      if (msg && msg.id !== undefined && msg.method) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: startError } });
+      return;
+    }
+    if (msg && msg.id !== undefined && msg.method) pending.set(msg.id, { isCall: false, resolve() {} });
+    send(msg);
+  }
+
+  const shutdown = () => {
+    killTree(child);
+    child = null;
+  };
+  process.on("exit", shutdown);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(0));
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", onClientLine);
+  rl.on("close", () => {
+    shutdown();
+    process.exit(0);
+  });
+  ensureChild();
+}
+
+if (require.main === module) run();
+
+module.exports = { PINNED_PACKAGE, classifyError, normalizeCallResult, resolveCommand };

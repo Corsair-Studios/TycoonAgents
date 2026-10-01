@@ -317,19 +317,18 @@
     "requiresEnv": [
       "GEMINI_API_KEY"
     ],
-    "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio via `npx -y gemini-mcp-tool`. Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH. UPDATE 2026-06-18: Google retired the Gemini CLI for individual users; gemini-mcp-tool now defaults to the Antigravity CLI (`agy`) backend. Set GEMINI_MCP_BACKEND=gemini to keep using the Gemini CLI (paid API key / enterprise), or GEMINI_MCP_BACKEND=agy for Antigravity (source: https://github.com/jamubc/gemini-mcp-tool). Install whichever CLI matches the backend you choose.",
+    "note": "Google's own gemini-cli (https://github.com/google-gemini/gemini-cli) only CONSUMES MCP servers — confirmed against its docs: it has no server-mode flag (no 'mcp-server'/'--experimental-mcp-server' subcommand), only a `mcpServers` client config in ~/.gemini/settings.json. There is no official Google-published Gemini MCP *server*. This entry instead uses the most-starred, actively-maintained community bridge, jamubc/gemini-mcp-tool (2.3k★, https://github.com/jamubc/gemini-mcp-tool), which runs the local `gemini` CLI under the hood and exposes it over MCP stdio. TycoonAgents runs it through its bundled wrapper (hooks/gemini-mcp-wrapper.cjs), which launches the PINNED version gemini-mcp-tool@1.1.8 via npx (found on PATH; override with TYCOON_GEMINI_MCP_CMD) and returns a structured status (ok / provider_error / timeout / empty) with a timeout (TYCOON_BRIDGE_TIMEOUT_MS, default 180000) and a summary size cap (TYCOON_BRIDGE_MAX_CHARS, default 12000). Auth follows whatever the underlying `gemini` CLI is configured with — interactive OAuth login (`gemini` CLI's default) or, if you'd rather avoid a browser login step, the CLI's own support for reading GEMINI_API_KEY from the environment. Set GEMINI_API_KEY here only if you want that path; the server can also work with a CLI already logged in via OAuth (leave the value blank in that case). The `gemini` CLI itself must be installed and on PATH. UPDATE 2026-06-18: Google retired the Gemini CLI for individual users; gemini-mcp-tool now defaults to the Antigravity CLI (`agy`) backend. Set GEMINI_MCP_BACKEND=gemini to keep using the Gemini CLI (paid API key / enterprise), or GEMINI_MCP_BACKEND=agy for Antigravity (source: https://github.com/jamubc/gemini-mcp-tool). Install whichever CLI matches the backend you choose.",
     "docsUrl": "https://github.com/jamubc/gemini-mcp-tool",
     "thirdParty": true,
     "vendor": "Google",
-    "package": "gemini-mcp-tool (community bridge over Google's gemini CLI, run via `npx`)",
+    "package": "gemini-mcp-tool (community bridge over Google's gemini CLI, pinned 1.1.8, run via `npx` through the bundled wrapper)",
     "homepage": "https://github.com/jamubc/gemini-mcp-tool",
     "network": true,
     "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local backend CLI's own auth (Antigravity `agy` by default, or `gemini` when GEMINI_MCP_BACKEND=gemini) (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
     "config": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "gemini-mcp-tool"
+        "${EXTENSION_DIR}/hooks/gemini-mcp-wrapper.cjs"
       ]
     }
   },
