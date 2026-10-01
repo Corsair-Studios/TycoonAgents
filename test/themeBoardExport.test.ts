@@ -334,3 +334,25 @@ test('retireSupersededBoard is a no-op when the filename did not change or the f
     assert.ok((await fsp.readdir(imagesDir)).includes('agent_01_cali.png'));
   });
 });
+
+test('export excludes .bak backups but keeps current files', async () => {
+  await withStaleTheme(async (store, root) => {
+    const themeDir = path.join(root, 'themes', THEME_ID);
+    await fsp.writeFile(path.join(themeDir, 'manifest.json.1700000000.bak'), 'old');
+    await fsp.writeFile(path.join(themeDir, 'plan.json.bak'), 'old');
+    const paths = Object.keys(unzipSync(await exportThemeArchiveFromStore(store, THEME_ID)));
+    assert.ok(!paths.some((p) => p.endsWith('.bak')), paths.join(', '));
+    assert.ok(paths.includes('manifest.json'));
+  });
+});
+
+test('board matching is case-consistent: a case-differing reference never drops its file', async () => {
+  await withStaleTheme(async (store, root) => {
+    const themeDir = path.join(root, 'themes', THEME_ID);
+    const review = JSON.parse(await fsp.readFile(path.join(themeDir, 'review.json'), 'utf8'));
+    review.items.find((i: { id: string }) => i.id === 'rivals_01').filename = 'Rivals_01.PNG';
+    await fsp.writeFile(path.join(themeDir, 'review.json'), JSON.stringify(review));
+    const paths = Object.keys(unzipSync(await exportThemeArchiveFromStore(store, THEME_ID)));
+    assert.ok(paths.includes('images/rivals_01.png'), paths.join(', '));
+  });
+});

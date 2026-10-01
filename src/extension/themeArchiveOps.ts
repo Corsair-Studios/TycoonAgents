@@ -106,6 +106,7 @@ async function collectDirectoryFiles(
     if (entry.isDirectory) {
       await collectDirectoryFiles(store, path, relativePath, files);
     } else if (entry.isFile) {
+      if (/\.bak$/i.test(entry.name)) continue;
       files.set(relativePath, await store.readFile(path));
     }
   }
@@ -145,16 +146,16 @@ export function selectCurrentBoardFiles(files: Map<string, Uint8Array>): { skipp
 
   const referenced = new Set<string>();
   for (const item of review.items) {
-    if (item && typeof item.filename === 'string' && item.filename) referenced.add(`images/${item.filename}`);
+    if (item && typeof item.filename === 'string' && item.filename) referenced.add(`images/${item.filename}`.toLowerCase());
   }
   const keysWithCurrentFile = new Set<string>();
   for (const path of referenced) {
     const key = boardKeyOf(path);
-    if (key && files.has(path)) keysWithCurrentFile.add(key);
+    if (key && [...files.keys()].some((candidate) => candidate.toLowerCase() === path)) keysWithCurrentFile.add(key);
   }
   for (const path of [...files.keys()]) {
     const key = boardKeyOf(path);
-    if (!key || referenced.has(path) || !keysWithCurrentFile.has(key)) continue;
+    if (!key || referenced.has(path.toLowerCase()) || !keysWithCurrentFile.has(key)) continue;
     files.delete(path);
     result.skipped.push(path);
   }
