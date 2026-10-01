@@ -25,6 +25,10 @@ import * as os from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const bridge = require("../../hooks/bridge-result.cjs") as {
+  parseBridgeResult: (r: unknown) => { status: string; provider: string; truncated: boolean; error?: { kind: string } } | null;
+};
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const shim = require("../../hooks/codex-app-server-mcp.cjs") as {
   AppServerClient: new (binaryPath: string, extraArgs?: string[]) => {
     ensureInitialized: () => Promise<unknown>;
@@ -34,8 +38,8 @@ const shim = require("../../hooks/codex-app-server-mcp.cjs") as {
   };
   CODEX_TOOL: unknown;
   CODEX_REPLY_TOOL: unknown;
-  handleCodexTool: (args: Record<string, unknown>, client?: unknown) => Promise<{ content?: { type: string; text: string }[]; isError?: boolean; structuredContent?: { threadId: string; content: string } }>;
-  handleCodexReplyTool: (args: Record<string, unknown>, client?: unknown) => Promise<{ content?: { type: string; text: string }[]; isError?: boolean; structuredContent?: { threadId: string; content: string } }>;
+  handleCodexTool: (args: Record<string, unknown>, client?: unknown) => Promise<{ content?: { type: string; text: string }[]; isError?: boolean; structuredContent?: { threadId: string; content: string; summary?: string } }>;
+  handleCodexReplyTool: (args: Record<string, unknown>, client?: unknown) => Promise<{ content?: { type: string; text: string }[]; isError?: boolean; structuredContent?: { threadId: string; content: string; summary?: string } }>;
 };
 
 const FIXTURE_TOOLS_LIST_PATH = path.join(__dirname, "..", "..", "test", "fixtures", "codex-hooks", "app-server", "tools-list-0.153.json");
@@ -92,7 +96,8 @@ rl.on("line", (line) => {
     const promptText = (msg.params.input && msg.params.input[0] && msg.params.input[0].text) || "";
     if (promptText === "NEVER_COMPLETE") return; // deliberately never sends turn/completed
     let finalText = "Hello";
-    if (promptText === "SLOW_A") finalText = "SLOW_A_DONE";
+    if (promptText === "EMPTY_ANSWER") finalText = " ";
+    else if (promptText === "SLOW_A") finalText = "SLOW_A_DONE";
     else if (promptText === "FAST_B") finalText = "FAST_B_DONE";
     const delay = promptText.indexOf("SLOW") !== -1 ? 80 : 20;
     setTimeout(() => {
@@ -107,7 +112,7 @@ rl.on("line", (line) => {
         });
       }
       send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m1", text: finalText } } });
-      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed" } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: promptText === "FAIL_TURN" ? "failed" : "completed", error: promptText === "FAIL_TURN" ? { message: "401 Unauthorized" } : undefined } } });
     }, delay);
     return;
   }
@@ -155,10 +160,13 @@ test("(codex) round-trips a turn and returns final text + thread id", async () =
   const client = makeClient(fakeAppServer);
   try {
     const result = await shim.handleCodexTool({ prompt: "hi there", cwd: process.cwd() }, client);
-    assert.equal(result.isError, undefined, `expected success, got: ${JSON.stringify(result)}`);
-    assert.equal(result.content && result.content[0].text, "Hello");
+    assert.equal(result.isError, false, `expected success, got: ${JSON.stringify(result)}`);
+    assert.equal(result.structuredContent && result.structuredContent.summary, "Hello");
     assert.equal(result.structuredContent && result.structuredContent.threadId, "fake-thread-1");
     assert.equal(result.structuredContent && result.structuredContent.content, "Hello");
+    const env = bridge.parseBridgeResult(result);
+    assert.deepEqual({ status: env?.status, provider: env?.provider, truncated: env?.truncated }, { status: "ok", provider: "codex-app-server", truncated: false });
+    assert.ok(result.content && result.content[0].text.endsWith("Hello"), "content[0].text keeps the readable answer after the header line");
   } finally {
     client.dispose();
   }
@@ -173,14 +181,14 @@ test("(codex-reply) continues an existing thread via another turn/start", async 
   const client = makeClient(fakeAppServer);
   try {
     const first = await shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client);
-    assert.equal(first.isError, undefined);
+    assert.equal(first.isError, false);
     const threadId = first.structuredContent && first.structuredContent.threadId;
     assert.ok(threadId, "expected a thread id from the first call");
 
     const second = await shim.handleCodexReplyTool({ prompt: "again", threadId }, client);
-    assert.equal(second.isError, undefined, `expected success, got: ${JSON.stringify(second)}`);
+    assert.equal(second.isError, false, `expected success, got: ${JSON.stringify(second)}`);
     assert.equal(second.structuredContent && second.structuredContent.threadId, threadId, "codex-reply must reuse the same thread id, not start a new one");
-    assert.equal(second.content && second.content[0].text, "Hello");
+    assert.equal(second.structuredContent && second.structuredContent.summary, "Hello");
   } finally {
     client.dispose();
   }
@@ -196,8 +204,8 @@ test("(approval) a mid-turn approval request is auto-declined and the turn still
   const client = makeClient(fakeAppServer);
   try {
     const result = await shim.handleCodexTool({ prompt: "TRIGGER_APPROVAL", cwd: process.cwd() }, client);
-    assert.equal(result.isError, undefined, `expected the turn to complete despite the approval request, got: ${JSON.stringify(result)}`);
-    assert.equal(result.content && result.content[0].text, "Hello");
+    assert.equal(result.isError, false, `expected the turn to complete despite the approval request, got: ${JSON.stringify(result)}`);
+    assert.equal(result.structuredContent && result.structuredContent.summary, "Hello");
   } finally {
     client.dispose();
   }
@@ -227,10 +235,10 @@ test("(concurrency) two concurrent codex-reply calls on one thread resolve indep
       shim.handleCodexReplyTool({ prompt: "FAST_B", threadId }, client),
     ]);
 
-    assert.equal(slow.isError, undefined, `expected SLOW_A to succeed, got: ${JSON.stringify(slow)}`);
-    assert.equal(fast.isError, undefined, `expected FAST_B to succeed, got: ${JSON.stringify(fast)}`);
-    assert.equal(slow.content && slow.content[0].text, "SLOW_A_DONE", "the slower call must resolve with its OWN text, not the faster call's");
-    assert.equal(fast.content && fast.content[0].text, "FAST_B_DONE", "the faster call must resolve with its OWN text, not the slower call's");
+    assert.equal(slow.isError, false, `expected SLOW_A to succeed, got: ${JSON.stringify(slow)}`);
+    assert.equal(fast.isError, false, `expected FAST_B to succeed, got: ${JSON.stringify(fast)}`);
+    assert.equal(slow.structuredContent && slow.structuredContent.summary, "SLOW_A_DONE", "the slower call must resolve with its OWN text, not the faster call's");
+    assert.equal(fast.structuredContent && fast.structuredContent.summary, "FAST_B_DONE", "the faster call must resolve with its OWN text, not the slower call's");
   } finally {
     client.dispose();
   }
@@ -252,17 +260,14 @@ test("(spawn error) a binary that cannot be spawned rejects the pending codex to
   const client = new shim.AppServerClient(missingBinaryPath, []);
   try {
     const start = Date.now();
-    // ensureInitialized() itself rejects (not caught inside handleCodexTool
-    // before that point), so the promptness/error-handler proof is that the
-    // rejection surfaces fast and names the unspawnable binary, not that
-    // handleCodexTool converts it to an {isError:true} result.
-    await assert.rejects(
-      () => shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client),
-      (err: Error) => {
-        assert.ok(/failed to spawn app-server child/.test(err.message), `expected the spawn-error message, got: ${err.message}`);
-        return true;
-      },
-    );
+    // handleCodexTool converts the rejected initialize into a provider_error
+    // bridge result (error.kind cli_missing) that names the unspawnable binary.
+    const result = await shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client);
+    const env = bridge.parseBridgeResult(result);
+    assert.equal(result.isError, true);
+    assert.equal(env?.status, "provider_error");
+    assert.equal(env?.error?.kind, "cli_missing");
+    assert.ok(/failed to spawn app-server child/.test(result.content![0].text), `expected the spawn-error message, got: ${result.content![0].text}`);
     const elapsed = Date.now() - start;
     assert.ok(elapsed < 5000, `expected a prompt rejection well under the timeout, took ${elapsed}ms`);
   } finally {
@@ -293,6 +298,70 @@ test("(timeout) a turn that never completes rejects cleanly instead of hanging",
     );
     const elapsed = Date.now() - start;
     assert.ok(elapsed < 5000, `expected the timeout to fire quickly, took ${elapsed}ms`);
+  } finally {
+    client.dispose();
+  }
+});
+
+// p98-t2: the structured bridge statuses for timeout, provider error, empty
+// output and over-cap output, through the real tool handler.
+async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) { saved[k] = process.env[k]; process.env[k] = vars[k]; }
+  try {
+    return await fn();
+  } finally {
+    for (const k of Object.keys(vars)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
+}
+
+test("(bridge) a turn that never completes returns status timeout", async () => {
+  const client = makeClient(writeFakeAppServer());
+  try {
+    const result = await withEnv({ CODEX_APP_SERVER_TIMEOUT_MS: "150" }, () => shim.handleCodexTool({ prompt: "NEVER_COMPLETE", cwd: process.cwd() }, client));
+    const env = bridge.parseBridgeResult(result);
+    assert.equal(result.isError, true);
+    assert.equal(env?.status, "timeout");
+    assert.equal(env?.error?.kind, "timeout");
+  } finally {
+    client.dispose();
+  }
+});
+
+test("(bridge) a failed turn returns provider_error with a classified kind", async () => {
+  const client = makeClient(writeFakeAppServer());
+  try {
+    const result = await shim.handleCodexTool({ prompt: "FAIL_TURN", cwd: process.cwd() }, client);
+    const env = bridge.parseBridgeResult(result);
+    assert.equal(result.isError, true);
+    assert.equal(env?.status, "provider_error");
+    assert.equal(env?.error?.kind, "auth");
+    assert.ok(result.content![0].text.includes("401 Unauthorized"));
+  } finally {
+    client.dispose();
+  }
+});
+
+test("(bridge) whitespace-only output returns status empty", async () => {
+  const client = makeClient(writeFakeAppServer());
+  try {
+    const result = await shim.handleCodexTool({ prompt: "EMPTY_ANSWER", cwd: process.cwd() }, client);
+    assert.equal(bridge.parseBridgeResult(result)?.status, "empty");
+    assert.equal(result.isError, true);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("(bridge) output above TYCOON_BRIDGE_MAX_CHARS is truncated with truncated=true", async () => {
+  const client = makeClient(writeFakeAppServer());
+  try {
+    const result = await withEnv({ TYCOON_BRIDGE_MAX_CHARS: "2" }, () => shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client));
+    const env = bridge.parseBridgeResult(result);
+    assert.equal(env?.status, "ok");
+    assert.equal(env?.truncated, true);
+    assert.ok(result.structuredContent!.summary!.startsWith("He"));
+    assert.ok(result.structuredContent!.content.length < "Hello".length + 40);
   } finally {
     client.dispose();
   }

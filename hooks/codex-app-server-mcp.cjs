@@ -41,7 +41,14 @@
  * This shim does NOT re-implement hooks/codex-mcp-launcher.cjs's discovery
  * ladder — it requires discoverCodexBinary from there so both stay in sync.
  * Env:
- *   CODEX_APP_SERVER_TIMEOUT_MS — per-turn timeout in ms (default 600000).
+ *   CODEX_APP_SERVER_TIMEOUT_MS — per-turn timeout in ms (default 600000);
+ *     TYCOON_BRIDGE_TIMEOUT_MS is the shared fallback when it is unset.
+ *   TYCOON_BRIDGE_MAX_CHARS     — summary cap (see hooks/bridge-result.cjs).
+ * Every tools/call result carries the shared bridge envelope in
+ * structuredContent (status ok | provider_error | timeout | empty, provider
+ * "codex-app-server", model, summary, truncated, error { kind, message } on
+ * non-ok) beside the existing { threadId, content } fields; `content` there
+ * is the capped summary. content[0].text stays the readable text/error.
  *   CODEX_CLI_PATH              — binary override, same as the launcher.
  * Argv: any leading `-c key=value` pairs given to THIS script are forwarded
  * verbatim to the spawned `codex.exe app-server` child (e.g. model/sandbox/
@@ -58,6 +65,7 @@
 const readline = require("readline");
 const { spawn } = require("child_process");
 const { discoverCodexBinary, needsShell } = require("./codex-mcp-launcher.cjs");
+const { formatBridgeResult } = require("./bridge-result.cjs");
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 
@@ -160,8 +168,28 @@ function respond(id, result) {
 function respondError(id, code, message) {
   writeMessage({ jsonrpc: "2.0", id, error: { code, message } });
 }
-function isErrorResult(text) {
-  return { isError: true, content: [{ type: "text", text }] };
+const PROVIDER = "codex-app-server";
+
+/** Short error.kind from error text. */
+function classifyError(text) {
+  const t = String(text || "");
+  if (/ENOENT|failed to spawn|app-server child exited|not recognized as an internal/i.test(t)) return "cli_missing";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|login/i.test(t)) return "auth";
+  if (/\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
+  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (/\b404\b|not found|model_not_found|does not exist|unsupported model/i.test(t)) return "not_found";
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
+  return "unknown";
+}
+
+function isErrorResult(text, kind, model) {
+  return formatBridgeResult({
+    status: "provider_error",
+    provider: PROVIDER,
+    model: model || "",
+    text,
+    error: { kind: kind || classifyError(text), message: text },
+  });
 }
 
 /**
@@ -392,7 +420,9 @@ class AppServerClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.turnListeners.delete(key);
-        reject(new Error(`app-server turn timed out after ${timeoutMs}ms (threadId=${threadId}, turnId=${turnId})`));
+        const err = new Error(`app-server turn timed out after ${timeoutMs}ms (threadId=${threadId}, turnId=${turnId})`);
+        err.bridgeTimeout = true;
+        reject(err);
       }, timeoutMs);
       this.turnListeners.set(key, { turnId, threadId, text: (buffered && buffered.text) || "", resolve, reject, timer });
     });
@@ -423,45 +453,63 @@ function getClient() {
   return sharedClient;
 }
 
+/** CODEX_APP_SERVER_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else the 600s default. */
 function timeoutMs() {
-  const raw = Number(process.env.CODEX_APP_SERVER_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+  for (const name of ["CODEX_APP_SERVER_TIMEOUT_MS", "TYCOON_BRIDGE_TIMEOUT_MS"]) {
+    const raw = Number(process.env[name]);
+    if (process.env[name] && Number.isFinite(raw) && raw > 0) return raw;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
+/** The model an agent asked for, if any (the app-server picks its own default otherwise). */
+function requestedModel(args) {
+  return args && typeof args.model === "string" ? args.model : "";
 }
 
 /** Handles the `codex` tool: initialize (once) -> thread/start -> turn/start -> wait for turn/completed. `client` is injectable so tests can point it at a fake app-server script instead of the real discovered binary. */
 async function handleCodexTool(args, client) {
   const prompt = args && typeof args.prompt === "string" ? args.prompt : undefined;
-  if (!prompt) return isErrorResult("Missing required argument: prompt");
+  if (!prompt) return isErrorResult("Missing required argument: prompt", "unknown");
+  const model = requestedModel(args);
 
   client = client || getClient();
-  await client.ensureInitialized();
+  try {
+    await client.ensureInitialized();
+  } catch (err) {
+    return isErrorResult(`codex: app-server initialize failed: ${err && err.message ? err.message : String(err)}`, undefined, model);
+  }
 
   const cwd = (args && typeof args.cwd === "string" && args.cwd) || process.cwd();
   let threadResult;
   try {
     threadResult = await client.request("thread/start", { cwd });
   } catch (err) {
-    return isErrorResult(`codex: thread/start failed: ${err && err.message ? err.message : String(err)}`);
+    return isErrorResult(`codex: thread/start failed: ${err && err.message ? err.message : String(err)}`, undefined, model);
   }
   const threadId = threadResult && threadResult.thread && threadResult.thread.id;
-  if (!threadId) return isErrorResult("codex: app-server thread/start returned no thread id");
+  if (!threadId) return isErrorResult("codex: app-server thread/start returned no thread id", "unknown", model);
 
-  return runTurn(client, threadId, prompt);
+  return runTurn(client, threadId, prompt, model);
 }
 
 /** Handles the `codex-reply` tool: reuses the caller-supplied thread id, issues another turn/start on it. `client` is injectable for tests, same as handleCodexTool. */
 async function handleCodexReplyTool(args, client) {
   const prompt = args && typeof args.prompt === "string" ? args.prompt : undefined;
-  if (!prompt) return isErrorResult("Missing required argument: prompt");
+  if (!prompt) return isErrorResult("Missing required argument: prompt", "unknown");
   const threadId = (args && (args.threadId || args.conversationId)) || undefined;
-  if (!threadId) return isErrorResult("codex-reply: missing required argument: threadId (or conversationId)");
+  if (!threadId) return isErrorResult("codex-reply: missing required argument: threadId (or conversationId)", "unknown");
 
   client = client || getClient();
-  await client.ensureInitialized();
-  return runTurn(client, threadId, prompt);
+  try {
+    await client.ensureInitialized();
+  } catch (err) {
+    return isErrorResult(`codex: app-server initialize failed: ${err && err.message ? err.message : String(err)}`);
+  }
+  return runTurn(client, threadId, prompt, "");
 }
 
-async function runTurn(client, threadId, prompt) {
+async function runTurn(client, threadId, prompt, model) {
   let turnResult;
   try {
     turnResult = await client.request("turn/start", {
@@ -469,18 +517,34 @@ async function runTurn(client, threadId, prompt) {
       input: [{ type: "text", text: prompt }],
     });
   } catch (err) {
-    return isErrorResult(`codex: turn/start failed: ${err && err.message ? err.message : String(err)}`);
+    return isErrorResult(`codex: turn/start failed: ${err && err.message ? err.message : String(err)}`, undefined, model);
   }
   const turnId = turnResult && turnResult.turn && turnResult.turn.id;
 
   try {
     const completed = await client.waitForTurn(threadId, turnId, timeoutMs());
-    return {
-      content: [{ type: "text", text: completed.text }],
-      structuredContent: { threadId: completed.threadId, content: completed.text },
-    };
+    const turn = completed.turn;
+    if (turn && (turn.status === "failed" || turn.status === "error")) {
+      const detail = turn.error && (turn.error.message || JSON.stringify(turn.error));
+      return isErrorResult(`codex: turn ${turn.status}${detail ? ": " + detail : ""}`, undefined, model);
+    }
+    const result = formatBridgeResult({
+      status: "ok",
+      provider: PROVIDER,
+      model,
+      text: completed.text,
+      error: { kind: "empty", message: "codex returned an empty answer" },
+      extra: { threadId: completed.threadId },
+    });
+    // outputSchema's `content` mirrors the (capped) summary, never the raw text.
+    result.structuredContent.content = result.structuredContent.summary;
+    return result;
   } catch (err) {
-    return isErrorResult(`codex: ${err && err.message ? err.message : String(err)}`);
+    const message = `codex: ${err && err.message ? err.message : String(err)}`;
+    if (err && err.bridgeTimeout) {
+      return formatBridgeResult({ status: "timeout", provider: PROVIDER, model, error: { kind: "timeout", message } });
+    }
+    return isErrorResult(message, undefined, model);
   }
 }
 
@@ -511,10 +575,10 @@ async function handleRequest(msg) {
       let result;
       if (toolName === "codex") result = await handleCodexTool(args);
       else if (toolName === "codex-reply") result = await handleCodexReplyTool(args);
-      else result = { isError: true, content: [{ type: "text", text: `Unknown tool: ${toolName}` }] };
+      else result = isErrorResult(`Unknown tool: ${toolName}`, "unknown");
       respond(id, result);
     } catch (err) {
-      respond(id, { isError: true, content: [{ type: "text", text: `Unexpected error: ${err && err.message ? err.message : String(err)}` }] });
+      respond(id, isErrorResult(`Unexpected error: ${err && err.message ? err.message : String(err)}`));
     }
     return;
   }

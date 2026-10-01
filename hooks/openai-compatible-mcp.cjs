@@ -59,12 +59,19 @@
  *     of parsing structuredContent — this is not itself a JSON-RPC message
  *     and MUST be ignored by a spec-compliant JSON-RPC client (parse each
  *     stdout line as JSON-RPC and skip lines that don't look like one).
+ *   - Every tools/call result carries the shared bridge envelope (see
+ *     hooks/bridge-result.cjs) in structuredContent: status ok | provider_error
+ *     | timeout | empty, plus provider ("openai-compatible"), model, summary,
+ *     truncated and, on non-ok, error { kind, message }. The summary is capped
+ *     at TYCOON_BRIDGE_MAX_CHARS (truncated=true above it); content[0].text
+ *     is the capped summary on ok, else the readable error message.
  *   - Missing OPENAI_COMPAT_BASE_URL, or any request-time failure (network
- *     error, non-2xx, malformed upstream JSON), is reported as a normal
- *     tools/call result with isError:true and a plain-text message in
- *     content[0].text naming the problem — never a thrown exception and
- *     never a JSON-RPC `error` object, matching the codex MCP server's own
- *     isError convention documented in .claude/agents/codex-reviewer.md.
+ *     error, non-2xx, malformed upstream JSON), is a provider_error result
+ *     (isError:true) with a plain-text message in content[0].text naming the
+ *     problem and an error.kind of auth | quota | rate_limit | not_found |
+ *     network | unknown — never a thrown exception and never a JSON-RPC
+ *     `error` object. An elapsed request timeout is status "timeout"; an
+ *     empty/whitespace completion is status "empty".
  * ---------------------------------------------------------------------------
  */
 
@@ -75,6 +82,7 @@ const https = require("https");
 const readline = require("readline");
 const path = require("path");
 const fs = require("fs");
+const { formatBridgeResult } = require("./bridge-result.cjs");
 
 // ---------------------------------------------------------------------------
 // p13-t6: local-store fallback for OPENAI_COMPAT_BASE_URL /
@@ -180,11 +188,36 @@ function buildChatUrl(baseUrl) {
  * agent's turn) indefinitely. */
 const DEFAULT_TIMEOUT_MS = 120000;
 
+/** OPENAI_COMPAT_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else the 120s default. */
 function resolveTimeoutMs() {
-  const raw = process.env.OPENAI_COMPAT_TIMEOUT_MS;
-  if (!raw) return DEFAULT_TIMEOUT_MS;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
+  for (const name of ["OPENAI_COMPAT_TIMEOUT_MS", "TYCOON_BRIDGE_TIMEOUT_MS"]) {
+    const n = Number(process.env[name]);
+    if (process.env[name] && Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_TIMEOUT_MS;
+}
+
+const PROVIDER = "openai-compatible";
+
+/** Short error.kind from an HTTP status and/or error text. */
+function classifyError(text, statusCode) {
+  const t = String(text || "");
+  if (statusCode === 401 || statusCode === 403 || /\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication/i.test(t)) return "auth";
+  if (statusCode === 429 || /\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
+  if (statusCode === 402 || /quota|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (statusCode === 404 || /\b404\b|not found|model_not_found|does not exist/i.test(t)) return "not_found";
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up|network/i.test(t)) return "network";
+  return "unknown";
+}
+
+function errorResult(model, text, statusCode, kindOverride) {
+  return formatBridgeResult({
+    status: "provider_error",
+    provider: PROVIDER,
+    model: model || "",
+    text,
+    error: { kind: kindOverride || classifyError(text, statusCode), message: text },
+  });
 }
 
 function postJson(urlString, body, apiKey) {
@@ -220,19 +253,25 @@ function postJson(urlString, body, apiKey) {
         res.on("end", () => {
           if (settled) return;
           settled = true;
+          clearTimeout(deadline);
           resolve({ statusCode: res.statusCode || 0, body: data });
         });
       },
     );
-    req.setTimeout(timeoutMs, () => {
+    // Total deadline (not socket-idle): a slowly trickling response is bounded too.
+    const deadline = setTimeout(() => {
       if (settled) return;
       settled = true;
       req.destroy();
-      reject(new Error(`Request to ${urlString} timed out after ${timeoutMs}ms (set OPENAI_COMPAT_TIMEOUT_MS to override)`));
-    });
+      const err = new Error(`Request to ${urlString} timed out after ${timeoutMs}ms (set OPENAI_COMPAT_TIMEOUT_MS or TYCOON_BRIDGE_TIMEOUT_MS to override)`);
+      err.bridgeTimeout = true;
+      reject(err);
+    }, timeoutMs);
+    if (deadline.unref) deadline.unref();
     req.on("error", (err) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       reject(err);
     });
     req.write(payload);
@@ -269,7 +308,7 @@ function vendorDefaultsFor(model) {
 async function handleChatTool(args) {
   const model = args && typeof args.model === "string" ? args.model : undefined;
   if (!model) {
-    return { isError: true, content: [{ type: "text", text: "Missing required argument: model" }] };
+    return errorResult("", "Missing required argument: model", undefined, "unknown");
   }
   const vendorDefault = vendorDefaultsFor(model);
 
@@ -281,18 +320,12 @@ async function handleChatTool(args) {
     baseUrl = resolveEnvOrLocal(vendorDefault.baseUrlEnv) || vendorDefault.defaultBaseUrl;
     apiKey = resolveEnvOrLocal(vendorDefault.apiKeyEnv);
     if (!apiKey) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: `${vendorDefault.apiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).` }],
-      };
+      return errorResult(model, `${vendorDefault.apiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).`, undefined, "auth");
     }
   } else {
     baseUrl = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
     if (!baseUrl) {
-      return {
-        isError: true,
-        content: [{ type: "text", text: "OPENAI_COMPAT_BASE_URL is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama, or your vLLM/LM Studio/hosted API base)." }],
-      };
+      return errorResult(model, "OPENAI_COMPAT_BASE_URL is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama, or your vLLM/LM Studio/hosted API base).", undefined, "unknown");
     }
     apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
   }
@@ -305,7 +338,7 @@ async function handleChatTool(args) {
     if (typeof args.system === "string" && args.system) messages.push({ role: "system", content: args.system });
     messages.push({ role: "user", content: args.prompt });
   } else {
-    return { isError: true, content: [{ type: "text", text: "Provide either `prompt` (+ optional `system`) or `messages`." }] };
+    return errorResult(model, "Provide either `prompt` (+ optional `system`) or `messages`.", undefined, "unknown");
   }
 
   // Strip this project's disambiguation prefix (e.g. "xai/") before sending
@@ -320,38 +353,48 @@ async function handleChatTool(args) {
   try {
     res = await postJson(url, requestBody, apiKey);
   } catch (err) {
-    return { isError: true, content: [{ type: "text", text: `Request to ${url} failed: ${err && err.message ? err.message : String(err)}` }] };
+    const message = err && err.message ? err.message : String(err);
+    if (err && err.bridgeTimeout) {
+      return formatBridgeResult({ status: "timeout", provider: PROVIDER, model, error: { kind: "timeout", message } });
+    }
+    return errorResult(model, `Request to ${url} failed: ${message}`);
   }
 
   if (res.statusCode < 200 || res.statusCode >= 300) {
-    return { isError: true, content: [{ type: "text", text: `Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 2000)}` }] };
+    return errorResult(model, `Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 2000)}`, res.statusCode);
   }
 
   let parsed;
   try {
     parsed = JSON.parse(res.body);
   } catch (err) {
-    return { isError: true, content: [{ type: "text", text: `Endpoint ${url} returned non-JSON response: ${res.body.slice(0, 2000)}` }] };
+    return errorResult(model, `Endpoint ${url} returned non-JSON response: ${res.body.slice(0, 2000)}`, undefined, "unknown");
   }
 
   const choice = parsed && Array.isArray(parsed.choices) ? parsed.choices[0] : undefined;
   const text = choice && choice.message && typeof choice.message.content === "string" ? choice.message.content : undefined;
   if (text === undefined) {
-    return { isError: true, content: [{ type: "text", text: `Endpoint ${url} returned an unexpected shape (no choices[0].message.content): ${res.body.slice(0, 2000)}` }] };
+    return errorResult(model, `Endpoint ${url} returned an unexpected shape (no choices[0].message.content): ${res.body.slice(0, 2000)}`, undefined, "unknown");
   }
 
-  const result = { content: [{ type: "text", text }] };
   const usageRaw = parsed && parsed.usage;
+  let usage;
   if (usageRaw && (typeof usageRaw.prompt_tokens === "number" || typeof usageRaw.completion_tokens === "number")) {
-    const usage = {
+    usage = {
       input_tokens: usageRaw.prompt_tokens,
       output_tokens: usageRaw.completion_tokens,
     };
-    result.structuredContent = { usage };
     // Belt-and-suspenders trailing NDJSON line — see header comment.
     try { process.stdout.write(JSON.stringify({ usage }) + "\n"); } catch { /* never break the server over a logging line */ }
   }
-  return result;
+  return formatBridgeResult({
+    status: "ok",
+    provider: PROVIDER,
+    model,
+    text,
+    error: { kind: "empty", message: "Endpoint returned an empty completion" },
+    extra: usage ? { usage } : undefined,
+  });
 }
 
 async function handleRequest(msg) {
@@ -390,7 +433,7 @@ async function handleRequest(msg) {
     } catch (err) {
       // Defensive: handleChatTool should never throw, but never let an
       // unexpected exception crash the server or leave the client hanging.
-      respond(id, { isError: true, content: [{ type: "text", text: `Unexpected error: ${err && err.message ? err.message : String(err)}` }] });
+      respond(id, errorResult("", `Unexpected error: ${err && err.message ? err.message : String(err)}`, undefined, "unknown"));
     }
     return;
   }

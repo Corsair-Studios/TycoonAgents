@@ -124,11 +124,18 @@
  *   - A trailing NDJSON line `{"usage": {...}}` is ALSO appended after the
  *     JSON-RPC response line, mirroring openai-compatible-mcp.cjs, for a
  *     caller that scrapes raw stdout instead of parsing structuredContent.
- *   - Non-zero CLI exit, a hung process past the timeout, unparsable CLI
- *     stdout, a missing/unresolvable binary, invalid input, or the CLI
- *     JSON's own `is_error:true` are ALL reported as a normal tools/call
- *     result with isError:true and a plain-text message in content[0].text
- *     — never a thrown exception and never a JSON-RPC `error` object.
+ *   - Every result carries the shared bridge envelope (hooks/bridge-result.cjs)
+ *     in structuredContent beside the fields above: status ok | provider_error
+ *     | timeout | empty, provider "claude-cli", model, summary (capped at
+ *     TYCOON_BRIDGE_MAX_CHARS, truncated=true above it) and, on non-ok,
+ *     error { kind, message }. kind is auth | quota | rate_limit | not_found |
+ *     network | cli_missing | unknown.
+ *   - Non-zero CLI exit, unparsable CLI stdout, a missing/unresolvable binary,
+ *     invalid input, or the CLI JSON's own `is_error:true` are provider_error
+ *     results (isError:true) with a plain-text message in content[0].text. A
+ *     hung process past the timeout is status "timeout"; an empty/whitespace
+ *     `result` is status "empty". Never a thrown exception and never a
+ *     JSON-RPC `error` object.
  *   - Prompt text and any credentials are NEVER written to stderr or logs.
  * ---------------------------------------------------------------------------
  */
@@ -140,6 +147,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const readline = require("readline");
+const { formatBridgeResult } = require("./bridge-result.cjs");
 
 const SERVER_NAME = "claude-cli-mcp";
 const SERVER_VERSION = "1.0.0";
@@ -189,15 +197,38 @@ function respondError(id, code, message) {
   writeMessage({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function isErrorResult(text) {
-  return { isError: true, content: [{ type: "text", text }] };
+const PROVIDER = "claude-cli";
+
+/** Short error.kind from CLI error text. */
+function classifyError(text) {
+  const t = String(text || "");
+  if (/ENOENT|could not find the claude cli|failed to spawn|could not resolve a \.js entry/i.test(t)) return "cli_missing";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|\/login|oauth/i.test(t)) return "auth";
+  if (/\b429\b|rate.?limit|too many requests|overloaded/i.test(t)) return "rate_limit";
+  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (/\b404\b|not found|model_not_found|does not exist|issue with the selected model/i.test(t)) return "not_found";
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
+  return "unknown";
 }
 
+/** A provider_error bridge result; `kind` overrides the text-based classification. */
+function isErrorResult(text, kind, model) {
+  return formatBridgeResult({
+    status: "provider_error",
+    provider: PROVIDER,
+    model: model || "",
+    text,
+    error: { kind: kind || classifyError(text), message: text },
+  });
+}
+
+/** CLAUDE_CLI_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else the 180s default. */
 function resolveTimeoutMs() {
-  const raw = process.env.CLAUDE_CLI_TIMEOUT_MS;
-  if (!raw) return DEFAULT_TIMEOUT_MS;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TIMEOUT_MS;
+  for (const name of ["CLAUDE_CLI_TIMEOUT_MS", "TYCOON_BRIDGE_TIMEOUT_MS"]) {
+    const n = Number(process.env[name]);
+    if (process.env[name] && Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_TIMEOUT_MS;
 }
 
 /** Binary discovery ladder — see header comment. Returns { bin, triedPaths }. */
@@ -330,7 +361,7 @@ function runClaudeCli(command, args, cwd, timeoutMs, promptText) {
       if (settled) return;
       settled = true;
       try { child.kill(); } catch { /* best effort */ }
-      resolve({ error: `claude CLI timed out after ${timeoutMs}ms (set CLAUDE_CLI_TIMEOUT_MS to override)` });
+      resolve({ timedOut: true, error: `claude CLI timed out after ${timeoutMs}ms (set CLAUDE_CLI_TIMEOUT_MS or TYCOON_BRIDGE_TIMEOUT_MS to override)` });
     }, timeoutMs);
 
     child.stdout.on("data", (c) => { stdout += c; });
@@ -402,12 +433,12 @@ function mapModelUsage(modelUsageRaw) {
 async function handleClaudeTool(args) {
   const prompt = args && typeof args.prompt === "string" ? args.prompt : undefined;
   if (!prompt) {
-    return isErrorResult("Missing required argument: prompt");
+    return isErrorResult("Missing required argument: prompt", "unknown");
   }
 
   const model = (typeof args.model === "string" && args.model) || process.env.CLAUDE_CLI_MODEL || DEFAULT_MODEL;
   if (!MODEL_RE.test(model)) {
-    return isErrorResult(`Invalid model "${model}" — must match ${MODEL_RE}`);
+    return isErrorResult(`Invalid model "${model}" — must match ${MODEL_RE}`, "unknown");
   }
 
   const maxTurns = typeof args.max_turns === "number" && args.max_turns > 0 ? args.max_turns : DEFAULT_MAX_TURNS;
@@ -416,7 +447,7 @@ async function handleClaudeTool(args) {
   let system;
   if (typeof args.system === "string" && args.system) {
     if (DISALLOWED_CONTROL_CHAR_RE.test(args.system)) {
-      return isErrorResult("Invalid system: contains a NUL byte or a disallowed control character.");
+      return isErrorResult("Invalid system: contains a NUL byte or a disallowed control character.", "unknown", model);
     }
     system = args.system;
   }
@@ -425,7 +456,7 @@ async function handleClaudeTool(args) {
   if (Array.isArray(args.allowed_tools) && args.allowed_tools.length > 0) {
     for (const tool of args.allowed_tools) {
       if (typeof tool !== "string" || !ALLOWED_TOOL_RE.test(tool)) {
-        return isErrorResult(`Invalid allowed_tools entry ${JSON.stringify(tool)} — each entry must match ${ALLOWED_TOOL_RE}`);
+        return isErrorResult(`Invalid allowed_tools entry ${JSON.stringify(tool)} — each entry must match ${ALLOWED_TOOL_RE}`, "unknown", model);
       }
     }
     allowedTools = args.allowed_tools;
@@ -437,10 +468,10 @@ async function handleClaudeTool(args) {
     try {
       stat = fs.statSync(args.cwd);
     } catch {
-      return isErrorResult(`Invalid cwd "${args.cwd}": does not exist.`);
+      return isErrorResult(`Invalid cwd "${args.cwd}": does not exist.`, "unknown", model);
     }
     if (!stat.isDirectory()) {
-      return isErrorResult(`Invalid cwd "${args.cwd}": not a directory.`);
+      return isErrorResult(`Invalid cwd "${args.cwd}": not a directory.`, "unknown", model);
     }
     cwd = args.cwd;
   } else {
@@ -451,13 +482,15 @@ async function handleClaudeTool(args) {
   if (!bin) {
     return isErrorResult(
       `Could not find the claude CLI. Tried:\n${triedPaths.map((p) => `  - ${p}`).join("\n")}\n` +
-      "Set CLAUDE_CLI_BIN to the full path of your claude binary to override discovery."
+      "Set CLAUDE_CLI_BIN to the full path of your claude binary to override discovery.",
+      "cli_missing",
+      model
     );
   }
 
   const spawnTarget = resolveSpawnTarget(bin);
   if (spawnTarget.error) {
-    return isErrorResult(spawnTarget.error);
+    return isErrorResult(spawnTarget.error, "cli_missing", model);
   }
 
   const timeoutMs = resolveTimeoutMs();
@@ -478,8 +511,11 @@ async function handleClaudeTool(args) {
 
   const finalArgs = [...spawnTarget.args, ...cliArgs];
   const run = await runClaudeCli(spawnTarget.command, finalArgs, cwd, timeoutMs, prompt);
+  if (run.timedOut) {
+    return formatBridgeResult({ status: "timeout", provider: PROVIDER, model, error: { kind: "timeout", message: run.error } });
+  }
   if (run.error) {
-    return isErrorResult(run.error);
+    return isErrorResult(run.error, /ENOENT|EACCES|EINVAL|spawn/i.test(run.error) ? "cli_missing" : undefined, model);
   }
 
   let parsed;
@@ -487,14 +523,14 @@ async function handleClaudeTool(args) {
     parsed = JSON.parse(run.stdout);
   } catch {
     const stderrSnippet = run.stderr ? ` stderr: ${run.stderr.slice(0, 1000)}` : "";
-    return isErrorResult(`claude CLI produced non-JSON output (exit ${run.code}): ${run.stdout.slice(0, 1000)}${stderrSnippet}`);
+    return isErrorResult(`claude CLI produced non-JSON output (exit ${run.code}): ${run.stdout.slice(0, 1000)}${stderrSnippet}`, undefined, model);
   }
 
   if (run.code !== 0 || parsed.is_error === true) {
     const message = typeof parsed.result === "string" && parsed.result
       ? parsed.result
       : `claude CLI exited ${run.code}${run.stderr ? `: ${run.stderr.slice(0, 1000)}` : ""}`;
-    return isErrorResult(message);
+    return isErrorResult(message, undefined, model);
   }
 
   const text = typeof parsed.result === "string" ? parsed.result : "";
@@ -508,15 +544,18 @@ async function handleClaudeTool(args) {
   if (typeof parsed.num_turns === "number") structuredContent.num_turns = parsed.num_turns;
   structuredContent.is_error = parsed.is_error === true;
 
-  const result = { content: [{ type: "text", text }] };
-  if (Object.keys(structuredContent).length > 0) {
-    result.structuredContent = structuredContent;
-    if (usage) {
-      // Belt-and-suspenders trailing NDJSON line — see header comment.
-      try { process.stdout.write(JSON.stringify({ usage }) + "\n"); } catch { /* never break the server over a logging line */ }
-    }
+  if (usage && text.trim() !== "") {
+    // Belt-and-suspenders trailing NDJSON line — see header comment.
+    try { process.stdout.write(JSON.stringify({ usage }) + "\n"); } catch { /* never break the server over a logging line */ }
   }
-  return result;
+  return formatBridgeResult({
+    status: "ok",
+    provider: PROVIDER,
+    model,
+    text,
+    error: { kind: "empty", message: "claude CLI returned an empty result" },
+    extra: structuredContent,
+  });
 }
 
 async function handleRequest(msg) {
@@ -552,7 +591,7 @@ async function handleRequest(msg) {
       const result = await handleClaudeTool(args);
       respond(id, result);
     } catch (err) {
-      respond(id, { isError: true, content: [{ type: "text", text: `Unexpected error: ${err && err.message ? err.message : String(err)}` }] });
+      respond(id, isErrorResult(`Unexpected error: ${err && err.message ? err.message : String(err)}`, "unknown"));
     }
     return;
   }

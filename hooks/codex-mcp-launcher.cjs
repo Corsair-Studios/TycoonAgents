@@ -40,6 +40,26 @@
  * On total failure, prints ONE explicit line to stderr listing every
  * location probed, and exits 1. Never silent, never a placeholder path.
  *
+ * Structured results + timeout (plan p98-t2): on the native `mcp-server` path
+ * the launcher no longer inherits stdio. It pipes the client's stdin/stdout
+ * through a line-level MCP proxy (createMcpResultProxy) that forwards every
+ * message untouched EXCEPT the JSON-RPC response to a client `tools/call`,
+ * which is rewritten through hooks/bridge-result.cjs formatBridgeResult into
+ * the shared envelope (status ok | provider_error | timeout | empty, provider
+ * "codex", summary capped at TYCOON_BRIDGE_MAX_CHARS, error.kind). Codex's own
+ * { threadId, content } structuredContent is kept beside the envelope (with
+ * `content` capped to the summary). A tools/call that is still unanswered
+ * after the timeout gets a synthesized status "timeout" response and the child
+ * is sent notifications/cancelled; the late real response is dropped.
+ * What it can NOT wrap: initialize / tools/list / notifications (including the
+ * streaming codex/event ones), anything that is not a single line of JSON, and
+ * it cannot hard-kill a runaway turn (cancellation is only a request; the
+ * codex child keeps its own lifetime and may keep working in the background).
+ * The app-server fallback path is wrapped by codex-app-server-mcp.cjs itself,
+ * not by this proxy.
+ *   CODEX_MCP_TIMEOUT_MS      - per-tools/call timeout (default 600000);
+ *     TYCOON_BRIDGE_TIMEOUT_MS is the shared fallback when it is unset.
+ *
  * Env vars:
  *   CODEX_BINARY_PATH          — override, rung 1 above (checked first).
  *   CODEX_CLI_PATH             — alias for CODEX_BINARY_PATH, rung 1 above
@@ -81,7 +101,9 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const readline = require("readline");
 const { spawnSync, spawn } = require("child_process");
+const { formatBridgeResult } = require("./bridge-result.cjs");
 
 const CODEX_VERSION_PREFIX = "codex-cli ";
 
@@ -666,6 +688,158 @@ function applyReasoningEffortOverride(args, env) {
   return out;
 }
 
+const BRIDGE_PROVIDER = "codex";
+const DEFAULT_MCP_TIMEOUT_MS = 600000;
+
+/** CODEX_MCP_TIMEOUT_MS first, then the shared TYCOON_BRIDGE_TIMEOUT_MS, else 600s. */
+function resolveMcpTimeoutMs(env) {
+  const e = env || process.env;
+  for (const name of ["CODEX_MCP_TIMEOUT_MS", "TYCOON_BRIDGE_TIMEOUT_MS"]) {
+    const n = Number(e[name]);
+    if (e[name] && Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_MCP_TIMEOUT_MS;
+}
+
+/** Short error.kind from codex error text. */
+function classifyBridgeError(text) {
+  const t = String(text || "");
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|authentication|not logged in|log ?in/i.test(t)) return "auth";
+  if (/\b429\b|rate.?limit|too many requests/i.test(t)) return "rate_limit";
+  if (/quota|usage limit|limit reached|insufficient|billing|credit|exceeded your/i.test(t)) return "quota";
+  if (/\b404\b|not found|model_not_found|does not exist|unsupported model/i.test(t)) return "not_found";
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|network|fetch failed|socket hang up/i.test(t)) return "network";
+  return "unknown";
+}
+
+/** The model from a `-c model="..."` launcher arg pair, else "". */
+function modelFromArgs(args) {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] !== "-c") continue;
+    const m = /^model=["']?([^"'\s]+)["']?$/.exec(args[i + 1]);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+function textOfResult(result) {
+  if (!result || !Array.isArray(result.content)) return "";
+  return result.content
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/**
+ * Line-level MCP proxy used on the native `mcp-server` path (see the file
+ * header). opts: { writeClient(line), writeChild(line), model, timeoutMs,
+ * env }. Feed it every client line via onClientLine and every child line via
+ * onChildLine; both forward verbatim except tools/call responses.
+ */
+function createMcpResultProxy(opts) {
+  const pending = new Map(); // JSON-RPC id -> { timer, model }
+  const abandoned = new Set(); // ids already answered with a synthesized timeout
+  const timeoutMs = opts.timeoutMs || resolveMcpTimeoutMs(opts.env);
+
+  function bridgeResponse(id, result) {
+    return JSON.stringify({ jsonrpc: "2.0", id, result });
+  }
+
+  function wrapResult(result, model) {
+    const text = textOfResult(result);
+    const isError = Boolean(result && result.isError);
+    const extra = result && result.structuredContent && typeof result.structuredContent === "object" ? { ...result.structuredContent } : {};
+    const wrapped = formatBridgeResult({
+      status: isError ? "provider_error" : "ok",
+      provider: BRIDGE_PROVIDER,
+      model: model || "",
+      text,
+      error: isError ? { kind: classifyBridgeError(text), message: text } : { kind: "empty", message: "codex returned an empty answer" },
+      extra,
+    });
+    // codex's outputSchema `content` mirrors the (capped) summary, never the raw text.
+    if (typeof wrapped.structuredContent.content === "string") wrapped.structuredContent.content = wrapped.structuredContent.summary;
+    return wrapped;
+  }
+
+  function onClientLine(line) {
+    const trimmed = line.trim();
+    if (trimmed) {
+      let msg = null;
+      try { msg = JSON.parse(trimmed); } catch { /* not JSON - forward untouched */ }
+      if (msg && msg.method === "tools/call" && msg.id !== undefined && msg.id !== null && !pending.has(msg.id)) {
+        const args = msg.params && msg.params.arguments;
+        const model = (args && typeof args.model === "string" && args.model) || opts.model || "";
+        const id = msg.id;
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          abandoned.add(id);
+          const message = "codex mcp-server call timed out after " + timeoutMs + "ms (set CODEX_MCP_TIMEOUT_MS or TYCOON_BRIDGE_TIMEOUT_MS to override)";
+          opts.writeClient(bridgeResponse(id, formatBridgeResult({ status: "timeout", provider: BRIDGE_PROVIDER, model, error: { kind: "timeout", message } })));
+          opts.writeChild(JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "bridge timeout" } }));
+        }, timeoutMs);
+        if (timer.unref) timer.unref();
+        pending.set(id, { timer, model });
+      }
+    }
+    opts.writeChild(line);
+  }
+
+  function onChildLine(line) {
+    const trimmed = line.trim();
+    let msg = null;
+    if (trimmed) {
+      try { msg = JSON.parse(trimmed); } catch { /* not JSON - forward untouched */ }
+    }
+    const isResponse = msg && msg.id !== undefined && msg.id !== null && !msg.method && (msg.result !== undefined || msg.error !== undefined);
+    if (isResponse) {
+      if (abandoned.delete(msg.id)) return; // late answer to a call already timed out
+      const entry = pending.get(msg.id);
+      if (entry) {
+        clearTimeout(entry.timer);
+        pending.delete(msg.id);
+        if (msg.result !== undefined) {
+          opts.writeClient(bridgeResponse(msg.id, wrapResult(msg.result, entry.model)));
+        } else {
+          const text = (msg.error && msg.error.message) || "codex mcp-server returned a JSON-RPC error";
+          opts.writeClient(bridgeResponse(msg.id, formatBridgeResult({
+            status: "provider_error",
+            provider: BRIDGE_PROVIDER,
+            model: entry.model,
+            text,
+            error: { kind: classifyBridgeError(text), message: text },
+          })));
+        }
+        return;
+      }
+    }
+    opts.writeClient(line);
+  }
+
+  function dispose() {
+    for (const entry of pending.values()) clearTimeout(entry.timer);
+    pending.clear();
+  }
+
+  return { onClientLine, onChildLine, dispose };
+}
+
+/** Wires createMcpResultProxy between this process's stdio and a piped codex child; the child's close handler owns exit. */
+function attachMcpResultProxy(child, model) {
+  const proxy = createMcpResultProxy({
+    model,
+    writeClient: (line) => { try { process.stdout.write(line + "\n"); } catch { /* client gone */ } },
+    writeChild: (line) => { try { child.stdin.write(line + "\n"); } catch { /* child gone */ } },
+  });
+  child.stdin.on("error", () => { /* EPIPE once the child exits - the close handler reports it */ });
+  const fromClient = readline.createInterface({ input: process.stdin, terminal: false });
+  fromClient.on("line", proxy.onClientLine);
+  fromClient.on("close", () => { try { child.stdin.end(); } catch { /* already closed */ } });
+  const fromChild = readline.createInterface({ input: child.stdout, terminal: false });
+  fromChild.on("line", proxy.onChildLine);
+  return proxy;
+}
+
 function main(opts) {
   const spawnSyncFn = (opts && opts.spawnSync) || spawnSync;
   const spawnFn = (opts && opts.spawn) || spawn;
@@ -712,18 +886,27 @@ function main(opts) {
   const command = discovered;
   const args = translateMcpServerSubcommand(command, requestedArgs, spawnSyncFn, helpCache);
 
+  // Native mcp-server path: pipe stdio through the result proxy so tools/call
+  // responses carry the shared envelope and a timeout (see the file header).
+  // Every other launch (e.g. `codex --version`) keeps stdio inherited.
+  const proxied = wantsMcpServer && args.includes("mcp-server");
   const child = spawnFn(command, args, {
     shell: needsShell(command),
-    stdio: "inherit",
+    stdio: proxied ? ["pipe", "pipe", "inherit"] : "inherit",
     windowsHide: true,
   });
+  let proxy = null;
+  if (proxied && child.stdin && child.stdout) proxy = attachMcpResultProxy(child, modelFromArgs(requestedArgs));
 
   child.on("error", (err) => {
     process.stderr.write(`codex-mcp-launcher: failed to launch "${command}": ${err && err.message}\n`);
     process.exit(1);
   });
 
-  child.on("exit", (code, signal) => {
+  // "close" (not "exit") when proxied: it fires only after the child's stdout
+  // is fully drained, so the last response is never lost to an early exit.
+  child.on(proxy ? "close" : "exit", (code, signal) => {
+    if (proxy) proxy.dispose();
     if (signal) {
       // Re-raise the same signal on ourselves so the parent sees the same
       // termination shape it would have from the child directly.
@@ -734,7 +917,15 @@ function main(opts) {
   });
 }
 
-module.exports = { discoverCodexBinary, main, needsShell, applyReasoningEffortOverride };
+module.exports = {
+  discoverCodexBinary,
+  main,
+  needsShell,
+  applyReasoningEffortOverride,
+  createMcpResultProxy,
+  resolveMcpTimeoutMs,
+  DEFAULT_MCP_TIMEOUT_MS,
+};
 
 if (require.main === module) {
   main();
