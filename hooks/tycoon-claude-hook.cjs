@@ -469,10 +469,27 @@ function toolAllowedByUserSettings(projectRoot, toolName) {
     return false;
   }
 }
-function isDispatcherRoutedAgent(agentsDir, agentId) {
+let dispatcherInstalledCache;
+// A body mention of the delegate tool only counts when the project's
+// .mcp.json actually declares the dispatcher server; read once per hook run.
+function dispatcherServerInstalled(projectRoot) {
+  if (dispatcherInstalledCache !== undefined) return dispatcherInstalledCache;
+  let installed = false;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"));
+    const servers = cfg && typeof cfg === "object" ? cfg.mcpServers : null;
+    installed = !!servers && typeof servers === "object" && (Object.prototype.hasOwnProperty.call(servers, "tycoon") || Object.prototype.hasOwnProperty.call(servers, "tycoon-dispatcher"));
+  } catch {
+    installed = false;
+  }
+  dispatcherInstalledCache = installed;
+  return installed;
+}
+function isDispatcherRoutedAgent(agentsDir, agentId, projectRoot) {
   try {
     const raw = fs.readFileSync(path.join(agentsDir, agentId + ".md"), "utf8");
-    return /mcp__tycoon(?:-dispatcher)?__delegate/.test(raw) || /^\s+mcpServer:\s*tycoon(?:-dispatcher)?\s*$/m.test(raw);
+    const root = projectRoot || path.dirname(path.dirname(agentsDir));
+    return (/mcp__tycoon(?:-dispatcher)?__delegate/.test(raw) && dispatcherServerInstalled(root)) || /^\s+mcpServer:\s*tycoon(?:-dispatcher)?\s*$/m.test(raw);
   } catch {
     return false;
   }
@@ -2097,7 +2114,7 @@ function main(raw) {
       try {
         const fallbackChain = getFallbackChainModule();
         const sessId = typeof payload.session_id === "string" ? payload.session_id : undefined;
-        if (fallbackChain && sessId && !isDispatcherRoutedAgent(agentsDir, agentId)) {
+        if (fallbackChain && sessId && !isDispatcherRoutedAgent(agentsDir, agentId, projectRoot)) {
           const stateData = loadFallbackStateFile(tycoonDir);
           const perSession = stateData[sessId] || {};
           const attemptsSoFar = (perSession[agentId] && perSession[agentId].attemptsSoFar) || 0;

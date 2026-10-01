@@ -264,3 +264,57 @@ test("multiple override markers present: the first one wins", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// p99-t3 review: a body mention of mcp__tycoon__delegate marks an agent as
+// dispatcher-routed only when the project's .mcp.json declares the server.
+function delegateBodyProject(mcpJson: string | null): string {
+  const root = mkdtempSync(join(tmpdir(), "tycoon-p99t3-"));
+  mkdirSync(join(root, ".claude", "tycoon"), { recursive: true });
+  mkdirSync(join(root, ".claude", "agents"), { recursive: true });
+  writeFileSync(
+    join(root, ".claude", "agents", "fake-reviewer.md"),
+    ["---", "model: sonnet", "backend:", "  vendor: vendor-fake-a", "  transport: mcp", "  mcpServer: fakevendor", "  tools: [ask]", "  model: vendor-fake-a/model-fake-a", "  costModelClass: metered", "---", "", "Use `mcp__tycoon__delegate` when available.", ""].join("\n"),
+  );
+  writeFileSync(
+    join(root, ".claude", "tycoon", "routing.resolved.json"),
+    JSON.stringify({ agents: { "fake-reviewer": { fallback: [{ vendor: "vendor-fake-b", model: "vendor-fake-b/model-fake-b", costModelClass: "local" }] } } }),
+  );
+  writeFileSync(join(root, ".claude", "tycoon", "fallback-state.json"), JSON.stringify({ "sess-1": { "fake-reviewer": { attemptsSoFar: 1 } } }));
+  if (mcpJson !== null) writeFileSync(join(root, ".mcp.json"), mcpJson);
+  return root;
+}
+
+function spawnRecord(root: string): ActivityRecord {
+  runHook(root, {
+    hook_event_name: "PreToolUse",
+    tool_name: "Agent",
+    tool_input: { subagent_type: "fake-reviewer", description: "review it", prompt: "review" },
+    session_id: "sess-1",
+  });
+  const rec = readActivity(root).find((r) => r.event === "PreToolUse" && r.workerId === "fake-reviewer");
+  assert.ok(rec);
+  return rec!;
+}
+
+test("delegate in body + tycoon server in .mcp.json: dispatcher-routed, no fallback attribution swap", () => {
+  const root = delegateBodyProject(JSON.stringify({ mcpServers: { tycoon: { command: "node" } } }));
+  try {
+    const rec = spawnRecord(root);
+    assert.equal(rec.fallbackOf, undefined);
+    assert.equal(rec.vendor, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("delegate in body + no tycoon server (missing or malformed .mcp.json): old fallback stamping applies", () => {
+  for (const mcp of [null, "{not json", JSON.stringify({ mcpServers: { other: {} } })]) {
+    const root = delegateBodyProject(mcp);
+    try {
+      const rec = spawnRecord(root);
+      assert.ok(rec.fallbackOf !== undefined || rec.vendor !== undefined, `fallback stamping expected for ${String(mcp)}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
