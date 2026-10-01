@@ -423,8 +423,38 @@ function readUserPermissions(projectRoot) {
   }
   return out;
 }
+// Managed (org policy) settings live in a fixed system dir per
+// https://code.claude.com/docs/en/managed-settings. Their presence means an
+// admin may deny/ask this tool or restrict rules to managed-only, which the
+// hook cannot evaluate, so injection fails closed. TYCOON_MANAGED_SETTINGS_DIR
+// replaces the system dirs (used by tests so no real system path is touched).
+function managedSettingsDirs() {
+  if (process.env.TYCOON_MANAGED_SETTINGS_DIR) return [process.env.TYCOON_MANAGED_SETTINGS_DIR];
+  if (process.platform === "win32") return ["C:/Program Files/ClaudeCode"];
+  if (process.platform === "darwin") return ["/Library/Application Support/ClaudeCode"];
+  return ["/etc/claude-code", "/mnt/c/Program Files/ClaudeCode"];
+}
+function managedSettingsPresent() {
+  for (const dir of managedSettingsDirs()) {
+    for (const name of ["managed-settings.json", "managed-settings.d"]) {
+      try {
+        fs.statSync(path.join(dir, name));
+        return true;
+      } catch (e) {
+        if (!e || (e.code !== "ENOENT" && e.code !== "ENOTDIR")) return true; // unreadable: fail closed
+      }
+    }
+  }
+  return false;
+}
+// Only modes where a settings allow rule applies as a normal prompt-bypass.
+// Hook input field `permission_mode` (https://code.claude.com/docs/en/hooks).
+function isPromptingMode(mode) {
+  return mode === "default" || mode === "acceptEdits";
+}
 function toolAllowedByUserSettings(projectRoot, toolName) {
   try {
+    if (managedSettingsPresent()) return false;
     const p = readUserPermissions(projectRoot);
     if (p.deny.some((r) => ruleMatchesTool(r, toolName, false))) return false;
     if (p.ask.some((r) => ruleMatchesTool(r, toolName, false))) return false;
@@ -2336,7 +2366,7 @@ function main(raw) {
       // Otherwise no decision and no input change are emitted, and the
       // dispatcher falls back to its activity-log heuristic.
       const dispatcherUpdate =
-        isDispatcherTool(toolName) && toolAllowedByUserSettings(projectRoot, toolName) && toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
+        isDispatcherTool(toolName) && isPromptingMode(payload.permission_mode) && toolAllowedByUserSettings(projectRoot, toolName) && toolInput && typeof toolInput === "object" && !Array.isArray(toolInput)
           ? {
               ...toolInput,
               _tycoon: {

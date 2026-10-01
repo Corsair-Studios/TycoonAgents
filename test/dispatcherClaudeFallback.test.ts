@@ -465,7 +465,7 @@ function runHook(root: string, payload: Record<string, unknown>): string {
     const r = spawnSync(process.execPath, [path.join(dir, "tycoon-claude-hook.cjs")], {
       input: JSON.stringify(payload),
       encoding: "utf8",
-      env: { ...process.env, CLAUDE_PROJECT_DIR: root, CLAUDE_CONFIG_DIR: path.join(root, "no-user-config") },
+      env: { ...process.env, CLAUDE_PROJECT_DIR: root, CLAUDE_CONFIG_DIR: path.join(root, "no-user-config"), TYCOON_MANAGED_SETTINGS_DIR: process.env.TEST_MANAGED_DIR || path.join(root, "no-managed") },
     });
     assert.equal(r.status, 0, `hook exited non-zero: ${r.stderr}`);
     return r.stdout;
@@ -543,8 +543,9 @@ function writeSettings(root: string, permissions: Record<string, string[]>, file
   fs.writeFileSync(path.join(root, ".claude", file), JSON.stringify({ permissions }));
 }
 
-function delegatePreToolUse(root: string): any {
+function delegatePreToolUse(root: string, permission_mode = "default"): any {
   const out = runHook(root, {
+    ...(permission_mode ? { permission_mode } : {}),
     hook_event_name: "PreToolUse",
     tool_name: "mcp__tycoon__delegate",
     tool_input: { specialist: "fake-reviewer", task: "review" },
@@ -581,6 +582,32 @@ test("hook: a delegate call the user has not allowed gets no permissionDecision 
     const hso2 = delegatePreToolUse(root);
     assert.equal(hso2.permissionDecision, undefined);
     assert.equal(hso2.updatedInput, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hook: managed settings present, or a non-prompting/unknown permission mode, means no injection", () => {
+  const root = hookProject();
+  try {
+    writeSettings(root, { allow: ["mcp__tycoon__delegate"] });
+    for (const mode of ["plan", "dontAsk", "auto", ""]) {
+      const hso = delegatePreToolUse(root, mode);
+      assert.equal(hso.permissionDecision, undefined, String(mode));
+      assert.equal(hso.updatedInput, undefined, String(mode));
+    }
+    assert.equal(delegatePreToolUse(root, "acceptEdits").permissionDecision, "allow");
+    const managed = path.join(root, "managed");
+    fs.mkdirSync(path.join(managed, "managed-settings.d"), { recursive: true });
+    process.env.TEST_MANAGED_DIR = managed;
+    try {
+      const hso = delegatePreToolUse(root);
+      assert.equal(hso.permissionDecision, undefined);
+      assert.equal(hso.updatedInput, undefined);
+    } finally {
+      delete process.env.TEST_MANAGED_DIR;
+    }
+    assert.equal(delegatePreToolUse(root).permissionDecision, "allow");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
