@@ -25,24 +25,11 @@ const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
-const { formatBridgeResult, withTimeout } = require("./bridge-result.cjs");
+const { formatBridgeResult, withTimeout, providerErrorResult } = require("./bridge-result.cjs");
 
 const PINNED_PACKAGE = "gemini-mcp-tool@1.1.8";
 const PROVIDER = "gemini";
 const IS_WIN = process.platform === "win32";
-
-const ERROR_KINDS = [
-  ["cli_missing", /ENOENT|command not found|not recognized as an internal|(?:agy|gemini)(?: cli)?[^\n]{0,40}(?:not (?:installed|found)|missing)|spawn [^\n]*(?:agy|gemini)/i],
-  ["auth", /\b40[13]\b|unauthori[sz]ed|unauthenticated|permission denied|not logged in|log ?in required|api[ _-]?key|invalid credentials|authentication/i],
-  ["rate_limit", /\b429\b|rate[ -]?limit|too many requests/i],
-  ["quota", /quota|resource[_ ]exhausted|billing|usage limit/i],
-  ["network", /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|network|socket hang up|getaddrinfo/i],
-];
-
-function classifyError(text) {
-  for (const [kind, re] of ERROR_KINDS) if (re.test(text)) return kind;
-  return "provider_error";
-}
 
 function pathCandidates(name) {
   const dirs = (process.env.PATH || process.env.Path || "").split(path.delimiter).filter(Boolean);
@@ -116,20 +103,21 @@ function textOf(result) {
 /** Pure: maps a child's tools/call result (or JSON-RPC error) to a bridge result. */
 function normalizeCallResult(msg, model) {
   if (msg.error) {
-    const m = (msg.error && msg.error.message) || "Gemini MCP server returned an error";
-    return formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind: classifyError(m), message: m } });
+    return providerErrorResult({ provider: PROVIDER, model, text: (msg.error && msg.error.message) || "Gemini MCP server returned an error" });
   }
   const text = textOf(msg.result);
   if (msg.result && msg.result.isError === true) {
-    return formatBridgeResult({
-      status: "provider_error",
-      provider: PROVIDER,
-      model,
-      text,
-      error: { kind: classifyError(text), message: text.slice(0, 400) || "Gemini call failed" },
-    });
+    return providerErrorResult({ provider: PROVIDER, model, text: text.slice(0, 400) || "Gemini call failed" });
   }
   return formatBridgeResult({ status: "ok", provider: PROVIDER, model, text });
+}
+
+const MAX_PENDING = 64;
+const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
+
+function requestTimeoutMs(env) {
+  const n = Number(String(env.TYCOON_BRIDGE_TIMEOUT_MS || "").trim());
+  return Number.isSafeInteger(n) && n > 0 ? Math.min(n, 2147483647) : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
 function run() {
@@ -141,12 +129,18 @@ function run() {
   let startError = null;
   let initRequest = null;
   let reinitId = null;
-  const pending = new Map(); // id -> { isCall, resolve }
+  const pending = new Map(); // id -> { isCall, resolve, owner: child that received it, timer? }
 
-  function failPending(message, kind) {
+  const errResult = (message, kind) => providerErrorResult({ provider: PROVIDER, model, text: message, kind });
+
+  // Fails only the requests that were sent to `owner`, so a replaced child's
+  // late exit never touches calls in flight on its successor.
+  function failOwned(owner, message, kind) {
     for (const [id, p] of pending) {
+      if (p.owner !== owner) continue;
       pending.delete(id);
-      if (p.isCall) p.resolve(formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind, message } }));
+      if (p.timer) clearTimeout(p.timer);
+      if (p.isCall) p.resolve(errResult(message, kind));
       else out({ jsonrpc: "2.0", id, error: { code: -32000, message } });
     }
   }
@@ -155,7 +149,8 @@ function run() {
     if (child && child.stdin.writable) child.stdin.write(JSON.stringify(obj) + "\n");
   }
 
-  function onChildLine(line) {
+  function onChildLine(c, line) {
+    if (child !== c) return;
     let msg;
     try {
       msg = JSON.parse(line);
@@ -173,6 +168,7 @@ function run() {
       return;
     }
     pending.delete(msg.id);
+    if (p.timer) clearTimeout(p.timer);
     if (p.isCall) p.resolve(normalizeCallResult(msg, model));
     else out(msg);
   }
@@ -191,16 +187,19 @@ function run() {
     child = c;
     startError = null;
     c.on("error", (e) => {
-      startError = "Could not start the Gemini MCP server (" + cmd.command + "): " + e.message;
-      if (child === c) child = null;
-      failPending(startError, "cli_missing");
+      const message = "Could not start the Gemini MCP server (" + cmd.command + "): " + e.message;
+      if (child === c) {
+        child = null;
+        startError = message;
+      }
+      failOwned(c, message, "cli_missing");
     });
     c.on("exit", (code, signal) => {
       if (child === c) child = null;
-      failPending("Gemini MCP server exited (" + (signal || "code " + code) + ")", "provider_error");
+      failOwned(c, "Gemini MCP server exited (" + (signal || "code " + code) + ")");
     });
     c.stdin.on("error", () => {});
-    readline.createInterface({ input: c.stdout }).on("line", onChildLine);
+    readline.createInterface({ input: c.stdout }).on("line", (line) => onChildLine(c, line));
     if (initRequest) {
       reinitId = "tycoon-reinit";
       send(Object.assign({}, initRequest, { id: reinitId }));
@@ -210,17 +209,19 @@ function run() {
 
   function handleCall(msg) {
     if (!ensureChild()) {
-      out({
-        jsonrpc: "2.0",
-        id: msg.id,
-        result: formatBridgeResult({ status: "provider_error", provider: PROVIDER, model, error: { kind: "cli_missing", message: startError } }),
-      });
+      out({ jsonrpc: "2.0", id: msg.id, result: errResult(startError, "cli_missing") });
       return;
     }
+    if (pending.size >= MAX_PENDING) {
+      out({ jsonrpc: "2.0", id: msg.id, result: errResult("Too many in-flight Gemini requests (" + MAX_PENDING + ")", "rate_limit") });
+      return;
+    }
+    const owner = child;
     let settled = false;
     const work = new Promise((resolve) => {
       pending.set(msg.id, {
         isCall: true,
+        owner,
         resolve: (v) => {
           settled = true;
           resolve(v);
@@ -231,11 +232,29 @@ function run() {
     withTimeout(work, undefined, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
       if (!settled) {
         pending.delete(msg.id);
-        killTree(child);
-        child = null;
+        killTree(owner);
+        if (child === owner) child = null;
       }
       out({ jsonrpc: "2.0", id: msg.id, result });
     });
+  }
+
+  function handleRequest(msg) {
+    if (pending.size >= MAX_PENDING) {
+      out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Too many in-flight requests (" + MAX_PENDING + ")" } });
+      return;
+    }
+    const owner = child;
+    const limit = requestTimeoutMs(env);
+    const timer = setTimeout(() => {
+      if (!pending.delete(msg.id)) return;
+      out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: msg.method + " timed out after " + limit + "ms" } });
+      killTree(owner);
+      if (child === owner) child = null;
+    }, limit);
+    if (typeof timer.unref === "function") timer.unref();
+    pending.set(msg.id, { isCall: false, owner, timer, resolve() {} });
+    send(msg);
   }
 
   function onClientLine(line) {
@@ -256,8 +275,8 @@ function run() {
       if (msg && msg.id !== undefined && msg.method) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: startError } });
       return;
     }
-    if (msg && msg.id !== undefined && msg.method) pending.set(msg.id, { isCall: false, resolve() {} });
-    send(msg);
+    if (msg && msg.id !== undefined && msg.method) handleRequest(msg);
+    else send(msg);
   }
 
   const shutdown = () => {
@@ -265,6 +284,10 @@ function run() {
     child = null;
   };
   process.on("exit", shutdown);
+  process.stdout.on("error", () => {
+    shutdown();
+    process.exit(0);
+  });
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(0));
   const rl = readline.createInterface({ input: process.stdin });
   rl.on("line", onClientLine);
@@ -277,4 +300,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { PINNED_PACKAGE, classifyError, normalizeCallResult, resolveCommand };
+module.exports = { PINNED_PACKAGE, normalizeCallResult, resolveCommand };

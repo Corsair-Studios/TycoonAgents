@@ -11,7 +11,7 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,7 +21,13 @@ const WRAPPER = path.join(__dirname, "..", "..", "hooks", "gemini-mcp-wrapper.cj
 const { PINNED_PACKAGE } = require("../../hooks/gemini-mcp-wrapper.cjs") as { PINNED_PACKAGE: string };
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-gemini-wrap-"));
-after(() => fs.rmSync(root, { recursive: true, force: true }));
+const liveWrappers = new Set<ChildProcess>();
+after(() => {
+  for (const w of liveWrappers) {
+    try { w.stdin?.end(); w.kill(); } catch { /* already gone */ }
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 const FAKE = path.join(root, "fake-gemini-mcp.js");
 fs.writeFileSync(
@@ -78,6 +84,8 @@ async function drive(env: Record<string, string>, requests: object[], keepOpen =
   });
   let errText = "";
   wrapper.stderr.on("data", (c) => (errText += c));
+  liveWrappers.add(wrapper);
+  wrapper.on("exit", () => liveWrappers.delete(wrapper));
   const replies = new Map<number, Msg>();
   const waiters = new Map<number, (m: Msg) => void>();
   let buf = "";
@@ -161,12 +169,16 @@ test("summary is capped at TYCOON_BRIDGE_MAX_CHARS and flagged truncated", async
 
 test("a hung call times out with status timeout and the child is killed", async () => {
   const { replies, pid, wrapper } = await drive({ FAKE_MODE: "hang", TYCOON_BRIDGE_TIMEOUT_MS: "400" }, [init, call(2)], true);
-  const sc = replies.get(2)!.result.structuredContent;
-  assert.equal(sc.status, "timeout");
-  assert.equal(sc.error.kind, "timeout");
-  assert.ok(pid > 0);
-  assert.ok(await waitDead(pid), "child killed on timeout");
-  wrapper.stdin.end();
+  try {
+    const sc = replies.get(2)!.result.structuredContent;
+    assert.equal(sc.status, "timeout");
+    assert.equal(sc.error.kind, "timeout");
+    assert.ok(pid > 0);
+    assert.ok(await waitDead(pid), "child killed on timeout");
+  } finally {
+    wrapper.stdin.end();
+    wrapper.kill();
+  }
 });
 
 test("an unstartable command yields a clear provider_error instead of hanging", async () => {
