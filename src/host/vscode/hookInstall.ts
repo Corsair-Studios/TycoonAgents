@@ -990,6 +990,13 @@ export function rewriteMcpJsonBridgePaths(
           return r.value;
         });
       }
+      if (id === "gemini") {
+        const env = cfg.env !== null && typeof cfg.env === "object" && !Array.isArray(cfg.env) ? (cfg.env as Record<string, unknown>) : {};
+        if (typeof env.TYCOON_PROJECT_DIR !== "string" || env.TYCOON_PROJECT_DIR.trim() === "") {
+          cfg.env = { ...env, TYCOON_PROJECT_DIR: projectRoot.replace(/\\/g, "/") };
+          changed = true;
+        }
+      }
       if (changed) rewritten.push(id);
     }
     if (rewritten.length > 0) {

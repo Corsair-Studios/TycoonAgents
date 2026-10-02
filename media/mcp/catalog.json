@@ -348,7 +348,7 @@
     "package": "gemini-mcp-tool (community bridge over Google's gemini CLI, pinned 1.1.8, run via `npx` through the bundled wrapper)",
     "homepage": "https://github.com/jamubc/gemini-mcp-tool",
     "network": true,
-    "dataNote": "Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local backend CLI's own auth (Antigravity `agy` by default, or `gemini` when GEMINI_MCP_BACKEND=gemini) (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
+    "dataNote": "On the agy backend, project files (non-secret, inside the project) named in a prompt are read locally and their contents are sent to Google. Prompts and content you send through this server leave this machine and are sent to Google's Gemini backend, via the local backend CLI's own auth (Antigravity `agy` by default, or `gemini` when GEMINI_MCP_BACKEND=gemini) (OAuth login or GEMINI_API_KEY). A different vendor than Anthropic, routed through a third-party (non-Google-published) MCP bridge rather than an official Gemini MCP server.",
     "config": {
       "command": "node",
       "args": [

@@ -102,10 +102,11 @@ export function removeMcpServer(
  * project when Claude Code launches it from a subdirectory, so at install time
  * the resolved project root is written into its env as TYCOON_PROJECT_DIR
  * (docs/PATH-DISCOVERY.md: resolved at install time, never hard-coded in the
- * repo). Any other id, or a non-object config, is returned unchanged. Pure.
+ * repo). The "gemini" entry gets the same variable: its wrapper only reads
+ * project files named in a prompt from inside that root. Any other id, or a non-object config, is returned unchanged. Pure.
  */
 export function withDispatcherProjectDir(id: string, config: unknown, projectRoot: string): unknown {
-  if (id !== "tycoon" || config === null || typeof config !== "object" || Array.isArray(config)) {
+  if ((id !== "tycoon" && id !== "gemini") || config === null || typeof config !== "object" || Array.isArray(config)) {
     return config;
   }
   const cfg = config as Record<string, unknown>;

@@ -679,6 +679,7 @@ test("withDispatcherProjectDir writes the resolved project root into the tycoon 
   assert.equal(cfg.env.TYCOON_DISPATCH_HOST, "claude");
   assert.equal((cfg.env as Record<string, string>).TYCOON_PROJECT_DIR, undefined, "input is not mutated");
   assert.equal(withDispatcherProjectDir("codex", cfg, "/p"), cfg);
+  assert.equal(withDispatcherProjectDir("gemini", { command: "node" }, "C:\\work\\proj").env.TYCOON_PROJECT_DIR, "C:/work/proj");
 });
 
 test("slotLabel and describeAttempts do not double a vendor prefix already on the model", () => {

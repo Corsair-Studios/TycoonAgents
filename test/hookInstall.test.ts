@@ -1158,3 +1158,19 @@ test("copyMcpBridgeHooks: a server with no .claude/hooks reference copies nothin
     fs.rmSync(srcDir, { recursive: true, force: true });
   }
 });
+
+test("rewriteMcpJsonBridgePaths: adds TYCOON_PROJECT_DIR to an existing gemini entry only when missing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-heal-env-"));
+  try {
+    const mcp = { mcpServers: { gemini: { command: "node", args: [".claude/hooks/gemini-mcp-wrapper.cjs"], env: { A: "1" } }, other: { command: "x" } } };
+    fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify(mcp, null, 2) + "\n");
+    assert.deepEqual(rewriteMcpJsonBridgePaths(root, () => undefined), ["gemini"]);
+    const out = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
+    assert.equal(out.mcpServers.gemini.env.TYCOON_PROJECT_DIR, root.replace(/\\/g, "/"));
+    assert.equal(out.mcpServers.gemini.env.A, "1");
+    assert.equal(out.mcpServers.other.env, undefined);
+    assert.deepEqual(rewriteMcpJsonBridgePaths(root, () => undefined), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
