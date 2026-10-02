@@ -23,6 +23,9 @@ import {
   RUNTIME_HOOK_FILES,
   enableMcpJsonServerInSettings,
   MCP_BRIDGE_HOOK_FILES,
+  rewriteMcpJsonBridgePaths,
+  copyMcpBridgeHooks,
+  healInstalledHookCopies,
   buildAbsoluteHookCommand,
   migrateRelativeHookCommand,
 } from "../src/host/vscode/hookInstall";
@@ -924,6 +927,9 @@ test("MCP_BRIDGE_HOOK_FILES is the four bridge scripts followed by the dispatche
     "codex-app-server-mcp.cjs",
     "bridge-result.cjs",
     "gemini-mcp-wrapper.cjs",
+    "claude-cli-mcp.cjs",
+    "openai-compatible-mcp.cjs",
+    "localEnvStore.js",
     "tycoon-dispatcher-mcp.cjs",
     "dispatcherAdapters.cjs",
     "dispatcherBridgeClient.cjs",
@@ -1057,4 +1063,83 @@ test("migrateRelativeHookCommand: no hooks section -> no-op, changed:false", () 
   const { settings, changed } = migrateRelativeHookCommand(existing, abs);
   assert.equal(changed, false);
   assert.equal(settings, existing);
+});
+
+test("catalog: bundled bridge servers launch the project copy, never an extension path", () => {
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "media", "mcp", "catalog.json"), "utf8")) as Array<{ id: string; config?: { args?: string[] } }>;
+  for (const id of ["claude-cli", "gemini", "openai-compatible"]) {
+    const entry = catalog.find((e) => e.id === id);
+    assert.ok(entry, id);
+    const arg = entry!.config!.args![0];
+    assert.match(arg, /^\.claude\/hooks\/[^/]+$/, id);
+    assert.ok(MCP_BRIDGE_HOOK_FILES.includes(arg.split("/").pop()!), `${id} file is in MCP_BRIDGE_HOOK_FILES`);
+  }
+  assert.ok(!JSON.stringify(catalog).includes("${EXTENSION_DIR}"));
+});
+
+test("rewriteMcpJsonBridgePaths: rewrites versioned extension paths for our bridges, leaves other servers alone, copies missing file", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-heal-"));
+  const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-src-"));
+  try {
+    for (const f of ["gemini-mcp-wrapper.cjs", "claude-cli-mcp.cjs", "openai-compatible-mcp.cjs"]) fs.writeFileSync(path.join(srcDir, f), "// " + f);
+    const original = {
+      mcpServers: {
+        gemini: { command: "node", args: ["C:/Users/u/.vscode/extensions/tycoonagents.tycoonagents-0.0.685/hooks/gemini-mcp-wrapper.cjs"] },
+        "claude-cli": { command: "node", args: ["C:\\Users\\u\\.vscode\\extensions\\TycoonAgents.tycoonagents-0.0.685\\hooks\\claude-cli-mcp.cjs"], env: { A: "1" } },
+        "openai-compatible": { command: "node", args: ["/home/u/.vscode/extensions/tycoonagents.tycoonagents-0.0.600/hooks/openai-compatible-mcp.cjs"] },
+        mine: { command: "node", args: ["/opt/other/hooks/gemini-mcp-wrapper.cjs"] },
+        theirs: { command: "node", args: ["C:/x/tycoonagents.tycoonagents-1/hooks/not-ours.cjs"] },
+      },
+      keep: true,
+    };
+    fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify(original, null, 2) + "\n");
+    fs.mkdirSync(path.join(root, ".claude", "hooks"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude", "hooks", "gemini-mcp-wrapper.cjs"), "// existing");
+    const ids = rewriteMcpJsonBridgePaths(root, (f) => path.join(srcDir, f));
+    assert.deepEqual(ids.sort(), ["claude-cli", "gemini", "openai-compatible"]);
+    const out = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
+    assert.deepEqual(out.mcpServers.gemini.args, [".claude/hooks/gemini-mcp-wrapper.cjs"]);
+    assert.deepEqual(out.mcpServers["claude-cli"].args, [".claude/hooks/claude-cli-mcp.cjs"]);
+    assert.deepEqual(out.mcpServers["claude-cli"].env, { A: "1" });
+    assert.deepEqual(out.mcpServers["openai-compatible"].args, [".claude/hooks/openai-compatible-mcp.cjs"]);
+    assert.deepEqual(out.mcpServers.mine, original.mcpServers.mine);
+    assert.deepEqual(out.mcpServers.theirs, original.mcpServers.theirs);
+    assert.equal(out.keep, true);
+    assert.equal(fs.readFileSync(path.join(root, ".claude", "hooks", "gemini-mcp-wrapper.cjs"), "utf8"), "// existing");
+    assert.equal(fs.readFileSync(path.join(root, ".claude", "hooks", "claude-cli-mcp.cjs"), "utf8"), "// claude-cli-mcp.cjs");
+    assert.deepEqual(rewriteMcpJsonBridgePaths(root, (f) => path.join(srcDir, f)), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(srcDir, { recursive: true, force: true });
+  }
+});
+
+test("healInstalledHookCopies: also heals .mcp.json; malformed .mcp.json is swallowed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-heal2-"));
+  try {
+    fs.writeFileSync(path.join(root, ".mcp.json"), "{ not json");
+    const warnings: string[] = [];
+    healInstalledHookCopies(root, () => undefined, (m) => warnings.push(m));
+    assert.equal(warnings.length, 1);
+    assert.equal(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"), "{ not json");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("copyMcpBridgeHooks: a server with no .claude/hooks reference copies nothing; gemini copies the wrapper plus its requires", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-copy-"));
+  const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-mcp-copysrc-"));
+  try {
+    for (const f of MCP_BRIDGE_HOOK_FILES) fs.writeFileSync(path.join(srcDir, f), "// " + f);
+    const resolve = (f: string): string => path.join(srcDir, f);
+    assert.deepEqual(copyMcpBridgeHooks(root, { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] }, resolve), []);
+    assert.ok(!fs.existsSync(path.join(root, ".claude")));
+    const copied = copyMcpBridgeHooks(root, { command: "node", args: [".claude/hooks/gemini-mcp-wrapper.cjs"] }, resolve);
+    assert.deepEqual(copied.sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs"]);
+    assert.deepEqual(fs.readdirSync(path.join(root, ".claude", "hooks")).sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs", "package.json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(srcDir, { recursive: true, force: true });
+  }
 });

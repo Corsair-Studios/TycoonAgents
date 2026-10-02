@@ -279,6 +279,26 @@ export function getMcpBridgeHookFiles() {
   return files;
 }
 
+/** Copies only the bridge files an installed MCP server config needs (plus requires) into
+ * `.claude/hooks/` - `copyMcpBridgeHooks` from hookInstall.ts via its compiled output.
+ * @type {(projectRoot: string, config: unknown, resolveSrc: (f: string) => string | undefined, warn?: (m: string) => void) => string[]} */
+export function copyMcpBridgeHooks(projectRoot, config, resolveSrc, warn) {
+  const fn = assertFn(hookInstallModule().copyMcpBridgeHooks, 'copyMcpBridgeHooks', 'out/src/host/vscode/hookInstall.js');
+  return fn(projectRoot, config, resolveSrc, warn);
+}
+
+/** Rewrites `.mcp.json` entries pointing into an extension `hooks/` folder to the
+ * project copy - `rewriteMcpJsonBridgePaths` from hookInstall.ts via its compiled output.
+ * @type {(projectRoot: string, resolveSrc: (f: string) => string | undefined, warn?: (m: string) => void) => string[]} */
+export function rewriteMcpJsonBridgePaths(projectRoot, resolveSrc, warn) {
+  const fn = assertFn(
+    hookInstallModule().rewriteMcpJsonBridgePaths,
+    'rewriteMcpJsonBridgePaths',
+    'out/src/host/vscode/hookInstall.js',
+  );
+  return fn(projectRoot, resolveSrc, warn);
+}
+
 /** Content-hash sync of one runtime file — the exact `syncRuntimeFile`
  * function from `src/host/vscode/hookInstall.ts`, reused via its compiled
  * output. See that function's doc comment for the create/refresh/unchanged

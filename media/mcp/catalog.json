@@ -284,7 +284,7 @@
     "config": {
       "command": "node",
       "args": [
-        "${EXTENSION_DIR}/hooks/claude-cli-mcp.cjs"
+        ".claude/hooks/claude-cli-mcp.cjs"
       ]
     }
   },
@@ -352,7 +352,7 @@
     "config": {
       "command": "node",
       "args": [
-        "${EXTENSION_DIR}/hooks/gemini-mcp-wrapper.cjs"
+        ".claude/hooks/gemini-mcp-wrapper.cjs"
       ]
     }
   },
@@ -376,7 +376,7 @@
     "config": {
       "command": "node",
       "args": [
-        "${EXTENSION_DIR}/hooks/openai-compatible-mcp.cjs"
+        ".claude/hooks/openai-compatible-mcp.cjs"
       ]
     }
   },

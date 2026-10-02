@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile } from './sharedLogic.mjs';
+import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile, rewriteMcpJsonBridgePaths, copyMcpBridgeHooks } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -351,6 +351,28 @@ export function installMcpBridgeHooks(targetDir, opts = {}) {
   return { created, refreshed };
 }
 
+/**
+ * Copies only the bridge files an installed MCP server config references under
+ * `.claude/hooks/` (plus their requires); a config without such a reference
+ * copies nothing. Returns the copied file names.
+ *
+ * @param {string} targetDir
+ * @param {unknown} config the server's final config.
+ * @param {{ hooksSourceDir?: string }} [opts] tests only.
+ * @returns {string[]}
+ */
+export function installMcpBridgeHooksForConfig(targetDir, config, opts = {}) {
+  const srcDir = opts.hooksSourceDir ?? hooksDir();
+  return copyMcpBridgeHooks(
+    path.resolve(String(targetDir ?? '')),
+    config,
+    (file) => {
+      const p = path.join(srcDir, file);
+      return fs.existsSync(p) ? p : undefined;
+    },
+  );
+}
+
 /** Warns (never rewrites) when a user-owned package.json in `dir` pins "type":"module". */
 function warnIfModuleMarker(dir, warn) {
   try {
@@ -399,6 +421,18 @@ export function healInstalledHookCopies(targetDir, opts = {}) {
     }
   } catch (err) {
     warn(`[tycoonagents] bridge hook heal failed: ${err instanceof Error ? err.message : err}`);
+  }
+  try {
+    rewriteMcpJsonBridgePaths(
+      absTarget,
+      (file) => {
+        const p = path.join(srcDir, file);
+        return fs.existsSync(p) ? p : undefined;
+      },
+      warn,
+    );
+  } catch (err) {
+    warn(`[tycoonagents] .mcp.json bridge path heal failed: ${err instanceof Error ? err.message : err}`);
   }
   return result;
 }

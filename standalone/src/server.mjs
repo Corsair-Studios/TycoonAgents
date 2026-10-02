@@ -52,7 +52,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createStateFeed } from './stateFeed.mjs';
-import { healInstalledHookCopies } from './installHook.mjs';
+import { healInstalledHookCopies, installMcpBridgeHooksForConfig } from './installHook.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
 import {
@@ -2290,6 +2290,11 @@ function handleInstallPack(payload) {
           const finalConfig = withDispatcherProjectDir(pack.mcp, resolveCodexBinaryForInstallStandalone(pack.mcp, resolvedConfig), primaryProjectRoot);
           const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
           fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+          try {
+            installMcpBridgeHooksForConfig(primaryProjectRoot, finalConfig);
+          } catch (err) {
+            console.error('[tycoonagents-standalone] bridge hook copy failed:', err);
+          }
           results.mcp = 'installed';
         }
       }

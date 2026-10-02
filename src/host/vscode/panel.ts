@@ -255,6 +255,7 @@ import {
   MCP_BRIDGE_HOOK_FILES,
   ensureCommonJsMarker,
   healInstalledHookCopies,
+  copyMcpBridgeHooks,
   enableMcpJsonServerInSettings,
   buildAbsoluteHookCommand,
   migrateRelativeHookCommand,
@@ -4292,6 +4293,7 @@ export class TycoonPanel {
       const finalConfig = withDispatcherProjectDir(id, this._resolveCodexBinaryForInstall(id, resolvedConfig), root);
       const merged = mergeMcpServer(existing, id, finalConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+      this._copyBridgeHooksForMcp(root, finalConfig);
       // Auto-approve the newly-added server so `claude mcp list` doesn't
       // leave it "Pending approval" (which times out non-interactive
       // sessions) — see enableMcpJsonServerInSettings (hookInstall.ts).
@@ -4687,6 +4689,7 @@ export class TycoonPanel {
             const finalConfig = withDispatcherProjectDir(pack.mcp, this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig), root);
             const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
             fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+            this._copyBridgeHooksForMcp(root, finalConfig);
             // Auto-approve so `claude mcp list` doesn't leave the pack's
             // server "Pending approval" for non-interactive sessions.
             enableMcpJsonServerInSettings(path.join(root, ".claude"), pack.mcp);
@@ -5273,6 +5276,21 @@ export class TycoonPanel {
       );
       return config;
     }
+  }
+
+  /** Project-relative MCP entries launch `.claude/hooks/<file>`; make sure those copies exist. */
+  private _copyBridgeHooksForMcp(root: string, config: unknown): void {
+    copyMcpBridgeHooks(
+      root,
+      config,
+      (fileName) => {
+        const hooksPath = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
+        if (fs.existsSync(hooksPath)) return hooksPath;
+        const outPath = vscode.Uri.joinPath(this._extensionUri, "out", "src", "core", fileName).fsPath;
+        return fs.existsSync(outPath) ? outPath : undefined;
+      },
+      (m) => console.warn(m),
+    );
   }
 
   private _resolveConfigTokens(config: unknown): unknown {

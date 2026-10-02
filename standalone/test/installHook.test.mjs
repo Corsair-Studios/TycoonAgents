@@ -23,6 +23,7 @@ import {
   defaultHookScriptPath,
   refreshRuntimeHookCopies,
   installMcpBridgeHooks,
+  installMcpBridgeHooksForConfig,
   ensureCommonJsMarker,
   healInstalledHookCopies,
   InstallHookError,
@@ -575,5 +576,48 @@ test('healInstalledHookCopies: older install (stale copies, no marker, type:modu
     assert.ok(warnings.some((m) => /type":"module/.test(m)));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('healInstalledHookCopies: rewrites versioned extension paths in .mcp.json to the project copy, only for our bridge files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-sa-mcpheal-'));
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-sa-mcpsrc-'));
+  try {
+    for (const f of ['gemini-mcp-wrapper.cjs', 'claude-cli-mcp.cjs', 'openai-compatible-mcp.cjs']) fs.writeFileSync(path.join(src, f), '// ' + f);
+    const mine = { command: 'node', args: ['/opt/other/hooks/gemini-mcp-wrapper.cjs'] };
+    fs.writeFileSync(path.join(dir, '.mcp.json'), JSON.stringify({
+      mcpServers: {
+        gemini: { command: 'node', args: ['C:/Users/u/.vscode/extensions/tycoonagents.tycoonagents-0.0.685/hooks/gemini-mcp-wrapper.cjs'] },
+        'claude-cli': { command: 'node', args: ['C:\\Users\\u\\.vscode\\extensions\\tycoonagents.tycoonagents-0.0.685\\hooks\\claude-cli-mcp.cjs'] },
+        'openai-compatible': { command: 'node', args: ['/home/u/.vscode/extensions/tycoonagents.tycoonagents-0.0.600/hooks/openai-compatible-mcp.cjs'] },
+        mine,
+      },
+    }, null, 2));
+    healInstalledHookCopies(dir, { hooksSourceDir: src, warn: () => {} });
+    const out = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'));
+    assert.deepEqual(out.mcpServers.gemini.args, ['.claude/hooks/gemini-mcp-wrapper.cjs']);
+    assert.deepEqual(out.mcpServers['claude-cli'].args, ['.claude/hooks/claude-cli-mcp.cjs']);
+    assert.deepEqual(out.mcpServers['openai-compatible'].args, ['.claude/hooks/openai-compatible-mcp.cjs']);
+    assert.deepEqual(out.mcpServers.mine, mine);
+    assert.ok(fs.existsSync(path.join(dir, '.claude', 'hooks', 'gemini-mcp-wrapper.cjs')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test('installMcpBridgeHooksForConfig: no .claude/hooks reference copies nothing; gemini copies the wrapper plus bridge-result', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-sa-cfgcopy-'));
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-sa-cfgsrc-'));
+  try {
+    for (const f of ['gemini-mcp-wrapper.cjs', 'bridge-result.cjs', 'claude-cli-mcp.cjs']) fs.writeFileSync(path.join(src, f), '// ' + f);
+    assert.deepEqual(installMcpBridgeHooksForConfig(dir, { command: 'npx', args: ['-y', 'some-server'] }, { hooksSourceDir: src }), []);
+    assert.ok(!fs.existsSync(path.join(dir, '.claude')));
+    const copied = installMcpBridgeHooksForConfig(dir, { command: 'node', args: ['.claude/hooks/gemini-mcp-wrapper.cjs'] }, { hooksSourceDir: src });
+    assert.deepEqual(copied.sort(), ['bridge-result.cjs', 'gemini-mcp-wrapper.cjs']);
+    assert.ok(!fs.existsSync(path.join(dir, '.claude', 'hooks', 'claude-cli-mcp.cjs')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(src, { recursive: true, force: true });
   }
 });
