@@ -50,7 +50,13 @@ function slotKey(slot) {
 
 function slotLabel(slot) {
   const who = slot.vendor || slot.mcpServer || "unknown";
-  return slot.model ? `${who}/${slot.model}` : who;
+  return slot.model ? joinVendorModel(who, slot.model) : who;
+}
+
+/** `vendor/model`, without doubling the prefix when the model already starts with `vendor/`. */
+function joinVendorModel(vendor, model) {
+  const m = String(model);
+  return vendor && m.toLowerCase().startsWith(String(vendor).toLowerCase() + "/") ? m : `${vendor}/${m}`;
 }
 
 /** Minimal parse of the `backend:` block of an agent .md (agentBackend.js is a build artifact, so not required here). */
@@ -201,7 +207,7 @@ function attemptEntry(slot, attempt, depth, isDefault) {
 
 function describeAttempts(attempts) {
   return attempts
-    .map((a, i) => `${i + 1}) ${a.provider}${a.model ? "/" + a.model : ""}: ${a.status}${a.kind ? "/" + a.kind : ""}`)
+    .map((a, i) => `${i + 1}) ${a.model ? joinVendorModel(a.provider, a.model) : a.provider}: ${a.status}${a.kind ? "/" + a.kind : ""}`)
     .join("; ");
 }
 
@@ -371,4 +377,6 @@ module.exports = {
   parseBackendFromAgentFile,
   findSpawnContext,
   runProviderChain,
+  slotLabel,
+  describeAttempts,
 };

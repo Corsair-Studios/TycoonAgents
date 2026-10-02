@@ -340,3 +340,9 @@ test("providerErrorResult builds a provider_error envelope with an overridable k
   assert.equal(r.structuredContent.error.kind, "auth");
   assert.equal(providerErrorResult({ provider: "p", text: "401", kind: "unknown" }).structuredContent.error.kind, "unknown");
 });
+
+test("classifyProviderError: a backend that ran but whose reply was unreadable is backend_unreadable", () => {
+  assert.equal(classify("Error executing ask-gemini: agy: found a SQLite transcript (C:/a/b.db) but could not extract a model reply from its schema."), "backend_unreadable");
+  assert.equal(classify("could not extract a model reply"), "backend_unreadable");
+  assert.equal(classify("some other failure"), "unknown");
+});

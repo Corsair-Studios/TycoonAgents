@@ -231,7 +231,9 @@ function parseBridgeResult(toolResponse, opts) {
 
 /**
  * Short error.kind for a provider/CLI failure message: auth | quota |
- * rate_limit | not_found | network | cli_missing | unknown. An HTTP status
+ * rate_limit | not_found | network | cli_missing | backend_unreadable | unknown.
+ * backend_unreadable: the backend ran but its reply could not be read back
+ * (e.g. agy's SQLite transcript); retryable. An HTTP status
  * (opts.httpStatus) wins over text matching. Shared by every bridge.
  */
 function classifyProviderError(message, opts) {
@@ -247,6 +249,7 @@ function classifyProviderError(message, opts) {
   if (/\b402\b|quota|usage limit|limit reached|insufficient|billing|credit|exceeded your|resource_exhausted/i.test(t)) return "quota";
   if (/\b404\b|not found|model_not_found|does not exist|unsupported model|issue with the selected model/i.test(t)) return "not_found";
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|network|fetch failed|socket hang up/i.test(t)) return "network";
+  if (/could not extract a model reply|found a SQLite transcript/i.test(t)) return "backend_unreadable";
   return "unknown";
 }
 

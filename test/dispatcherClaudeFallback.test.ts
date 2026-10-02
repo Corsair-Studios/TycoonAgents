@@ -177,7 +177,7 @@ test("primary provider_error -> fallback bridge answers inside the same delegate
     assert.equal(sc.status, "ok");
     assert.equal(sc.provider, "fake-b");
     assert.match(String(sc.summary), /review from fake-b/);
-    assert.equal(sc.fellBackFrom, "vendor-fake-a/vendor-fake-a/model-fake-a");
+    assert.equal(sc.fellBackFrom, "vendor-fake-a/model-fake-a");
     assert.deepEqual(sc.attempts.map((a: any) => [a.mcpServer, a.status, a.depth]), [["fake-a", "provider_error", 0], ["fake-b", "ok", 1]]);
     assert.equal(sc.attempts[0].kind, "rate_limit");
 
@@ -679,4 +679,13 @@ test("withDispatcherProjectDir writes the resolved project root into the tycoon 
   assert.equal(cfg.env.TYCOON_DISPATCH_HOST, "claude");
   assert.equal((cfg.env as Record<string, string>).TYCOON_PROJECT_DIR, undefined, "input is not mutated");
   assert.equal(withDispatcherProjectDir("codex", cfg, "/p"), cfg);
+});
+
+test("slotLabel and describeAttempts do not double a vendor prefix already on the model", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const chain = require("../../hooks/dispatcherClaudeChain.cjs") as { slotLabel: (s: object) => string; describeAttempts: (a: object[]) => string };
+  assert.equal(chain.slotLabel({ vendor: "google", model: "google/gemini-2.5-pro" }), "google/gemini-2.5-pro");
+  assert.equal(chain.slotLabel({ vendor: "google", model: "gemini-2.5-pro" }), "google/gemini-2.5-pro");
+  assert.equal(chain.describeAttempts([{ provider: "google", model: "google/gemini-2.5-pro", status: "provider_error", kind: "auth" }]), "1) google/gemini-2.5-pro: provider_error/auth");
+  assert.equal(chain.describeAttempts([{ provider: "gemini", model: "gemini-3.5-flash", status: "ok" }]), "1) gemini/gemini-3.5-flash: ok");
 });

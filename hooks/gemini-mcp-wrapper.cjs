@@ -201,12 +201,34 @@ function textOf(result) {
     .join("\n");
 }
 
+/**
+ * The model that actually ran. agy ignores model selection in print mode and
+ * gemini-mcp-tool says so in a warning ("... (print-mode is <id>-only) ...");
+ * that id wins. Otherwise the agy backend reports "agy-default", and any other
+ * backend keeps the configured label.
+ */
+function actualModel(text, model, isAgy) {
+  const m = /Backend "agy" ignores model selection \(print-mode is ([^\s)]+?)-only\)/i.exec(text || "");
+  if (m) return m[1];
+  return isAgy ? "agy-default" : model;
+}
+
+const UNREADABLE_MESSAGE =
+  "The Antigravity CLI ran but its reply couldn't be read (a known agy issue). Try again, or set GEMINI_MCP_BACKEND=gemini if you have a Gemini CLI license.";
+
+function errorKindOf(result) {
+  const sc = result && result.structuredContent;
+  return sc && sc.error ? sc.error.kind : undefined;
+}
+
 /** Pure: maps a child's tools/call result (or JSON-RPC error) to a bridge result. */
-function normalizeCallResult(msg, model) {
+function normalizeCallResult(msg, model, opts) {
+  const isAgy = !!(opts && opts.isAgy);
   if (msg.error) {
     return providerErrorResult({ provider: PROVIDER, model, text: (msg.error && msg.error.message) || "Gemini MCP server returned an error" });
   }
   const text = textOf(msg.result);
+  model = actualModel(text, model, isAgy);
   if (msg.result && msg.result.isError === true) {
     return providerErrorResult({ provider: PROVIDER, model, text: text.slice(0, 400) || "Gemini call failed" });
   }
@@ -224,6 +246,8 @@ function requestTimeoutMs(env) {
 function run() {
   const env = process.env;
   const model = env.GEMINI_MODEL || "gemini";
+  const backendName = (env.GEMINI_MCP_BACKEND || "").trim().toLowerCase();
+  const isAgy = backendName === "agy" || (!backendName && !(env.TYCOON_GEMINI_MCP_CMD || "").trim());
   const out = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 
   let child = null;
@@ -270,7 +294,7 @@ function run() {
     }
     pending.delete(msg.id);
     if (p.timer) clearTimeout(p.timer);
-    if (p.isCall) p.resolve(normalizeCallResult(msg, model));
+    if (p.isCall) p.resolve(normalizeCallResult(msg, model, { isAgy }));
     else out(msg);
   }
 
@@ -316,6 +340,32 @@ function run() {
     return true;
   }
 
+  // One attempt: sends `msg` under `wireId` and resolves to a bridge result,
+  // or a timeout result after `budgetMs` (the child is then killed).
+  function attemptCall(msg, wireId, budgetMs) {
+    const owner = child;
+    let settled = false;
+    const work = new Promise((resolve) => {
+      pending.set(wireId, {
+        isCall: true,
+        owner,
+        resolve: (v) => {
+          settled = true;
+          resolve(v);
+        },
+      });
+    });
+    send(Object.assign({}, msg, { id: wireId }));
+    return withTimeout(work, budgetMs, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
+      if (!settled) {
+        pending.delete(wireId);
+        killTree(owner);
+        if (child === owner) child = null;
+      }
+      return result;
+    });
+  }
+
   function handleCall(msg) {
     if (!ensureChild()) {
       out({ jsonrpc: "2.0", id: msg.id, result: errResult(startError, "cli_missing") });
@@ -325,27 +375,19 @@ function run() {
       out({ jsonrpc: "2.0", id: msg.id, result: errResult("Too many in-flight Gemini requests (" + MAX_PENDING + ")", "rate_limit") });
       return;
     }
-    const owner = child;
-    let settled = false;
-    const work = new Promise((resolve) => {
-      pending.set(msg.id, {
-        isCall: true,
-        owner,
-        resolve: (v) => {
-          settled = true;
-          resolve(v);
-        },
-      });
-    });
-    send(msg);
-    withTimeout(work, undefined, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
-      if (!settled) {
-        pending.delete(msg.id);
-        killTree(owner);
-        if (child === owner) child = null;
-      }
-      out({ jsonrpc: "2.0", id: msg.id, result });
-    });
+    const total = requestTimeoutMs(env);
+    const startedAt = Date.now();
+    attemptCall(msg, msg.id, total)
+      .then((result) => {
+        if (errorKindOf(result) !== "backend_unreadable") return result;
+        // The backend ran but its reply was unreadable: retry once within the remaining budget.
+        const left = total - (Date.now() - startedAt);
+        if (left <= 0 || !ensureChild()) return errResult(UNREADABLE_MESSAGE, "backend_unreadable");
+        return attemptCall(msg, "tycoon-retry-" + String(msg.id), left).then((again) =>
+          errorKindOf(again) === "backend_unreadable" ? errResult(UNREADABLE_MESSAGE, "backend_unreadable") : again,
+        );
+      })
+      .then((result) => out({ jsonrpc: "2.0", id: msg.id, result }));
   }
 
   function handleRequest(msg) {

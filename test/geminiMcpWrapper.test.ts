@@ -55,6 +55,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const text = (t, isError) => send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: t }], isError: !!isError } });
   if (mode === "hang") return;
   if (mode === "hang-first") { if (spawnIndex === 1) return; return setTimeout(() => text("late child answer"), 250); }
+  globalThis.calls = (globalThis.calls || 0) + 1;
+  const UNREAD = "Error executing ask-gemini: agy: found a SQLite transcript (C:/x/c.db) but could not extract a model reply from its schema. Please report this with the agy version";
+  if (mode === "unreadable-once") return globalThis.calls === 1 ? text(UNREAD, true) : text("second try answer");
+  if (mode === "unreadable") return text(UNREAD, true);
+  if (mode === "agywarn") return text('Warning: Backend "agy" ignores model selection (print-mode is gemini-3.5-flash-only); "gemini-2.5-pro" was not applied.\nreply');
   if (mode === "agymissing") return text("Error: agy not installed", true);
   if (mode === "pathecho") return text(process.env.PATH || "");
   if (mode === "empty") return text("   ");
@@ -420,4 +425,34 @@ test("childEnv preserves the existing Path/PATH key casing and never adds a dupl
   const up = wrapperApi.childEnv({ PATH: "/a" }, agy);
   assert.equal(up.PATH, agy.dir + path.delimiter + "/a");
   assert.equal(Object.keys(up).filter((k) => k.toUpperCase() === "PATH").length, 1);
+});
+
+test("backend_unreadable then success: retried once transparently and returns ok", async () => {
+  const r = await drive({ FAKE_MODE: "unreadable-once" }, [init, call(2)]);
+  const sc = r.replies.get(2)!.result.structuredContent;
+  assert.equal(sc.status, "ok", JSON.stringify(sc));
+  assert.equal(sc.summary, "second try answer");
+});
+
+test("backend_unreadable twice: provider_error backend_unreadable with the user-facing message", async () => {
+  const r = await drive({ FAKE_MODE: "unreadable" }, [init, call(2)]);
+  const sc = r.replies.get(2)!.result.structuredContent;
+  assert.equal(sc.status, "provider_error");
+  assert.equal(sc.error.kind, "backend_unreadable");
+  assert.match(sc.error.message, /reply couldn't be read/);
+  assert.match(sc.error.message, /GEMINI_MCP_BACKEND=gemini/);
+});
+
+test("other error kinds are not retried", async () => {
+  const r = await drive({ FAKE_MODE: "auth" }, [init, call(2)]);
+  assert.equal(r.replies.get(2)!.result.structuredContent.error.kind, "auth");
+});
+
+test("envelope model reflects what ran: parsed from the agy warning, else agy-default, else the label", async () => {
+  const warned = await drive({ FAKE_MODE: "agywarn", GEMINI_MCP_BACKEND: "agy", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
+  assert.equal((warned.replies.get(2)!.result.structuredContent as any).model, "gemini-3.5-flash");
+  const plain = await drive({ FAKE_MODE: "ok", GEMINI_MCP_BACKEND: "agy", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
+  assert.equal((plain.replies.get(2)!.result.structuredContent as any).model, "agy-default");
+  const cli = await drive({ FAKE_MODE: "ok", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
+  assert.equal((cli.replies.get(2)!.result.structuredContent as any).model, "gemini-2.5-pro");
 });
