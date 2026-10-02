@@ -1,6 +1,6 @@
 {
   "name": "tycoonagents",
-  "version": "0.0.686",
+  "version": "0.0.687",
   "private": true,
   "description": "Enforces delegation of coding work to cheaper specialist AI models, with a live tycoon-style visualization of that work as it happens.",
   "displayName": "TycoonAgents",
