@@ -15,7 +15,16 @@
  * found on PATH, then beside the running node binary, and failure lists every
  * place tried and names the override.
  *
- * Env: TYCOON_GEMINI_MCP_CMD, TYCOON_GEMINI_MCP_ARGS, TYCOON_BRIDGE_TIMEOUT_MS
+ * Antigravity CLI discovery (docs/PATH-DISCOVERY.md): gemini-mcp-tool's default
+ * backend runs `agy`, and the Windows installer does not put its bin folder on
+ * PATH. When GEMINI_MCP_BACKEND is unset or "agy", the wrapper finds agy before
+ * spawning: TYCOON_AGY_PATH (file or directory) wins, then PATH, then known
+ * install dirs built from env (win32 LOCALAPPDATA/agy/bin, verified on a real
+ * install; posix ~/.local/bin only, unverified - use the override otherwise).
+ * The dir is prepended to the child's PATH. Not found: no crash, tool calls
+ * return provider_error cli_missing naming every place tried and the override.
+ *
+ * Env: TYCOON_AGY_PATH, TYCOON_GEMINI_MCP_CMD, TYCOON_GEMINI_MCP_ARGS, TYCOON_BRIDGE_TIMEOUT_MS
  * (default 180000), TYCOON_BRIDGE_MAX_CHARS (default 12000), GEMINI_MCP_BACKEND
  * (agy | gemini, read by gemini-mcp-tool itself), GEMINI_MODEL (label only).
  */
@@ -49,6 +58,88 @@ function isFile(p) {
   } catch {
     return false;
   }
+}
+
+function isRunnable(p) {
+  try {
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size === 0) return false;
+    if (!IS_WIN) fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function agyFileNames() {
+  return IS_WIN ? ["agy.exe", "agy.cmd", "agy.bat"] : ["agy"];
+}
+
+function agyInstallDirs(env) {
+  if (IS_WIN) return env.LOCALAPPDATA ? [path.join(env.LOCALAPPDATA, "agy", "bin")] : [];
+  const home = env.HOME || env.USERPROFILE;
+  return home ? [path.join(home, ".local", "bin")] : [];
+}
+
+/**
+ * Discovers the Antigravity CLI. Returns { skipped: true } when the backend is
+ * not agy, { dir, file, source, onPath } when found, or { error } listing every
+ * place tried and naming the override.
+ */
+function resolveAgy(env) {
+  const backend = (env.GEMINI_MCP_BACKEND || "").trim().toLowerCase();
+  if (backend && backend !== "agy") return { skipped: true };
+  if ((env.TYCOON_GEMINI_MCP_CMD || "").trim()) return { skipped: true };
+  const names = agyFileNames();
+  const tried = [];
+  const inDir = (dir) => {
+    for (const n of names) {
+      const f = path.join(dir, n);
+      tried.push(f);
+      if (isRunnable(f)) return f;
+    }
+    return null;
+  };
+  const override = (env.TYCOON_AGY_PATH || "").trim();
+  if (override) {
+    let isDir = false;
+    try {
+      isDir = fs.statSync(override).isDirectory();
+    } catch {
+      /* missing: reported below */
+    }
+    let f = null;
+    if (isDir) f = inDir(override);
+    else {
+      tried.push(override);
+      if (isRunnable(override)) f = override;
+    }
+    if (f) return { file: f, dir: path.dirname(f), source: "TYCOON_AGY_PATH", onPath: false };
+    return { error: "TYCOON_AGY_PATH is set to " + override + " but no runnable agy CLI was found there. Tried: " + tried.join(", ") + ". Fix or unset TYCOON_AGY_PATH." };
+  }
+  for (const d of (env.PATH || env.Path || "").split(path.delimiter).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean)) {
+    const f = inDir(d);
+    if (f) return { file: f, dir: d, source: "PATH", onPath: true };
+  }
+  const installDirs = agyInstallDirs(env);
+  for (const d of installDirs) {
+    const f = inDir(d);
+    if (f) return { file: f, dir: d, source: "install dir", onPath: false };
+  }
+  return {
+    error:
+      "The Antigravity CLI (agy) was not found, and gemini-mcp-tool's default backend needs it. Looked on PATH and in " +
+      (installDirs.join(", ") || "(no known install dir for this environment)") +
+      ". Install it, or set TYCOON_AGY_PATH to the agy executable (or its folder), or set GEMINI_MCP_BACKEND=gemini to use the Gemini CLI.",
+  };
+}
+
+/** Env for the child with the agy dir prepended to PATH when it is not already on PATH. */
+function childEnv(env, agy) {
+  if (!agy || !agy.dir || agy.onPath) return env;
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") || "PATH";
+  const cur = env[key] || "";
+  return Object.assign({}, env, { [key]: cur ? agy.dir + path.delimiter + cur : agy.dir });
 }
 
 /** Returns { command, args } or throws an Error listing every location tried. */
@@ -192,10 +283,16 @@ function run() {
       startError = e.message;
       return false;
     }
+    const agy = resolveAgy(env);
+    if (agy.error) {
+      startError = agy.error;
+      return false;
+    }
+    const spawnEnv = childEnv(env, agy);
     const needsShell = IS_WIN && /\.(cmd|bat)$/i.test(cmd.command);
     const c = needsShell
-      ? spawn(shellCommandLine(cmd.command, cmd.args), { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: true, windowsHide: true })
-      : spawn(cmd.command, cmd.args, { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: needsShell, windowsHide: true });
+      ? spawn(shellCommandLine(cmd.command, cmd.args), { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: true, windowsHide: true, env: spawnEnv })
+      : spawn(cmd.command, cmd.args, { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: needsShell, windowsHide: true, env: spawnEnv });
     child = c;
     startError = null;
     c.on("error", (e) => {
@@ -312,4 +409,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { PINNED_PACKAGE, normalizeCallResult, resolveCommand, shellCommandLine };
+module.exports = { PINNED_PACKAGE, resolveAgy, childEnv, normalizeCallResult, resolveCommand, shellCommandLine };

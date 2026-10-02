@@ -125,6 +125,9 @@ for (const id of REVIEWER_IDS) {
       assert.ok(md.includes(status), `failure section must name ${status}`);
     }
     assert.ok(md.includes("never re-dispatch"), "must forbid re-dispatch after the chain was exhausted");
+    assert.ok(md.includes("Delegate result is final - no direct call after delegate."), "delegate-result-is-final rule");
+    assert.ok(md.includes('"Not available" means ONLY that the `mcp__tycoon__delegate` tool is absent'), "unavailable defined narrowly");
+    assert.ok(md.includes("make NO further model calls (no direct vendor tool, no retry, no second delegate)"), "no direct call after delegate");
     for (const line of RETAINED_LINES) {
       assert.ok(md.includes(line), `retained delegation/verdict language missing: ${line}`);
     }

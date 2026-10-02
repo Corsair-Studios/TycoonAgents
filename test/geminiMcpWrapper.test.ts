@@ -56,6 +56,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (mode === "hang") return;
   if (mode === "hang-first") { if (spawnIndex === 1) return; return setTimeout(() => text("late child answer"), 250); }
   if (mode === "agymissing") return text("Error: agy not installed", true);
+  if (mode === "pathecho") return text(process.env.PATH || "");
   if (mode === "empty") return text("   ");
   if (mode === "big") return text("x".repeat(500));
   if (mode === "auth") return text("Error: 401 Unauthorized - please log in again", true);
@@ -89,7 +90,7 @@ async function waitDead(pid: number): Promise<boolean> {
 async function drive(env: Record<string, string>, requests: object[], keepOpen = false) {
   const pidFile = path.join(root, "pid-" + Math.random().toString(36).slice(2));
   const wrapper = spawn(process.execPath, [WRAPPER], {
-    env: { ...process.env, TYCOON_GEMINI_MCP_CMD: process.execPath, TYCOON_GEMINI_MCP_ARGS: JSON.stringify([FAKE]), FAKE_PID_FILE: pidFile, ...env },
+    env: { ...process.env, TYCOON_GEMINI_MCP_CMD: process.execPath, TYCOON_GEMINI_MCP_ARGS: JSON.stringify([FAKE]), FAKE_PID_FILE: pidFile, GEMINI_MCP_BACKEND: "gemini", ...env },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -313,4 +314,110 @@ test("a .cmd shim under a directory containing a space starts and answers (win32
   assert.ok(replies.get(1)?.result, "initialize answered through the quoted .cmd shim");
   const parsed = parseBridgeResult(replies.get(2)?.result);
   assert.equal(parsed?.status, "ok");
+});
+
+// Antigravity CLI discovery: fake agy (Node script behind a .cmd shim / sh), never an .exe.
+function makeFakeAgy(dir: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const js = path.join(dir, "agy-fake.js");
+  fs.writeFileSync(js, "process.exit(0);\n");
+  const file = path.join(dir, process.platform === "win32" ? "agy.cmd" : "agy");
+  if (process.platform === "win32") fs.writeFileSync(file, `@echo off\r\n"${process.execPath}" "${js}" %*\r\n`);
+  else fs.writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${js}" "$@"\n`, { mode: 0o755 });
+  return file;
+}
+
+function agyEnv(home: string, extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    GEMINI_MCP_BACKEND: "agy",
+    FAKE_MODE: "pathecho",
+    PATH: path.dirname(process.execPath),
+    LOCALAPPDATA: path.join(home, "Local"),
+    HOME: home,
+    USERPROFILE: home,
+    ...extra,
+  };
+}
+
+const agyBinDir = (home: string) => (process.platform === "win32" ? path.join(home, "Local", "agy", "bin") : path.join(home, ".local", "bin"));
+
+type AgyResult = { skipped?: boolean; dir?: string; file?: string; source?: string; onPath?: boolean; error?: string };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const wrapperApi = require("../../hooks/gemini-mcp-wrapper.cjs") as {
+  resolveAgy: (env: Record<string, string>) => AgyResult;
+  childEnv: (env: Record<string, string>, agy: AgyResult) => Record<string, string>;
+};
+const discoverEnv = (home: string, extra: Record<string, string> = {}) => {
+  const e = agyEnv(home, extra);
+  delete (e as Record<string, string | undefined>).FAKE_MODE;
+  return e;
+};
+
+test("agy in the install dir is discovered and its dir is prepended to the child's PATH", () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  makeFakeAgy(agyBinDir(home));
+  const env = discoverEnv(home);
+  const agy = wrapperApi.resolveAgy(env);
+  assert.equal(agy.dir, agyBinDir(home));
+  assert.equal(agy.onPath, false);
+  assert.ok(wrapperApi.childEnv(env, agy).PATH.startsWith(agyBinDir(home) + path.delimiter));
+});
+
+test("TYCOON_AGY_PATH (file or dir) wins over the install dir", () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  makeFakeAgy(agyBinDir(home));
+  const other = path.join(root, "other-agy-" + Math.random().toString(36).slice(2));
+  const file = makeFakeAgy(other);
+  for (const value of [file, other]) {
+    const agy = wrapperApi.resolveAgy(discoverEnv(home, { TYCOON_AGY_PATH: value }));
+    assert.equal(agy.dir, other);
+    assert.equal(agy.source, "TYCOON_AGY_PATH");
+  }
+});
+
+test("agy not found yields an error naming where we looked and TYCOON_AGY_PATH; a bad override is explicit", () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  const agy = wrapperApi.resolveAgy(discoverEnv(home));
+  assert.match(agy.error!, /TYCOON_AGY_PATH/);
+  assert.ok(agy.error!.includes(agyBinDir(home)), agy.error);
+  makeFakeAgy(agyBinDir(home));
+  const bad = wrapperApi.resolveAgy(discoverEnv(home, { TYCOON_AGY_PATH: path.join(root, "nope") }));
+  assert.match(bad.error!, /TYCOON_AGY_PATH is set to/);
+});
+
+test("end to end: agy missing with the agy backend returns cli_missing (no TYCOON_GEMINI_MCP_CMD)", async () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  const { replies } = await drive(agyEnv(home, { TYCOON_GEMINI_MCP_CMD: "", TYCOON_GEMINI_MCP_ARGS: "" }), [init, call(2)]);
+  const e = envelopeFor(replies, 2);
+  assert.equal(e.error?.kind, "cli_missing");
+  assert.match(replies.get(2)!.result.content[0].text, /Antigravity|npx|TYCOON_AGY_PATH/);
+});
+
+test("a TYCOON_GEMINI_MCP_CMD override skips agy discovery (custom server gets no agy cli_missing)", async () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  assert.equal(wrapperApi.resolveAgy(discoverEnv(home, { TYCOON_GEMINI_MCP_CMD: "x" })).skipped, true);
+  const { replies } = await drive(agyEnv(home, { FAKE_MODE: "ok" }), [init, call(2)]);
+  assert.equal(envelopeFor(replies, 2).status, "ok");
+});
+
+test("agy already on PATH is used without a prepend, and quoted PATH entries are unquoted", () => {
+  const home = fs.mkdtempSync(path.join(root, "home-"));
+  const dir = path.join(root, "onpath-" + Math.random().toString(36).slice(2));
+  makeFakeAgy(dir);
+  const env = discoverEnv(home, { PATH: '"' + dir + '"' + path.delimiter + path.dirname(process.execPath) });
+  const agy = wrapperApi.resolveAgy(env);
+  assert.equal(agy.onPath, true);
+  assert.equal(agy.dir, dir);
+  assert.equal(wrapperApi.childEnv(env, agy), env);
+});
+
+test("childEnv preserves the existing Path/PATH key casing and never adds a duplicate", () => {
+  const agy: AgyResult = { dir: path.join(root, "agydir"), onPath: false };
+  const win = wrapperApi.childEnv({ Path: "C:a", Other: "1" }, agy);
+  assert.equal(win.Path, agy.dir + path.delimiter + "C:a");
+  assert.equal(Object.keys(win).filter((k) => k.toUpperCase() === "PATH").length, 1);
+  assert.equal("PATH" in win, false);
+  const up = wrapperApi.childEnv({ PATH: "/a" }, agy);
+  assert.equal(up.PATH, agy.dir + path.delimiter + "/a");
+  assert.equal(Object.keys(up).filter((k) => k.toUpperCase() === "PATH").length, 1);
 });
