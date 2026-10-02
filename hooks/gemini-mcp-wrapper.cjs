@@ -78,6 +78,16 @@ function resolveCommand(env) {
   return { command: found, args: ["-y", PINNED_PACKAGE] };
 }
 
+/**
+ * cmd.exe needs a single pre-quoted command line to run a .cmd/.bat shim (a
+ * bare path with a space in a directory name is split at the space). Quotes the
+ * command and any argument containing whitespace or cmd metacharacters.
+ */
+function shellCommandLine(command, args) {
+  const quote = (s) => (/[\s"&|<>^()%!]/.test(String(s)) ? '"' + String(s).replace(/"/g, '""') + '"' : String(s));
+  return [quote(command), ...(args || []).map(quote)].join(" ");
+}
+
 function killTree(child) {
   if (!child || child.exitCode !== null || !child.pid) return;
   try {
@@ -183,7 +193,9 @@ function run() {
       return false;
     }
     const needsShell = IS_WIN && /\.(cmd|bat)$/i.test(cmd.command);
-    const c = spawn(cmd.command, cmd.args, { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: needsShell, windowsHide: true });
+    const c = needsShell
+      ? spawn(shellCommandLine(cmd.command, cmd.args), { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: true, windowsHide: true })
+      : spawn(cmd.command, cmd.args, { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: needsShell, windowsHide: true });
     child = c;
     startError = null;
     c.on("error", (e) => {
@@ -300,4 +312,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { PINNED_PACKAGE, normalizeCallResult, resolveCommand };
+module.exports = { PINNED_PACKAGE, normalizeCallResult, resolveCommand, shellCommandLine };

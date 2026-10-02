@@ -60,7 +60,16 @@
  *   CODEX_MCP_TIMEOUT_MS      - per-tools/call timeout (default 600000);
  *     TYCOON_BRIDGE_TIMEOUT_MS is the shared fallback when it is unset.
  *
+ * Backend selection: launched with only -c flags (the catalog shape) or an
+ * explicit `mcp-server`, the launcher serves MCP. It uses the native
+ * `mcp-server` subcommand when the resolved codex has it (codex-cli < 0.154
+ * and --help lists it) and otherwise runs hooks/codex-app-server-mcp.cjs as a
+ * child against that binary. TYCOON_CODEX_BACKEND=mcp-server|app-server
+ * forces one (unset/auto = detect). Probes are bounded (10s) and cached
+ * in-process.
+ *
  * Env vars:
+ *   TYCOON_CODEX_BACKEND       — mcp-server | app-server | auto (default).
  *   CODEX_BINARY_PATH          — override, rung 1 above (checked first).
  *   CODEX_CLI_PATH             — alias for CODEX_BINARY_PATH, rung 1 above
  *     (checked second); also the internal handoff var this launcher sets
@@ -156,7 +165,7 @@ function probeCandidate(command, spawnSyncFn) {
       return { ok: false, ranButWrongContent: false };
     }
     if (stdout.trim().startsWith(CODEX_VERSION_PREFIX)) {
-      return { ok: true };
+      return { ok: true, version: stdout.trim().slice(CODEX_VERSION_PREFIX.length).trim() };
     }
     if (looksLikeCommandNotFound(stdout, stderr)) {
       return { ok: false, ranButWrongContent: false };
@@ -168,6 +177,43 @@ function probeCandidate(command, spawnSyncFn) {
   } catch {
     return { ok: false, ranButWrongContent: false };
   }
+}
+
+/** Parses "0.155.0" / "0.154.0-alpha.6.1" into [major, minor, patch], else null. */
+function parseCodexVersion(text) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(text || "").trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** codex-cli 0.154 removed the `mcp-server` subcommand. */
+function versionLacksMcpServer(versionText) {
+  const v = parseCodexVersion(versionText);
+  if (!v) return false;
+  return v[0] > 0 || v[1] >= 154;
+}
+
+/**
+ * TYCOON_CODEX_BACKEND: "mcp-server" | "app-server" force a backend; anything
+ * else (unset, "auto") means auto-detect from the resolved binary.
+ */
+function resolveBackendOverride(env) {
+  const raw = String((env || process.env)["TYCOON_CODEX_BACKEND"] || "").trim().toLowerCase();
+  return raw === "mcp-server" || raw === "app-server" ? raw : "auto";
+}
+
+/**
+ * True when the launcher args ask for an MCP server: an explicit `mcp-server`,
+ * or no subcommand at all (only -c key=value pairs / flags, the shape the
+ * catalog and .mcp.json.example launch with). Any other positional (e.g. a
+ * prompt) or --version/--help is a plain passthrough to codex.
+ */
+function wantsMcpServerLaunch(args) {
+  if (args.includes("mcp-server")) return true;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-c" || args[i] === "--config") { i++; continue; }
+    return false; // a bare positional or other flag: plain passthrough
+  }
+  return true;
 }
 
 function addCandidate(list, seen, origin, command) {
@@ -458,6 +504,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   const tried = [];
   const wantsMcpServer = Array.isArray(requestedArgs) && requestedArgs.includes("mcp-server");
   const allowIncapableFallback = Boolean(opts && opts.allowIncapableFallback) && wantsMcpServer;
+  const skipCapability = Boolean(opts && opts.skipCapability);
   // Injectable spawnSync-shaped seam (Plan p34-t3): defaults to the real
   // child_process.spawnSync, so CLI entry behaviour (`main()` with no
   // override) is byte-for-byte identical to before this seam existed.
@@ -471,8 +518,17 @@ function discoverCodexBinary(requestedArgs, opts) {
   const helpCache = (opts && opts.helpTextCache) || helpTextCache;
   let firstIncapable = null;
 
-  function hasCapability(command) {
-    if (!wantsMcpServer) return true;
+  function hasCapability(command, version) {
+    if (!wantsMcpServer || skipCapability) return true;
+    if (versionLacksMcpServer(version)) {
+      if (allowIncapableFallback && !firstIncapable) firstIncapable = command;
+      process.stderr.write(
+        `codex-mcp-launcher: skipping "${command}" — codex-cli ${version} is 0.154 or newer, which removed "mcp-server"; ` +
+          `trying the next candidate.
+`,
+      );
+      return false;
+    }
     // Deliberately a plain substring test, not the stricter
     // Commands-list-anchored helpListsCommand() used elsewhere in this
     // file: this check must also pass against a minimal argv-echo/fixture
@@ -494,7 +550,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   if (override) {
     tried.push(`${overrideVarName}=${override}`);
     const probed = probeCandidate(override, spawnSyncFn);
-    if (probed.ok && hasCapability(override)) {
+    if (probed.ok && hasCapability(override, probed.version)) {
       return override;
     }
     if (!probed.ok) {
@@ -519,7 +575,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   for (const candidate of candidates) {
     tried.push(`${candidate.origin}: ${candidate.command}`);
     const probed = probeCandidate(candidate.command, spawnSyncFn);
-    if (probed.ok && hasCapability(candidate.command)) {
+    if (probed.ok && hasCapability(candidate.command, probed.version)) {
       return candidate.command;
     }
   }
@@ -839,51 +895,64 @@ function attachMcpResultProxy(child, model) {
   return proxy;
 }
 
+function launchAppServerShim(spawnFn, binary, requestedArgs, reason) {
+  const shimPath = path.join(__dirname, "codex-app-server-mcp.cjs");
+  process.stderr.write(`codex-mcp-launcher: ${reason}; falling back to the app-server MCP shim (${shimPath}) against "${binary}".
+`);
+  const shimArgs = requestedArgs.filter((a) => a !== "mcp-server");
+  const child = spawnFn(process.execPath, [shimPath, ...shimArgs], {
+    stdio: "inherit",
+    windowsHide: true,
+    env: { ...process.env, CODEX_CLI_PATH: binary },
+  });
+  child.on("error", (err) => {
+    process.stderr.write(`codex-mcp-launcher: failed to launch app-server shim: ${err && err.message}
+`);
+    process.exit(1);
+  });
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code === null ? 1 : code);
+  });
+}
+
 function main(opts) {
   const spawnSyncFn = (opts && opts.spawnSync) || spawnSync;
   const spawnFn = (opts && opts.spawn) || spawn;
   const helpCache = (opts && opts.helpTextCache) || helpTextCache;
-  const requestedArgs = applyReasoningEffortOverride(process.argv.slice(2), process.env);
-  const wantsMcpServer = requestedArgs.includes("mcp-server");
+  let requestedArgs = applyReasoningEffortOverride(process.argv.slice(2), process.env);
+  const serverLaunch = wantsMcpServerLaunch(requestedArgs);
+  // The catalog launches with only -c pairs; the MCP-server intent is implicit.
+  if (serverLaunch && !requestedArgs.includes("mcp-server")) requestedArgs = [...requestedArgs, "mcp-server"];
+  const wantsMcpServer = serverLaunch;
+  const backend = wantsMcpServer ? resolveBackendOverride(process.env) : "auto";
+
+  if (backend === "app-server") {
+    const binary = discoverCodexBinary(requestedArgs.filter((a) => a !== "mcp-server"), { spawnSync: spawnSyncFn, helpTextCache: helpCache });
+    launchAppServerShim(spawnFn, binary, requestedArgs, "TYCOON_CODEX_BACKEND=app-server");
+    return;
+  }
+
   const discovered = discoverCodexBinary(requestedArgs, {
-    allowIncapableFallback: wantsMcpServer,
+    allowIncapableFallback: wantsMcpServer && backend === "auto",
+    skipCapability: backend === "mcp-server",
     spawnSync: spawnSyncFn,
     helpTextCache: helpCache,
   });
 
   if (discovered && typeof discovered === "object" && discovered.fallbackTo) {
     // Plan p30-t1: every candidate that content-verified as Codex lacks the
-    // `mcp-server` subcommand (0.154+ dropped it) — fall back to the
-    // app-server-backed MCP shim, driving that same (incapable) binary via
-    // CODEX_CLI_PATH so it never re-runs discovery. This is an explicit,
-    // logged substitution, never silent.
-    const shimPath = path.join(__dirname, "codex-app-server-mcp.cjs");
-    process.stderr.write(
-      `codex-mcp-launcher: no discovered Codex CLI has an "mcp-server" subcommand; falling back to the app-server ` +
-        `MCP shim (${shimPath}) against "${discovered.fallbackTo}".\n`,
-    );
-    const shimArgs = requestedArgs.filter((a) => a !== "mcp-server");
-    const child = spawnFn(process.execPath, [shimPath, ...shimArgs], {
-      stdio: "inherit",
-      windowsHide: true,
-      env: { ...process.env, CODEX_CLI_PATH: discovered.fallbackTo },
-    });
-    child.on("error", (err) => {
-      process.stderr.write(`codex-mcp-launcher: failed to launch app-server shim: ${err && err.message}\n`);
-      process.exit(1);
-    });
-    child.on("exit", (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
-        return;
-      }
-      process.exit(code === null ? 1 : code);
-    });
+    // `mcp-server` subcommand (0.154+ dropped it) — an explicit, logged
+    // substitution, never silent.
+    launchAppServerShim(spawnFn, discovered.fallbackTo, requestedArgs, 'no discovered Codex CLI has an "mcp-server" subcommand');
     return;
   }
 
   const command = discovered;
-  const args = translateMcpServerSubcommand(command, requestedArgs, spawnSyncFn, helpCache);
+  const args = backend === "mcp-server" ? requestedArgs : translateMcpServerSubcommand(command, requestedArgs, spawnSyncFn, helpCache);
 
   // Native mcp-server path: pipe stdio through the result proxy so tools/call
   // responses carry the shared envelope and a timeout (see the file header).
@@ -921,6 +990,10 @@ module.exports = {
   main,
   needsShell,
   applyReasoningEffortOverride,
+  parseCodexVersion,
+  versionLacksMcpServer,
+  wantsMcpServerLaunch,
+  resolveBackendOverride,
   createMcpResultProxy,
   resolveMcpTimeoutMs,
   DEFAULT_MCP_TIMEOUT_MS,

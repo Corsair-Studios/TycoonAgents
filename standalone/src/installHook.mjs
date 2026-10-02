@@ -235,6 +235,33 @@ function stripBom(s) {
 }
 
 /**
+ * Writes `<dir>/package.json` = {"type":"commonjs"} so the CommonJS `.js`
+ * modules copied under `.claude/` load as CJS in "type":"module" projects.
+ * Idempotent; mirrors ensureCommonJsMarker in src/host/vscode/hookInstall.ts.
+ * An existing file gets `type` added only when absent; otherwise untouched.
+ *
+ * @param {string} dir
+ * @returns {'created'|'updated'|'unchanged'|'skipped'}
+ */
+export function ensureCommonJsMarker(dir) {
+  const file = path.join(dir, 'package.json');
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, JSON.stringify({ type: 'commonjs' }, null, 2) + '\n', 'utf8');
+    return 'created';
+  }
+  try {
+    const parsed = JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'skipped';
+    if (typeof parsed.type === 'string') return 'unchanged';
+    fs.writeFileSync(file, JSON.stringify({ ...parsed, type: 'commonjs' }, null, 2) + '\n', 'utf8');
+    return 'updated';
+  } catch {
+    return 'skipped';
+  }
+}
+
+/**
  * Refreshes any STALE runtime hook file(s) already sitting in
  * `<targetDir>/.claude/tycoon/` (the bundled hook script + its companions —
  * see {@link RUNTIME_HOOK_FILES's source, `getRuntimeHookFiles`}), by
@@ -289,6 +316,9 @@ export function refreshRuntimeHookCopies(targetDir, opts = {}) {
       refreshed.push(file);
     }
   }
+  if (getRuntimeHookFiles().some((f) => fs.existsSync(path.join(tycoonDir, f)))) {
+    ensureCommonJsMarker(tycoonDir);
+  }
   return refreshed;
 }
 
@@ -317,7 +347,60 @@ export function installMcpBridgeHooks(targetDir, opts = {}) {
     if (status === 'created') created.push(file);
     else if (status === 'refreshed') refreshed.push(file);
   }
+  if (fs.existsSync(destDir)) ensureCommonJsMarker(destDir);
   return { created, refreshed };
+}
+
+/** Warns (never rewrites) when a user-owned package.json in `dir` pins "type":"module". */
+function warnIfModuleMarker(dir, warn) {
+  try {
+    const parsed = JSON.parse(stripBom(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')));
+    if (parsed && parsed.type === 'module') {
+      warn(`[tycoonagents] ${dir}/package.json sets "type":"module"; the CommonJS hook files there will fail to load until it is changed to "commonjs" or removed.`);
+    }
+  } catch { /* absent or unreadable: nothing to warn about */ }
+}
+
+/**
+ * Startup/open-time heal for projects installed by an older version: refreshes
+ * stale copies in `.claude/tycoon/` and `.claude/hooks/` (only files that
+ * already exist and are on our lists - never adds files) and ensures the
+ * CommonJS marker in each dir that holds our files. Never throws.
+ *
+ * @param {string} targetDir
+ * @param {{ hooksSourceDir?: string, warn?: (m: string) => void }} [opts]
+ * @returns {{ refreshed: string[], bridgeRefreshed: string[] }}
+ */
+export function healInstalledHookCopies(targetDir, opts = {}) {
+  const warn = opts.warn ?? ((m) => console.warn(m));
+  const absTarget = path.resolve(String(targetDir ?? ''));
+  const srcDir = opts.hooksSourceDir ?? hooksDir();
+  const result = { refreshed: [], bridgeRefreshed: [] };
+  try {
+    result.refreshed = refreshRuntimeHookCopies(absTarget, { hooksSourceDir: srcDir });
+    warnIfModuleMarker(path.join(absTarget, '.claude', 'tycoon'), warn);
+  } catch (err) {
+    warn(`[tycoonagents] runtime hook heal failed: ${err instanceof Error ? err.message : err}`);
+  }
+  try {
+    const destDir = path.join(absTarget, '.claude', 'hooks');
+    let any = false;
+    for (const file of getMcpBridgeHookFiles()) {
+      const destPath = path.join(destDir, file);
+      const srcPath = path.join(srcDir, file);
+      if (!fs.existsSync(destPath)) continue;
+      any = true;
+      if (!fs.existsSync(srcPath)) continue;
+      if (syncRuntimeFile(srcPath, destPath) === 'refreshed') result.bridgeRefreshed.push(file);
+    }
+    if (any) {
+      ensureCommonJsMarker(destDir);
+      warnIfModuleMarker(destDir, warn);
+    }
+  } catch (err) {
+    warn(`[tycoonagents] bridge hook heal failed: ${err instanceof Error ? err.message : err}`);
+  }
+  return result;
 }
 
 /**

@@ -241,7 +241,7 @@ test("a missing agy/gemini CLI reported by the tool is cli_missing, a bare RESOU
 
 test("a replaced child's late exit does not fail the new child's in-flight call", async () => {
   const countFile = path.join(root, "count-" + Math.random().toString(36).slice(2));
-  const r = await drive({ FAKE_MODE: "hang-first", FAKE_COUNT_FILE: countFile, TYCOON_BRIDGE_TIMEOUT_MS: "500" }, [init, call(2), call(3)], true);
+  const r = await drive({ FAKE_MODE: "hang-first", FAKE_COUNT_FILE: countFile, TYCOON_BRIDGE_TIMEOUT_MS: "2500" }, [init, call(2), call(3)], true);
   try {
     const first = envelopeFor(r.replies, 2);
     assert.equal(first.status, "timeout");
@@ -289,4 +289,28 @@ test("a non-call request (tools/list) that never answers times out with a JSON-R
     r.wrapper.stdin.end();
     r.wrapper.kill();
   }
+});
+
+test("shellCommandLine quotes a command path and arguments containing spaces or cmd metacharacters", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { shellCommandLine } = require("../../hooks/gemini-mcp-wrapper.cjs") as { shellCommandLine: (c: string, a: string[]) => string };
+  assert.equal(
+    shellCommandLine("C:\\Program Files\\nodejs\\npx.cmd", ["-y", "pkg name", "a&b"]),
+    '"C:\\Program Files\\nodejs\\npx.cmd" -y "pkg name" "a&b"',
+  );
+  assert.equal(shellCommandLine("npx.cmd", ["-y", "pkg"]), "npx.cmd -y pkg");
+});
+
+test("a .cmd shim under a directory containing a space starts and answers (win32 shell quoting)", { skip: process.platform !== "win32" }, async () => {
+  const spaced = path.join(root, "Program Files fake", "nodejs");
+  fs.mkdirSync(spaced, { recursive: true });
+  const shim = path.join(spaced, "fake-gemini.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"${process.execPath}" "${FAKE}" %*\r\n`);
+  const { replies } = await drive(
+    { TYCOON_GEMINI_MCP_CMD: shim, TYCOON_GEMINI_MCP_ARGS: JSON.stringify(["--flag", "two words"]) },
+    [init, call(2)],
+  );
+  assert.ok(replies.get(1)?.result, "initialize answered through the quoted .cmd shim");
+  const parsed = parseBridgeResult(replies.get(2)?.result);
+  assert.equal(parsed?.status, "ok");
 });

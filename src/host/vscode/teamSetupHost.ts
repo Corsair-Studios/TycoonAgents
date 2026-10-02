@@ -69,6 +69,7 @@ import {
   cleanupForeignHookArtifacts,
   RUNTIME_HOOK_FILES,
   MCP_BRIDGE_HOOK_FILES,
+  ensureCommonJsMarker,
   buildAbsoluteHookCommand,
 } from "./hookInstall";
 
@@ -394,6 +395,7 @@ function installPortableHooks(root: string, hookSourceDir: string, delegationMod
         syncRuntimeFile(src, path.join(tycoonDir, fileName));
       }
     }
+    ensureCommonJsMarker(tycoonDir);
 
     // MCP bridge scripts (.claude/hooks/, not .claude/tycoon/) — see
     // MCP_BRIDGE_HOOK_FILES in hookInstall.ts.
@@ -405,6 +407,7 @@ function installPortableHooks(root: string, hookSourceDir: string, delegationMod
         syncRuntimeFile(src, path.join(hooksDestDir, fileName));
       }
     }
+    if (fs.existsSync(hooksDestDir)) ensureCommonJsMarker(hooksDestDir);
 
     // Absolute path, not project-relative — see buildAbsoluteHookCommand's
     // doc comment (hookInstall.ts): a relative command breaks silently once

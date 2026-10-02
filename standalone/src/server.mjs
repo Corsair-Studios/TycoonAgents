@@ -52,6 +52,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createStateFeed } from './stateFeed.mjs';
+import { healInstalledHookCopies } from './installHook.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
 import {
@@ -4464,6 +4465,16 @@ export async function startServer({
   // CURRENT call's primary root, never a stale prior instance's — same
   // posture as themeStore/themeImagesRootDir below.
   primaryProjectRoot = primary.root;
+
+  // Heal hook/bridge copies installed by an older version (stale content,
+  // missing CommonJS marker). Existing files only; never blocks startup.
+  for (const { root } of roots) {
+    try {
+      healInstalledHookCopies(root);
+    } catch (err) {
+      console.error(`[tycoonagents-standalone] hook copy heal failed for ${root}:`, err);
+    }
+  }
 
   // Auto-heal the always-on core skills (tycoon-ready-test, tycoon-diagnose)
   // for every resolved root that already has TycoonAgents hooks installed —

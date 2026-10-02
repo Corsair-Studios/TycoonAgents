@@ -505,3 +505,105 @@ test("(not-found) no candidates anywhere: non-zero exit, empty stdout, stderr li
     rmSync(emptyProjectRoot, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// (backend) automatic mcp-server vs app-server selection, and the
+// TYCOON_CODEX_BACKEND override. The fake codex reports FAKE_CODEX_VERSION
+// and lists `mcp-server` in --help only when that version is below 0.154.
+// The app-server shim answers initialize/tools/list itself, so the fake never
+// needs to speak app-server.
+// ---------------------------------------------------------------------------
+
+const versionedFakeJs = join(fixtureRoot, "versionedFakeCodex.js");
+writeFileSync(
+  versionedFakeJs,
+  [
+    "const [self, ...rest] = process.argv.slice(2);",
+    "const version = process.env.FAKE_CODEX_VERSION || '0.153.0';",
+    "const minor = Number(version.split('.')[1]);",
+    "if (rest[0] === '--version') { console.log('codex-cli ' + version); process.exit(0); }",
+    "if (rest[rest.length - 1] === '--help') {",
+    "  console.log('Commands:');",
+    "  if (minor < 154) console.log('  mcp-server   Run the MCP stdio server');",
+    "  console.log('  app-server   Run the app server');",
+    "  process.exit(0);",
+    "}",
+    "console.log('SELF:' + self + '|ARGV:[' + rest.map((a) => JSON.stringify(a)).join(',') + ']');",
+  ].join("\n"),
+  "utf8",
+);
+
+function writeVersionedStub(dir: string): string {
+  const dest = join(dir, IS_WIN ? "codex.cmd" : "codex");
+  if (IS_WIN) {
+    writeFileSync(dest, `@echo off\r\nnode ${cmdQuote(versionedFakeJs)} ${cmdQuote(dest)} %*\r\n`);
+  } else {
+    writeFileSync(dest, `#!/bin/sh\nexec node ${cmdQuote(versionedFakeJs)} ${cmdQuote(dest)} "$@"\n`, "utf8");
+    chmodSync(dest, 0o755);
+  }
+  return dest;
+}
+
+const MCP_HANDSHAKE =
+  JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } } }) +
+  "\n" +
+  JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) +
+  "\n";
+
+function runBackend(version: string, extra: NodeJS.ProcessEnv = {}) {
+  const home = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-"));
+  const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
+  try {
+    const stub = writeVersionedStub(home);
+    const env = scrubbedEnv({ ...homeOverride(home), CODEX_CLI_PATH: stub, FAKE_CODEX_VERSION: version, ...extra }, emptyProjectRoot);
+    // Catalog shape: only -c pairs, no subcommand.
+    return spawnSync(process.execPath, [LAUNCHER_PATH, "-c", 'model="x"'], { env, encoding: "utf8", windowsHide: true, timeout: 60_000, input: MCP_HANDSHAKE });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(emptyProjectRoot, { recursive: true, force: true });
+  }
+}
+
+function assertAppServerShim(result: ReturnType<typeof runBackend>) {
+  assert.ok((result.stderr || "").includes("app-server MCP shim"), `expected shim fallback, stderr: ${result.stderr}`);
+  const lines = (result.stdout || "").split("\n").filter((l) => l.trim().startsWith("{")).map((l) => JSON.parse(l));
+  assert.equal(lines[0]?.id, 1, `initialize must be answered, stdout: ${result.stdout}`);
+  assert.ok(lines[0]?.result, "initialize result");
+  const names = (lines[1]?.result?.tools ?? []).map((t: { name: string }) => t.name);
+  assert.deepEqual(names.sort(), ["codex", "codex-reply"]);
+}
+
+test("(backend) codex 0.155 without mcp-server -> app-server shim answers initialize and tools/list", () => {
+  assertAppServerShim(runBackend("0.155.0"));
+});
+
+test("(backend) codex 0.153 -> native mcp-server path, subcommand appended to catalog-shaped args", () => {
+  const result = runBackend("0.153.0");
+  assert.ok(!(result.stderr || "").includes("app-server MCP shim"), `must not use the shim, stderr: ${result.stderr}`);
+  const match = /ARGV:(\[.*\])/.exec(result.stdout || "");
+  assert.ok(match, `expected the fake to run, stdout: ${result.stdout}`);
+  assert.equal(JSON.parse(match![1]).at(-1), "mcp-server");
+});
+
+test("(backend) TYCOON_CODEX_BACKEND=app-server forces the shim even on 0.153", () => {
+  assertAppServerShim(runBackend("0.153.0", { TYCOON_CODEX_BACKEND: "app-server" }));
+});
+
+test("(backend) TYCOON_CODEX_BACKEND=mcp-server forces the native path even on 0.155", () => {
+  const result = runBackend("0.155.0", { TYCOON_CODEX_BACKEND: "mcp-server" });
+  assert.ok(!(result.stderr || "").includes("app-server MCP shim"), `must not use the shim, stderr: ${result.stderr}`);
+  const match = /ARGV:(\[.*\])/.exec(result.stdout || "");
+  assert.ok(match, `expected the fake to run, stdout: ${result.stdout}`);
+  assert.equal(JSON.parse(match![1]).at(-1), "mcp-server");
+});
+
+test("(backend) version/launch-shape helpers", () => {
+  const l = require("../../hooks/codex-mcp-launcher.cjs");
+  assert.equal(l.versionLacksMcpServer("0.155.0"), true);
+  assert.equal(l.versionLacksMcpServer("0.154.0-alpha.6.1"), true);
+  assert.equal(l.versionLacksMcpServer("0.153.0"), false);
+  assert.equal(l.versionLacksMcpServer("0.0.0-test"), false);
+  assert.equal(l.wantsMcpServerLaunch(["-c", 'model="x"']), true);
+  assert.equal(l.wantsMcpServerLaunch(["--version"]), false);
+  assert.equal(l.wantsMcpServerLaunch(["hello"]), false);
+});

@@ -440,6 +440,33 @@ export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "fallbackChain.js",
 ];
 
+/**
+ * Writes `<dir>/package.json` = {"type":"commonjs"} so the CommonJS `.js`
+ * modules copied into `.claude/hooks/` and `.claude/tycoon/` load as CJS even
+ * when the project's own package.json says "type":"module" (otherwise Node
+ * throws "exports is not defined in ES module scope"). Idempotent; an
+ * existing file is only touched when it has no `type` field (type is added,
+ * other fields preserved); an existing `type` or unparseable file is left alone.
+ */
+export function ensureCommonJsMarker(dir: string): "created" | "updated" | "unchanged" | "skipped" {
+  const file = path.join(dir, "package.json");
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, JSON.stringify({ type: "commonjs" }, null, 2) + "\n", "utf8");
+    return "created";
+  }
+  try {
+    const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "skipped";
+    if (typeof parsed.type === "string") return "unchanged";
+    fs.writeFileSync(file, JSON.stringify({ ...parsed, type: "commonjs" }, null, 2) + "\n", "utf8");
+    return "updated";
+  } catch {
+    return "skipped";
+  }
+}
+
 /** Outcome of syncing one runtime file — see {@link syncRuntimeFile}. */
 export type RuntimeFileSyncStatus = "created" | "refreshed" | "unchanged";
 
@@ -826,4 +853,46 @@ export function cleanupForeignHookArtifacts(
   }
 
   return result;
+}
+
+/**
+ * Heal for projects installed by an older version: refreshes stale copies of
+ * files from RUNTIME_HOOK_FILES (`.claude/tycoon/`) and MCP_BRIDGE_HOOK_FILES
+ * (`.claude/hooks/`) that ALREADY exist, and ensures the CommonJS marker in
+ * each dir holding them. Never adds files, never throws. Warns (leaves the
+ * file) when a user package.json there pins "type":"module".
+ */
+export function healInstalledHookCopies(
+  projectRoot: string,
+  resolveSrc: (fileName: string) => string | undefined,
+  warn: (message: string) => void = () => undefined,
+): string[] {
+  const refreshed: string[] = [];
+  const groups: Array<[string, ReadonlyArray<string>]> = [
+    [path.join(projectRoot, ".claude", "tycoon"), RUNTIME_HOOK_FILES],
+    [path.join(projectRoot, ".claude", "hooks"), MCP_BRIDGE_HOOK_FILES],
+  ];
+  for (const [dir, files] of groups) {
+    try {
+      let any = false;
+      for (const fileName of files) {
+        const dest = path.join(dir, fileName);
+        if (!fs.existsSync(dest)) continue;
+        any = true;
+        const src = resolveSrc(fileName);
+        if (src && fs.existsSync(src) && syncRuntimeFile(src, dest) === "refreshed") refreshed.push(path.join(dir, fileName));
+      }
+      if (!any) continue;
+      ensureCommonJsMarker(dir);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8").replace(/^\uFEFF/, ""));
+        if (parsed && parsed.type === "module") {
+          warn(`TycoonAgents: ${dir}${path.sep}package.json sets "type":"module"; the CommonJS hook files there will fail to load. Change it to "commonjs" or remove it.`);
+        }
+      } catch { /* unreadable: nothing to warn about */ }
+    } catch (err) {
+      warn(`TycoonAgents: hook copy heal failed in ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return refreshed;
 }

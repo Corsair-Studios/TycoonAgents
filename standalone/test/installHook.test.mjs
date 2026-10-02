@@ -23,6 +23,8 @@ import {
   defaultHookScriptPath,
   refreshRuntimeHookCopies,
   installMcpBridgeHooks,
+  ensureCommonJsMarker,
+  healInstalledHookCopies,
   InstallHookError,
   TYCOON_HOOK_SLOTS,
 } from '../src/installHook.mjs';
@@ -486,6 +488,91 @@ test('installMcpBridgeHooks: copies every MCP_BRIDGE_HOOK_FILES entry into .clau
     assert.deepEqual(second.refreshed, []);
     fs.writeFileSync(path.join(dir, '.claude', 'hooks', 'bridge-result.cjs'), 'stale');
     assert.deepEqual(installMcpBridgeHooks(dir).refreshed, ['bridge-result.cjs']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- CommonJS marker: copied .js modules must load in "type":"module" projects --
+
+test('installMcpBridgeHooks: in a "type":"module" project the copied dispatcher starts and answers MCP initialize', async () => {
+  const { spawn } = await import('node:child_process');
+  const dir = mkTempDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'esm-proj', type: 'module' }));
+    installMcpBridgeHooks(dir);
+    const hooksDir = path.join(dir, '.claude', 'hooks');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(hooksDir, 'package.json'), 'utf8')), { type: 'commonjs' });
+    const probe = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [path.join(hooksDir, 'tycoon-dispatcher-mcp.cjs')], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      let out = '';
+      let err = '';
+      let finished = false;
+      const done = (v) => { if (finished) return; finished = true; clearTimeout(timer); child.once('close', () => resolve(v)); try { child.kill(); } catch { resolve(v); } };
+      const timer = setTimeout(() => done({ out, err, timedOut: true }), 15000);
+      child.stdout.on('data', (c) => { out += c; if (out.includes('\n')) done({ out, err }); });
+      child.stderr.on('data', (c) => { err += c; });
+      child.on('exit', () => { if (!finished) { finished = true; clearTimeout(timer); resolve({ out, err }); } });
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } } }) + '\n');
+    });
+    assert.ok(!/exports is not defined/.test(probe.err), probe.err);
+    assert.equal(JSON.parse(probe.out.split('\n')[0]).id, 1, `no initialize reply; stderr: ${probe.err}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ensureCommonJsMarker: creates, is idempotent, adds type only when absent, never overrides an explicit type', () => {
+  const dir = mkTempDir();
+  try {
+    assert.equal(ensureCommonJsMarker(dir), 'created');
+    assert.equal(ensureCommonJsMarker(dir), 'unchanged');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'keep' }));
+    assert.equal(ensureCommonJsMarker(dir), 'updated');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')), { name: 'keep', type: 'commonjs' });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+    assert.equal(ensureCommonJsMarker(dir), 'unchanged');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).type, 'module');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{not json');
+    assert.equal(ensureCommonJsMarker(dir), 'skipped');
+    assert.equal(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'), '{not json');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('healInstalledHookCopies: older install (stale copies, no marker, type:module project) is healed; non-installed files are not added; dispatcher answers initialize', async () => {
+  const { spawn } = await import('node:child_process');
+  const dir = mkTempDir();
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'esm-proj', type: 'module' }));
+    installMcpBridgeHooks(dir);
+    const hooksDir = path.join(dir, '.claude', 'hooks');
+    fs.rmSync(path.join(hooksDir, 'package.json'));
+    // Simulate an older install: stale content, and a bridge file never installed.
+    fs.writeFileSync(path.join(hooksDir, 'gemini-mcp-wrapper.cjs'), 'stale');
+    fs.rmSync(path.join(hooksDir, 'codex-app-server-mcp.cjs'));
+    const warnings = [];
+    const res = healInstalledHookCopies(dir, { warn: (m) => warnings.push(m) });
+    assert.deepEqual(res.bridgeRefreshed, ['gemini-mcp-wrapper.cjs']);
+    assert.ok(!fs.existsSync(path.join(hooksDir, 'codex-app-server-mcp.cjs')), 'must not add a missing file');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(hooksDir, 'package.json'), 'utf8')), { type: 'commonjs' });
+    assert.ok(!fs.existsSync(path.join(dir, '.claude', 'tycoon')), 'no tycoon dir created');
+    const out = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [path.join(hooksDir, 'tycoon-dispatcher-mcp.cjs')], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      let buf = '';
+      let finished = false;
+      const done = () => { if (finished) return; finished = true; clearTimeout(timer); child.once('close', () => resolve(buf)); try { child.kill(); } catch { resolve(buf); } };
+      const timer = setTimeout(done, 15000);
+      child.stdout.on('data', (c) => { buf += c; if (buf.includes('\n')) done(); });
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } } }) + '\n');
+    });
+    assert.equal(JSON.parse(out.split('\n')[0]).id, 1);
+    // Explicit module marker is left alone and warned about.
+    fs.writeFileSync(path.join(hooksDir, 'package.json'), JSON.stringify({ type: 'module' }));
+    healInstalledHookCopies(dir, { warn: (m) => warnings.push(m) });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(hooksDir, 'package.json'), 'utf8')).type, 'module');
+    assert.ok(warnings.some((m) => /type":"module/.test(m)));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

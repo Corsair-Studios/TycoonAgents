@@ -253,6 +253,8 @@ import {
   LEGACY_STATE_FILE_NAMES,
   syncRuntimeFile,
   MCP_BRIDGE_HOOK_FILES,
+  ensureCommonJsMarker,
+  healInstalledHookCopies,
   enableMcpJsonServerInSettings,
   buildAbsoluteHookCommand,
   migrateRelativeHookCommand,
@@ -6105,6 +6107,20 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") return;
 
+      // Heal older installs (stale bridge/runtime copies, missing CommonJS
+      // marker) before the early returns below. Existing files only.
+      try {
+        const resolveSrc = (fileName: string): string | undefined => {
+          const hooksPath = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
+          if (fs.existsSync(hooksPath)) return hooksPath;
+          const outPath = vscode.Uri.joinPath(this._extensionUri, "out", "src", "core", fileName).fsPath;
+          return fs.existsSync(outPath) ? outPath : undefined;
+        };
+        healInstalledHookCopies(root, resolveSrc, (m) => console.warn(m));
+      } catch (err) {
+        console.warn("TycoonAgents: hook copy heal failed:", err);
+      }
+
       const dest = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
       if (!fs.existsSync(dest)) return; // never auto-create — opt-in preserved
 
@@ -6773,6 +6789,7 @@ export class TycoonPanel {
         syncCompanion(fallbackChainSrc, "fallbackChain.js");
         // p99-t1: structured bridge-status parser required by the hook.
         syncCompanion(resolveRuntimeFile("bridge-result.cjs"), "bridge-result.cjs");
+        ensureCommonJsMarker(tycoonDir);
       } catch {
         /* best-effort; hook falls back to legacy behavior when absent */
       }
@@ -6792,6 +6809,7 @@ export class TycoonPanel {
             syncRuntimeFile(bridgeSrc, path.join(hooksDestDir, fileName));
           }
         }
+        if (fs.existsSync(hooksDestDir)) ensureCommonJsMarker(hooksDestDir);
       } catch {
         /* best-effort; MCP bridge entries simply won't resolve if absent */
       }
