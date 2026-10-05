@@ -34,7 +34,22 @@
  * PRIVACY: on the agy backend, non-secret project files named in a prompt are read
  * locally and their contents are sent to Google.
  *
- * Env: TYCOON_AGY_PATH, TYCOON_GEMINI_MCP_CMD, TYCOON_GEMINI_MCP_ARGS, TYCOON_BRIDGE_TIMEOUT_MS
+ * Direct agy mode (agy backend, no TYCOON_GEMINI_MCP_CMD): gemini-mcp-tool@1.1.8 spawns
+ * `agy -p <prompt>` with shell:true on Windows, so cmd.exe cuts the prompt at its first
+ * newline and agy only sees line one (it then tries a denied tool and returns nothing).
+ * In this mode the wrapper therefore serves the MCP tools itself (initialize, tools/list
+ * with ask-gemini and ping, tools/call) and spawns agy directly with an argv array and no
+ * shell, so multi-line prompts arrive intact. agy has no stdin prompt mode (`-p -` is the
+ * literal text "-"), so the prompt is passed in argv and capped at 30000 chars (Windows'
+ * command-line limit is 32,767) by shrinking inlined file content first, then the Windows-escaped
+ * command line is kept under ~32,000. A prompt that would start with "-" gets a "Request:" line
+ * first so agy cannot read it as a flag. On Windows a .cmd/.bat agy is refused (cmd.exe would
+ * truncate the prompt): point TYCOON_AGY_PATH/AGY_CLI_PATH at agy.exe. A TYCOON_AGY_PATH or
+ * AGY_CLI_PATH naming a .js/.cjs/.mjs file is executed with node (operator env; test hook).
+ * GEMINI_MCP_BACKEND=gemini or a TYCOON_GEMINI_MCP_CMD override keeps the
+ * gemini-mcp-tool child path.
+ *
+ * Env: TYCOON_AGY_PATH, AGY_CLI_PATH, TYCOON_GEMINI_MCP_CMD, TYCOON_GEMINI_MCP_ARGS, TYCOON_BRIDGE_TIMEOUT_MS
  * (default 180000), TYCOON_BRIDGE_MAX_CHARS (default 12000), GEMINI_MCP_BACKEND
  * (agy | gemini, read by gemini-mcp-tool itself), GEMINI_MODEL (label only).
  */
@@ -111,7 +126,8 @@ function resolveAgy(env) {
     }
     return null;
   };
-  const override = (env.TYCOON_AGY_PATH || "").trim();
+  const overrideName = (env.TYCOON_AGY_PATH || "").trim() ? "TYCOON_AGY_PATH" : "AGY_CLI_PATH";
+  const override = (env[overrideName] || "").trim();
   if (override) {
     let isDir = false;
     try {
@@ -125,8 +141,8 @@ function resolveAgy(env) {
       tried.push(override);
       if (isRunnable(override)) f = override;
     }
-    if (f) return { file: f, dir: path.dirname(f), source: "TYCOON_AGY_PATH", onPath: false };
-    return { error: "TYCOON_AGY_PATH is set to " + override + " but no runnable agy CLI was found there. Tried: " + tried.join(", ") + ". Fix or unset TYCOON_AGY_PATH." };
+    if (f) return { file: f, dir: path.dirname(f), source: overrideName, onPath: false };
+    return { error: overrideName + " is set to " + override + " but no runnable agy CLI was found there. Tried: " + tried.join(", ") + ". Fix or unset " + overrideName + "." };
   }
   for (const d of (env.PATH || env.Path || "").split(path.delimiter).map((d) => d.trim().replace(/^"(.*)"$/, "$1")).filter(Boolean)) {
     const f = inDir(d);
@@ -224,6 +240,9 @@ function actualModel(text, model, isAgy) {
   return isAgy ? "agy-default" : model;
 }
 
+const ARGV_PROMPT_MAX_CHARS = 30000;
+const INLINE_OVERHEAD_CHARS = 700; // no-tools and untrusted-data notes around the blocks
+const BLOCK_OVERHEAD_CHARS = 200; // fences and label per block
 const PER_FILE_MAX_BYTES = 64 * 1024;
 const DEFAULT_INLINE_TOTAL_BYTES = 200 * 1024;
 const NO_TOOLS_ONLY = "Do not use any tools, run commands, or read files.";
@@ -338,7 +357,7 @@ function readCapped(real, limit) {
  * the home dir or a filesystem/drive root), only files inside it, never secret
  * paths or the app-data secrets store, never binaries, and within the caps.
  */
-function inlineReferencedFiles(prompt, env, _cwd, log) {
+function inlineReferencedFiles(prompt, env, _cwd, log, maxChars) {
   const note = typeof log === "function" ? log : (m) => process.stderr.write("tycoon gemini wrapper: " + m + "\n");
   const none = (why) => {
     note("not inlining referenced files: " + why);
@@ -372,6 +391,7 @@ function inlineReferencedFiles(prompt, env, _cwd, log) {
   }
   const totalCap = inlineTotalBytes(env);
   let used = 0;
+  let charsLeft = maxChars ? maxChars - prompt.length - INLINE_OVERHEAD_CHARS : Infinity;
   const seen = new Set();
   const blocks = [];
   for (const tok of pathCandidatesIn(prompt)) {
@@ -397,10 +417,18 @@ function inlineReferencedFiles(prompt, env, _cwd, log) {
     const limit = Math.min(PER_FILE_MAX_BYTES, room);
     const got = readCapped(real, limit);
     if (!got) continue;
+    if (charsLeft <= BLOCK_OVERHEAD_CHARS) break;
     used += got.read;
-    const text = got.text;
+    let text = got.text;
+    let note = got.size > got.read ? " (truncated to " + got.read + " of " + got.size + " bytes)" : "";
+    const fit = charsLeft - BLOCK_OVERHEAD_CHARS;
+    if (text.length > fit) {
+      text = text.slice(0, fit);
+      note = " (truncated to " + fit + " characters to fit the command-line limit)";
+    }
+    charsLeft -= text.length + BLOCK_OVERHEAD_CHARS;
     const fence = fenceFor(text);
-    const label = safeLabel(rel.split(path.sep).join("/")) + (got.size > got.read ? " (truncated to " + got.read + " of " + got.size + " bytes)" : "");
+    const label = safeLabel(rel.split(path.sep).join("/")) + note;
     blocks.push("### " + label + "\n" + fence + "\n" + text + (text.endsWith("\n") ? "" : "\n") + fence);
   }
   if (!blocks.length) return prompt + "\n\n" + NO_TOOLS_ONLY;
@@ -408,10 +436,10 @@ function inlineReferencedFiles(prompt, env, _cwd, log) {
 }
 
 /** Rewrites an ask-gemini tools/call so its prompt carries inlined file contents (agy backend only). */
-function prepareCall(msg, env, cwd, isAgy, log) {
+function prepareCall(msg, env, cwd, isAgy, log, maxChars) {
   const a = msg && msg.params && msg.params.arguments;
   if (!isAgy || !a || msg.params.name !== "ask-gemini" || typeof a.prompt !== "string") return msg;
-  return Object.assign({}, msg, { params: Object.assign({}, msg.params, { arguments: Object.assign({}, a, { prompt: inlineReferencedFiles(a.prompt, env, cwd, log) }) }) });
+  return Object.assign({}, msg, { params: Object.assign({}, msg.params, { arguments: Object.assign({}, a, { prompt: inlineReferencedFiles(a.prompt, env, cwd, log, maxChars) }) }) });
 }
 
 const UNREADABLE_MESSAGE =
@@ -436,6 +464,184 @@ function normalizeCallResult(msg, model, opts) {
   return formatBridgeResult({ status: "ok", provider: PROVIDER, model, text });
 }
 
+const ASK_GEMINI_TOOL = {
+  name: "ask-gemini",
+  description: "Execute 'gemini -p <prompt>' to get Gemini AI's response. Supports enhanced change mode for structured edit suggestions.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt: { type: "string", minLength: 1, description: "Analysis request. Use @ syntax to include files (e.g., '@largefile.js explain what this does') or ask general questions" },
+      model: { type: "string", description: "Optional model to use (e.g., 'gemini-2.5-flash'). If not specified, uses the default model (gemini-2.5-pro)." },
+      sandbox: { type: "boolean", default: false, description: "Use sandbox mode (-s flag) to safely test code changes, execute scripts, or run potentially risky operations in an isolated environment" },
+      changeMode: { type: "boolean", default: false, description: "Enable structured change mode - formats prompts to prevent tool errors and returns structured edit suggestions that Claude can apply directly" },
+      chunkIndex: { type: ["number", "string"], description: "Which chunk to return (1-based)" },
+      chunkCacheKey: { type: "string", description: "Optional cache key for continuation" },
+    },
+    required: ["prompt"],
+    additionalProperties: false,
+    $schema: "http://json-schema.org/draft-07/schema#",
+  },
+};
+const PING_TOOL = {
+  name: "ping",
+  description: "Echo",
+  inputSchema: {
+    type: "object",
+    properties: { prompt: { type: "string", description: "Message to echo" } },
+    additionalProperties: false,
+    $schema: "http://json-schema.org/draft-07/schema#",
+  },
+};
+
+function toolDeniedMessage(denied) {
+  const names = (Array.isArray(denied) ? denied : [])
+    .map((d) => (d && (d.display_name || d.displayName || d.action)) || "")
+    .filter(Boolean)
+    .filter((n, i, a) => a.indexOf(n) === i);
+  return "agy tried to use " + (names.join(", ") || "a tool") + ", which headless mode can't approve; the code under review must be in the prompt.";
+}
+
+/** Top-level {...} substrings of text (string-aware brace matching), in order. */
+function balancedObjects(text) {
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"' && depth > 0) inStr = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" && depth > 0) {
+      depth--;
+      if (depth === 0) out.push(text.slice(start, i + 1));
+    }
+  }
+  return out;
+}
+
+/** Parse candidates for agy's stdout: all of it, from the first line starting with "{" (pretty-printed after banners), then balanced objects, last first. */
+function jsonCandidates(raw) {
+  const out = [raw];
+  const m = /^\{/m.exec(raw);
+  if (m && m.index > 0) out.push(raw.slice(m.index));
+  out.push(...balancedObjects(raw).reverse());
+  return out;
+}
+
+/** Pure: maps agy's --output-format json stdout / exit code / stderr to a bridge result. */
+function parseAgyOutput(code, stdout, stderr, model) {
+  const fail = (text, kind) => providerErrorResult({ provider: PROVIDER, model, text, kind });
+  const errText = String(stderr || "").trim() || String(stdout || "").trim();
+  if (code !== 0) return fail("agy exited with code " + code + (errText ? ": " + errText.slice(0, 400) : ""));
+  let json = null;
+  const raw = String(stdout || "").trim();
+  for (const cand of jsonCandidates(raw)) {
+    try {
+      const v = JSON.parse(cand);
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        json = v;
+        break;
+      }
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (!json || typeof json !== "object") return fail("agy output could not be parsed as JSON" + (errText ? ": " + errText.slice(0, 400) : ""));
+  const reply = typeof json.response === "string" ? json.response : "";
+  const ran = typeof json.model === "string" && json.model ? json.model : "agy-default";
+  if (reply.trim()) return formatBridgeResult({ status: "ok", provider: PROVIDER, model: ran, text: reply });
+  if (Array.isArray(json.denied_actions) && json.denied_actions.length) return fail(toolDeniedMessage(json.denied_actions), "tool_denied");
+  if (json.status && String(json.status).toUpperCase() !== "SUCCESS") {
+    return fail(String(json.error || json.message || "agy returned status " + json.status).slice(0, 400));
+  }
+  return formatBridgeResult({ status: "ok", provider: PROVIDER, model: ran, text: "" });
+}
+
+const WIN_CMDLINE_LIMIT = 32000;
+const POSIX_ARG_LIMIT = 120000;
+const CMDLINE_FIXED_CHARS = 120; // flags, print timeout and separators around the prompt
+
+/** Length of one argument as CreateProcess-quoted by libuv: quotes become \", backslash runs before a quote or the end are doubled, plus surrounding quotes. */
+function winQuotedArgLength(a) {
+  let n = 2;
+  let bs = 0;
+  for (const ch of String(a)) {
+    if (ch === "\\") {
+      bs++;
+      n++;
+    } else if (ch === '"') {
+      n += bs + 2;
+      bs = 0;
+    } else {
+      bs = 0;
+      n++;
+    }
+  }
+  return n + bs;
+}
+
+function promptCost(prompt, exeLen) {
+  return IS_WIN ? winQuotedArgLength(prompt) + exeLen + CMDLINE_FIXED_CHARS : prompt.length;
+}
+
+const PROMPT_TRUNCATED_NOTE = "\n\n[prompt truncated to fit the command-line limit]";
+
+/**
+ * Caps a prompt for argv delivery (Windows: the escaped command line, including the exe path
+ * length exeLen, stays under ~32,000; posix: a generous per-argument cap). Inlined file content
+ * is shrunk earlier; this is the last resort. The body is cut, then a truncation note and the
+ * no-tools line are appended, so the no-tools instruction is never sliced off.
+ */
+function capPromptForArgv(prompt, exeLen) {
+  const exe = exeLen || 0;
+  const limit = IS_WIN ? WIN_CMDLINE_LIMIT : POSIX_ARG_LIMIT;
+  const fits = (t) => promptCost(t, exe) <= limit;
+  if (fits(prompt)) return prompt;
+  const tail = PROMPT_TRUNCATED_NOTE + "\n\n" + NO_TOOLS_ONLY;
+  let lo = 0;
+  let hi = prompt.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(prompt.slice(0, mid) + tail)) lo = mid;
+    else hi = mid - 1;
+  }
+  return prompt.slice(0, lo) + tail;
+}
+
+/** A prompt value that starts with "-" could be read as a flag by agy; give it a leading line. */
+function safePromptStart(prompt) {
+  return prompt.startsWith("-") ? "Request:\n" + prompt : prompt;
+}
+
+/** How to launch the resolved agy file: node scripts via node, else directly; a Windows .cmd/.bat is refused (cmd.exe truncates the prompt at its first newline). */
+function agyLaunch(file, args) {
+  if (/\.(c|m)?js$/i.test(file)) return { command: process.execPath, args: [file, ...args] };
+  if (IS_WIN && /\.(cmd|bat)$/i.test(file)) {
+    return {
+      error:
+        "The resolved agy is a Windows batch shim (" + file + "); running it would go through cmd.exe, which truncates multi-line prompts at the first newline. Point TYCOON_AGY_PATH or AGY_CLI_PATH at agy.exe.",
+    };
+  }
+  return { command: file, args };
+}
+
+function projectCwd(env) {
+  const d = (env.TYCOON_PROJECT_DIR || "").trim();
+  try {
+    if (d && fs.statSync(d).isDirectory()) return d;
+  } catch {
+    /* fall back */
+  }
+  return process.cwd();
+}
+
+const MAX_AGY_STDOUT = 8 * 1024 * 1024;
+
 const MAX_PENDING = 64;
 const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
 
@@ -449,7 +655,10 @@ function run() {
   const model = env.GEMINI_MODEL || "gemini";
   const backendName = (env.GEMINI_MCP_BACKEND || "").trim().toLowerCase();
   const isAgy = backendName === "agy" || (!backendName && !(env.TYCOON_GEMINI_MCP_CMD || "").trim());
+  const direct = isAgy && !(env.TYCOON_GEMINI_MCP_CMD || "").trim();
   const out = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
+  const agyChildren = new Set();
+  let directInFlight = 0;
 
   let child = null;
   let startError = null;
@@ -592,6 +801,102 @@ function run() {
       .then((result) => out({ jsonrpc: "2.0", id: msg.id, result }));
   }
 
+  // One agy run: argv array, never a shell, cwd = project root.
+  function runAgy(agy, prompt, budgetMs) {
+    const secs = Math.max(1, Math.ceil(budgetMs / 1000));
+    const launch = agyLaunch(agy.file, ["--output-format", "json", "--print-timeout", secs + "s", "-p", prompt]);
+    if (launch.error) return Promise.resolve(errResult(launch.error, "cli_missing"));
+    let c = null;
+    const work = new Promise((resolve) => {
+      try {
+        c = spawn(launch.command, launch.args, { cwd: projectCwd(env), env: childEnv(env, agy), stdio: ["ignore", "pipe", "pipe"], detached: !IS_WIN, shell: false, windowsHide: true });
+      } catch (e) {
+        resolve(errResult("Could not start agy (" + agy.file + "): " + e.message, "cli_missing"));
+        return;
+      }
+      const proc = c;
+      agyChildren.add(proc);
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.setEncoding("utf8");
+      proc.stderr.setEncoding("utf8");
+      proc.stdout.on("data", (d) => {
+        if (stdout.length < MAX_AGY_STDOUT) stdout += d;
+      });
+      proc.stderr.on("data", (d) => {
+        if (stderr.length < 65536) stderr += d;
+      });
+      proc.on("error", (e) => resolve(errResult("Could not start agy (" + agy.file + "): " + e.message, "cli_missing")));
+      proc.on("close", (code, signal) => resolve(parseAgyOutput(code === null ? -1 : code, stdout, signal ? stderr + " (signal " + signal + ")" : stderr, model)));
+    });
+    return withTimeout(work, budgetMs, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
+      if (c) {
+        killTree(c);
+        agyChildren.delete(c);
+      }
+      return result;
+    });
+  }
+
+  function askDirect(msg) {
+    const args = (msg.params && msg.params.arguments) || {};
+    if (typeof args.prompt !== "string" || !args.prompt.trim()) return Promise.resolve(errResult("ask-gemini needs a non-empty prompt", "unknown"));
+    const agy = resolveAgy(env);
+    if (agy.error) return Promise.resolve(errResult(agy.error, "cli_missing"));
+    const request = safePromptStart(args.prompt);
+    const prepared = prepareCall(Object.assign({}, msg, { params: Object.assign({}, msg.params, { arguments: Object.assign({}, args, { prompt: request }) }) }), env, process.cwd(), true, undefined, ARGV_PROMPT_MAX_CHARS);
+    const prompt = capPromptForArgv(prepared.params.arguments.prompt, winQuotedArgLength(agy.file));
+    const total = requestTimeoutMs(env);
+    const startedAt = Date.now();
+    const retryable = (r) => ["backend_unreadable", "tool_denied"].includes(errorKindOf(r));
+    return runAgy(agy, prompt, total).then((result) => {
+      if (!retryable(result)) return result;
+      const left = total - (Date.now() - startedAt);
+      if (left <= 0) return result;
+      return runAgy(agy, prompt, left).then((again) => (errorKindOf(again) === "backend_unreadable" ? errResult(UNREADABLE_MESSAGE, "backend_unreadable") : again));
+    });
+  }
+
+  function handleDirectCall(msg) {
+    const name = msg.params && msg.params.name;
+    if (name === "ping") {
+      const a = (msg.params && msg.params.arguments) || {};
+      out({ jsonrpc: "2.0", id: msg.id, result: formatBridgeResult({ status: "ok", provider: PROVIDER, model: "agy-default", text: typeof a.prompt === "string" && a.prompt ? a.prompt : "Pong!" }) });
+      return;
+    }
+    if (name !== "ask-gemini") {
+      out({ jsonrpc: "2.0", id: msg.id, result: errResult("Unknown tool: " + String(name), "unknown") });
+      return;
+    }
+    if (directInFlight >= MAX_PENDING) {
+      out({ jsonrpc: "2.0", id: msg.id, result: errResult("Too many in-flight Gemini requests (" + MAX_PENDING + ")", "rate_limit") });
+      return;
+    }
+    directInFlight++;
+    askDirect(msg)
+      .catch((e) => errResult("agy call failed: " + (e && e.message), "unknown"))
+      .then((result) => {
+        directInFlight--;
+        out({ jsonrpc: "2.0", id: msg.id, result });
+      });
+  }
+
+  function serveDirect(msg) {
+    if (!msg || msg.id === undefined || !msg.method) return; // notifications and stray replies need no answer
+    if (msg.method === "initialize") {
+      const v = msg.params && msg.params.protocolVersion;
+      out({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: typeof v === "string" && v ? v : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "tycoon-gemini-agy", version: "1.0.0" } } });
+    } else if (msg.method === "ping") {
+      out({ jsonrpc: "2.0", id: msg.id, result: {} });
+    } else if (msg.method === "tools/list") {
+      out({ jsonrpc: "2.0", id: msg.id, result: { tools: [ASK_GEMINI_TOOL, PING_TOOL] } });
+    } else if (msg.method === "tools/call") {
+      handleDirectCall(msg);
+    } else {
+      out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Method not found: " + msg.method } });
+    }
+  }
+
   function handleRequest(msg) {
     if (pending.size >= MAX_PENDING) {
       out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "Too many in-flight requests (" + MAX_PENDING + ")" } });
@@ -619,6 +924,10 @@ function run() {
       out({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
       return;
     }
+    if (direct) {
+      serveDirect(msg);
+      return;
+    }
     if (msg && msg.method === "initialize") initRequest = msg;
     if (msg && msg.method === "tools/call" && msg.id !== undefined) {
       handleCall(msg);
@@ -635,6 +944,8 @@ function run() {
   const shutdown = () => {
     killTree(child);
     child = null;
+    for (const c of agyChildren) killTree(c);
+    agyChildren.clear();
   };
   process.on("exit", shutdown);
   process.stdout.on("error", () => {
@@ -648,9 +959,9 @@ function run() {
     shutdown();
     process.exit(0);
   });
-  ensureChild();
+  if (!direct) ensureChild();
 }
 
 if (require.main === module) run();
 
-module.exports = { PINNED_PACKAGE, resolveAgy, childEnv, normalizeCallResult, inlineReferencedFiles, prepareCall, resolveCommand, shellCommandLine };
+module.exports = { PINNED_PACKAGE, parseAgyOutput, capPromptForArgv, winQuotedArgLength, safePromptStart, agyLaunch, ARGV_PROMPT_MAX_CHARS, resolveAgy, childEnv, normalizeCallResult, inlineReferencedFiles, prepareCall, resolveCommand, shellCommandLine };

@@ -232,6 +232,8 @@ function parseBridgeResult(toolResponse, opts) {
 /**
  * Short error.kind for a provider/CLI failure message: auth | quota |
  * rate_limit | not_found | network | cli_missing | backend_unreadable | unknown.
+ * (tool_denied is never classified from text; a bridge sets it explicitly via
+ * `kind` when the backend tried to use a tool headless mode cannot approve.)
  * backend_unreadable: the backend ran but its reply could not be read back
  * (e.g. agy's SQLite transcript); retryable. An HTTP status
  * (opts.httpStatus) wins over text matching. Shared by every bridge.
