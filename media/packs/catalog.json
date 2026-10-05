@@ -153,7 +153,6 @@
           "mcpServer": "gemini",
           "tools": [
             "ask-gemini",
-            "sandbox-test",
             "ping"
           ],
           "model": "google/gemini-2.5-pro",

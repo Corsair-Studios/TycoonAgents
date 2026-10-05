@@ -34,7 +34,7 @@ import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/
 import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -5932,8 +5932,39 @@ export class TycoonPanel {
       if (!this._hooksInstalledForRoot(root)) return;
       this._installWorkerAgents(root);
       this._ensureWorkerAgentRoleTextCurrent(root);
+      this._healForeignWrapperModels(root);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /**
+   * Auto-heal: an agent file with a non-anthropic `backend:` block must keep a
+   * Claude alias as its top-level `model:`. A vendor id there (written by an
+   * older routing save) makes Claude Code 404 before the agent starts. Best
+   * effort; logs each repair.
+   */
+  private _healForeignWrapperModels(root: string): void {
+    try {
+      const agentsDir = path.join(root, ".claude", "agents");
+      for (const file of fs.readdirSync(agentsDir)) {
+        if (!file.endsWith(".md")) continue;
+        try {
+          const id = file.slice(0, -3);
+          const filePath = path.join(agentsDir, file);
+          const content = fs.readFileSync(filePath, "utf8");
+          const catalog = FOREIGN_LLM_AGENTS.find((x) => x.id === id);
+          const healed = healForeignWrapperModel(content, catalog?.model);
+          if (healed === null) continue;
+          fs.writeFileSync(filePath, healed.content);
+          this._rosterModelCache = undefined;
+          console.warn(`TycoonAgents: restored wrapper model for ${id}: ${healed.from} -> ${healed.to}`);
+        } catch {
+          /* best-effort per file */
+        }
+      }
+    } catch {
+      /* no agents dir or unreadable — nothing to heal */
     }
   }
 

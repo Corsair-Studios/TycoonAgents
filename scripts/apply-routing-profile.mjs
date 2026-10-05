@@ -134,9 +134,18 @@ function renderBackendBlockLines(backend) {
 // already-qualified 'provider/model' string — both are written to the
 // top-level `model:` key. Any other existing top-level model value is left
 // untouched.
+// The top-level `model:` is the Claude Code subagent's own model: it must be
+// a Claude alias or claude-* id. A foreign-vendor slot's model belongs only
+// in the backend block, so it never reaches the top-level key (Claude Code
+// would send it to Anthropic and 404). Returns undefined (leave as is) then.
+const CLAUDE_TOP_LEVEL_ALIASES = new Set(["opus", "sonnet", "haiku", "fable", "inherit", "opusplan"]);
 function slotTopLevelModel(slot) {
   if (!slot || typeof slot.model !== "string" || slot.model === "") return undefined;
-  return slot.model;
+  if (slot.vendor && slot.vendor !== "anthropic") return undefined;
+  const bare = slot.model.replace(/^anthropic\//, "").trim().replace(/^["']|["']$/g, "");
+  const core = bare.replace(/\[1m\]$/i, "");
+  if (CLAUDE_TOP_LEVEL_ALIASES.has(core) || /^claude-/.test(core)) return bare;
+  return undefined;
 }
 
 // Split raw file text into { hasFrontmatter, fmLines, bodyText, eol,

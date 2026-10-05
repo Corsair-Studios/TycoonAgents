@@ -591,3 +591,35 @@ test('no routing.json present: exits 0, writes nothing', () => {
   assert.equal(after, before);
   assert.equal(fs.existsSync(path.join(root, '.claude', 'tycoon', 'routing.resolved.json')), false);
 });
+
+test('foreign-vendor slot never writes a non-Claude top-level model:; anthropic slot updates it', () => {
+  const root = mkTempRoot();
+  writeAgent(root, 'gem.md', ['name: gem', 'description: g', 'model: haiku'], '# Gem');
+  writeAgent(root, 'ant.md', ['name: ant', 'description: a', 'model: haiku'], '# Ant');
+  writeRoutingProfile(root, {
+    version: 1,
+    agents: {
+      gem: { vendor: 'google', transport: 'mcp', mcpServer: 'gemini', tools: ['ask-gemini', 'ping'], model: 'google/gemini-2.5-pro', costModelClass: 'metered' },
+      ant: { vendor: 'anthropic', transport: 'claude-native', model: 'sonnet', costModelClass: 'subscription' },
+    },
+  });
+  const result = run(['--root', root]);
+  assert.equal(result.status, 0, result.stderr);
+  const gem = fs.readFileSync(path.join(root, '.claude', 'agents', 'gem.md'), 'utf8');
+  assert.match(gem, /^model: haiku$/m);
+  assert.match(gem, /^ {2}model: google\/gemini-2\.5-pro$/m);
+  const ant = fs.readFileSync(path.join(root, '.claude', 'agents', 'ant.md'), 'utf8');
+  assert.match(ant, /^model: sonnet$/m);
+});
+
+test('anthropic slot accepts [1m]/opusplan/claude-* and ignores unknown top-level models', () => {
+  for (const [m, expected] of [['sonnet[1m]', 'sonnet[1m]'], ['opusplan', 'opusplan'], ['claude-opus-4-7[1m]', 'claude-opus-4-7[1m]'], ['gpt-5', 'haiku']]) {
+    const root = mkTempRoot();
+    writeAgent(root, 'ant.md', ['name: ant', 'description: a', 'model: haiku'], '# Ant');
+    writeRoutingProfile(root, { version: 1, agents: { ant: { vendor: 'anthropic', transport: 'claude-native', model: m, costModelClass: 'subscription' } } });
+    const result = run(['--root', root]);
+    assert.equal(result.status, 0, result.stderr);
+    const ant = fs.readFileSync(path.join(root, '.claude', 'agents', 'ant.md'), 'utf8');
+    assert.ok(ant.split(/\r?\n/).includes(`model: ${expected}`), ant);
+  }
+});

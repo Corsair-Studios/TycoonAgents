@@ -16,6 +16,8 @@ import {
   WORKING_DISCIPLINE_BODY,
   resyncAgentDisciplineSection,
   resyncAgentFrontmatterFields,
+  healForeignWrapperModel,
+  isClaudeTopLevelModel,
   workerAgentFingerprintMatches,
   REGULAR_AGENTS,
   LEAD_AGENTS,
@@ -1014,4 +1016,37 @@ test("every REGULAR_AGENTS (minus orchestrator)/LEAD_AGENTS/REVIEWER_AGENTS work
   assert.equal(orchMd.includes("Open with the outcome"), false, "orchestrator must not carry the answer-first line");
   assert.equal(orchMd.includes("bullet-theater"), false, "orchestrator must not carry the no-decoration line");
   assert.equal(orchMd.includes("widen into cleanup"), false, "orchestrator must not carry the scope-discipline line");
+});
+
+test("healForeignWrapperModel restores a clobbered wrapper alias on a foreign backend and leaves valid files alone", () => {
+  const bad = "---\nname: g\nmodel: google/gemini-2.5-pro\nbackend:\n  # managed-by: tycoon-routing\n  vendor: google\n  model: google/gemini-2.5-pro\n---\n\n<!-- wrapper-class: relay -->\nbody\n";
+  const healed = healForeignWrapperModel(bad);
+  assert.ok(healed);
+  assert.match(healed.content, /^model: haiku$/m);
+  assert.match(healed.content, /^ {2}model: google\/gemini-2\.5-pro$/m);
+  assert.equal(healForeignWrapperModel(bad, "sonnet")!.to, "sonnet");
+  assert.equal(healForeignWrapperModel(healed.content), null);
+  assert.equal(healForeignWrapperModel(bad.replace(/vendor: google/, "vendor: anthropic")), null);
+});
+
+test("resyncAgentFrontmatterFields heals a clobbered model for a file-level foreign backend", () => {
+  const content = "---\nname: x\ndescription: d\nmodel: openai/gpt-5\nbackend:\n  vendor: openai\n---\nbody\n";
+  const out = resyncAgentFrontmatterFields(content, { id: "x", name: "X", model: "sonnet", role: "r", keywords: "k" } as never);
+  assert.ok(out);
+  assert.match(out, /^model: sonnet$/m);
+});
+
+test("foreign-backend wrapper models in alias+suffix, quoted, and claude-* forms are not rewritten", () => {
+  for (const m of ["sonnet[1m]", "opus[1m]", "haiku[1m]", "fable[1m]", "opusplan", "inherit", "claude-sonnet-4-6", "claude-opus-4-7[1m]", '"sonnet"', "'haiku[1m]'"]) {
+    assert.equal(isClaudeTopLevelModel(m), true, m);
+    const content = `---\nname: x\ndescription: d\nmodel: ${m}\nbackend:\n  vendor: google\n  model: google/gemini-2.5-pro\n---\nbody\n`;
+    assert.equal(healForeignWrapperModel(content), null, m);
+    assert.equal(resyncAgentFrontmatterFields(content, { id: "x", name: "X", model: "sonnet", role: "r", keywords: "k" } as never), null, m);
+  }
+  assert.equal(isClaudeTopLevelModel("google/gemini-2.5-pro"), false);
+});
+
+test("an unrelated nested vendor: key outside backend: does not mark the file foreign", () => {
+  const content = "---\nname: x\ndescription: d\nmodel: openai/gpt-5\nmeta:\n  vendor: google\n---\nbody\n";
+  assert.equal(healForeignWrapperModel(content), null);
 });

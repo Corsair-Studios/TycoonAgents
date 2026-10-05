@@ -331,7 +331,27 @@ export function resyncAgentRoleSection(content: string, newRole: string): string
  * A vendor-prefixed id like `anthropic/haiku` or `openai/gpt-5` is not in
  * this set and gets rewritten to `agent.model` by
  * {@link resyncAgentFrontmatterFields}. */
-const VALID_TOP_LEVEL_MODELS = new Set(["sonnet", "opus", "haiku", "inherit", "fable"]);
+const VALID_TOP_LEVEL_MODELS = new Set(["sonnet", "opus", "haiku", "inherit", "fable", "opusplan"]);
+
+/** True for a top-level `model:` Claude Code accepts: a family alias with an
+ * optional `[1m]` suffix, `inherit`/`opusplan`, or a `claude-*` id with or
+ * without `[1m]`. Surrounding quotes are ignored. */
+export function isClaudeTopLevelModel(value: string): boolean {
+  const v = value.trim().replace(/^["']|["']$/g, "").replace(/\[1m\]$/i, "");
+  return VALID_TOP_LEVEL_MODELS.has(v) || /^claude-/.test(v);
+}
+
+/** Vendor declared inside the top-level `backend:` block only (an indented
+ * `vendor:` key elsewhere is ignored). */
+function backendBlockVendor(lines: string[]): string | undefined {
+  const start = lines.findIndex((l) => /^backend\s*:/.test(l));
+  if (start === -1) return undefined;
+  for (let i = start + 1; i < lines.length && /^\s+\S|^\s*$/.test(lines[i]); i++) {
+    const m = /^\s+vendor\s*:\s*["']?([^\s"']+)/.exec(lines[i]);
+    if (m) return m[1];
+  }
+  return undefined;
+}
 
 /**
  * Repair a managed agent file's frontmatter when it predates the `name`/
@@ -382,7 +402,15 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
   // that already has a *valid-looking* but wrong vendor slug still gets
   // corrected. When the rewritten value is lost, it is preserved under
   // `backend.model` if that field isn't already set explicitly.
-  const isForeignBackend = agent.backend !== undefined && agent.backend.vendor !== "anthropic";
+  // A backend block already in the file (e.g. written by the routing
+  // write-through) also marks the agent foreign, even for an agent whose
+  // catalog entry has no backend.
+  const fileVendor = backendBlockVendor(lines);
+  const fileHasForeignBackend = fileVendor !== undefined && fileVendor !== "anthropic";
+  const isForeignBackend = (agent.backend !== undefined && agent.backend.vendor !== "anthropic") || fileHasForeignBackend;
+  const wrapperModel = isClaudeTopLevelModel(agent.model)
+    ? agent.model
+    : (/relay/.test(agent.body ?? "") ? "haiku" : "sonnet");
   let strandedVendorModel: string | undefined;
 
   const fixedLines = lines.map((l) => {
@@ -390,7 +418,7 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
     if (!m || m[1].length > 0) {
       return l; // not a model line, or a nested (indented) one like backend.model
     }
-    const isValidAlias = VALID_TOP_LEVEL_MODELS.has(m[2]) || /^claude-/.test(m[2]);
+    const isValidAlias = isClaudeTopLevelModel(m[2]);
     if (isValidAlias && !isForeignBackend) {
       return l;
     }
@@ -401,7 +429,7 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
     }
     changed = true;
     strandedVendorModel = m[2];
-    return `model: ${agent.model}`;
+    return `model: ${wrapperModel}`;
   });
 
   if (isForeignBackend && strandedVendorModel !== undefined) {
@@ -426,6 +454,35 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
     "---" + eol + newFmBody + eol + "---" + eol +
     content.slice(fmMatch[0].length)
   );
+}
+
+/**
+ * Heal a clobbered top-level `model:` on any agent file that carries a
+ * `backend:` block with a non-anthropic vendor. The top-level value is the
+ * Claude Code subagent's own model and must be a Claude alias or claude-* id;
+ * a vendor id there (e.g. `google/gemini-2.5-pro`) makes Claude Code 404 on
+ * launch. Restores `catalogModel` when it is a valid alias, else `haiku` for
+ * relay wrappers and `sonnet` otherwise. Returns null when nothing to heal.
+ */
+export function healForeignWrapperModel(
+  content: string,
+  catalogModel?: string,
+): { content: string; from: string; to: string } | null {
+  const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
+  if (!fmMatch) return null;
+  const lines = fmMatch[1].split(/\r\n|\n/);
+  const vendor = backendBlockVendor(lines);
+  if (vendor === undefined || vendor === "anthropic") return null;
+  const idx = lines.findIndex((l) => /^model\s*:\s*\S/.test(l));
+  if (idx === -1) return null;
+  const current = /^model\s*:\s*(.+?)\s*$/.exec(lines[idx])![1].replace(/^["']|["']$/g, "");
+  if (isClaudeTopLevelModel(current)) return null;
+  const to = catalogModel !== undefined && isClaudeTopLevelModel(catalogModel)
+    ? catalogModel
+    : (/wrapper-class:\s*relay/.test(content) ? "haiku" : "sonnet");
+  lines[idx] = `model: ${to}`;
+  const eol = fmMatch[0].includes("\r\n") ? "\r\n" : "\n";
+  return { content: "---" + eol + lines.join(eol) + eol + "---" + eol + content.slice(fmMatch[0].length), from: current, to };
 }
 
 /**
@@ -657,7 +714,7 @@ export const FOREIGN_LLM_AGENTS: PackAgent[] = [
     model: "haiku",
     role: "Runs an adversarial, cross-vendor review of a completed change through Google Gemini (via the gemini MCP server) and returns a structured, machine-parseable verdict.",
     keywords: "gemini|foreign-review|cross-vendor|second-opinion|adversarial-review",
-    backend: { vendor: "google", transport: "mcp", mcpServer: "gemini", tools: ["ask-gemini","sandbox-test","ping"], model: "google/gemini-2.5-pro", costModelClass: "metered" },
+    backend: { vendor: "google", transport: "mcp", mcpServer: "gemini", tools: ["ask-gemini","ping"], model: "google/gemini-2.5-pro", costModelClass: "metered" },
     body: "<!-- wrapper-class: relay - forwards the review brief to Gemini via the dispatcher and reformats the returned envelope into the verdict shape; no independent verification -->\n\n## Role\nRuns an adversarial, cross-vendor review of a completed change by calling Google's Gemini through the `gemini` MCP server, then returns a structured, machine-parseable verdict — never free-form prose. This agent reviews; it does not author, edit, or fix. It must never review a change it authored itself (project rule: a change is always verified by someone other than its author). Treat every review as a single pass — this agent does not loop, re-review, or iterate; the orchestrator (or a wiring layer) owns any retry policy.\n\n## Calling through the dispatcher (preferred)\nWhen the `mcp__tycoon__delegate` tool is available in this session (the `tycoon` dispatcher MCP server is installed and configured), make exactly ONE call to it for the review instead of calling the vendor tool directly. The dispatcher runs this agent's configured provider chain (primary backend first, then any fallbacks) in-process and returns the result. Arguments:\n- `specialist: \"gemini-reviewer\"` — this agent's own id, so the dispatcher resolves this agent's backend and routing chain.\n- `task`: the complete, self-contained review request — the diff or change under review, the acceptance criteria, and an explicit statement that the review is read-only. The delegated provider sees only this text, never this conversation.\n- `description`: optional short label; omit it unless needed. Never set `_tycoon` — the hook injects it.\n\nThe result is the bridge envelope `{tycoonBridge:1,status,provider,model,summary,truncated,error,attempts,fellBackFrom}`. On `status: \"ok\"`, review `summary` and return the structured verdict below. Only this agent calls `mcp__tycoon__delegate`; the orchestrator calls this agent and never calls reviewer MCP tools directly.\n\nIf `mcp__tycoon__delegate` is not available in this session (dispatcher not installed), fall back to calling the direct vendor tool `ask-gemini` exactly as described in the next section, as before. Never call both for the same review.\n\n**Delegate result is final - no direct call after delegate.** \"Not available\" means ONLY that the `mcp__tycoon__delegate` tool is absent from this session's tool list. If `mcp__tycoon__delegate` was called and returned anything - `ok`, `provider_error`, `timeout`, `empty`, or an error - that result is final: report it in the verdict format below and make NO further model calls (no direct vendor tool, no retry, no second delegate). The dispatcher already ran the whole fallback chain, so a direct call afterward only repeats the failure and bypasses the chain.\n\n## Calling Gemini\nUse the `ask-gemini` tool to analyze the diff or answer a review question. `sandbox-test` is available only if the review genuinely requires executing a snippet to confirm a defect — prefer read-only analysis via `ask-gemini` whenever possible, since this agent's job is to review, not to run code. `ping` is a connectivity check only, never a review call.\n\nGemini reached through the Antigravity CLI (agy) cannot read files itself: in headless mode it cannot approve the shell command a file read needs, and the call returns an empty reply. Include the code under review inline in the task text (the diff or the relevant file contents), or name the project files by path so the bridge can inline them; never rely on Gemini opening a path on its own.\n\nThe catalog entry (media/mcp/catalog.json, id \"gemini\") launches `gemini-mcp-tool` via `npx -y gemini-mcp-tool`, which wraps the local `gemini` CLI. Auth follows whatever that CLI is configured with (OAuth login, or `GEMINI_API_KEY` if set) — this agent has no control over that and should not attempt to change it.\n\n## Recognizing a provider failure vs. a review outcome\nA Gemini/`gemini-mcp-tool` error surfaces as `isError:true` on an otherwise normal JSON-RPC result, with a plain-text message in `content[0].text` — never a JSON-RPC `error` object and never a structured error code. Treat any `isError:true` response as **not a review** — do not interpret its text as findings. Pattern-match the text for quota/auth exhaustion: substrings like \"quota\", \"rate limit\", \"RESOURCE_EXHAUSTED\", \"401\", \"403\", or \"Unauthorized\" indicate the provider is unavailable, not that the change passed. Report this as `verdict: \"provider-unavailable\"` with the raw error text — never silently upgrade an unreachable or quota-exhausted Gemini into an approval.\n\nWhen the review went through `mcp__tycoon__delegate`, the result is the bridge envelope instead of raw vendor text. `status: \"ok\"` is a review result. `status: \"provider_error\"` (its `error.kind` may be `chain_exhausted`), `status: \"timeout\"`, and `status: \"empty\"` are NOT reviews — do not read `summary` as findings. The dispatcher has already tried this agent's fallback chain before returning, so the agent must report the failure and never re-dispatch, retry, or call the vendor tool itself. Report `verdict: \"provider-unavailable\"` with `provider_error` set to the envelope's `error` message (include `attempts` and `fellBackFrom` when present) — never silently upgrade a failed or exhausted chain into an approval.\n\n## Structured verdict shape\nReturn exactly one verdict object (as your report body), shaped like:\n\n```\nverdict: approve | changes-requested | provider-unavailable\nsummary: <one sentence>\nfindings:\n  - file: <path>\n    line: <int or range>\n    severity: blocker | major | minor\n    summary: <one sentence, the defect only>\nprovider_error: <raw isError text, only when verdict is provider-unavailable>\n```\n\n`findings` is empty when `verdict` is `approve`. `provider-unavailable` carries no `findings` — only `provider_error`. Do not add extra fields, prose commentary, or a narrative wrapper around this shape; a downstream consumer parses it directly.\n\n## Keywords (for task routing)\ngemini|foreign-review|cross-vendor|second-opinion|adversarial-review\n\n## Report Format\nOutcome first: state the verdict shape above directly. No headings, no decorative bullets, no flattery or self-assessment. Under 250 words. Do not invite a follow-up review round — this is one pass.\n",
   },
   {
