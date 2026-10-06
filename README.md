@@ -1,15 +1,26 @@
+<p align="center"><img src="media/handbook/tycoonagents_logo_sm.png" width="180" alt="TycoonAgents"></p>
+
 # TycoonAgents™
 
 **TycoonAgents™ is an AI build harness first, and a visualization second.** It's built to make the most of your tokens: instead of running everything on one expensive model, it routes work to a fleet of sub-agents — each on the model that fits the job — so your project gets built in the most cost-effective way possible. A heavyweight model coordinates and makes the calls; cheaper, faster models pick up the work they're suited for.
 
-Sitting on top of that harness is a live, game-style visualization of your agent fleet — but the harness is the point.
+Sitting on top of that harness is a live, game-style visualization of your agent fleet — but the harness is the point. Built for solo developers and small teams working on indie/UGC games and web apps.
+
+![The TycoonAgents panel: the isometric Catopia stage above the live Agent Metrics table](media/readme/stage-metrics.png)
+
+**Features at a glance**
+- Mandatory delegation: the orchestrator coordinates, specialist sub-agents do the work.
+- Multi-model delegation through the TycoonAgents dispatcher, with per-agent routing and automatic fallback chains.
+- Live visualization and per-agent token-cost metrics.
+- Tycoon Theme Builder for custom stage art; Project Plan with approval gates (on by default).
+- VS Code extension or standalone app; an in-panel handbook covers everything in depth.
 
 > **Status:** Working prerelease — not a design sketch. TycoonAgents ships as a real VS Code extension (.vsix) with a small early user base: mandatory delegation, the live visualization, custom themes, an in-panel handbook, and everything else described below runs today. It's still prerelease software — expect rough edges and breaking changes between versions. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
 
-**Three ways to run it:**
+**Ways to run it:**
 - **VS Code extension with Claude Code** — install the extension and open the panel (see Setup below).
-- **Standalone product** — `node standalone/src/cli.mjs watch .`, no VS Code required; see [`standalone/README.md`](standalone/README.md).
-- **OpenCode as the provider** — `--provider opencode`; see "Using OpenCode as the provider" below and [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
+- **Standalone app** — `node standalone/src/cli.mjs watch .`, no VS Code required; see [`standalone/README.md`](standalone/README.md).
+- **Codex (Experimental) or OpenCode (Experimental) as the harness** — `--provider codex` / `--provider opencode`; see "Multi-LLM" below.
 
 ## Mandatory delegation & orchestration
 
@@ -71,10 +82,10 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 
 ## What's shipped
 
-- **Bundled theme.** "Survivors vs Zombies" ships inside the VSIX and seeds automatically on first run, so a fresh install has a playable stage out of the box.
+- **Bundled theme.** "Catopia" (the default) and "Doggo Tycoon" ship inside the VSIX and seed automatically on first run, so a fresh install has a playable stage out of the box.
 - **Tycoon Theme Builder.** Opened from the **Tycoon Themes** menu, this is the primary path for building a theme (characters, objects, enemies, expressions, badges, decor, and an environment) and opens straight to the draft form from every entry point. Name your theme once, then choose **Generate with AI** — which fills a plan you always review and edit before any images generate, with an optional pause for your approval after each image — or **Build manually**, which goes straight to the sprite boards. Every board card shows its name and description for editing alongside the usual Retry, edit-direction, Normalize size, Upload, Keep, and Reslice controls; on the manual path, a board without an image can still be generated individually with AI once you sign in. **Save theme** saves the whole theme, and it also saves automatically after every upload.
 - **Import .zip.** The free, offline path, and always available: additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
-- **In-panel handbook.** A 13-chapter user handbook ships in the VSIX, opened from the book icon in the panel.
+- **In-panel handbook.** A 15-chapter user handbook ships in the VSIX, opened from the book icon in the panel. It is the place to go for depth on setup, themes, routing, and fallback.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
 - **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
 - **UEFN pack.** See "UEFN pack" below.
@@ -158,9 +169,20 @@ A teammate who clones the project and opens TycoonAgents sees a **"Team setup ch
 
 ## Multi-LLM
 
-A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or local/API models.
+A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or other models.
 
 Supported harnesses: Claude Code, OpenCode (Experimental), Codex (Experimental). Gemini / Antigravity agent as harness: planned (not yet available); the Antigravity editor itself is supported.
+
+### Multi-model delegation
+
+Specialist agents can run on a different vendor than the orchestrator. Delegation goes through the TycoonAgents dispatcher — the `tycoon` MCP server and its `delegate` tool — which sends the brief to the agent's configured model and returns the result. Supported providers:
+
+- **Claude** (Claude Code subscription).
+- **Codex** (ChatGPT sign-in).
+- **Gemini**, through the Antigravity CLI (`agy`) — no API key needed by default.
+- **OpenAI-compatible endpoints** — Kimi, Qwen, and local or VM-hosted servers.
+
+Each agent has its own routing (vendor and model) plus an ordered fallback chain. When a provider hits a usage limit or quota error (401/429), or is unreachable, the work falls back automatically along the chain; fallback rows show an amber **(fb)** marker, and the default fallback shows **(dfb)**. Set it up in the **Routing** view (see the walkthrough below) and see the handbook chapter "Adding Other AIs: Agents, Routing & Fallback".
 
 ### Using OpenCode as the provider
 
@@ -180,7 +202,7 @@ The **Multi-LLM agents** pack installs the launcher-based Codex MCP entry (`code
 
 ### Routing walkthrough
 
-1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code or OpenCode).
+1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code, Codex, or OpenCode).
 2. Open the **Routing** view from the panel menu.
 3. Fill in the **orchestrator** slot at the top the same way as any agent row below.
 4. For a per-agent model, pick **Vendor** then choose a preset from the **Model** dropdown.
@@ -197,7 +219,7 @@ for any agent once that agent's own fallback chain is exhausted, or
 immediately when the agent has none, whenever the agent runs out of tokens
 (usage limit, 401/429, quota) or is unreachable (connection refused, missing
 endpoint). Each agent's **"Fallback chain (N)"** section shows the default
-as a final amber **"(fb)"** row with a **"Use default fallback for this
+as a final amber **"(dfb)"** row with a **"Use default fallback for this
 agent"** checkbox, checked by default; unchecking it makes that agent fail
 after its own chain instead. The default never falls back to itself, never
 repeats an agent already tried in the chain, and total chain depth stays at
