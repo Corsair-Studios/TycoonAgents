@@ -70,8 +70,9 @@ test("ok: envelope, provider/model, summary and usage; isError false", async () 
   assert.deepEqual(reply!.result!.structuredContent!.usage, { input_tokens: 3, output_tokens: 4 });
 });
 
-test("provider_error: HTTP statuses map to auth / rate_limit / quota / not_found with isError", async () => {
-  const cases: Array<[string, string]> = [["AUTH", "auth"], ["RATE", "rate_limit"], ["QUOTA", "quota"], ["MISSING", "not_found"]];
+test("provider_error: HTTP statuses map to auth / rate_limit / billing / not_found with isError", async () => {
+  // A 402 whose body says "Insufficient credit" is billing (OpenRouter-style); a bare 402 stays quota.
+  const cases: Array<[string, string]> = [["AUTH", "auth"], ["RATE", "rate_limit"], ["QUOTA", "billing"], ["MISSING", "not_found"]];
   for (const [prompt, kind] of cases) {
     const { reply } = await openai(prompt);
     const env = envelopeOf(reply);

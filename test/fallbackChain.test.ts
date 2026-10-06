@@ -46,6 +46,46 @@ test("isProviderFailure matches the documented quota/unavailable/unreachable pat
   assert.equal(isProviderFailure('{"name":"APIError","data":{"message":"..."}}'), true);
 });
 
+test("isProviderFailure recognizes current provider limit wordings (Claude Code, Codex, Anthropic, OpenAI, Gemini, Qwen, Kimi, OpenRouter)", () => {
+  const samples = [
+    "You've hit your weekly limit · resets 12am (America/Los_Angeles)",
+    "You've hit your weekly limit · resets Mon 12:00am",
+    "You've hit your session limit · resets 3:45pm",
+    "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+    "Claude AI usage limit reached|1791300000",
+    "API Error: Repeated 529 Overloaded errors",
+    '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    '{"type":"error","error":{"type":"rate_limit_error","message":"Your organization has hit a rate limit"}}',
+    "enforced_spend_limit_reached",
+    "You have reached your API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.",
+    "rate_limit_error: acceleration_limit",
+    "Your credit balance is too low to access the Anthropic API.",
+    "rate_limit_exceeded: You are sending requests too quickly.",
+    "insufficient_quota",
+    "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 11th, 2026 4:36 AM.",
+    "429 Resource has been exhausted (e.g. check quota).",
+    "Throttling.AllocationQuota: Allocated quota exceeded",
+    '{"code":"Throttling","message":"Requests throttling triggered."}',
+    "Arrearage: Access denied",
+    "rate_limit_reached_error: reached organization TPD rate limit",
+    "exceeded_current_quota_error",
+    "engine_overloaded_error",
+    "429 Too Many Requests",
+    "402 Payment Required",
+    "Insufficient credits. Add more using https://openrouter.ai/settings/credits",
+    "Rate limit exceeded. Please retry after 5 seconds.",
+    "Sorry, you've hit a rate limit that restricts the number of Copilot model requests",
+  ];
+  for (const text of samples) assert.equal(isProviderFailure(text), true, text);
+});
+
+test("isProviderFailure new limit patterns stay phrase-specific (no bare 429/overloaded/throttling prose)", () => {
+  assert.equal(isProviderFailure("Added a guard so the queue is never overloaded."), false);
+  assert.equal(isProviderFailure("Fixed issue #429 in the parser."), false);
+  assert.equal(isProviderFailure("Throttling the scroll handler improved FPS."), false);
+  assert.equal(isProviderFailure("Updated the billing page copy."), false);
+});
+
 test("isProviderFailure does not flag ordinary success/failure text unrelated to provider outages", () => {
   assert.equal(isProviderFailure("Done: implemented the thing."), false);
   assert.equal(isProviderFailure("verdict: changes-requested"), false);

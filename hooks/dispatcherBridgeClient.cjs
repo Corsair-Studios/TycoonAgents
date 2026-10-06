@@ -239,9 +239,9 @@ function normalizeAttempt(call, slotInfo) {
   const model = (slotInfo && slotInfo.model) || "";
   if (!call || call.error) {
     const message = (call && call.error) || "bridge call failed";
-    const kind = (call && call.kind) || bridgeResult.classifyProviderError(message);
-    const status = kind === "timeout" ? "timeout" : "provider_error";
-    return { status, provider, model, summary: "", error: { kind, message } };
+    const error = bridgeResult.describeProviderError(message, { kind: call && call.kind });
+    const status = error.kind === "timeout" ? "timeout" : "provider_error";
+    return { status, provider, model, summary: "", error };
   }
   const result = call.result || {};
   const usage = result.structuredContent && result.structuredContent.usage ? result.structuredContent.usage : undefined;
@@ -254,7 +254,7 @@ function normalizeAttempt(call, slotInfo) {
   }
   const first = Array.isArray(result.content) && result.content[0] && typeof result.content[0].text === "string" ? result.content[0].text : "";
   if (result.isError === true) {
-    return { status: "provider_error", provider, model, summary: "", error: { kind: bridgeResult.classifyProviderError(first), message: first.slice(0, 500) || "Provider call failed" } };
+    return { status: "provider_error", provider, model, summary: "", error: bridgeResult.describeProviderError(first.slice(0, 500) || "Provider call failed") };
   }
   if (first.trim() === "") {
     return { status: "empty", provider, model, summary: "", error: { kind: "empty", message: "Provider returned empty output" } };

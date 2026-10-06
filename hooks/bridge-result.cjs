@@ -14,7 +14,14 @@
  *   { tycoonBridge: 1,
  *     status: "ok" | "provider_error" | "timeout" | "empty",
  *     provider, model, summary, truncated,
- *     error?: { kind, message } }          (error only on non-ok statuses)
+ *     error?: { kind, message, resetHint?, retryAfterMs? } }
+ *                                          (error only on non-ok statuses)
+ *
+ * error.resetHint / error.retryAfterMs (optional, additive): when a
+ * provider_error message says when the limit lifts ("resets Mon 12:00am",
+ * "try again at ...", "regain access on ...", "retry after 5 seconds"),
+ * formatBridgeResult copies that hint out of the message (see
+ * extractResetHint). retryAfterMs is set only for a short relative wait.
  *
  * Delivery: the envelope rides in the MCP CallToolResult's `structuredContent`
  * (supported since MCP protocol 2025-06-18; every bridge echoes the client's
@@ -49,6 +56,7 @@ const STATUSES = ["ok", "provider_error", "timeout", "empty"];
 const DEFAULT_MAX_CHARS = 12000;
 const DEFAULT_TIMEOUT_MS = 180000;
 const ERROR_MESSAGE_MAX = 500;
+const RESET_HINT_MAX = 120;
 const TEXT_HEADER_PREFIX = "TYCOON_BRIDGE ";
 
 const MAX_TIMER_MS = 2147483647;
@@ -116,6 +124,11 @@ function formatBridgeResult(opts) {
     const fallbackMsg =
       status === "empty" ? "Provider returned empty output" : status === "timeout" ? "Provider call timed out" : "Provider call failed";
     envelope.error = { kind, message: capError(err.message || fallbackMsg) };
+    const hint = status === "provider_error" ? extractResetHint(err.message || "") : {};
+    const resetHint = typeof err.resetHint === "string" && err.resetHint ? err.resetHint.slice(0, RESET_HINT_MAX) : hint.resetHint;
+    const retryAfterMs = validRetryAfter(err.retryAfterMs) ? err.retryAfterMs : hint.retryAfterMs;
+    if (resetHint) envelope.error.resetHint = resetHint;
+    if (retryAfterMs !== undefined) envelope.error.retryAfterMs = retryAfterMs;
   }
 
   const isError = status !== "ok";
@@ -231,28 +244,148 @@ function parseBridgeResult(toolResponse, opts) {
 
 /**
  * Short error.kind for a provider/CLI failure message: auth | quota |
- * rate_limit | not_found | network | cli_missing | backend_unreadable | unknown.
+ * billing | rate_limit | overloaded | not_found | network | cli_missing |
+ * backend_unreadable | unknown.
+ *   quota       a plan/usage cap that lasts until a reset (Claude Code
+ *               weekly/session/spend limit, Codex usage limit, OpenAI
+ *               insufficient_quota, Gemini resource exhausted, Kimi daily
+ *               TPD cap, Anthropic enforced spend limit). Not retried.
+ *   billing     the account has no money/credit (credit balance too low,
+ *               billing_error, 402 Payment Required, DashScope Arrearage).
+ *               Not retried.
+ *   rate_limit  a short-window throttle (429, too many requests, Throttling).
+ *               Retried once when the provider names a short wait.
+ *   overloaded  the provider is at capacity (Anthropic 529 overloaded_error,
+ *               Kimi engine_overloaded_error). Retried like rate_limit.
  * (tool_denied is never classified from text; a bridge sets it explicitly via
  * `kind` when the backend tried to use a tool headless mode cannot approve.)
  * backend_unreadable: the backend ran but its reply could not be read back
  * (e.g. agy's SQLite transcript); retryable. An HTTP status
- * (opts.httpStatus) wins over text matching. Shared by every bridge.
+ * (opts.httpStatus) wins over text matching, except that a 429/402 body
+ * naming a hard quota or billing failure refines the kind. Shared by every
+ * bridge. Callers pass ERROR text only, never an ok summary.
  */
+// 529 only with HTTP/status/error context ("529 Overloaded", "status 529",
+// "HTTP 529", "error 529"), never a bare number such as a stack frame "x.js:529:10".
+const OVERLOADED_RE = /overloaded_error|engine_overloaded|(?<![:\w.])529\s+overloaded|(?:status|http|error|code)\W{0,3}529(?![:\w.])/i;
+const BILLING_RE = /billing_error|credit balance is (?:too )?low|insufficient (?:credits?|balance|funds)|payment required|\bArrearage\b/i;
+const QUOTA_SPECIFIC_RE = /you'?ve (?:hit|reached) your [\w -]{0,30}limit|usage limit reached|reached your (?:api )?usage limits?|regain access on|enforced_spend_limit|spend limit|insufficient_quota|exceeded_current_quota|exceeded your current quota|allocated quota exceeded|AllocationQuota|resource has been exhausted|\bTPD\b[^\n]{0,30}rate limit|tokens per day|requests per day/i;
+// Under an explicit HTTP 429 only machine codes / unambiguous cap wordings
+// refine to quota (a bare prose "exceeded your current quota" stays rate_limit).
+const QUOTA_CODE_RE = /insufficient_quota|exceeded_current_quota|enforced_spend_limit|AllocationQuota|resource has been exhausted|you'?ve (?:hit|reached) your [\w -]{0,30}limit|\bTPD\b[^\n]{0,30}rate limit/i;
+const RATE_LIMIT_RE = /\b429\b|rate.?limit|too many requests|requests too quickly|acceleration_limit|\bThrottling\b|overloaded/i;
+
 function classifyProviderError(message, opts) {
   const t = String(message === undefined || message === null ? "" : message);
   const status = opts && Number(opts.httpStatus);
   if (status === 401 || status === 403) return "auth";
-  if (status === 429) return "rate_limit";
-  if (status === 402) return "quota";
+  if (status === 429) return QUOTA_CODE_RE.test(t) ? "quota" : "rate_limit";
+  if (status === 402) return BILLING_RE.test(t) ? "billing" : "quota";
+  if (status === 529) return "overloaded";
   if (status === 404) return "not_found";
   if (/ENOENT|could not find the claude cli|failed to spawn|spawn [^\n]*EACCES|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found|(?<!\bmodel:?\s*["'`]?)\b(?:agy|gemini)(?: cli| command| binary)?\s+(?:is\s+)?not (?:installed|found)\b|\b(?:agy|gemini|codex|claude|cli|command|binary|npx)\b[^\n]{0,30}\bnot installed\b/i.test(t)) return "cli_missing";
   if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth|(?:api|key|token|credential|auth|403)[^\n]{0,60}permission[ _]denied|permission[ _]denied[^\n]{0,60}(?:api|key|token|credential|auth|403)/i.test(t)) return "auth";
-  if (/\b429\b|rate.?limit|too many requests|overloaded/i.test(t)) return "rate_limit";
-  if (/\b402\b|quota|usage limit|limit reached|insufficient|billing|credit|exceeded your|resource_exhausted/i.test(t)) return "quota";
+  if (OVERLOADED_RE.test(t)) return "overloaded";
+  if (BILLING_RE.test(t)) return "billing";
+  if (QUOTA_SPECIFIC_RE.test(t)) return "quota";
+  if (RATE_LIMIT_RE.test(t)) return "rate_limit";
+  if (/\b402\b|quota|usage limit|limit reached|insufficient[^\n]{0,20}(?:quota|balance|credits?|funds)|out of credits?|credits?[^\n]{0,20}(?:exhausted|depleted|exceeded|limit|balance)|billing (?:details|limit|hard limit)|exceeded your|resource_exhausted/i.test(t)) return "quota";
   if (/\b404\b|not found|model_not_found|does not exist|unsupported model|issue with the selected model/i.test(t)) return "not_found";
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|network|fetch failed|socket hang up/i.test(t)) return "network";
   if (/could not extract a model reply|found a SQLite transcript/i.test(t)) return "backend_unreadable";
   return "unknown";
+}
+
+function validRetryAfter(ms) {
+  return typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
+}
+
+function trimHint(s) {
+  return s.replace(/\s+/g, " ").trim().replace(/[.,;:]+$/, "").slice(0, RESET_HINT_MAX);
+}
+
+const UNIT_MS = { ms: 1, millisecond: 1, milliseconds: 1, s: 1000, sec: 1000, secs: 1000, second: 1000, seconds: 1000, m: 60000, min: 60000, mins: 60000, minute: 60000, minutes: 60000 };
+
+/**
+ * Pulls a "when does this limit lift" hint out of a provider error message.
+ * Returns { resetHint?, retryAfterMs? }: resetHint is a short human string
+ * ("resets Mon 12:00am", "try again at Sep 11th, 2026 4:36 AM", "regain
+ * access on 2026-09-01 at 00:00 UTC", "resets at <ISO>" from Claude Code's
+ * "usage limit reached|<epoch>" form); retryAfterMs is set only for a
+ * relative wait ("retry after 5 seconds", "try again in 20s", "retry in
+ * 1.5s", "Retry-After: 7"). Never throws.
+ */
+function extractResetHint(message) {
+  const out = {};
+  const t = typeof message === "string" ? message : "";
+  if (!t) return out;
+  const rel = /(?:retry[- ]after|(?:try|retry) again in|retry in)[:\s]+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)?(?![\w])/i.exec(t);
+  if (rel) {
+    const unit = (rel[2] || "s").toLowerCase();
+    const ms = Math.round(Number(rel[1]) * (UNIT_MS[unit] || 1000));
+    if (Number.isFinite(ms)) out.retryAfterMs = ms;
+    out.resetHint = trimHint(rel[0]);
+    return out;
+  }
+  const resets = /\bresets\s+([^\n|]{1,80})/i.exec(t);
+  if (resets) {
+    out.resetHint = trimHint("resets " + resets[1]);
+    return out;
+  }
+  const at = /\btry again (?:at|after|on)\s+([^\n]{1,80}?)(?:\.(?:\s|$)|\n|$)/i.exec(t);
+  if (at) {
+    out.resetHint = trimHint("try again at " + at[1]);
+    return out;
+  }
+  const regain = /\bregain access on\s+([^\n]{1,80}?)(?:\.(?:\s|$)|\n|$)/i.exec(t);
+  if (regain) {
+    out.resetHint = trimHint("regain access on " + regain[1]);
+    return out;
+  }
+  const epoch = /usage limit reached\|(\d{10,13})\b/i.exec(t);
+  if (epoch) {
+    const n = Number(epoch[1]);
+    const d = new Date(epoch[1].length === 13 ? n : n * 1000);
+    if (!isNaN(d.getTime())) out.resetHint = "resets at " + d.toISOString();
+  }
+  return out;
+}
+
+/** Kinds that hand off to the next fallback slot right away (no retry). */
+const NO_RETRY_KINDS = ["quota", "billing"];
+/** Kinds that may be retried once on the same slot after a short wait. */
+const SHORT_RETRY_KINDS = ["rate_limit", "overloaded"];
+const SHORT_RETRY_MAX_MS = 10000;
+
+/**
+ * Retry policy shared by the dispatcher loops (the bridges themselves never
+ * retry rate limits, so a dispatched call is retried at most once):
+ * quota/billing fall back immediately; rate_limit/overloaded get ONE retry on
+ * the same slot only when the error named a wait <= 10s (retryAfterMs) and
+ * the wait PLUS a minimum retry run (opts.minRunMs, default 1000) fits in
+ * what is left of the step budget (opts.budgetLeftMs, when known); the caller
+ * then runs the retry with only the budget that remains after the wait.
+ * Everything else falls back without a retry. Returns the wait in ms, or -1.
+ */
+const MIN_RETRY_RUN_MS = 1000;
+function shortRetryDelayMs(error, opts) {
+  if (!error || SHORT_RETRY_KINDS.indexOf(error.kind) === -1) return -1;
+  const ms = error.retryAfterMs;
+  if (!validRetryAfter(ms) || ms > SHORT_RETRY_MAX_MS) return -1;
+  const left = opts && typeof opts.budgetLeftMs === "number" ? opts.budgetLeftMs : Infinity;
+  const minRun = opts && typeof opts.minRunMs === "number" && opts.minRunMs >= 0 ? opts.minRunMs : MIN_RETRY_RUN_MS;
+  return ms + minRun <= left ? ms : -1;
+}
+
+/** { kind, message, resetHint?, retryAfterMs? } for an error string (opts: { kind?, httpStatus? }). */
+function describeProviderError(message, opts) {
+  const msg = String(message === undefined || message === null ? "" : message);
+  const kind = (opts && opts.kind) || classifyProviderError(msg, opts);
+  const err = { kind, message: capError(msg) };
+  const hint = extractResetHint(msg);
+  if (hint.resetHint) err.resetHint = hint.resetHint;
+  if (hint.retryAfterMs !== undefined) err.retryAfterMs = hint.retryAfterMs;
+  return err;
 }
 
 /**
@@ -281,5 +414,12 @@ module.exports = {
   withTimeout,
   parseBridgeResult,
   classifyProviderError,
+  extractResetHint,
+  describeProviderError,
+  shortRetryDelayMs,
+  NO_RETRY_KINDS,
+  SHORT_RETRY_KINDS,
+  SHORT_RETRY_MAX_MS,
+  MIN_RETRY_RUN_MS,
   providerErrorResult,
 };

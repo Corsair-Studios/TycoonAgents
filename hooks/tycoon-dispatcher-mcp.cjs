@@ -80,6 +80,7 @@ const codexRollout = require("./codexRollout.cjs");
 const { LEAF_WORKER_DENY_MESSAGE } = require("./delegationEnforcement.js");
 const dispatcherAdapters = require("./dispatcherAdapters.cjs");
 const dispatcherClaudeChain = require("./dispatcherClaudeChain.cjs");
+const bridgeResult = require("./bridge-result.cjs");
 const gateEvents = require("./gateEvents.cjs");
 
 // Plan p29-t3: cursor file name this harness uses to track its own read
@@ -281,14 +282,31 @@ function readRoutingChainForSpecialist(projectDir, specialistId) {
  * "OPENAI_COMPAT_BASE_URL is not set in the Codex process environment or
  * the TycoonAgents local env store.") as a failure — a missing endpoint is
  * exactly the kind of condition a fallback chain exists to route around. */
+/**
+ * Codex aborts an MCP tool call after its tool_timeout_sec (60s by default;
+ * TycoonAgents' installer does not raise it). A same-slot retry must finish
+ * inside that window, measured from the start of the delegate call.
+ * TYCOON_CODEX_TOOL_TIMEOUT_MS overrides it when a user raised the Codex value.
+ */
+const CODEX_TOOL_TIMEOUT_MS_DEFAULT = 60000;
+function codexToolTimeoutMs() {
+  const n = Number(process.env.TYCOON_CODEX_TOOL_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : CODEX_TOOL_TIMEOUT_MS_DEFAULT;
+}
+
+/** Provider-limit kinds that always advance to the next fallback slot. */
+const LIMIT_KINDS = ["quota", "billing", "rate_limit", "overloaded"];
+
 function isDispatchFailure(fallbackChain, errorText) {
   if (fallbackChain && fallbackChain.isProviderFailure(errorText)) return true;
+  if (LIMIT_KINDS.indexOf(bridgeResult.classifyProviderError(errorText)) !== -1) return true;
   return /not set in the Codex process environment or the TycoonAgents local env store\./.test(
     String(errorText || "")
   );
 }
 
 async function handleDelegateTool(args) {
+  const callStartedAt = Date.now();
   const task = args && typeof args.task === "string" ? args.task : undefined;
   if (!task) return isErrorResult("Missing required argument: task");
 
@@ -445,7 +463,32 @@ async function handleDelegateTool(args) {
     process.env.TYCOON_DISPATCH_DEPTH = "1";
     let result;
     try {
+      const startedAt = Date.now();
       result = await adapterFn(task, { vendor: currentVendor, model: currentModel, workerId });
+      // Retry policy (bridgeResult.shortRetryDelayMs): rate_limit/overloaded
+      // with a named wait <= 10s inside the step budget get ONE same-slot
+      // retry; quota/billing and everything else go straight to fallback.
+      // The wait plus the retry share what is left of the step budget and of
+      // Codex's MCP tool timeout (from the start of this delegate call).
+      if (result.error) {
+        const stepBudgetMs = Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) > 0 ? Number(process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS) : bridgeResult.DEFAULT_TIMEOUT_MS;
+        const left = Math.min(stepBudgetMs - (Date.now() - startedAt), codexToolTimeoutMs() - (Date.now() - callStartedAt));
+        const wait = bridgeResult.shortRetryDelayMs(bridgeResult.describeProviderError(result.error), { budgetLeftMs: left });
+        if (wait >= 0) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          const retryBudgetMs = Math.max(1, left - wait);
+          let timer;
+          const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve({ error: `retry timed out after the remaining ${retryBudgetMs}ms budget` }), retryBudgetMs);
+            if (timer && typeof timer.unref === "function") timer.unref();
+          });
+          try {
+            result = await Promise.race([adapterFn(task, { vendor: currentVendor, model: currentModel, workerId }), timeout]);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+      }
     } finally {
       if (prevDepth === undefined) delete process.env.TYCOON_DISPATCH_DEPTH;
       else process.env.TYCOON_DISPATCH_DEPTH = prevDepth;

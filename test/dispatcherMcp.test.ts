@@ -907,3 +907,77 @@ test("handleDelegateTool: two separate delegate calls get distinct spawnIds", as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Provider-limit policy on the Codex host (hooks/bridge-result.cjs shortRetryDelayMs).
+
+test("handleDelegateTool: a Claude Code weekly limit falls back (the old text backstop missed this wording)", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, { version: 1, agents: { "coding-specialist": { fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }] } } });
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    const result = await withStubFailure("You've hit your weekly limit · resets 12am (America/Los_Angeles)", 1, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes("stub:moonshot:"));
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleDelegateTool: rate_limit naming a short wait is retried once on the same slot, no fallback", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, { version: 1, agents: { "coding-specialist": { fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }] } } });
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    const result = await withStubFailure("Rate limit exceeded. Please retry after 0 seconds.", 1, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes("stub:anthropic:"), "the retry on the primary answered");
+    const records = readActivityRecords(mod.resolveActivityFile());
+    assert.equal(records.filter((r) => r.event === "ProviderError").length, 0);
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleDelegateTool: a short-wait rate_limit that fails again is retried only once, then falls back", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, { version: 1, agents: { "coding-specialist": { fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }] } } });
+  const { mod, restore } = loadDispatcherModule(dir);
+  try {
+    const result = await withStubFailure("Rate limit exceeded. Please retry after 0 seconds.", 2, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes("stub:moonshot:"));
+    const records = readActivityRecords(mod.resolveActivityFile());
+    assert.equal(records.filter((r) => r.event === "ProviderError").length, 1, "one failed slot after its single retry");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("handleDelegateTool: no same-slot retry when the wait plus a retry run would overrun Codex's MCP tool timeout", async () => {
+  const dir = makeProjectDir();
+  writeRoutingJson(dir, { version: 1, agents: { "coding-specialist": { fallback: [{ vendor: "moonshot", model: "moonshot/kimi-k2" }] } } });
+  const { mod, restore } = loadDispatcherModule(dir);
+  const prev = process.env.TYCOON_CODEX_TOOL_TIMEOUT_MS;
+  process.env.TYCOON_CODEX_TOOL_TIMEOUT_MS = "500";
+  try {
+    const result = await withStubFailure("Rate limit exceeded. Please retry after 0 seconds.", 1, () =>
+      mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
+    );
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes("stub:moonshot:"), "fell back instead of retrying past the tool timeout");
+  } finally {
+    if (prev === undefined) delete process.env.TYCOON_CODEX_TOOL_TIMEOUT_MS;
+    else process.env.TYCOON_CODEX_TOOL_TIMEOUT_MS = prev;
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

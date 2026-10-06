@@ -346,3 +346,116 @@ test("classifyProviderError: a backend that ran but whose reply was unreadable i
   assert.equal(classify("could not extract a model reply"), "backend_unreadable");
   assert.equal(classify("some other failure"), "unknown");
 });
+
+// Provider limit samples, verbatim, per vendor -> error.kind.
+const LIMIT_SAMPLES: Array<[string, string, string]> = [
+  ["claude-code", "You've hit your weekly limit · resets 12am (America/Los_Angeles)", "quota"],
+  ["claude-code", "You've hit your weekly limit · resets Mon 12:00am", "quota"],
+  ["claude-code", "You've hit your session limit · resets 3:45pm", "quota"],
+  ["claude-code", "You've hit your monthly spend limit · raise it at claude.ai/settings/usage", "quota"],
+  ["claude-code", "Claude AI usage limit reached|1791300000", "quota"],
+  ["claude-code", "API Error: Repeated 529 Overloaded errors", "overloaded"],
+  ["anthropic", '529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', "overloaded"],
+  ["anthropic", '429 {"type":"error","error":{"type":"rate_limit_error","message":"Your organization has hit a rate limit"}}', "rate_limit"],
+  ["anthropic", '{"type":"error","error":{"type":"invalid_request_error","message":"enforced_spend_limit_reached"}}', "quota"],
+  ["anthropic", "You have reached your API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.", "quota"],
+  ["anthropic", '{"type":"error","error":{"type":"rate_limit_error","message":"acceleration_limit"}}', "rate_limit"],
+  ["anthropic", "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.", "billing"],
+  ["anthropic", '{"type":"error","error":{"type":"billing_error","message":"billing issue"}}', "billing"],
+  ["openai", "rate_limit_exceeded: You are sending requests too quickly.", "rate_limit"],
+  ["openai", "insufficient_quota: You exceeded your current quota, please check your plan and billing details.", "quota"],
+  ["codex", "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 11th, 2026 4:36 AM.", "quota"],
+  ["gemini", "429 Resource has been exhausted (e.g. check quota).", "quota"],
+  ["gemini", "RESOURCE_EXHAUSTED", "quota"],
+  ["qwen", "insufficient_quota", "quota"],
+  ["qwen", "Throttling.AllocationQuota: Allocated quota exceeded, please increase your quota limit.", "quota"],
+  ["qwen", "Throttling: Requests throttling triggered.", "rate_limit"],
+  ["qwen", "Throttling.RateQuota: Requests rate limit exceeded, please try again later.", "rate_limit"],
+  ["qwen", "Arrearage: Access denied, please make sure your account is in good standing.", "billing"],
+  ["kimi", "rate_limit_reached_error: Your account org-x request reached organization TPD rate limit, current: 1500001, limit: 1500000", "quota"],
+  ["kimi", "exceeded_current_quota_error: Your account org-x is suspended, please check your plan and billing details", "quota"],
+  ["kimi", "engine_overloaded_error: The engine is currently overloaded, please try again later", "overloaded"],
+  ["xai", "429 Too Many Requests", "rate_limit"],
+  ["openrouter", "402 Payment Required", "billing"],
+  ["openrouter", "Insufficient credits. Add more using https://openrouter.ai/settings/credits", "billing"],
+  ["vllm", "Rate limit exceeded. Please retry after 5 seconds.", "rate_limit"],
+  ["copilot", "Sorry, you've hit a rate limit that restricts the number of Copilot model requests you can make within a specific time period.", "rate_limit"],
+];
+
+for (const [vendor, text, kind] of LIMIT_SAMPLES) {
+  test(`classifyProviderError (${vendor}): ${text.slice(0, 60)} -> ${kind}`, () => {
+    assert.equal(classify(text), kind);
+  });
+}
+
+test("classifyProviderError: HTTP status refines on quota/billing body text, and 529 is overloaded", () => {
+  assert.equal(classify("insufficient_quota", { httpStatus: 429 }), "quota");
+  assert.equal(classify("Too Many Requests", { httpStatus: 429 }), "rate_limit");
+  assert.equal(classify("Insufficient credits", { httpStatus: 402 }), "billing");
+  assert.equal(classify("boom", { httpStatus: 529 }), "overloaded");
+});
+
+const hintApi = require("../../hooks/bridge-result.cjs") as {
+  extractResetHint: (m: unknown) => { resetHint?: string; retryAfterMs?: number };
+  shortRetryDelayMs: (e: unknown, o?: { budgetLeftMs?: number; minRunMs?: number }) => number;
+};
+
+test("extractResetHint pulls reset/retry hints out of limit messages", () => {
+  const cases: Array<[string, { resetHint?: string; retryAfterMs?: number }]> = [
+    ["You've hit your weekly limit · resets Mon 12:00am", { resetHint: "resets Mon 12:00am" }],
+    ["You've hit your weekly limit · resets 12am (America/Los_Angeles)", { resetHint: "resets 12am (America/Los_Angeles)" }],
+    ["You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at Sep 11th, 2026 4:36 AM.", { resetHint: "try again at Sep 11th, 2026 4:36 AM" }],
+    ["You have reached your API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.", { resetHint: "regain access on 2026-09-01 at 00:00 UTC" }],
+    ["Rate limit exceeded. Please retry after 5 seconds.", { retryAfterMs: 5000, resetHint: "retry after 5 seconds" }],
+    ["Rate limit reached. Please try again in 1.5s.", { retryAfterMs: 1500, resetHint: "try again in 1.5s" }],
+    ["Claude AI usage limit reached|1791300000", { resetHint: "resets at " + new Date(1791300000 * 1000).toISOString() }],
+    ["You've hit your monthly spend limit · raise it at claude.ai/settings/usage", {}],
+    ["", {}],
+  ];
+  for (const [text, want] of cases) assert.deepEqual(hintApi.extractResetHint(text), want, text);
+});
+
+test("provider_error envelopes carry resetHint/retryAfterMs additively; parseBridgeResult round-trips them", () => {
+  const r = providerErrorResult({ provider: "p", model: "m", text: "Rate limit exceeded. Please retry after 5 seconds." });
+  assert.equal(r.structuredContent.error.kind, "rate_limit");
+  assert.equal(r.structuredContent.error.retryAfterMs, 5000);
+  assert.equal(r.structuredContent.error.resetHint, "retry after 5 seconds");
+  const parsed = bridge.parseBridgeResult(r, {}) as { error?: { retryAfterMs?: number } } | null;
+  assert.equal(parsed?.error?.retryAfterMs, 5000);
+  const plain = providerErrorResult({ provider: "p", text: "401 Unauthorized" });
+  assert.equal("resetHint" in plain.structuredContent.error, false);
+  assert.equal("retryAfterMs" in plain.structuredContent.error, false);
+});
+
+test("shortRetryDelayMs: quota/billing never retry; rate_limit/overloaded retry once only for waits <= 10s inside the budget", () => {
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "quota", retryAfterMs: 1000 }), -1);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "billing", retryAfterMs: 0 }), -1);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 5000 }), 5000);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "overloaded", retryAfterMs: 10000 }), 10000);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 10001 }), -1);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit" }), -1, "no named wait -> fall back");
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 5000 }, { budgetLeftMs: 4000 }), -1, "wait exceeds budget");
+  assert.equal(hintApi.shortRetryDelayMs(undefined), -1);
+});
+
+test("classifyProviderError: a 529 needs HTTP/status/error context; a stack frame line number is not overloaded", () => {
+  assert.notEqual(classify("TypeError: x is undefined\n    at run (src/x.js:529:10)"), "overloaded");
+  assert.equal(classify("request id 529 failed"), "unknown");
+  assert.equal(classify("HTTP 529"), "overloaded");
+  assert.equal(classify("status: 529"), "overloaded");
+  assert.equal(classify("529 Overloaded"), "overloaded");
+});
+
+test("classifyProviderError: a bare credit/insufficient mention is not quota without limit/quota/balance context", () => {
+  assert.equal(classify("Your credit card was charged"), "unknown");
+  assert.equal(classify("insufficient permissions to write file"), "unknown");
+  assert.equal(classify("out of credits"), "quota");
+  assert.equal(classify("insufficient balance"), "billing");
+  assert.equal(classify("credit limit exceeded"), "quota");
+});
+
+test("shortRetryDelayMs requires room for the wait plus a minimum retry run", () => {
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 1000 }, { budgetLeftMs: 1500 }), -1);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 1000 }, { budgetLeftMs: 2000 }), 1000);
+  assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 1000 }, { budgetLeftMs: 1200, minRunMs: 100 }), 1000);
+});

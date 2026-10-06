@@ -75,6 +75,22 @@ const PROVIDER_FAILURE_PATTERNS = [
     /cannot connect to api/i,
     /unable to connect/i,
     /\bAPIError\b/,
+    // Provider limit wordings (kept phrase-specific, never a bare "429" or
+    // "overloaded", because the OpenCode host also scans successful task
+    // output). Kinds match hooks/bridge-result.cjs classifyProviderError:
+    // Claude Code "You've hit your weekly/session/monthly spend limit",
+    // Codex "You've hit your usage limit" (quota).
+    /you'?ve (?:hit|reached) your [\w -]{0,30}limit/i,
+    // Anthropic API: spend/usage caps (quota), 429/529 error types.
+    /enforced_spend_limit|reached your (?:api )?usage limits?|regain access on/i,
+    /rate_limit_(?:error|exceeded|reached)|acceleration_limit|rate limit exceeded/i,
+    /overloaded_error|engine_overloaded|repeated 529|\b529 overloaded/i,
+    // OpenAI / Kimi / Qwen quota codes, Gemini's 429 wording.
+    /insufficient_quota|exceeded_current_quota|resource has been exhausted/i,
+    /\btoo many requests\b|sending requests too quickly/i,
+    /\bThrottling(?:\.\w+)?:|"code"\s*:\s*"Throttling/,
+    // Billing: Anthropic credit balance, OpenRouter 402, DashScope Arrearage.
+    /billing_error|credit balance is (?:too )?low|insufficient credits|\b402 payment required|\bArrearage\b/i,
 ];
 function isProviderFailure(text) {
     if (!text || typeof text !== "string")

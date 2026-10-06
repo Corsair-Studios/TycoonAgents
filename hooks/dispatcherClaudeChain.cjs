@@ -182,7 +182,7 @@ async function runStep(slot, ctx) {
     else process.env.TYCOON_DISPATCH_DEPTH = prev;
   }
   if (res.error) {
-    return { status: "provider_error", provider: info.provider, model: info.model, summary: "", error: { kind: bridgeResult.classifyProviderError(res.error), message: String(res.error).slice(0, 500) } };
+    return { status: "provider_error", provider: info.provider, model: info.model, summary: "", error: bridgeResult.describeProviderError(res.error) };
   }
   if (!res.text || res.text.trim() === "") {
     return { status: "empty", provider: info.provider, model: info.model, summary: "", error: { kind: "empty", message: "Provider returned empty output" } };
@@ -190,6 +190,28 @@ async function runStep(slot, ctx) {
   const out = { status: "ok", provider: info.provider, model: info.model, summary: res.text };
   if (res.usage) out.usage = res.usage;
   return out;
+}
+
+/**
+ * A same-slot retry bounded by what is left of the step budget: bridge steps
+ * get it as their own timeout (callBridgeTool + TYCOON_BRIDGE_TIMEOUT_MS);
+ * every step is also raced against it so an adapter step cannot overrun.
+ */
+async function runStepWithin(slot, ctx, budgetMs) {
+  const info = { provider: slot.vendor || slot.mcpServer || "", model: slot.model || "" };
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(
+      () => resolve({ status: "timeout", provider: info.provider, model: info.model, summary: "", error: { kind: "timeout", message: `retry timed out after the remaining ${budgetMs}ms step budget` } }),
+      budgetMs,
+    );
+    if (timer && typeof timer.unref === "function") timer.unref();
+  });
+  try {
+    return await Promise.race([runStep(slot, Object.assign({}, ctx, { stepTimeoutMs: budgetMs })), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function attemptEntry(slot, attempt, depth, isDefault) {
@@ -201,6 +223,7 @@ function attemptEntry(slot, attempt, depth, isDefault) {
   };
   if (slot.mcpServer) e.mcpServer = slot.mcpServer;
   if (attempt.error && attempt.error.kind) e.kind = attempt.error.kind;
+  if (attempt.error && attempt.error.resetHint) e.resetHint = attempt.error.resetHint;
   if (isDefault) e.isDefault = true;
   return e;
 }
@@ -258,10 +281,34 @@ async function runProviderChain(ctx) {
     }
   };
 
+  // Retry policy (bridgeResult.shortRetryDelayMs): quota/billing hand off to
+  // the next slot at once; rate_limit/overloaded get ONE same-slot retry when
+  // the provider named a wait <= 10s. The wait plus the retry share the one
+  // step budget: the retry runs with only what is left after the first try
+  // and the wait (never a fresh full stepTimeoutMs). Bridges never retry
+  // rate limits themselves, so nothing is retried twice.
+  const stepBudgetMs = ctx.stepTimeoutMs > 0 ? ctx.stepTimeoutMs : bridgeResult.DEFAULT_TIMEOUT_MS;
+  let retryBudgetMs = 0;
+
   for (;;) {
     attempted.add(slotKey(slot));
-    const attempt = await runStep(slot, ctx);
-    attempts.push(attemptEntry(slot, attempt, depth, isDefault));
+    const startedAt = Date.now();
+    const isRetry = retryBudgetMs > 0;
+    const attempt = isRetry ? await runStepWithin(slot, ctx, retryBudgetMs) : await runStep(slot, ctx);
+    retryBudgetMs = 0;
+    const entry = attemptEntry(slot, attempt, depth, isDefault);
+    attempts.push(entry);
+
+    if (attempt.status !== "ok" && !isRetry) {
+      const left = stepBudgetMs - (Date.now() - startedAt);
+      const wait = bridgeResult.shortRetryDelayMs(attempt.error, { budgetLeftMs: left });
+      if (wait >= 0) {
+        entry.retriedAfterMs = wait;
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        retryBudgetMs = Math.max(1, left - wait);
+        continue;
+      }
+    }
 
     if (attempt.status === "ok") {
       if (depth > 0) {
@@ -336,6 +383,7 @@ async function runProviderChain(ctx) {
     });
     if (next && next.slot.model) trig.nextModel = next.slot.model;
     if (attempt.error && attempt.error.kind) trig.bridgeErrorKind = attempt.error.kind;
+    if (attempt.error && attempt.error.resetHint) trig.resetHint = attempt.error.resetHint;
     append(trig);
 
     if (!next) break;
@@ -344,9 +392,11 @@ async function runProviderChain(ctx) {
     depth += 1;
   }
 
-  const failed = attempts.filter((a) => a.status !== "skipped");
+  // A same-slot retry (retriedAfterMs) is not a separate provider.
+  const failed = attempts.filter((a) => a.status !== "skipped" && a.retriedAfterMs === undefined);
+  const skipped = attempts.filter((a) => a.status === "skipped").length;
   const message =
-    failed.length > 1 || attempts.length > failed.length
+    failed.length > 1 || skipped > 0
       ? `delegate: every provider in the chain for ${ctx.workerId} failed (${describeAttempts(attempts)}). This is not a review result; report the provider failure.`
       : `delegate: ${ctx.workerId} failed on ${slotLabel(ctx.primary)} (${describeAttempts(attempts)}) and no fallback provider is configured. This is not a review result; report the provider failure.`;
   const last = failed[failed.length - 1];
@@ -377,6 +427,7 @@ module.exports = {
   parseBackendFromAgentFile,
   findSpawnContext,
   runProviderChain,
+  runStepWithin,
   slotLabel,
   describeAttempts,
 };

@@ -36,6 +36,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (mode === "hang") return;
   if (mode === "fail") { send(msg.id, br.providerErrorResult({ provider: name, model, text: "rate limit exceeded (HTTP 429)" })); return; }
   if (mode === "empty") { send(msg.id, br.formatBridgeResult({ provider: name, model, text: "" })); return; }
+  if (mode === "quota") { send(msg.id, br.providerErrorResult({ provider: name, model, text: "You've hit your weekly limit · resets Mon 12:00am" })); return; }
+  if (mode === "flakyhang") {
+    const prior = fs.readFileSync(process.env.FAKE_LOG, "utf8").split("\\n").filter((l) => l && JSON.parse(l).server === name).length;
+    if (prior > 1) return;
+    send(msg.id, br.providerErrorResult({ provider: name, model, text: "Rate limit exceeded. Please retry after 0 seconds." }));
+    return;
+  }
+  if (mode === "flaky" || mode === "throttled" || mode === "short") {
+    const prior = fs.readFileSync(process.env.FAKE_LOG, "utf8").split("\\n").filter((l) => l &&JSON.parse(l).server === name).length;
+    if (mode !== "flaky" || prior <= 1) { send(msg.id, br.providerErrorResult({ provider: name, model, text: "Rate limit exceeded. Please retry after " + (mode === "throttled" ? "30" : "0") + " seconds." })); return; }
+  }
   send(msg.id, br.formatBridgeResult({ provider: name, model, text: "review from " + name, extra: { usage: { input_tokens: 3, output_tokens: 4 } } }));
 });
 `;
@@ -689,4 +700,96 @@ test("slotLabel and describeAttempts do not double a vendor prefix already on th
   assert.equal(chain.slotLabel({ vendor: "google", model: "gemini-2.5-pro" }), "google/gemini-2.5-pro");
   assert.equal(chain.describeAttempts([{ provider: "google", model: "google/gemini-2.5-pro", status: "provider_error", kind: "auth" }]), "1) google/gemini-2.5-pro: provider_error/auth");
   assert.equal(chain.describeAttempts([{ provider: "gemini", model: "gemini-3.5-flash", status: "ok" }]), "1) gemini/gemini-3.5-flash: ok");
+});
+
+test("limit policy: a Claude Code weekly limit (quota) falls back at once with no same-slot retry, and carries its reset hint", async () => {
+  const project = makeProject({ modes: { "fake-a": "quota", "fake-b": "ok" }, chain: [slot("fake-b")] });
+  try {
+    const res = await delegate(project);
+    assert.notEqual(res.isError, true);
+    const sc = res.structuredContent as any;
+    assert.equal(sc.attempts.length, 2);
+    assert.equal(sc.attempts[0].kind, "quota");
+    assert.equal(sc.attempts[0].resetHint, "resets Mon 12:00am");
+    assert.equal(sc.attempts[0].retriedAfterMs, undefined);
+    assert.deepEqual(project.calls().map((c) => c.server), ["fake-a", "fake-b"]);
+    const trig = project.records().find((r) => r.event === "FallbackTriggered");
+    assert.equal(trig?.bridgeErrorKind, "quota");
+    assert.equal(trig?.resetHint, "resets Mon 12:00am");
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("limit policy: rate_limit naming a short wait is retried once on the same slot and needs no fallback", async () => {
+  const project = makeProject({ modes: { "fake-a": "flaky", "fake-b": "ok" }, chain: [slot("fake-b")] });
+  try {
+    const res = await delegate(project);
+    assert.notEqual(res.isError, true);
+    const sc = res.structuredContent as any;
+    assert.deepEqual(project.calls().map((c) => c.server), ["fake-a", "fake-a"]);
+    assert.equal(sc.attempts[0].kind, "rate_limit");
+    assert.equal(sc.attempts[0].retriedAfterMs, 0);
+    assert.equal(sc.attempts[1].status, "ok");
+    assert.equal(sc.answeredBy.depth, 0);
+    assert.equal(project.records().filter((r) => r.event === "FallbackTriggered").length, 0);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("limit policy: rate_limit with a long wait (> 10s) falls back without retrying", async () => {
+  const project = makeProject({ modes: { "fake-a": "throttled", "fake-b": "ok" }, chain: [slot("fake-b")] });
+  try {
+    const res = await delegate(project);
+    assert.notEqual(res.isError, true);
+    assert.deepEqual(project.calls().map((c) => c.server), ["fake-a", "fake-b"]);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("limit policy: a retry that fails again is one provider, so a lone slot is not reported as chain_exhausted", async () => {
+  const project = makeProject({ modes: { "fake-a": "short" }, useDefaultFallback: false });
+  try {
+    const res = await delegate(project);
+    assert.equal(res.isError, true);
+    assert.deepEqual(project.calls().map((c) => c.server), ["fake-a", "fake-a"], "exactly one retry, never two");
+    assert.equal((res.structuredContent as any).error.kind, "rate_limit");
+    assert.match(res.content[0].text, /no fallback provider is configured/);
+  } finally {
+    cleanup(project);
+  }
+});
+
+test("retry budget: the same-slot retry runs with only the REMAINING step budget, not a fresh stepTimeoutMs", async () => {
+  const project = makeProject({ modes: { "fake-a": "flakyhang" }, useDefaultFallback: false });
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const chainMod = require("../../hooks/dispatcherClaudeChain.cjs") as { runProviderChain: (c: Record<string, unknown>) => Promise<ToolResult> };
+    const started = Date.now();
+    const res = await chainMod.runProviderChain({
+      projectDir: project.dir,
+      activityFile: path.join(project.dir, ".claude", "tycoon", "activity.jsonl"),
+      workerId: "fake-reviewer",
+      task: "review this diff",
+      primary: slot("fake-a"),
+      chain: [],
+      fallbackChain: null,
+      stepTimeoutMs: 2500,
+      guardGraceMs: 200,
+    });
+    const elapsed = Date.now() - started;
+    const sc = res.structuredContent as any;
+    assert.equal(res.isError, true);
+    assert.equal(sc.attempts.length, 2);
+    assert.equal(sc.attempts[0].kind, "rate_limit");
+    assert.equal(sc.attempts[0].retriedAfterMs, 0);
+    assert.equal(sc.attempts[1].status, "timeout");
+    // First try + wait + retry all fit in ONE 2500ms step budget (plus kill grace), never ~2 x 2500.
+    assert.ok(elapsed < 2500 + 1500, `took ${elapsed}ms`);
+  } finally {
+    await assertNoLeakedBridges(project);
+    cleanup(project);
+  }
 });

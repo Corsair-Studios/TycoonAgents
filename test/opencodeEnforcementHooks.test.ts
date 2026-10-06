@@ -46,6 +46,7 @@ function compilePlugin(): string {
   // as scripts/copy-hook-runtime.mjs does for a real install.
   writeFileSync(join(moduleDir, "delegationEnforcement.js"), readFileSync(DELEGATION_ENFORCEMENT_JS, "utf8"), "utf8");
   writeFileSync(join(moduleDir, "fallbackChain.js"), readFileSync(FALLBACK_CHAIN_JS, "utf8"), "utf8");
+  writeFileSync(join(moduleDir, "bridge-result.cjs"), readFileSync(join(process.cwd(), "hooks", "bridge-result.cjs"), "utf8"), "utf8");
   return modulePath;
 }
 
@@ -398,4 +399,67 @@ test("a task tool part reported via message.part.updated with state 'error' trig
   await plugin.chatSystemTransform({ sessionID: "root-session-err" }, out);
   assert.equal(out.system.length, 1);
   assert.match(out.system[0], /opencode\/big-pickle/);
+});
+
+// ---------------------------------------------------------------------------
+// False-fallback guard: tool.execute.after only applies the text backstop to
+// an ERROR task result (OpenCode's <task state="..."> not "completed"); a
+// bridge envelope in structuredContent decides first.
+// ---------------------------------------------------------------------------
+
+async function runTaskAfter(plugin: any, session: string, output: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
+  await plugin.toolExecuteBefore({ tool: "task", sessionID: session, args: { subagent_type: "coding-specialist", description: "review rate limiter" } });
+  await plugin.toolExecuteAfter(
+    { tool: "task", sessionID: session, args: { subagent_type: "coding-specialist" } },
+    Object.assign({ metadata: { parentSessionId: session, sessionId: session + "-child", model: { providerID: "anthropic", modelID: "sonnet" } } }, output)
+  );
+  return readActivity(plugin._paths.activityFile).filter((r) => r.event === "FallbackTriggered");
+}
+
+test("a completed review of a rate limiter that mentions quota / 429 / rate limit never triggers a fallback", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["openai/gpt-5.4-mini"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+  const review =
+    '<task id="ses_ok" state="completed">Reviewed rateLimiter.js: it returns 429 Too Many Requests once the quota is spent; ' +
+    "the rate limit exceeded branch and the usage limit reset look correct. You've hit your weekly limit is the user-facing copy. LGTM.</task>";
+  const triggered = await runTaskAfter(plugin, "root-ok-review", { output: review });
+  assert.equal(triggered.length, 0);
+  const out: { system: string[] } = { system: [] };
+  await plugin.chatSystemTransform({ sessionID: "root-ok-review" }, out);
+  assert.equal(out.system.length, 0);
+});
+
+test("an error task result carrying a provider limit message triggers a fallback", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["openai/gpt-5.4-mini"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+  const triggered = await runTaskAfter(plugin, "root-err-limit", {
+    output: '<task id="ses_err" state="error">You\'ve hit your weekly limit · resets Mon 12:00am</task>',
+  });
+  assert.equal(triggered.length, 1);
+  assert.equal(triggered[0].nextModel, "openai/gpt-5.4-mini");
+});
+
+test("a non-ok bridge envelope in structuredContent triggers a fallback even without limit wording; an ok envelope never does", async () => {
+  const mod = requireFreshPlugin();
+  const directory = setupDirectory();
+  writeRoutingGenerated(directory, "coding-specialist", ["openai/gpt-5.4-mini"]);
+  const plugin = mod.createPlugin({ directory, now: () => 1 });
+  const bad = await runTaskAfter(plugin, "root-env-bad", {
+    output: '<task id="ses_a" state="completed">something</task>',
+    structuredContent: { tycoonBridge: 1, status: "timeout", provider: "p", model: "m", summary: "", truncated: false, error: { kind: "timeout", message: "call timed out" } },
+  });
+  assert.equal(bad.length, 1);
+  const mod2 = requireFreshPlugin();
+  const directory2 = setupDirectory();
+  writeRoutingGenerated(directory2, "coding-specialist", ["openai/gpt-5.4-mini"]);
+  const plugin2 = mod2.createPlugin({ directory: directory2, now: () => 1 });
+  const ok = await runTaskAfter(plugin2, "root-env-ok", {
+    output: '<task id="ses_b" state="error">usage limit reached</task>',
+    structuredContent: { tycoonBridge: 1, status: "ok", provider: "p", model: "m", summary: "fine", truncated: false },
+  });
+  assert.equal(ok.length, 0, "an ok envelope wins over error-looking text");
 });

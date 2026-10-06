@@ -141,6 +141,46 @@ function getGateEventsModule(): GateEventsModule | null {
   return gateEventsModule;
 }
 
+// Shared bridge result contract (hooks/bridge-result.cjs), copied next to the
+// plugin by standalone/src/installHook.mjs OPENCODE_PLUGIN_FILES. Optional:
+// absent, a task result is judged only by OpenCode's own error signal.
+interface BridgeResultModule {
+  parseBridgeResult: (
+    toolResponse: unknown,
+    opts?: { trustedTextHeader?: boolean }
+  ) => { status: string; summary?: string; error?: { kind?: string; message?: string } } | null;
+}
+
+let bridgeResultModule: BridgeResultModule | null | undefined; // undefined = not attempted
+
+function getBridgeResultModule(): BridgeResultModule | null {
+  if (bridgeResultModule === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      bridgeResultModule = require(path.join(__dirname, "bridge-result.cjs")) as BridgeResultModule;
+    } catch {
+      bridgeResultModule = null;
+    }
+  }
+  return bridgeResultModule;
+}
+
+/**
+ * OpenCode renders a task tool's result as `<task id="..." state="completed">
+ * ...</task>` (docs/opencode-probe-findings.md). The result is an ERROR only
+ * when that outer tag's state is something other than "completed", or, for
+ * output without a state attribute, when the body itself opens with an
+ * error marker ("Error:", "APIError", "AI_APICallError"). A completed review
+ * that merely mentions quota / 429 / rate limits is never an error.
+ */
+function isTaskOutputError(text: string): boolean {
+  const m = /^\s*<task\b([^>]*)>\s*/.exec(text);
+  if (!m) return /^\s*(?:Error\b|APIError\b|AI_APICallError\b)/.test(text);
+  const state = /\bstate="([^"]*)"/.exec(m[1]);
+  if (state) return state[1] !== "completed";
+  return /^(?:Error\b|APIError\b|AI_APICallError\b)/.test(text.slice(m[0].length));
+}
+
 // OpenCode's own cursor file, distinct from the Claude hook's
 // "gate-events.cursor" and the Codex dispatcher's "gate-events.codex.cursor"
 // so none of the three harnesses consume another's events from the shared
@@ -1186,10 +1226,12 @@ export function createPlugin(deps: PluginDeps) {
     workerId: string,
     rootSessionId: string | undefined,
     model: string | undefined,
-    errorText: string
+    errorText: string,
+    knownFailure = false
   ): Promise<void> {
     if (!fallbackChain || !fallbackState || workerId === "unknown" || !rootSessionId) return;
-    if (!fallbackChain.isProviderFailure(errorText)) return;
+    // knownFailure: a bridge envelope already said non-ok, so no text match is needed.
+    if (!knownFailure && !fallbackChain.isProviderFailure(errorText)) return;
     const chain = readFallbackChainForAgent(directory, workerId);
     const defaultFallback = readDefaultFallback(directory);
     const failureRecord = fallbackState.recordFailure(rootSessionId, workerId, chain, model, errorText.slice(0, 300));
@@ -1374,9 +1416,32 @@ export function createPlugin(deps: PluginDeps) {
     // at all — see maybeTriggerFallback's other call site in the
     // message.part.updated dispatch handler below, which is the path that
     // actually fires for that case.
+    //
+    // Same rule as the Claude host (tycoon-claude-hook.cjs detectMcpFailure):
+    // a bridge envelope (structuredContent only; task text is model output and
+    // its header is never trusted) decides first, ok never falls back; without
+    // one, the text backstop runs ONLY when OpenCode marks the result as an
+    // error (isTaskOutputError), so a successful review that quotes "quota",
+    // "429" or "rate limit" never triggers a false fallback.
     const rootSessionId = metadata.parentSessionId ?? input.sessionID;
     const outputText = typeof output?.output === "string" ? output.output : "";
-    await maybeTriggerFallback(workerId, rootSessionId, model, outputText);
+    let envelope: ReturnType<BridgeResultModule["parseBridgeResult"]> = null;
+    const bridge = getBridgeResultModule();
+    if (bridge) {
+      try {
+        envelope = bridge.parseBridgeResult(output, { trustedTextHeader: false });
+      } catch {
+        envelope = null;
+      }
+    }
+    if (envelope) {
+      if (envelope.status !== "ok") {
+        const msg = envelope.error?.message || envelope.summary || envelope.status;
+        await maybeTriggerFallback(workerId, rootSessionId, model, msg, true);
+      }
+    } else if (isTaskOutputError(outputText)) {
+      await maybeTriggerFallback(workerId, rootSessionId, model, outputText);
+    }
 
     // (3) Single review-gate pass equivalent — BEST-EFFORT (see the
     // reviewGateByParentSession comment in createPlugin above for why this

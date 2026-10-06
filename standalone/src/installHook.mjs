@@ -128,6 +128,7 @@ export const OPENCODE_PLUGIN_FILES = Object.freeze([
   'modelAliases.js',
   'delegationEnforcement.js',
   'fallbackChain.js',
+  'bridge-result.cjs',
 ]);
 
 /**
