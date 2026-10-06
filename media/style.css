@@ -1652,6 +1652,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  text-align: center;
 }
 
 #about-logo {
