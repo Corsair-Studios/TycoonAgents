@@ -136,6 +136,49 @@
     <code>.mcp.json.example</code> entries to copy.
   </p>
 
+  <h3>Setting provider keys</h3>
+  <p>
+    Each provider looks for its key under a fixed <em>name</em>. You give
+    TycoonAgents the name; the value stays on your machine.
+  </p>
+  <div class="ref-table">
+  <table>
+    <thead><tr><th>Provider</th><th>What it needs</th></tr></thead>
+    <tbody>
+      <tr><td>Mistral</td><td><code>MISTRAL_API_KEY</code> (optional <code>MISTRAL_BASE_URL</code>)</td></tr>
+      <tr><td>xAI Grok</td><td><code>XAI_API_KEY</code> (optional <code>XAI_BASE_URL</code>)</td></tr>
+      <tr><td>Kimi (Moonshot)</td><td><code>MOONSHOT_API_KEY</code> (optional <code>MOONSHOT_BASE_URL</code>, default <code>https://api.moonshot.ai/v1</code>)</td></tr>
+      <tr><td>Local models (Qwen3 via Ollama or LM Studio)</td><td><code>OPENAI_COMPAT_BASE_URL</code> (e.g. <code>http://localhost:11434/v1</code>) and optionally <code>OPENAI_COMPAT_API_KEY</code></td></tr>
+      <tr><td>Gemini via Antigravity</td><td>no key &mdash; uses your Antigravity sign-in. <code>GEMINI_API_KEY</code> is only for the paid <code>gemini</code> backend.</td></tr>
+      <tr><td>Codex, Claude Worker</td><td>no key &mdash; they use your own CLI sign-ins (<code>codex login</code>, <code>claude</code>)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>Option A &mdash; in the panel (easiest).</strong></p>
+  <ol>
+    <li>Open <strong>Routing</strong> and pick the agent.</li>
+    <li>In its <strong>API key env</strong> field (or <strong>Credential env</strong>), type the variable name from the table, e.g. <code>MISTRAL_API_KEY</code>. For a local model, type the name in <strong>Endpoint URL env</strong> too.</li>
+    <li>Click <strong>Set value&hellip;</strong>, paste the key, and press <strong>Save</strong>.</li>
+  </ol>
+  <p>
+    The value is stored for your user only, never in the project, and
+    takes effect without restarting.
+  </p>
+  <p><strong>Option B &mdash; a Windows user variable.</strong></p>
+  <ol>
+    <li>Press Start and type <em>environment</em>, then open <strong>Edit environment variables for your account</strong>.</li>
+    <li>Under <strong>User variables</strong>, click <strong>New&hellip;</strong>, enter the name and the value, and click <strong>OK</strong>.</li>
+    <li>Fully quit and reopen VS Code. A window reload is not enough.</li>
+  </ol>
+  <p>
+    On macOS or Linux, add <code>export NAME=value</code> to your shell
+    profile, then restart VS Code.
+  </p>
+  <p>
+    Never paste a key into chat or commit it. <code>.mcp.json</code> only
+    ever holds names.
+  </p>
+
   <div class="section-head">
     <div class="s-title">&sect; 15.3 &middot; Option 2 &middot; the Routing view</div>
     <div class="s-caption">any OpenAI-compatible endpoint</div>
