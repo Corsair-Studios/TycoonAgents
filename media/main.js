@@ -18594,7 +18594,7 @@ function themeAnimPreviewDraw(player) {
     }
     // xAI Grok, via OpenCode's built-in xai provider (see PRICE_TABLE above)
     // — API-key metered, like the Anthropic families, not a CLI subscription.
-    if (s.includes("xai") || s.includes("grok")) {
+    if (s.includes("xai") || s.includes("grok") || s.includes("mistral")) {
       return "metered";
     }
     // FORWARD-LOOKING, NOT YET VERIFIED: no local provider (Ollama/LM

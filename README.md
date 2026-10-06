@@ -182,7 +182,7 @@ Specialist agents can run on a different vendor than the orchestrator. Delegatio
 - **Claude** (Claude Code subscription).
 - **Codex** (ChatGPT sign-in).
 - **Gemini**, through the Antigravity CLI (`agy`) — no API key needed by default.
-- **OpenAI-compatible endpoints** — Kimi, Qwen, and local or VM-hosted servers.
+- **OpenAI-compatible endpoints** — Kimi, Qwen, Mistral, and local or VM-hosted servers.
 
 Each agent has its own routing (vendor and model) plus an ordered fallback chain. When a provider hits a usage limit or quota error (401/429), or is unreachable, the work falls back automatically along the chain; fallback rows show an amber **(fb)** marker, and the default fallback shows **(dfb)**. Set it up in the **Routing** view (see the walkthrough below) and see the handbook chapter "Adding Other AIs: Agents, Routing & Fallback".
 

@@ -95,6 +95,7 @@
       <tr><td>Gemini Reviewer</td><td>Google Gemini</td><td><code>gemini</code> (<code>gemini-mcp-tool</code>)</td><td><code>GEMINI_API_KEY</code> (or the <code>gemini</code> CLI's own OAuth login)</td></tr>
       <tr><td>Kimi Reviewer</td><td>Moonshot Kimi K2 (or Qwen, or a local endpoint)</td><td><code>openai-compatible</code></td><td><code>OPENAI_COMPAT_BASE_URL</code>, <code>OPENAI_COMPAT_API_KEY</code></td></tr>
       <tr><td>Grok Reviewer</td><td>xAI Grok</td><td><code>openai-compatible</code> (dedicated xAI branch)</td><td><code>XAI_API_KEY</code>, optionally <code>XAI_BASE_URL</code></td></tr>
+      <tr><td>Mistral Reviewer</td><td>Mistral AI (on the free tier, API inputs may be used for training by default; pay-as-you-go accounts can opt out in the Mistral admin privacy settings)</td><td><code>openai-compatible</code> (dedicated Mistral branch)</td><td><code>MISTRAL_API_KEY</code>, optionally <code>MISTRAL_BASE_URL</code></td></tr>
       <tr><td>Claude Worker</td><td>Anthropic Claude (your own CLI subscription)</td><td><code>claude-cli</code></td><td>none &mdash; auth is the logged-in <code>claude</code> CLI</td></tr>
     </tbody>
   </table>
@@ -349,7 +350,7 @@ Reference env var names only, never a value.</pre>
   <table>
     <thead><tr><th>Situation</th><th>Pick</th></tr></thead>
     <tbody>
-      <tr><td>Want a ready-made reviewer/worker on Codex, Gemini, Kimi, Grok, or a Claude subscription seat</td><td>Multi-LLM agents pack (&sect; 15.2)</td></tr>
+      <tr><td>Want a ready-made reviewer/worker on Codex, Gemini, Kimi, Grok, Mistral, or a Claude subscription seat</td><td>Multi-LLM agents pack (&sect; 15.2)</td></tr>
       <tr><td>Want an existing agent to run on a different model, no new verdict contract needed</td><td>Routing view &middot; Custom endpoint&hellip; (&sect; 15.3)</td></tr>
       <tr><td>Want a brand-new specialist role backed by a vendor not covered by the pack</td><td>Copy-paste prompt in your harness (&sect; 15.4)</td></tr>
       <tr><td>Want automatic recovery when a provider is unreachable or out of quota</td><td>Fallback chain + default fallback (&sect; 15.5)</td></tr>

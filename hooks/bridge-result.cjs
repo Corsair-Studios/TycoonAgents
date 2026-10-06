@@ -275,15 +275,21 @@ const QUOTA_SPECIFIC_RE = /you'?ve (?:hit|reached) your [\w -]{0,30}limit|usage 
 const QUOTA_CODE_RE = /insufficient_quota|exceeded_current_quota|enforced_spend_limit|AllocationQuota|resource has been exhausted|you'?ve (?:hit|reached) your [\w -]{0,30}limit|\bTPD\b[^\n]{0,30}rate limit/i;
 const RATE_LIMIT_RE = /\b429\b|rate.?limit|too many requests|requests too quickly|acceleration_limit|\bThrottling\b|overloaded/i;
 
+// A 403 that is really a spending cap (Mistral returns 403 when the org's
+// monthly spending limit is exceeded) is billing, not an auth failure.
+const SPEND_CAP_RE = /spending limit|spend(?:ing)? cap|monthly (?:spend(?:ing)? )?limit|usage limit/i;
+
 function classifyProviderError(message, opts) {
   const t = String(message === undefined || message === null ? "" : message);
   const status = opts && Number(opts.httpStatus);
+  if (status === 403 && SPEND_CAP_RE.test(t)) return "billing";
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return QUOTA_CODE_RE.test(t) ? "quota" : "rate_limit";
   if (status === 402) return BILLING_RE.test(t) ? "billing" : "quota";
   if (status === 529) return "overloaded";
   if (status === 404) return "not_found";
   if (/ENOENT|could not find the claude cli|failed to spawn|spawn [^\n]*EACCES|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found|(?<!\bmodel:?\s*["'`]?)\b(?:agy|gemini)(?: cli| command| binary)?\s+(?:is\s+)?not (?:installed|found)\b|\b(?:agy|gemini|codex|claude|cli|command|binary|npx)\b[^\n]{0,30}\bnot installed\b/i.test(t)) return "cli_missing";
+  if (/\b403\b/.test(t) && SPEND_CAP_RE.test(t)) return "billing";
   if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth|(?:api|key|token|credential|auth|403)[^\n]{0,60}permission[ _]denied|permission[ _]denied[^\n]{0,60}(?:api|key|token|credential|auth|403)/i.test(t)) return "auth";
   if (OVERLOADED_RE.test(t)) return "overloaded";
   if (BILLING_RE.test(t)) return "billing";

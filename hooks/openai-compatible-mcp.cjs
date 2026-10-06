@@ -281,6 +281,10 @@ function postJson(urlString, body, apiKey) {
 // ---------------------------------------------------------------------------
 const VENDOR_DEFAULTS = [
   { prefix: "xai/", baseUrlEnv: "XAI_BASE_URL", defaultBaseUrl: "https://api.x.ai/v1", apiKeyEnv: "XAI_API_KEY" },
+  // Mistral routes ONLY on the explicit "mistral/" prefix: bare ids like
+  // "mistral:7b" or "dolphin-mistral" are local Ollama/LM Studio models on the
+  // generic OPENAI_COMPAT_* path and must never reach the cloud endpoint.
+  { prefix: "mistral/", baseUrlEnv: "MISTRAL_BASE_URL", defaultBaseUrl: "https://api.mistral.ai/v1", apiKeyEnv: "MISTRAL_API_KEY" },
 ];
 
 function vendorDefaultsFor(model) {

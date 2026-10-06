@@ -17,12 +17,13 @@ const EXPECTED_BACKEND: Record<string, { vendor: string; transport: string; mode
   "gemini-reviewer": { vendor: "google", transport: "mcp", model: "google/gemini-2.5-pro", costModelClass: "metered" },
   "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2", costModelClass: "local" },
   "grok-reviewer": { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },
+  "mistral-reviewer": { vendor: "mistral", transport: "openai-compatible", model: "mistral/mistral-large-latest", costModelClass: "metered" },
   "claude-worker": { vendor: "anthropic", transport: "mcp", model: "anthropic/sonnet", costModelClass: "subscription" },
 };
 
-test("FOREIGN_LLM_AGENTS has exactly the 5 expected ids", () => {
+test("FOREIGN_LLM_AGENTS has exactly the 6 expected ids", () => {
   const ids = FOREIGN_LLM_AGENTS.map((a) => a.id).sort();
-  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer"]);
+  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer", "mistral-reviewer"]);
 });
 
 for (const agent of FOREIGN_LLM_AGENTS) {
@@ -86,7 +87,7 @@ test("media/packs/catalog.json ships a multi-llm pack with the 4 foreign-LLM age
   const pack = catalog.find((p) => p.id === "multi-llm");
   assert.ok(pack, "multi-llm pack must exist in the catalog");
   const ids = pack.agents.map((a: any) => a.id).sort();
-  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer"]);
+  assert.deepEqual(ids, ["claude-worker", "codex-reviewer", "gemini-reviewer", "grok-reviewer", "kimi-reviewer", "mistral-reviewer"]);
   for (const a of pack.agents) {
     const md = buildAgentMarkdown(a, pack.id);
     const backend = parseAgentBackend(readAgentFrontmatter(md));
@@ -99,7 +100,7 @@ test("media/packs/catalog.json ships a multi-llm pack with the 4 foreign-LLM age
 // Plan p99-t3: foreign reviewers call the dispatcher `delegate` tool. These
 // phrases are the pre-existing delegation/orchestration/verdict language that
 // must survive the rewrite; the check guards against any later trim.
-const REVIEWER_IDS = ["codex-reviewer", "gemini-reviewer", "kimi-reviewer", "grok-reviewer"];
+const REVIEWER_IDS = ["codex-reviewer", "gemini-reviewer", "kimi-reviewer", "grok-reviewer", "mistral-reviewer"];
 const RETAINED_LINES = [
   "It must never review a change it authored itself (project rule: a change is always verified by someone other than its author).",
   "the orchestrator (or a wiring layer) owns any retry policy.",
@@ -166,6 +167,7 @@ const WRAPPER_CLASS: Record<string, { cls: "relay" | "judge"; model: string }> =
   "gemini-reviewer": { cls: "relay", model: "haiku" },
   "kimi-reviewer": { cls: "relay", model: "haiku" },
   "grok-reviewer": { cls: "relay", model: "haiku" },
+  "mistral-reviewer": { cls: "relay", model: "haiku" },
   "claude-worker": { cls: "judge", model: "sonnet" },
 };
 

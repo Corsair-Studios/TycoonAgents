@@ -459,3 +459,18 @@ test("shortRetryDelayMs requires room for the wait plus a minimum retry run", ()
   assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 1000 }, { budgetLeftMs: 2000 }), 1000);
   assert.equal(hintApi.shortRetryDelayMs({ kind: "rate_limit", retryAfterMs: 1000 }, { budgetLeftMs: 1200, minRunMs: 100 }), 1000);
 });
+
+test("classifyProviderError: Mistral 403 spending-limit is billing, ordinary 403 stays auth, 429 rate_limit_error is rate_limit", () => {
+  const rows: Array<[string, number | undefined, string]> = [
+    ["Mistral API error 403: Your organization's monthly spending limit has been exceeded", 403, "billing"],
+    ["HTTP 403 spend cap reached, access suspended until next month", undefined, "billing"],
+    ["HTTP 403 usage limit exceeded for this workspace", undefined, "billing"],
+    ["Mistral API error 403: Forbidden", 403, "auth"],
+    ["HTTP 403 permission denied for this API key", undefined, "auth"],
+    ['{"object":"error","message":"Rate limit exceeded","type":"rate_limit_error","param":null,"code":"1300"}', 429, "rate_limit"],
+    ['HTTP 429 {"object":"error","type":"rate_limit_error","message":"Rate limit exceeded"}', undefined, "rate_limit"],
+  ];
+  for (const [text, httpStatus, kind] of rows) {
+    assert.equal(classify(text, httpStatus === undefined ? undefined : { httpStatus }), kind, text);
+  }
+});

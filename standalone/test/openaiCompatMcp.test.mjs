@@ -344,3 +344,66 @@ test('VENDOR_DEFAULTS (source, not executed against the network) points xai/ mod
   assert.match(src, /defaultBaseUrl:\s*"https:\/\/api\.x\.ai\/v1"/);
   assert.match(src, /apiKeyEnv:\s*"XAI_API_KEY"/);
 });
+
+test('VENDOR_DEFAULTS (source) points mistral models at MISTRAL_BASE_URL / https://api.mistral.ai/v1 and MISTRAL_API_KEY', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(HOOK_PATH, 'utf8');
+  assert.match(src, /prefix:\s*"mistral\/"/);
+  assert.match(src, /baseUrlEnv:\s*"MISTRAL_BASE_URL"/);
+  assert.match(src, /defaultBaseUrl:\s*"https:\/\/api\.mistral\.ai\/v1"/);
+  assert.match(src, /apiKeyEnv:\s*"MISTRAL_API_KEY"/);
+});
+
+test('mistral/ model with no MISTRAL_API_KEY: error names MISTRAL_API_KEY, never falls back to OPENAI_COMPAT_API_KEY', async () => {
+  const storeDir = emptyStoreDir();
+  const env = {
+    ...process.env,
+    TYCOON_STANDALONE_DATA_DIR: storeDir,
+    MISTRAL_BASE_URL: 'http://127.0.0.1:1',
+    OPENAI_COMPAT_API_KEY: 'kimi-key-must-not-be-used',
+  };
+  delete env.OPENAI_COMPAT_BASE_URL;
+  delete env.MISTRAL_API_KEY;
+  const { child } = spawnMcpServer(env, { merge: false });
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    let id = 3;
+    for (const model of ['mistral/mistral-large-latest']) {
+      send(child, { jsonrpc: '2.0', id: id++, method: 'tools/call', params: { name: 'chat', arguments: { model, prompt: 'hi' } } });
+      const callLine = JSON.parse(await nextLine());
+      assert.equal(callLine.result.isError, true);
+      assert.match(callLine.result.content[0].text, /MISTRAL_API_KEY/);
+      assert.doesNotMatch(callLine.result.content[0].text, /kimi-key-must-not-be-used/);
+    }
+  } finally {
+    child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+test('unprefixed mistral-family ids (mistral:7b, mistral-nemo, dolphin-mistral, codestral-latest) stay on the generic OPENAI_COMPAT path, never Mistral', async () => {
+  const storeDir = emptyStoreDir();
+  const env = {
+    ...process.env,
+    TYCOON_STANDALONE_DATA_DIR: storeDir,
+    MISTRAL_API_KEY: 'mistral-key-must-not-be-used',
+  };
+  delete env.OPENAI_COMPAT_BASE_URL;
+  const { child } = spawnMcpServer(env, { merge: false });
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    let id = 3;
+    for (const model of ['mistral:7b', 'mistral-nemo', 'dolphin-mistral', 'codestral-latest']) {
+      send(child, { jsonrpc: '2.0', id: id++, method: 'tools/call', params: { name: 'chat', arguments: { model, prompt: 'hi' } } });
+      const callLine = JSON.parse(await nextLine());
+      assert.equal(callLine.result.isError, true);
+      assert.match(callLine.result.content[0].text, /OPENAI_COMPAT_BASE_URL/);
+      assert.doesNotMatch(callLine.result.content[0].text, /MISTRAL_API_KEY/);
+    }
+  } finally {
+    child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
+  }
+});
