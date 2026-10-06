@@ -90,7 +90,8 @@ function isRunnable(p) {
   try {
     const st = fs.statSync(p);
     if (!st.isFile() || st.size === 0) return false;
-    if (!IS_WIN) fs.accessSync(p, fs.constants.X_OK);
+    // Node scripts are launched via node (agyLaunch), so they need not be executable.
+    if (!IS_WIN && !/\.(c|m)?js$/i.test(p)) fs.accessSync(p, fs.constants.X_OK);
     return true;
   } catch {
     return false;
