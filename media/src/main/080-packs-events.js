@@ -1147,7 +1147,8 @@
     // suffix above reflects only the most recent run.
     if (typeof agent.fallbackCount === "number" && agent.fallbackCount > 0) {
       nameText.title = `Fell back ${agent.fallbackCount} time${agent.fallbackCount === 1 ? "" : "s"}` +
-        (agent.lastFallbackModel ? `; last: ${agent.lastFallbackModel}` : "");
+        (agent.lastFallbackModel ? `; last: ${agent.lastFallbackModel}` : "") +
+        (agent.lastFallbackVia ? ` via ${agent.lastFallbackVia}` : "");
     }
     nameTd.appendChild(nameText);
 

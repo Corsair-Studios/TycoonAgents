@@ -78,6 +78,8 @@ export interface AgentMetric {
   fallbackIsDefault?: boolean;
   /** Model the most recent fallback dispatch ran on (survives the marker being cleared). Absent when never fallen back. */
   lastFallbackModel?: string;
+  /** Agent id that ran the most recent cross-agent fallback re-dispatch (e.g. "codex-reviewer" for gemini-reviewer). Absent for same-agent fallbacks. */
+  lastFallbackVia?: string;
   /** Total number of fallback re-dispatches recorded for this agent. Always present (default 0) so the webview can sum it. */
   fallbackCount: number;
   /** One-line description of this agent's role. */
@@ -284,6 +286,10 @@ export interface MetricsWorldState {
   sanityCapMs: number;
   /** Most recent hook activity timestamp (epoch ms) across all agents, or null if none. */
   lastActivityAt?: number | null;
+  /** Internal: ids seeded via WorkerRegistered (the installed .claude/agents roster). Absent until a roster is seeded. */
+  _registeredIds?: string[];
+  /** Internal: true once the host signalled (RosterSeeded) that the full roster was seeded. Stale-marker clearing waits for it. */
+  _rosterSeeded?: boolean;
 }
 
 /** Override map: workerId values that should not use the default title-case formatter. */
@@ -438,6 +444,40 @@ export function creditedElapsed(
 // Pure reducer: fold a normalized event into the world state.
 // NOTE: skeleton - mappings are intentionally minimal; tune per docs/DESIGN.md section 3.
 export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): MetricsWorldState {
+  const next = applyEventCore(state, event);
+  const registeredBase = next._registeredIds ?? state._registeredIds;
+  const registered =
+    event.type === "WorkerRegistered" && !(registeredBase ?? []).includes(event.workerId)
+      ? [...(registeredBase ?? []), event.workerId]
+      : registeredBase;
+  const seeded = event.type === "RosterSeeded" ? true : state._rosterSeeded === true;
+  if (!registered || registered.length === 0 || !seeded) {
+    return registered !== next._registeredIds || seeded !== next._rosterSeeded
+      ? { ...next, ...(registered ? { _registeredIds: registered } : {}), ...(seeded ? { _rosterSeeded: true } : {}) }
+      : next;
+  }
+  // Once a roster is seeded, an agent whose file no longer exists (deleted
+  // since its last fallback) must not keep an amber "(fb)" marker forever.
+  // Only the marker is cleared; the metrics row and fallbackCount stay.
+  const stale = (m: AgentMetric): boolean =>
+    m.fallbackOf !== undefined && m.id !== ORCHESTRATOR_ID && m.id !== "primary-agent" && !registered.includes(m.id);
+  const clear = <T extends AgentMetric>(m: T): T =>
+    stale(m) ? { ...m, fallbackOf: undefined, fallbackDepth: undefined, fallbackIsDefault: undefined } : m;
+  const anyStale = next._agentMetricsInternal.some(stale);
+  return {
+    ...next,
+    _registeredIds: registered,
+    _rosterSeeded: true,
+    ...(anyStale
+      ? {
+          _agentMetricsInternal: next._agentMetricsInternal.map(clear),
+          agentMetrics: next.agentMetrics.map(clear),
+        }
+      : {}),
+  };
+}
+
+function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): MetricsWorldState {
   // Refresh the top-level "most recent hook activity" timestamp before branching,
   // so EVERY event type (not just the ones with agent-specific handling) keeps it
   // current -- this is what a downstream "plan stalled" advisory reads. Every
@@ -645,12 +685,14 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
                 fallbackOf: event.fallbackOf,
                 fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
                 fallbackIsDefault: event.fallbackIsDefault,
-                ...(event.model !== undefined ? { lastFallbackModel: event.model } : {}),
+                ...(event.fallbackOf === event.workerId && (event.fallbackModel ?? event.model) !== undefined
+                  ? { lastFallbackModel: event.fallbackModel ?? event.model }
+                  : {}),
               }
             : event.spawnId !== undefined && (m.liveSpawns ?? []).includes(event.spawnId)
               ? {}
               : { fallbackOf: undefined, fallbackDepth: undefined, fallbackIsDefault: undefined }),
-          fallbackCount: event.fallbackOf !== undefined ? m.fallbackCount + 1 : m.fallbackCount,
+          fallbackCount: event.fallbackOf !== undefined && event.fallbackOf === event.workerId ? m.fallbackCount + 1 : m.fallbackCount,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
@@ -671,10 +713,34 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
         event.provider,
         event.sessionId,
       );
+      // Cross-agent re-dispatch: the spawned agent (event.workerId) is running
+      // as a fallback for ANOTHER slot (event.fallbackOf), so that slot's row
+      // gets the marker too. It clears on the slot's own next non-fallback
+      // spawn, exactly like a same-agent fallback marker.
+      const crossFallbackSlot =
+        event.fallbackOf !== undefined && event.fallbackOf !== event.workerId ? event.fallbackOf : undefined;
+      const afterSlot =
+        crossFallbackSlot !== undefined
+          ? upsertMetric(
+              afterChild,
+              crossFallbackSlot,
+              (m) => ({
+                ...m,
+                fallbackOf: crossFallbackSlot,
+                fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
+                fallbackIsDefault: event.fallbackIsDefault,
+                lastFallbackModel: event.fallbackModel ?? event.model ?? m.lastFallbackModel,
+                lastFallbackVia: event.workerId,
+                fallbackCount: m.fallbackCount + 1,
+              }),
+              event.provider,
+              event.sessionId,
+            )
+          : afterChild;
       const isRealDelegation = event.role === "Task" || event.role === "Agent";
       const nextInternals = isRealDelegation
         ? upsertMetric(
-            afterChild,
+            afterSlot,
             ORCHESTRATOR_ID,
             (m) => ({
               ...m,
@@ -690,7 +756,7 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
             event.provider,
             event.sessionId,
           )
-        : afterChild;
+        : afterSlot;
       return {
         ...state,
         workers: nextWorkers,

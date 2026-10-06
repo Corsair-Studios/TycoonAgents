@@ -163,6 +163,8 @@ export function activate(context: vscode.ExtensionContext): void {
         });
       }
 
+      runtime.ingest({ type: "RosterSeeded", at: Date.now() });
+
       let providerId: ProviderId;
       try {
         providerId = resolveProviderId({

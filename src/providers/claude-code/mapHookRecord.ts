@@ -174,6 +174,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
             ...(record.fallbackOf !== undefined ? { fallbackOf: record.fallbackOf } : {}),
             ...(record.fallbackDepth !== undefined ? { fallbackDepth: record.fallbackDepth } : {}),
             ...(record.fallbackIsDefault !== undefined ? { fallbackIsDefault: record.fallbackIsDefault } : {}),
+            ...(record.fallbackModel !== undefined ? { fallbackModel: record.fallbackModel } : {}),
             ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
             ...(record.roleInferred !== undefined ? { roleInferred: record.roleInferred } : {}),
           },

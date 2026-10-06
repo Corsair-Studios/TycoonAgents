@@ -278,3 +278,47 @@ test("(f) same-agent wording keeps attempts on delivery and resets on the slot's
   run(p, { hook_event_name: "PostToolUse", tool_name: "mcp__gemini__ask-gemini", tool_response: "fine result", agent_id: "a3", agent_type: "gemini-reviewer" });
   assert.equal(readState(p.root)[SESSION]?.["gemini-reviewer"], undefined);
 });
+
+test("(g) cross-agent re-dispatch: the codex-reviewer spawn is tagged fallbackOf gemini-reviewer once, then spawns normally", () => {
+  const p = setup();
+  run(p, failure({ agent_id: "a1", agent_type: "gemini-reviewer" }));
+  run(p, { hook_event_name: "PostToolUse", tool_name: "Agent", tool_response: { ok: true } }); // guidance delivered
+  const spawn = () => run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "codex-reviewer", description: "review", prompt: "review cart.js" } });
+  spawn();
+  spawn();
+  const spawns = activity(p.root).filter((r) => r.event === "PreToolUse" && r.tool === "Agent" && r.workerId === "codex-reviewer");
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[0].fallbackOf, "gemini-reviewer");
+  assert.equal(spawns[0].fallbackDepth, 1);
+  assert.equal(spawns[0].fallbackModel, "openai/gpt-5.6-sol");
+  assert.equal(spawns[1].fallbackOf, undefined);
+});
+
+test("(h) a codex-reviewer spawn with no pending cross-agent re-dispatch is not tagged", () => {
+  const p = setup();
+  run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "codex-reviewer", description: "review", prompt: "x" } });
+  const spawns = activity(p.root).filter((r) => r.event === "PreToolUse" && r.tool === "Agent");
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].fallbackOf, undefined);
+});
+
+test("(i) an unrelated spawn neither consumes the mark nor gets fallbackOf; the target still gets tagged after", () => {
+  const p = setup();
+  run(p, failure({ agent_id: "a1", agent_type: "gemini-reviewer" }));
+  run(p, { hook_event_name: "PostToolUse", tool_name: "Agent", tool_response: { ok: true } });
+  run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "search-retrieval", description: "find", prompt: "x" } });
+  run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "codex-reviewer", description: "review", prompt: "x" } });
+  const spawns = activity(p.root).filter((r) => r.event === "PreToolUse" && r.tool === "Agent");
+  assert.equal(spawns[0].fallbackOf, undefined);
+  assert.equal(spawns[1].fallbackOf, "gemini-reviewer");
+});
+
+test("(j) the failed slot's own normal spawn drops the mark so a later codex-reviewer spawn is untagged", () => {
+  const p = setup();
+  run(p, failure({ agent_id: "a1", agent_type: "gemini-reviewer" }));
+  run(p, { hook_event_name: "PostToolUse", tool_name: "Agent", tool_response: { ok: true } });
+  run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "gemini-reviewer", description: "again", prompt: "x" } });
+  run(p, { hook_event_name: "PreToolUse", tool_name: "Agent", tool_input: { subagent_type: "codex-reviewer", description: "review", prompt: "x" } });
+  const spawns = activity(p.root).filter((r) => r.event === "PreToolUse" && r.tool === "Agent" && r.workerId === "codex-reviewer");
+  assert.equal(spawns[0].fallbackOf, undefined);
+});

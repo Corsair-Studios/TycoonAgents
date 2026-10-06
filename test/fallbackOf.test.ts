@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
-import { computeStateFromRecords } from "../src/core/state";
+import { computeStateFromRecords, applyEvent, initialWorldState } from "../src/core/state";
 import type { HookRecord } from "../src/providers/claude-code/hookRecord";
 
 test("mapHookRecord: fallback re-dispatch Task record carries fallbackOf/fallbackDepth onto WorkerSpawned", () => {
@@ -171,4 +171,51 @@ test("fallback marker: two fallback runs then a normal run counts 2, replay is d
   assert.equal(m.fallbackOf, undefined);
   assert.equal(m.fallbackCount, 2);
   assert.equal(m.lastFallbackModel, "claude-haiku");
+});
+
+test("cross-agent fallback: spawn of codex-reviewer with fallbackOf gemini-reviewer marks the gemini row; its next normal spawn clears it", () => {
+  const recs = [
+    { event: "PreToolUse", tool: "Agent", workerId: "codex-reviewer", model: "haiku", fallbackOf: "gemini-reviewer", fallbackDepth: 1, fallbackModel: "openai/gpt-5.6-sol", spawnId: "c1", sessionId: "s", at: 1000 },
+  ] as HookRecord[];
+  const s1 = computeStateFromRecords(recs);
+  const g = s1.agentMetrics.find((x) => x.id === "gemini-reviewer")!;
+  assert.equal(g.fallbackOf, "gemini-reviewer");
+  assert.equal(g.fallbackDepth, 1);
+  assert.equal(g.fallbackCount, 1);
+  assert.equal(g.lastFallbackModel, "openai/gpt-5.6-sol");
+  assert.equal(g.lastFallbackVia, "codex-reviewer");
+  const c = s1.agentMetrics.find((x) => x.id === "codex-reviewer")!;
+  assert.equal(c.fallbackOf, "gemini-reviewer");
+  assert.equal(c.lastFallbackVia, undefined);
+  assert.equal(c.fallbackCount, 0);
+
+  const s2 = computeStateFromRecords([
+    ...recs,
+    { event: "PreToolUse", tool: "Agent", workerId: "gemini-reviewer", model: "haiku", spawnId: "g2", sessionId: "s", at: 2000 },
+  ] as HookRecord[]);
+  const g2 = s2.agentMetrics.find((x) => x.id === "gemini-reviewer")!;
+  assert.equal(g2.fallbackOf, undefined);
+  assert.equal(g2.fallbackCount, 1);
+});
+
+test("stale marker: fb marker is cleared for an agent absent from the seeded roster; row and count stay", () => {
+  let st = initialWorldState();
+  st = applyEvent(st, { type: "WorkerRegistered", at: 1, workerId: "codex-reviewer" });
+  st = applyEvent(st, { type: "RosterSeeded", at: 1 });
+  st = applyEvent(st, { type: "WorkerSpawned", at: 2, workerId: "error-probe", role: "Agent", fallbackOf: "error-probe", fallbackDepth: 1, spawnId: "e1" });
+  const probe = st.agentMetrics.find((x) => x.id === "error-probe")!;
+  assert.equal(probe.fallbackOf, undefined);
+  assert.equal(probe.fallbackCount, 1);
+  st = applyEvent(st, { type: "WorkerSpawned", at: 3, workerId: "codex-reviewer", role: "Agent", fallbackOf: "codex-reviewer", fallbackDepth: 1, spawnId: "c1" });
+  assert.equal(st.agentMetrics.find((x) => x.id === "codex-reviewer")!.fallbackOf, "codex-reviewer");
+});
+
+test("replay with markers set then incremental WorkerRegistered does not wipe markers; only RosterSeeded enables clearing", () => {
+  let st = initialWorldState();
+  st = applyEvent(st, { type: "WorkerSpawned", at: 1, workerId: "gemini-reviewer", role: "Agent", fallbackOf: "gemini-reviewer", fallbackDepth: 1, spawnId: "g1" });
+  st = applyEvent(st, { type: "WorkerRegistered", at: 2, workerId: "codex-reviewer" });
+  assert.equal(st.agentMetrics.find((x) => x.id === "gemini-reviewer")!.fallbackOf, "gemini-reviewer");
+  st = applyEvent(st, { type: "WorkerRegistered", at: 3, workerId: "gemini-reviewer" });
+  st = applyEvent(st, { type: "RosterSeeded", at: 4 });
+  assert.equal(st.agentMetrics.find((x) => x.id === "gemini-reviewer")!.fallbackOf, "gemini-reviewer");
 });

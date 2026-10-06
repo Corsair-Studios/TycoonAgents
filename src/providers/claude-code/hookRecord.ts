@@ -51,6 +51,7 @@ export interface HookRecord {
                               // this dispatch is a fallback re-dispatch, per FallbackState (src/core/fallbackChain.ts).
                               // Absent (never present as any falsy value) on non-fallback records.
   fallbackDepth?: number;    // 1-based index into the fallback chain for this dispatch. Present iff fallbackOf is.
+  fallbackModel?: string;    // Cross-agent re-dispatch only: model of the chain slot that was re-dispatched to.
   fallbackIsDefault?: boolean; // p32-t2: true when the fallback resolved to the routing-level defaultFallback
                               // rather than the slot's own chain entry. Absent/false on pre-p32-t2 records.
   report?: string;           // SubagentStop only: the subagent's final assistant-message text, extracted

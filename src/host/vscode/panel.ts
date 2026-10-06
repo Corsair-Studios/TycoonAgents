@@ -9155,6 +9155,8 @@ export class TycoonPanel {
         });
       }
 
+      this._runtime.ingest({ type: "RosterSeeded", at: Date.now() });
+
       void this._panel.webview.postMessage({ type: MSG.METRICS_RESET, ok: true });
     } catch (err) {
       void this._panel.webview.postMessage({

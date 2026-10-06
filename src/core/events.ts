@@ -41,6 +41,7 @@ export type NormalizedEvent =
   // written by hook versions predating this field.
   | { type: "SessionStop"; at: number; tokens?: number; cacheReadTokens?: number; model?: string; delegationMode?: string; provider?: string; sessionId?: string }
   // Identity-only registration: seeds an idle roster entry without marking it active.
+  | { type: "RosterSeeded"; at: number; provider?: string; sessionId?: string }
   | { type: "WorkerRegistered"; at: number; workerId: WorkerId; name?: string; model?: string; description?: string; provider?: string; sessionId?: string }
   // parentId/tier are approximate hierarchy telemetry (Team Lead Mode Phase 3): parentId
   // is the spawning agent inferred from the hook's active-agent stack, tier mirrors the
@@ -56,7 +57,7 @@ export type NormalizedEvent =
   // (HookRecord.description, toolInput.description) — NOT the agent's static
   // .md frontmatter `description` above. roleInferred is true when workerId was
   // resolved via keyword scoring rather than an explicit agent name/subagent_type.
-  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; currentDescription?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; fallbackIsDefault?: boolean; provider?: string; sessionId?: string; spawnId?: string; roleInferred?: boolean }
+  | { type: "WorkerSpawned"; at: number; workerId: WorkerId; role?: string; name?: string; model?: string; description?: string; currentDescription?: string; parentId?: string; tier?: string; delegationMode?: string; vendor?: string; costModelClass?: "metered" | "subscription" | "local"; fallbackOf?: string; fallbackDepth?: number; fallbackIsDefault?: boolean; fallbackModel?: string; provider?: string; sessionId?: string; spawnId?: string; roleInferred?: boolean }
   | {
       type: "WorkerActivity";
       at: number;

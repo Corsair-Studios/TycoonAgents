@@ -673,8 +673,68 @@ function queuePendingGuidance(tycoonDir, sessionId, entry) {
       list.push(entry);
       pending[sessionId] = list.slice(-PENDING_GUIDANCE_MAX);
       data[PENDING_GUIDANCE_KEY] = pending;
+      // Cross-agent re-dispatch: the guidance is delivered (and deleted) before
+      // the orchestrator spawns the target, so remember "target X runs as a
+      // fallback for slot S" separately until that spawn consumes it.
+      if (entry && typeof entry.redispatchTo === "string" && entry.redispatchTo && entry.workerId) {
+        const marks = data[REDISPATCH_MARK_KEY] && typeof data[REDISPATCH_MARK_KEY] === "object" ? data[REDISPATCH_MARK_KEY] : {};
+        pruneRedispatchMarks(marks, entry.at);
+        const perSess = marks[sessionId] && typeof marks[sessionId] === "object" ? marks[sessionId] : {};
+        perSess[entry.redispatchTo] = {
+          from: entry.workerId,
+          at: entry.at,
+          model: entry.fallbackModel,
+          depth: entry.fallbackDepth,
+          isDefault: entry.fallbackIsDefault === true,
+        };
+        marks[sessionId] = perSess;
+        data[REDISPATCH_MARK_KEY] = marks;
+      }
     });
   } catch { /* fail open */ }
+}
+
+const REDISPATCH_MARK_KEY = "__redispatch";
+const REDISPATCH_MARK_TTL_MS = 30 * 60 * 1000;
+
+/** Drops expired marks (and empty sessions) in place. */
+function pruneRedispatchMarks(marks, now) {
+  for (const sid of Object.keys(marks)) {
+    const per = marks[sid];
+    if (!per || typeof per !== "object") { delete marks[sid]; continue; }
+    for (const t of Object.keys(per)) {
+      if (!per[t] || typeof per[t].at !== "number" || now - per[t].at > REDISPATCH_MARK_TTL_MS) delete per[t];
+    }
+    if (Object.keys(per).length === 0) delete marks[sid];
+  }
+}
+
+/**
+ * Called on every Agent spawn. Consumes the cross-agent re-dispatch mark for
+ * `targetId` (one-shot) and returns it or null. Also prunes expired marks and
+ * drops marks whose failed slot (`from`) is itself spawning normally now, so
+ * that slot's fresh run ends its chain and a later unrelated spawn of the
+ * target is not tagged.
+ */
+function takeRedispatchMark(tycoonDir, sessionId, targetId, now) {
+  try {
+    const peek = loadFallbackStateFile(tycoonDir)[REDISPATCH_MARK_KEY];
+    if (!peek || !peek[sessionId]) return null;
+    return mutateFallbackState(tycoonDir, (data) => {
+      const marks = data[REDISPATCH_MARK_KEY];
+      if (!marks) return null;
+      pruneRedispatchMarks(marks, now);
+      const per = marks[sessionId];
+      if (!per) return null;
+      const m = per[targetId] || null;
+      delete per[targetId];
+      for (const t of Object.keys(per)) if (per[t].from === targetId) delete per[t];
+      if (Object.keys(per).length === 0) delete marks[sessionId];
+      return m;
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2486,6 +2546,7 @@ function main(raw) {
       let fallbackVendor;
       let fallbackCostModelClass;
       let fallbackIsDefault;
+      let crossAgentFallbackModel;
       try {
         const fallbackChain = getFallbackChainModule();
         const sessId = typeof payload.session_id === "string" ? payload.session_id : undefined;
@@ -2523,6 +2584,18 @@ function main(raw) {
               fallbackCostModelClass = result.slot.costModelClass;
               fallbackIsDefault = result.isDefault === true;
             }
+          }
+        }
+        // Cross-agent re-dispatch (subagent tool failure queued guidance to run
+        // THIS agent instead of the failed slot): tag this spawn as a fallback
+        // run for the failed slot; the reducer marks the slot's row too.
+        if (fallbackOf === undefined && sessId) {
+          const mark = takeRedispatchMark(tycoonDir, sessId, agentId, at);
+          if (mark && mark.from && mark.from !== agentId) {
+            fallbackOf = mark.from;
+            fallbackDepth = mark.depth;
+            fallbackIsDefault = mark.isDefault === true;
+            crossAgentFallbackModel = mark.model;
           }
         }
       } catch {
@@ -2605,6 +2678,7 @@ function main(raw) {
         record.fallbackIsDefault = fallbackIsDefault === true;
         if (fallbackVendor) record.vendor = fallbackVendor;
         if (fallbackCostModelClass) record.costModelClass = fallbackCostModelClass;
+        if (crossAgentFallbackModel) record.fallbackModel = crossAgentFallbackModel;
       }
 
       try {
@@ -2933,7 +3007,18 @@ function main(raw) {
                 `Provider ${failedDesc} failed: ${reasonText}. Do not retry this tool or the same provider. ` +
                 `End now and report verdict provider-unavailable with this error; the orchestrator will re-dispatch the task to the fallback provider.`;
               if (!repeatedFailure) {
-                queuePendingGuidance(tycoonDir, sessionId, { workerId: slotId, at, text: parentInstruction, resetOnDelivery: !!redispatchTo });
+                queuePendingGuidance(tycoonDir, sessionId, {
+                  workerId: slotId,
+                  at,
+                  text: parentInstruction,
+                  resetOnDelivery: !!redispatchTo,
+                  ...(redispatchTo ? {
+                    redispatchTo,
+                    fallbackModel: result.slot && result.slot.model,
+                    fallbackDepth: result.index + 1,
+                    fallbackIsDefault: result.isDefault === true,
+                  } : {}),
+                });
               }
             }
 
