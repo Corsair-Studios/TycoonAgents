@@ -43,6 +43,7 @@ import {
 } from "./routingProfile";
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
 import { isFallbackTargetDispatchable } from "./fallbackTargets";
+import { readClaudeSubscriptionOptIn, writeClaudeSubscriptionOptIn, usesClaudeSubscriptionRoute, claudeSubscriptionBlockedMessage, type ClaudeRouteSlotLike } from "./claudeSubscriptionBridge";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
 import { loadAgentRoster } from "../providers/claude-code/agentRoster";
 import { hasValue as localEnvHasValue, setValue as localEnvSetValue, clearValue as localEnvClearValue } from "./localEnvStore";
@@ -131,6 +132,8 @@ export interface RoutingView {
   envProbe: Record<string, EnvProbeEntry>;
   presets: RoutingPresets;
   lastApplied: RoutingLastApplied;
+  /** Per-user opt-in (default false) to reach Claude via the user's subscription (`claude -p` bridge) under OpenCode; see claudeSubscriptionBridge.ts. */
+  claudeSubscriptionOptIn: boolean;
 }
 
 export interface ScriptRunResult {
@@ -490,7 +493,14 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
     envProbe: probeEnv(Array.from(envNames), env),
     presets: buildPresets(),
     lastApplied: readLastApplied(root),
+    claudeSubscriptionOptIn: readClaudeSubscriptionOptIn(),
   };
+}
+
+/** Handles the Settings opt-in toggle (OpenCode: Claude subscription via the claude CLI); per-user, default off. */
+export function setClaudeSubscriptionOptIn(value: boolean): boolean {
+  writeClaudeSubscriptionOptIn(!!value);
+  return readClaudeSubscriptionOptIn();
 }
 
 /**
@@ -620,6 +630,8 @@ export interface SaveRoutingProfileOptions {
   profile: unknown;
   scriptsDir: string;
   nodeBin?: string;
+  /** Override for the per-user Claude subscription opt-in (tests); defaults to the stored flag. */
+  claudeSubscriptionOptIn?: boolean;
   /** p20-t1: the caller's already-resolved effective harness (e.g. from
    *  describeProviderSelection). When it is anything other than "opencode",
    *  a profile carrying an `orchestrator` slot is rejected outright — the
@@ -702,6 +714,24 @@ function collectUndispatchableFallbackTargets(profile: RoutingProfile, harness: 
   return errors;
 }
 
+/** JSON of every slot in a profile that uses the Claude subscription route (top-level slots and their fallbacks). */
+function collectClaudeSubscriptionSlots(profile: unknown): string[] {
+  const out: string[] = [];
+  const visit = (slot: unknown): void => {
+    if (!slot || typeof slot !== "object") return;
+    const sl = slot as Record<string, unknown>;
+    if (usesClaudeSubscriptionRoute(sl as ClaudeRouteSlotLike)) out.push(JSON.stringify(sl));
+    if (Array.isArray(sl["fallback"])) sl["fallback"].forEach(visit);
+  };
+  if (!profile || typeof profile !== "object") return out;
+  const p = profile as Record<string, unknown>;
+  visit(p["defaults"]);
+  visit(p["defaultFallback"]);
+  visit(p["orchestrator"]);
+  if (p["agents"] && typeof p["agents"] === "object") Object.values(p["agents"] as Record<string, unknown>).forEach(visit);
+  return out;
+}
+
 export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRoutingResult {
   const { root, profile } = opts;
   const nodeBin = opts.nodeBin ?? process.execPath;
@@ -745,6 +775,22 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
         errors: [
           "Orchestrator routing applies only when OpenCode runs your agents; set the Claude Code session model with /model.",
         ],
+        check: EMPTY_SAVE_RESULT_SCRIPTS,
+        write: EMPTY_SAVE_RESULT_SCRIPTS,
+      };
+    }
+  }
+
+  // Claude subscription opt-in: under OpenCode, a slot that NEWLY uses the
+  // claude -p bridge (not already on disk) is rejected until the user opts in.
+  // Slots already saved that way carry through unchanged (grandfathered).
+  if (opts.effectiveHarness === "opencode" && !(opts.claudeSubscriptionOptIn ?? readClaudeSubscriptionOptIn())) {
+    const existingRoutes = new Set(collectClaudeSubscriptionSlots(loadRoutingProfile(root).profile));
+    const added = collectClaudeSubscriptionSlots(profile).filter((j) => !existingRoutes.has(j));
+    if (added.length > 0) {
+      return {
+        ok: false,
+        errors: [claudeSubscriptionBlockedMessage("Routing Claude through the claude CLI")],
         check: EMPTY_SAVE_RESULT_SCRIPTS,
         write: EMPTY_SAVE_RESULT_SCRIPTS,
       };

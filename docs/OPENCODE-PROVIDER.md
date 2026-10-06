@@ -296,7 +296,22 @@ the `codex` and `gemini` catalog entries
 (`media/mcp/catalog.json`). **Caveat:** third-party OAuth against a Claude
 subscription is against Anthropic's terms of service — the only supported
 surface here is the official `claude` CLI running under the user's own
-login; TycoonAgents itself never stores or handles credentials. See
+login; TycoonAgents itself never stores or handles credentials.
+
+**Claude subscription under OpenCode is opt-in (2026-10-06).** Anthropic's
+consumer terms target third-party harnesses using subscriptions (OpenCode was
+named in 2026 enforcement); the official CLI route is currently allowed but
+may tighten. So under OpenCode (Experimental) the Claude default is an API
+key, and the `claude-cli` route needs the per-user Settings checkbox "Allow
+Claude subscription via the claude CLI under OpenCode" (default off; flag file
+`opencode-claude-subscription-optin` in the per-user app-data dir,
+`src/core/claudeSubscriptionBridge.ts`). With it off, the slot editor disables
+the `mcp` transport and `subscription` cost class for anthropic slots.
+**Existing configs** (a `claude-worker` backend, or a saved slot already using
+the route) count as an explicit choice: they keep working and display the
+note "Uses your own Claude Code CLI login. Anthropic's terms for third-party
+harnesses have changed several times; check them before relying on this."
+Claude Code and Codex hosts are unaffected. See
 `docs/AGENT-BACKENDS.md` for the pricing-key (`costModelClass`) and
 `endpointEnv`/`apiKeyEnv` reference.
 
@@ -472,8 +487,10 @@ bug.
   findings, OpenCode supports API key, Bedrock, Vertex, Zen, or Copilot auth
   only — a Claude agent run natively through OpenCode is `costModelClass:
   "metered"`, not the subscription class TycoonAgents assumes for Claude
-  Code. The subscription CLI bridges above (`claude-cli`) are the supported
-  way to reach a Claude subscription from OpenCode.
+  Code. **Default (decision 2026-10-06):** under OpenCode, Claude slots use
+  the Anthropic API key route (env name `ANTHROPIC_API_KEY`, set via the
+  local env store; names only) and the metered cost class. The `claude -p`
+  bridge (`claude-cli`) is an explicit per-user opt-in, below.
 - **Worker identity:** as with the Claude Code provider, correlation relies
   on `sessionId`/`workerId` fields the plugin observes directly — there is
   no additional identity scheme beyond what OpenCode's own event payloads

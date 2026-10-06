@@ -255,8 +255,40 @@ function redactSecrets(text) {
     .replace(/[A-Za-z0-9_-]{32,}/g, "***REDACTED***");
 }
 
+/**
+ * Claude subscription gate (decision 2026-10-06): when the dispatcher runs for
+ * the OpenCode harness (TYCOON_DISPATCH_HOST=opencode) the claude -p bridge
+ * needs the per-user opt-in flag (file `opencode-claude-subscription-optin`
+ * in the per-user app-data dir, same path src/core/claudeSubscriptionBridge.ts
+ * writes). Returns an error message when blocked, else null. Unreadable flag =
+ * not opted in. Claude Code (host "claude") and Codex (host unset) never block.
+ */
+function claudeSubscriptionBlock(env) {
+  const e = env || process.env;
+  if (e.TYCOON_DISPATCH_HOST !== "opencode") return null;
+  try {
+    const os = require("os");
+    let dir;
+    if (typeof e.TYCOON_STANDALONE_DATA_DIR === "string" && e.TYCOON_STANDALONE_DATA_DIR.trim() !== "") {
+      dir = path.resolve(e.TYCOON_STANDALONE_DATA_DIR.trim());
+    } else if (process.platform === "win32") {
+      const base = typeof e.APPDATA === "string" && e.APPDATA.trim() !== "" ? e.APPDATA : path.join(os.homedir(), "AppData", "Roaming");
+      dir = path.join(base, "TycoonAgents");
+    } else if (process.platform === "darwin") {
+      dir = path.join(os.homedir(), "Library", "Application Support", "TycoonAgents");
+    } else {
+      const base = typeof e.XDG_DATA_HOME === "string" && e.XDG_DATA_HOME.trim() !== "" ? e.XDG_DATA_HOME : path.join(os.homedir(), ".local", "share");
+      dir = path.join(base, "tycoonagents");
+    }
+    if (fs.existsSync(path.join(dir, "opencode-claude-subscription-optin"))) return null;
+  } catch { /* fall through: unreadable = not opted in */ }
+  return "Claude via the claude CLI needs the 'Allow Claude subscription via the claude CLI under OpenCode' setting (off by default; Claude uses an Anthropic API key, ANTHROPIC_API_KEY, under OpenCode). Enable it in the TycoonAgents Settings screen.";
+}
+
 /** Anthropic adapter: `claude -p --output-format json` over stdin, no shell. */
 async function anthropicAdapter(task, agentInfo) {
+  const blocked = claudeSubscriptionBlock();
+  if (blocked) return { error: blocked };
   const rawModel = (agentInfo && agentInfo.model) || resolveVendorEnv("CLAUDE_CLI_MODEL") || "haiku";
   // The claude CLI takes an alias ("sonnet") or a bare id ("claude-sonnet-5-5"),
   // never the vendor-qualified "anthropic/..." form a backend.model carries.
@@ -443,6 +475,7 @@ function resolveAdapter(vendor) {
 }
 
 module.exports = {
+  claudeSubscriptionBlock,
   adapterKeyForVendor,
   resolveAdapter,
   resolveVendorEnv,

@@ -82,6 +82,34 @@
     return draft;
   }
 
+  // OpenCode + Claude: API key is the default route; the subscription route
+  // (claude-cli MCP bridge, or an anthropic mcp slot billed as subscription)
+  // is a per-user opt-in. Mirrors src/core/claudeSubscriptionBridge.ts.
+  var CLAUDE_API_KEY_ENV_NAME = "ANTHROPIC_API_KEY";
+  var CLAUDE_SUBSCRIPTION_NOTE = "Uses your own Claude Code CLI login. Anthropic's terms for third-party harnesses have changed several times; check them before relying on this.";
+
+  function usesClaudeSubscriptionRoute(slot) {
+    if (!slot || String(slot.vendor || "").toLowerCase() !== "anthropic") return false;
+    if (slot.mcpServer === "claude-cli") return true;
+    return slot.transport === "mcp" && slot.costModelClass === "subscription";
+  }
+
+  function claudeSubscriptionOptedIn() {
+    return !!(lastRoutingPayload && lastRoutingPayload.claudeSubscriptionOptIn);
+  }
+
+  /**
+   * True when the subscription route may NOT be newly picked for this slot:
+   * OpenCode harness, anthropic vendor, opt-in off. A slot that already
+   * uses the route is grandfathered (keeps working, shows the note).
+   */
+  function claudeSubscriptionLocked(slot, harness) {
+    return harness === "opencode"
+      && String(slot && slot.vendor || "").toLowerCase() === "anthropic"
+      && !claudeSubscriptionOptedIn()
+      && !usesClaudeSubscriptionRoute(slot);
+  }
+
   /**
    * p26-t1: the harness's own native vendor (no bridge/MCP needed) —
    * "anthropic" for claude-code, "openai" for codex, null for opencode
@@ -196,6 +224,13 @@
     restSpan.className = "routing-slot-summary-rest";
     restSpan.textContent = " · " + route + " · " + billing + (omitFallbackCount ? "" : " · " + fallbackText);
     line.appendChild(restSpan);
+
+    if (harness === "opencode" && usesClaudeSubscriptionRoute(s)) {
+      var claudeSubSpan = document.createElement("span");
+      claudeSubSpan.className = "routing-slot-summary-claude-subscription-note";
+      claudeSubSpan.textContent = " · " + CLAUDE_SUBSCRIPTION_NOTE;
+      line.appendChild(claudeSubSpan);
+    }
 
     return line;
   }
@@ -628,6 +663,10 @@
         opt.value = t;
         opt.textContent = t;
         if (t === slot.transport) opt.selected = true;
+        if (t === "mcp" && claudeSubscriptionLocked(slot, slotHarnessEff)) {
+          opt.disabled = true;
+          opt.title = "Claude defaults to an Anthropic API key under OpenCode. Enable \"Allow Claude subscription via the claude CLI under OpenCode\" in Settings to bridge Claude through MCP.";
+        }
         transportSel.appendChild(opt);
       });
       transportSel.addEventListener("change", function () { slot.transport = transportSel.value; onStructural(); });
@@ -648,6 +687,10 @@
       opt.value = c;
       opt.textContent = costClassLabel(c);
       if (c === slot.costModelClass) opt.selected = true;
+      if (c === "subscription" && claudeSubscriptionLocked(slot, slotHarnessEff)) {
+        opt.disabled = true;
+        opt.title = "Claude defaults to an Anthropic API key under OpenCode. Enable the Claude subscription opt-in in Settings to use this.";
+      }
       costSel.appendChild(opt);
     });
     costSel.addEventListener("change", function () { slot.costModelClass = costSel.value; });
@@ -661,6 +704,16 @@
     // .claude/agents/codex-reviewer.md for the shape. Warn inline and hand
     // the user a ready-made request to paste to their orchestrator instead
     // of letting Save silently produce a routing entry that can't run.
+    if (slotHarnessEff === "opencode") {
+      var claudeSubNote = document.createElement("div");
+      claudeSubNote.className = "delegation-mode-footnote routing-claude-subscription-note";
+      claudeSubNote.textContent = CLAUDE_SUBSCRIPTION_NOTE;
+      claudeSubNote.hidden = !usesClaudeSubscriptionRoute(slot);
+      var refreshClaudeSubNote = function () { claudeSubNote.hidden = !usesClaudeSubscriptionRoute(slot); };
+      frag.addEventListener("input", refreshClaudeSubNote);
+      frag.addEventListener("change", refreshClaudeSubNote);
+      frag.appendChild(claudeSubNote);
+    }
     var subNotice = buildSubscriptionMcpNotice(slot, agentInfo);
     frag.appendChild(subNotice.el);
     frag._refreshSubscriptionNotice = subNotice.refresh;
@@ -3329,6 +3382,36 @@
       } else {
         settingsMultiProviderCheckboxEl = null;
         settingsMultiProviderHelpEl = null;
+      }
+
+      // OpenCode only: Claude models default to an Anthropic API key
+      // (ANTHROPIC_API_KEY); routing through the user's Claude subscription
+      // via the `claude -p` CLI bridge is an explicit per-user opt-in.
+      if (multiProviderHarnessEff === "opencode") {
+        const claudeSubRow = document.createElement("label");
+        claudeSubRow.className = "delegation-mode-option settings-claude-subscription-row";
+        const claudeSubCheckbox = document.createElement("input");
+        claudeSubCheckbox.type = "checkbox";
+        claudeSubCheckbox.className = "settings-claude-subscription-checkbox";
+        claudeSubCheckbox.checked = claudeSubscriptionOptedIn();
+        claudeSubCheckbox.disabled = !lastRoutingPayload;
+        claudeSubCheckbox.addEventListener("change", () => {
+          if (claudeSubCheckbox.disabled) return;
+          vscode.postMessage({ type: "setClaudeSubscriptionOptIn", value: claudeSubCheckbox.checked });
+        });
+        const claudeSubBody = document.createElement("span");
+        claudeSubBody.className = "delegation-mode-option-body";
+        const claudeSubLabel = document.createElement("span");
+        claudeSubLabel.className = "delegation-mode-option-label";
+        claudeSubLabel.textContent = "Allow Claude subscription via the claude CLI under OpenCode";
+        const claudeSubHelp = document.createElement("span");
+        claudeSubHelp.className = "delegation-mode-option-help";
+        claudeSubHelp.textContent = "Off by default: Claude models use an Anthropic API key (" + CLAUDE_API_KEY_ENV_NAME + "). " + CLAUDE_SUBSCRIPTION_NOTE;
+        claudeSubBody.appendChild(claudeSubLabel);
+        claudeSubBody.appendChild(claudeSubHelp);
+        claudeSubRow.appendChild(claudeSubCheckbox);
+        claudeSubRow.appendChild(claudeSubBody);
+        harnessSection.appendChild(claudeSubRow);
       }
 
       // Exactly one "Open Agents" link in this section (2026-09-05 fix):

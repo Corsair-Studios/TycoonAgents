@@ -347,6 +347,13 @@ function detectCodexDispatcherInstalledStandalone() {
   }
 }
 
+const CLAUDE_SUBSCRIPTION_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'claudeSubscriptionBridge.js');
+let _claudeSubscriptionModule;
+function claudeSubscriptionModule() {
+  if (!_claudeSubscriptionModule) _claudeSubscriptionModule = requireCompiledOrThrow(CLAUDE_SUBSCRIPTION_JS, 'claudeSubscriptionBridge');
+  return _claudeSubscriptionModule;
+}
+
 let _routingHostOpsModule;
 function routingHostOpsModule() {
   if (!_routingHostOpsModule) _routingHostOpsModule = requireCompiledOrThrow(ROUTING_HOST_OPS_JS, 'routingHostOps');
@@ -959,6 +966,17 @@ function handleBrowserMessage(msg) {
         broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
       } catch (err) {
         console.error('[tycoonagents-standalone] clearRouting failed:', err);
+      }
+      break;
+    case 'setClaudeSubscriptionOptIn':
+      // Per-user opt-in to the Claude subscription (`claude -p`) route under
+      // OpenCode; flat { type, value } like setLocalEnvValue.
+      try {
+        const { setClaudeSubscriptionOptIn } = routingHostOpsModule();
+        setClaudeSubscriptionOptIn(msg.value === true);
+        broadcast('message', { type: 'routing', payload: buildRoutingPayload(primaryProjectRoot || process.cwd()) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] setClaudeSubscriptionOptIn failed:', err instanceof Error ? err.message : err);
       }
       break;
     case 'probeEnv':
@@ -2305,7 +2323,14 @@ function handleInstallPack(payload) {
     const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
     const agentResults = [];
     let cfg = readKeywordsConfigStandalone(root);
+    const claudeSub = claudeSubscriptionModule();
+    const packHarness = resolveEffectiveHarness(root);
+    const packClaudeOptIn = claudeSub.readClaudeSubscriptionOptIn();
     for (const a of agents) {
+      if (claudeSub.shouldSkipPackAgentForClaudeSubscription(packHarness, packClaudeOptIn, a.backend)) {
+        agentResults.push({ id: a.id, status: 'skipped', error: claudeSub.claudeSubscriptionBlockedMessage(`skipped: ${a.name || a.id}`) });
+        continue;
+      }
       try {
         const agentsDir = path.join(root, '.claude', 'agents');
         const agentPath = path.join(agentsDir, `${a.id}.md`);

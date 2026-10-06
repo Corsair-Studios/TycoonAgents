@@ -145,6 +145,11 @@ async function runStep(slot, ctx) {
     );
   }
 
+  if (slot.mcpServer === "claude-cli") {
+    const blocked = dispatcherAdapters.claudeSubscriptionBlock();
+    if (blocked) return bridgeClient.normalizeAttempt({ error: blocked, kind: "not_configured" }, info);
+  }
+
   if (slot.mcpServer) {
     const toolName = (Array.isArray(slot.tools) && slot.tools[0]) || bridgeClient.defaultToolForServer(slot.mcpServer);
     if (!toolName) {

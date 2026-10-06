@@ -21,6 +21,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -513,10 +514,48 @@ function getAgentBackendModule(): AgentBackendModule | null {
   return agentBackendModule;
 }
 
+// Claude subscription gate (decision 2026-10-06). This plugin runs under
+// OpenCode only, where the claude -p bridge needs the per-user opt-in flag
+// (mirrors src/core/claudeSubscriptionBridge.ts: flag file in the per-user
+// app-data dir, honoring TYCOON_STANDALONE_DATA_DIR). Inlined because the
+// plugin is a single zero-dependency file. An unreadable flag = not opted in.
+const CLAUDE_SUBSCRIPTION_OPT_IN_FILE = "opencode-claude-subscription-optin";
+
+function claudeSubscriptionOptedIn(): boolean {
+  try {
+    const env = process.env;
+    let dir: string;
+    if (typeof env.TYCOON_STANDALONE_DATA_DIR === "string" && env.TYCOON_STANDALONE_DATA_DIR.trim() !== "") {
+      dir = path.resolve(env.TYCOON_STANDALONE_DATA_DIR.trim());
+    } else if (process.platform === "win32") {
+      const base = typeof env.APPDATA === "string" && env.APPDATA.trim() !== "" ? env.APPDATA : path.join(os.homedir(), "AppData", "Roaming");
+      dir = path.join(base, "TycoonAgents");
+    } else if (process.platform === "darwin") {
+      dir = path.join(os.homedir(), "Library", "Application Support", "TycoonAgents");
+    } else {
+      const base = typeof env.XDG_DATA_HOME === "string" && env.XDG_DATA_HOME.trim() !== "" ? env.XDG_DATA_HOME : path.join(os.homedir(), ".local", "share");
+      dir = path.join(base, "tycoonagents");
+    }
+    return fs.existsSync(path.join(dir, CLAUDE_SUBSCRIPTION_OPT_IN_FILE));
+  } catch {
+    return false;
+  }
+}
+
+function usesClaudeSubscriptionRoute(b: { vendor?: string; transport?: string; mcpServer?: string; costModelClass?: string }): boolean {
+  if (String(b.vendor ?? "").toLowerCase() !== "anthropic") return false;
+  if (b.mcpServer === "claude-cli") return true;
+  return b.transport === "mcp" && b.costModelClass === "subscription";
+}
+
+function claudeSubscriptionBlockMessage(what: string): string {
+  return what + " needs the 'Allow Claude subscription via the claude CLI under OpenCode' setting (off by default; Claude uses an Anthropic API key, ANTHROPIC_API_KEY, under OpenCode). Enable it in the TycoonAgents Settings screen (one click) and retry.";
+}
+
 function readAgentBackendFromFile(
   agentsDir: string,
   agentId: string
-): { vendor?: string; model?: string; costModelClass?: "metered" | "subscription" | "local" } {
+): { vendor?: string; model?: string; costModelClass?: "metered" | "subscription" | "local"; transport?: string; mcpServer?: string } {
   const mod = getAgentBackendModule();
   if (!mod) return {};
   try {
@@ -525,7 +564,7 @@ function readAgentBackendFromFile(
     const text = fs.readFileSync(mdPath, "utf8");
     const frontmatter = mod.readAgentFrontmatter(text);
     const backend = mod.parseAgentBackend(frontmatter);
-    return { vendor: backend.vendor, model: backend.model, costModelClass: backend.costModelClass };
+    return { vendor: backend.vendor, model: backend.model, costModelClass: backend.costModelClass, transport: backend.transport, mcpServer: backend.mcpServer };
   } catch {
     return {};
   }
@@ -1082,6 +1121,9 @@ export function createPlugin(deps: PluginDeps) {
 
       const agentDescription = typeof args["description"] === "string" ? (args["description"] as string) : undefined;
       const backend = workerId ? readAgentBackendFromFile(agentsDir, workerId) : {};
+      if (workerId && usesClaudeSubscriptionRoute(backend) && !claudeSubscriptionOptedIn()) {
+        throw new BlockingToolCallError(claudeSubscriptionBlockMessage("Agent '" + workerId + "' (Claude via the claude CLI)"));
+      }
 
       // p15-t1: on a re-dispatch of a slot that previously failed in this
       // session, rewrite the model to the next fallback chain entry. Setting
@@ -1187,6 +1229,13 @@ export function createPlugin(deps: PluginDeps) {
       sessionId,
     };
     const mcpBackend = lookupMcpBackend(mcpRouting, mappedTool);
+    if (
+      (mappedTool.startsWith("mcp__claude-cli__") ||
+        (mcpBackend && mcpBackend.vendor === "anthropic" && mcpBackend.costModelClass === "subscription")) &&
+      !claudeSubscriptionOptedIn()
+    ) {
+      throw new BlockingToolCallError(claudeSubscriptionBlockMessage("The claude-cli MCP tool"));
+    }
     if (mcpBackend) {
       if (mcpBackend.vendor) record.vendor = mcpBackend.vendor;
       if (mcpBackend.model) record.model = mcpBackend.model;

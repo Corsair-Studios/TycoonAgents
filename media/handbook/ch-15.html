@@ -117,6 +117,17 @@
       activates when an agent's own configuration names that MCP server
       &mdash; nothing routes to a subscription CLI implicitly.
     </p>
+    <p>
+      <strong>OpenCode (Experimental):</strong> Claude models there default
+      to an Anthropic API key (<code>ANTHROPIC_API_KEY</code>, metered).
+      Using Claude Worker or any Claude slot through the <code>claude</code>
+      CLI is an explicit opt-in: turn on <em>Allow Claude subscription via
+      the claude CLI under OpenCode</em> in Settings (off by default).
+      Existing setups that already use it keep working and show this note:
+      &ldquo;Uses your own Claude Code CLI login. Anthropic's terms for
+      third-party harnesses have changed several times; check them before
+      relying on this.&rdquo; Claude Code and Codex are unaffected.
+    </p>
   </div>
   <p>
     See <code>docs/adding-a-non-anthropic-agent.md</code> and

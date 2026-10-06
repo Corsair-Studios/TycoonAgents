@@ -449,6 +449,9 @@ export const MSG = {
   // (ConfigurationTarget.Global) then re-posts a fresh MSG.ROUTING so the
   // Agents screen's uiMode flips immediately.
   SET_AGENTS_MULTI_PROVIDER: "setAgentsMultiProvider",
+  // webview -> host: per-user opt-in to the Claude subscription (`claude -p`)
+  // route under OpenCode; host persists it, then re-posts MSG.ROUTING.
+  SET_CLAUDE_SUBSCRIPTION_OPT_IN: "setClaudeSubscriptionOptIn",
   PROBE_ENV: "probeEnv",
   ENV_PROBE: "envProbe",
   // p13-t6: per-user, outside-any-project stored endpoint URL / API key
@@ -622,6 +625,7 @@ export const MSG_SCHEMAS = {
   // before reaching that validation.
   SAVE_ROUTING: z.object({ profile: z.record(z.unknown()) }).passthrough(),
   SET_AGENTS_MULTI_PROVIDER: z.object({ value: z.boolean() }).passthrough(),
+  SET_CLAUDE_SUBSCRIPTION_OPT_IN: z.object({ value: z.boolean() }).passthrough(),
   PROBE_ENV: z.object({ names: z.array(z.string()) }).passthrough(),
   SET_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1), value: z.string() }).passthrough(),
   CLEAR_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1) }).passthrough(),

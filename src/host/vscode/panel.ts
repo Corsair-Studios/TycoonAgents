@@ -60,7 +60,8 @@ import {
   type ProviderId,
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
-import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
+import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
+import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, setClaudeSubscriptionOptIn, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
 import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { REFERRAL_CODE_PATTERN } from "../../core/themeServiceClient";
@@ -1567,6 +1568,18 @@ export class TycoonPanel {
             void this._handleSetAgentsMultiProvider(parsedSetAgentsMultiProvider.data.value);
           } else {
             console.error("TycoonAgents: setAgentsMultiProvider payload rejected:", parsedSetAgentsMultiProvider.error.message);
+          }
+        } else if (message.type === MSG.SET_CLAUDE_SUBSCRIPTION_OPT_IN) {
+          const parsedClaudeSubOptIn = MSG_SCHEMAS.SET_CLAUDE_SUBSCRIPTION_OPT_IN.safeParse(message);
+          if (parsedClaudeSubOptIn.success) {
+            try {
+              setClaudeSubscriptionOptIn(parsedClaudeSubOptIn.data.value);
+            } catch (err) {
+              console.error("TycoonAgents: setClaudeSubscriptionOptIn failed:", err instanceof Error ? err.message : err);
+            }
+            this._handleGetRouting();
+          } else {
+            console.error("TycoonAgents: setClaudeSubscriptionOptIn payload rejected:", parsedClaudeSubOptIn.error.message);
           }
         } else if (message.type === MSG.CLEAR_AGENT_ROUTE) {
           const parsedClearAgentRoute = MSG_SCHEMAS.CLEAR_AGENT_ROUTE.safeParse(message);
@@ -4714,9 +4727,15 @@ export class TycoonPanel {
       //     disk, never deleted.
       // Each file is handled in its own try/catch so one failure doesn't
       // abort the rest of the loop.
-      const agentResults: Array<{ id: string; status: "created" | "refreshed" | "unchanged" | "replaced-legacy" | "error"; error?: string }> = [];
+      const agentResults: Array<{ id: string; status: "created" | "refreshed" | "unchanged" | "replaced-legacy" | "skipped" | "error"; error?: string }> = [];
       let cfg = this._readKeywordsConfig(root);
+      const packHarness = this._resolveEffectiveHarness(root);
+      const packClaudeOptIn = readClaudeSubscriptionOptIn();
       for (const a of agents) {
+        if (shouldSkipPackAgentForClaudeSubscription(packHarness, packClaudeOptIn, a.backend)) {
+          agentResults.push({ id: a.id, status: "skipped", error: claudeSubscriptionBlockedMessage(`skipped: ${a.name || a.id}`) });
+          continue;
+        }
         try {
           const agentsDir = path.join(root, ".claude", "agents");
           const agentPath = path.join(agentsDir, `${a.id}.md`);
@@ -6535,6 +6554,13 @@ export class TycoonPanel {
 
           const agents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
           for (const a of agents) {
+            if (a.backend && a.backend.mcpServer === "claude-cli") {
+              let skip = false;
+              try {
+                skip = shouldSkipPackAgentForClaudeSubscription(this._resolveEffectiveHarness(root), readClaudeSubscriptionOptIn(), a.backend);
+              } catch { /* harness unresolvable: never block the heal */ }
+              if (skip) continue;
+            }
             try {
               const agentPath = path.join(root, ".claude", "agents", `${a.id}.md`);
               let existingContent: string;
