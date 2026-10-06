@@ -181,8 +181,9 @@ body {
 
 .boot-loader-logo {
   display: block;
-  width: 112px;
-  height: 112px;
+  width: min(146px, 60vw);
+  height: auto;
+  aspect-ratio: 1 / 1;
   object-fit: contain;
   filter: drop-shadow(0 0 14px rgba(255, 176, 32, 0.35));
   animation: boot-loader-logo-pulse 2.6s ease-in-out infinite;
@@ -1653,7 +1654,18 @@ body {
   gap: 12px;
 }
 
+#about-logo {
+  display: block;
+  align-self: center;
+  width: min(100px, 40vw);
+  height: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  margin: 0 auto 4px;
+}
+
 #about-modal-title {
+  text-align: center;
   font-size: 18px;
   font-weight: 600;
   color: var(--accent);

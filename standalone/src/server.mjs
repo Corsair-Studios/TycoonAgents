@@ -3958,6 +3958,7 @@ function buildHostHtml(token) {
     <div id="about-backdrop"></div>
     <div id="about-dialog">
       <button id="modal-close" aria-label="Close dialog">&times;</button>
+      <img id="about-logo" src="/media/handbook/tycoonagents_logo_sm.png" alt="TycoonAgents" width="100" height="100" decoding="async" />
       <h2 id="about-modal-title">TycoonAgents™</h2>
       <p>Created by Scott McClellan</p>
       <p>
