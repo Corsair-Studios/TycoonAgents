@@ -200,14 +200,21 @@ class FallbackState {
 }
 exports.FallbackState = FallbackState;
 function buildFallbackInstruction(input) {
-    const providerPart = input.failedProvider ? `${input.failedProvider}/` : "";
-    const failedDesc = `${providerPart}${input.failedModel ?? "unknown model"}`;
+    const failedModelName = input.failedModel ?? "unknown model";
+    // Avoid a doubled vendor prefix when the model string already carries it.
+    const providerPart = input.failedProvider && !failedModelName.startsWith(`${input.failedProvider}/`) ? `${input.failedProvider}/` : "";
+    const failedDesc = `${providerPart}${failedModelName}`;
     if (input.result.exhausted || !input.result.slot) {
         return (`agent ${input.workerId} failed on provider/model ${failedDesc}: ${input.reason}. ` +
             `All fallback options for this slot are exhausted — report the failure to the user instead of retrying again.`);
     }
     const nextModel = input.result.slot.model ?? "an unspecified fallback model";
     const position = input.result.index + 1; // 1-based position within the chain
+    if (input.redispatchTo && input.redispatchTo !== input.workerId) {
+        return (`agent ${input.workerId} failed on provider/model ${failedDesc}: ${input.reason}. ` +
+            `Re-dispatch the same task to ${input.redispatchTo} \u2014 ${input.workerId}'s fallback ` +
+            `(fallback ${position} of ${input.chainLength}: ${nextModel}).`);
+    }
     // Last-resort wording (p99-t2): no hook can re-run an agent on another
     // provider, and an agent bound directly to its own MCP server will call
     // that same server again. Agents that route through the TycoonAgents

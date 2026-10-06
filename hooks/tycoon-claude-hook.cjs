@@ -691,7 +691,15 @@ function takePendingGuidance(tycoonDir, sessionId, now, dropWorkerId) {
       const pending = data[PENDING_GUIDANCE_KEY];
       if (!pending || !Array.isArray(pending[sessionId]) || pending[sessionId].length === 0) return "";
       const texts = [];
+      const perSess = data[sessionId];
       for (const e of pending[sessionId]) {
+        // Delivered (or dropped/expired): the slot's repeat-failure memory ends here.
+        // A re-dispatch to a DIFFERENT agent (resetOnDelivery) ends the slot's chain
+        // progress; same-agent wording keeps attemptsSoFar for the re-run's failure.
+        if (e && e.workerId && perSess && perSess[e.workerId]) {
+          if (e.resetOnDelivery === true && perSess[e.workerId].fromSubagent === true) delete perSess[e.workerId];
+          else delete perSess[e.workerId].failedKeys;
+        }
         if (!e || typeof e.text !== "string") continue;
         if (typeof e.at === "number" && now - e.at > PENDING_GUIDANCE_TTL_MS) continue;
         if (dropWorkerId && e.workerId === dropWorkerId) continue;
@@ -703,6 +711,25 @@ function takePendingGuidance(tycoonDir, sessionId, now, dropWorkerId) {
   } catch {
     return "";
   }
+}
+
+// Subagent-path chain progress ends when the slot is healthy again: a
+// successful vendor-tool call or a clean SubagentStop, but never while
+// re-dispatch guidance for the slot is still pending (the failed run's own stop).
+function clearSubagentFallbackIfHealthy(tycoonDir, sessionId, slotId) {
+  try {
+    const st = loadFallbackStateFile(tycoonDir);
+    const cur = st[sessionId] && st[sessionId][slotId];
+    if (!cur || cur.fromSubagent !== true) return;
+    mutateFallbackState(tycoonDir, (sd) => {
+      const pend = sd[PENDING_GUIDANCE_KEY] && sd[PENDING_GUIDANCE_KEY][sessionId];
+      if (Array.isArray(pend) && pend.some((e) => e && e.workerId === slotId)) return;
+      if (sd[sessionId] && sd[sessionId][slotId] && sd[sessionId][slotId].fromSubagent === true) {
+        delete sd[sessionId][slotId];
+        if (Object.keys(sd[sessionId]).length === 0) delete sd[sessionId];
+      }
+    });
+  } catch { /* fail open */ }
 }
 
 /** Synchronous bounded sleep (hook scripts are sync); never throws. */
@@ -962,6 +989,8 @@ function buildMcpBackendRouting(agentsDir) {
       vendor: backend.vendor,
       model: backend.model,
       costModelClass: backend.costModelClass,
+      mcpServer: backend.mcpServer,
+      transport: backend.transport,
     };
     const serverPrefix = "mcp__" + backend.mcpServer + "__";
     if (Array.isArray(backend.tools) && backend.tools.length > 0) {
@@ -973,6 +1002,40 @@ function buildMcpBackendRouting(agentsDir) {
     }
   }
   return { exact, prefixes };
+}
+
+// Subagent-context fallback: finds ANOTHER agent whose backend can actually
+// reach the fallback slot. Requires an exact mcpServer match (preferring one
+// whose model also matches); a vendor match is used only when the slot names
+// no mcpServer and the candidate's transport reaches the slot. Always excludes
+// the failing slot's agent and any agent bound to the already-failed server.
+function findAgentForFallbackSlot(routing, slot, excludeAgentId, failedMcpServer) {
+  if (!routing || !slot) return undefined;
+  const entries = [];
+  const seen = new Set();
+  const all = [...routing.exact.values(), ...routing.prefixes.map((p) => p.entry)];
+  for (const e of all) {
+    if (!e || !e.agentId || e.agentId === excludeAgentId || seen.has(e.agentId)) continue;
+    if (failedMcpServer && e.mcpServer === failedMcpServer) continue;
+    seen.add(e.agentId);
+    entries.push(e);
+  }
+  if (slot.mcpServer) {
+    const same = entries.filter((e) => e.mcpServer === slot.mcpServer);
+    const hit = same.find((e) => slot.model && e.model === slot.model) || same[0];
+    return hit ? hit.agentId : undefined;
+  }
+  if (slot.vendor) {
+    const hit = entries.find((e) => e.vendor === slot.vendor && (!slot.transport || e.transport === slot.transport));
+    if (hit) return hit.agentId;
+  }
+  return undefined;
+}
+
+// "google" + "google/gemini-2.5-pro" -> "google/gemini-2.5-pro" (no doubled prefix).
+function providerModelDesc(vendor, model) {
+  const m = model || "unknown model";
+  return vendor && m.indexOf(vendor + "/") !== 0 ? vendor + "/" + m : m;
 }
 
 // p_bugfix: lightweight, zero-dependency scan for an mcpServer's
@@ -2149,6 +2212,7 @@ function main(raw) {
     // (see handleStopFailure / the Stop handler): clear it.
     try {
       const sid = typeof payload.session_id === "string" ? payload.session_id : "";
+      if (sid) clearSubagentFallbackIfHealthy(tycoonDir, sid, workerId);
       const cur = sid ? loadFallbackStateFile(tycoonDir)[sid] : undefined;
       if (cur && cur[workerId] && cur[workerId].fromStopFailure === true) {
         mutateFallbackState(tycoonDir, (stateData) => {
@@ -2783,6 +2847,9 @@ function main(raw) {
           const detection = detectMcpFailure(payload, hookEvent, toolName, fallbackChain);
           const toolResponseText = detection.text;
           const codexModelSlugError = detection.failed && isCodexModelSlugError(toolResponseText);
+          if (!detection.failed && hookEvent === "PostToolUse") {
+            clearSubagentFallbackIfHealthy(tycoonDir, typeof payload.session_id === "string" ? payload.session_id : "unknown-session", mcpBackend.agentId);
+          }
           if (detection.failed) {
             const slotId = mcpBackend.agentId;
             const sessionId = typeof payload.session_id === "string" ? payload.session_id : "unknown-session";
@@ -2796,13 +2863,38 @@ function main(raw) {
             const chainRaw = (resolvedAgentEntry && resolvedAgentEntry.fallback) || (flatEntry && flatEntry.chain) || [];
             const chain = Array.isArray(chainRaw) ? chainRaw : [];
 
-            const stateData = loadFallbackStateFile(tycoonDir);
-            const perSession = stateData[sessionId] || {};
-            const attemptsSoFar = (perSession[slotId] && perSession[slotId].attemptsSoFar) || 0;
-            const newAttempts = attemptsSoFar + 1;
-            perSession[slotId] = { attemptsSoFar: newAttempts };
-            stateData[sessionId] = perSession;
-            saveFallbackStateFile(tycoonDir, stateData);
+            // Subagent context (payload.agent_id / agent_type present): the
+            // subagent cannot spawn agents, so it must end and let the parent
+            // re-dispatch. A repeat failure of the same provider/model within
+            // the chain must not consume the next fallback step.
+            const isSubagent =
+              (typeof payload.agent_id === "string" && payload.agent_id !== "") ||
+              (typeof payload.agent_type === "string" && payload.agent_type.trim() !== "");
+            let newAttempts;
+            let repeatedFailure = false;
+            if (isSubagent) {
+              const failKey = (typeof payload.agent_id === "string" ? payload.agent_id : "") + "|" + providerModelDesc(mcpBackend.vendor, mcpBackend.model);
+              const st = mutateFallbackState(tycoonDir, (sd) => {
+                const per = sd[sessionId] || {};
+                const prev = per[slotId] || {};
+                const failedKeys = Array.isArray(prev.failedKeys) ? prev.failedKeys : [];
+                const repeat = failedKeys.indexOf(failKey) !== -1;
+                const n = (prev.attemptsSoFar || 0) + (repeat ? 0 : 1);
+                per[slotId] = { attemptsSoFar: n, fromSubagent: true, failedKeys: repeat ? failedKeys : failedKeys.concat(failKey) };
+                sd[sessionId] = per;
+                return { n, repeat };
+              });
+              newAttempts = Math.max(st.n, 1);
+              repeatedFailure = st.repeat;
+            } else {
+              const stateData = loadFallbackStateFile(tycoonDir);
+              const perSession = stateData[sessionId] || {};
+              const attemptsSoFar = (perSession[slotId] && perSession[slotId].attemptsSoFar) || 0;
+              newAttempts = attemptsSoFar + 1;
+              perSession[slotId] = { attemptsSoFar: newAttempts };
+              stateData[sessionId] = perSession;
+              saveFallbackStateFile(tycoonDir, stateData);
+            }
 
             const result = fallbackChain.resolveNextFallback({
               slotId,
@@ -2817,19 +2909,33 @@ function main(raw) {
               failingSlot: { vendor: mcpBackend.vendor, model: mcpBackend.model },
             });
             const reasonBase = detection.kind
-              ? `${detection.status}/${detection.kind}: ${toolResponseText}`
+              ? `${isSubagent && detection.status === detection.kind ? detection.kind : `${detection.status}/${detection.kind}`}: ${toolResponseText}`
               : toolResponseText;
             const reasonText = codexModelSlugError
               ? `${reasonBase.slice(0, 300)} ${CODEX_MODEL_SLUG_ERROR_HINT}`
               : reasonBase.slice(0, 300);
-            const instruction = fallbackChain.buildFallbackInstruction({
+            const redispatchTo = isSubagent && !result.exhausted && result.slot
+              ? findAgentForFallbackSlot(mcpRouting, result.slot, slotId, mcpBackend.mcpServer)
+              : undefined;
+            const parentInstruction = fallbackChain.buildFallbackInstruction({
               workerId: slotId,
               failedProvider: mcpBackend.vendor,
               failedModel: mcpBackend.model,
               reason: reasonText,
               result,
               chainLength: chain.length,
+              redispatchTo,
             });
+            let instruction = parentInstruction;
+            if (isSubagent) {
+              const failedDesc = providerModelDesc(mcpBackend.vendor, mcpBackend.model);
+              instruction =
+                `Provider ${failedDesc} failed: ${reasonText}. Do not retry this tool or the same provider. ` +
+                `End now and report verdict provider-unavailable with this error; the orchestrator will re-dispatch the task to the fallback provider.`;
+              if (!repeatedFailure) {
+                queuePendingGuidance(tycoonDir, sessionId, { workerId: slotId, at, text: parentInstruction, resetOnDelivery: !!redispatchTo });
+              }
+            }
 
             /** @type {Record<string, unknown>} */
             const fallbackRecord = {
@@ -2845,9 +2951,11 @@ function main(raw) {
             if (detection.status) fallbackRecord.bridgeStatus = detection.status;
             if (detection.kind) fallbackRecord.bridgeErrorKind = detection.kind;
             if (payload.session_id) fallbackRecord.sessionId = payload.session_id;
-            try {
-              fs.appendFileSync(activityFile, JSON.stringify(fallbackRecord) + "\n", "utf8");
-            } catch { /* ignore */ }
+            if (!repeatedFailure) {
+              try {
+                fs.appendFileSync(activityFile, JSON.stringify(fallbackRecord) + "\n", "utf8");
+              } catch { /* ignore */ }
+            }
 
             try {
               process.stdout.write(JSON.stringify({
