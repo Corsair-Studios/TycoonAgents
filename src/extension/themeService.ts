@@ -1098,7 +1098,7 @@ export async function uploadThemeImage(
 }
 
 /** The bundled starter theme preferred when no user theme is installed. */
-export const DEFAULT_THEME_ID = 'survivors_vs_zombies';
+export const DEFAULT_THEME_ID = 'catopia';
 
 /**
  * theme_ids shipped under `media/themes/` and seeded on first run. Declared
@@ -1106,7 +1106,7 @@ export const DEFAULT_THEME_ID = 'survivors_vs_zombies';
  * imports 'vscode' and themeService.ts must stay require-able from a bare
  * Node process. Keep in sync with the directories under media/themes/.
  */
-export const BUNDLED_THEME_IDS: readonly string[] = [DEFAULT_THEME_ID];
+export const BUNDLED_THEME_IDS: readonly string[] = [DEFAULT_THEME_ID, 'doggo_tycoon'];
 
 /**
  * Load the theme to show by default, in order: (1) the user's own themes —

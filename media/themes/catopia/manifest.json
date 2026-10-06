@@ -1,0 +1,949 @@
+{
+  "manifest_version": "1.0.0",
+  "theme_id": "catopia",
+  "display_name": "Catopia",
+  "author": "TycoonAgents Factory",
+  "viewport": {
+    "native_width": 1280,
+    "native_height": 720,
+    "background_asset": "frames.json#environment_background",
+    "crate_asset": "frames.json#crate",
+    "poof_asset": "frames.json#poof",
+    "projectile_asset": "frames.json#projectile",
+    "walkable_nav_polygon": [
+      [
+        0.50761,
+        0.34249
+      ],
+      [
+        0.97768,
+        0.49922
+      ],
+      [
+        0.97325,
+        0.80377
+      ],
+      [
+        0.50211,
+        0.98116
+      ],
+      [
+        0.04203,
+        0.8022
+      ],
+      [
+        0.03097,
+        0.49137
+      ]
+    ],
+    "overall_scale": 1,
+    "enemy_config": {
+      "spawn_interval_seconds": 225,
+      "count_mode": "random"
+    },
+    "character_scale": 1,
+    "object_scale": 1,
+    "character_scale_overrides": {
+      "agent_2": 1.35,
+      "agent_3": 0.85,
+      "agent_4": 1.15,
+      "agent_6": 0.9,
+      "agent_7": 1.1,
+      "agent_1": 1.3,
+      "agent_0": 1.25,
+      "agent_5": 1.05,
+      "agent_11": 1.2,
+      "agent_14": 1.15,
+      "agent_13": 1.2
+    },
+    "object_scale_overrides": {
+      "stone_well_with_bucket": 1.3,
+      "ranged_weapon_rack_of_tail_slingshots": 1.7,
+      "patchwork_quilt_table": 2.4,
+      "sun_dial_made_of_seashells": 2.1,
+      "fish_shaped_wooden_cart": 2.05,
+      "knotted_rope_ladder": 1.65,
+      "glass_jar_of_fireflies": 2.6,
+      "catnip_plant_patch": 1.45,
+      "ceramic_water_fountain": 1.85,
+      "woven_straw_cat_bed": 0.9,
+      "miniature_treehouse_workshop": 1.95,
+      "wooden_barrel_stack": 2.2,
+      "clay_pottery_set": 0.85,
+      "fishing_pole_stand": 0.8,
+      "scratching_post_tower": 1.45,
+      "spinning_wheel_for_wool": 1.4,
+      "animated_cat_grass_spinner": 1.3,
+      "stack_of_yarn_balls": 1.2,
+      "mini_wind_chimes": 1.15,
+      "automated_fish_stream_conveyor": 1.2
+    },
+    "object_anchor_overrides": {
+      "stone_well_with_bucket": [
+        0.5167112724936122,
+        0.9741518578352181
+      ],
+      "patchwork_quilt_table": [
+        0.9196094893718914,
+        0.7350565428109854
+      ],
+      "ranged_weapon_rack_of_tail_slingshots": [
+        0.45525222246133235,
+        0.42164781906300486
+      ],
+      "sun_dial_made_of_seashells": [
+        0.8763605282380648,
+        0.8303715670436187
+      ],
+      "fish_shaped_wooden_cart": [
+        0.39606943354135915,
+        0.505654281098546
+      ],
+      "glass_jar_of_fireflies": [
+        0.2501111488747258,
+        0.8763503634221862
+      ],
+      "catnip_plant_patch": [
+        0.09105044449226646,
+        0.6171243941841681
+      ],
+      "woven_straw_cat_bed": [
+        0.4051744779905858,
+        0.801292407108239
+      ],
+      "clay_pottery_set": [
+        0.6760495503550785,
+        0.43134087237479807
+      ],
+      "knotted_rope_ladder": [
+        0.652390353107152,
+        0.9182096121432418
+      ],
+      "wooden_barrel_stack": [
+        0.8285590448796248,
+        0.6090468497576736
+      ],
+      "scratching_post_tower": [
+        0.5918278891997321,
+        0.420032310177706
+      ],
+      "fishing_pole_stand": [
+        0.6806020725796919,
+        0.6930533117932148
+      ],
+      "ceramic_water_fountain": [
+        0.760271211510425,
+        0.4781906300484653
+      ],
+      "animated_cat_grass_spinner": [
+        0.5053299669320789,
+        0.691437802907916
+      ],
+      "spinning_wheel_for_wool": [
+        0.935543317158038,
+        0.5702746365105008
+      ],
+      "handmade_bell_collar_rack": [
+        0.780757561521185,
+        0.8642972536348951
+      ],
+      "stack_of_yarn_balls": [
+        0.36875430019367916,
+        0.925686591276252
+      ],
+      "mini_wind_chimes": [
+        0.5827228447505054,
+        0.7948303715670436
+      ]
+    },
+    "decor_anchor_overrides": {
+      "decor_round_flowerpot_stand": [
+        0.26404628902757277,
+        0.4652665589660743
+      ],
+      "decor_blooming_catnip_bush": [
+        0.34599168907061256,
+        0.40549273021001614
+      ],
+      "decor_decorative_clay_chimney": [
+        0.518987533605919,
+        0.36672051696284325
+      ],
+      "seat_flower_embroidered_bean_bag": [
+        0.1349283254938575,
+        0.7111459968602826
+      ],
+      "seat_patchwork_pillow_seat": [
+        0.6879132660424538,
+        0.5902668759811617
+      ],
+      "seat_cozy_straw_cushion": [
+        0.6123142392104921,
+        0.5008077544426495
+      ],
+      "seat_carved_wooden_bench": [
+        0.27770385570141276,
+        0.5492730210016155
+      ],
+      "decor_twig_and_leaf_birdhouse": [
+        0.15704772311580137,
+        0.4945054945054945
+      ],
+      "decor_glowing_firefly_lantern": [
+        0.08184177120119226,
+        0.5243328100470958
+      ]
+    },
+    "decor_flip_overrides": {
+      "decor_decorative_clay_chimney": true
+    },
+    "object_flip_overrides": {
+      "catnip_plant_patch": true,
+      "glass_jar_of_fireflies": true
+    },
+    "decor_hidden": [],
+    "rival_scale": 1,
+    "rival_scale_overrides": {
+      "rival_rogue_alley_tomcat": 1.3,
+      "rival_mangy_dog": 1.6,
+      "rival_scrapjaw_rat": 0.8
+    },
+    "decor_scale": 1,
+    "decor_scale_overrides": {
+      "decor_round_flowerpot_stand": 1.75,
+      "decor_decorative_clay_chimney": 2.25,
+      "seat_flower_embroidered_bean_bag": 1.35,
+      "seat_patchwork_pillow_seat": 1.25,
+      "seat_cozy_straw_cushion": 1.35,
+      "seat_carved_wooden_bench": 1.2
+    }
+  },
+  "roster_agents": [
+    {
+      "slot_id": 0,
+      "name": "Ember",
+      "atlas_asset": "frames.json#agent_0",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 1,
+      "name": "Cali",
+      "atlas_asset": "frames.json#agent_1",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 2,
+      "name": "Dex the Gentleman",
+      "atlas_asset": "frames.json#agent_2",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 3,
+      "name": "The Tobes",
+      "atlas_asset": "frames.json#agent_3",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 4,
+      "name": "Max",
+      "atlas_asset": "frames.json#agent_4",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 5,
+      "name": "Salem",
+      "atlas_asset": "frames.json#agent_5",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 6,
+      "name": "Torachan",
+      "atlas_asset": "frames.json#agent_6",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 7,
+      "name": "Clover",
+      "atlas_asset": "frames.json#agent_7",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 8,
+      "name": "Princess",
+      "atlas_asset": "frames.json#agent_8",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 9,
+      "name": "Simba",
+      "atlas_asset": "frames.json#agent_9",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 10,
+      "name": "Little Foot",
+      "atlas_asset": "frames.json#agent_10",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 11,
+      "name": "Dobby",
+      "atlas_asset": "frames.json#agent_11",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 12,
+      "name": "Fluffers",
+      "atlas_asset": "frames.json#agent_12",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 13,
+      "name": "Jimothy",
+      "atlas_asset": "frames.json#agent_13",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 14,
+      "name": "Cream & Sugar",
+      "atlas_asset": "frames.json#agent_14",
+      "preferred_idle_pose": "pose_crossed"
+    },
+    {
+      "slot_id": 15,
+      "name": "Bond",
+      "atlas_asset": "frames.json#agent_15",
+      "preferred_idle_pose": "pose_crossed"
+    }
+  ],
+  "roster_rivals": [
+    {
+      "rival_id": "rival_rogue_alley_tomcat",
+      "name": "Rogue Alley Tomcat",
+      "atlas_asset": "frames.json#rival_rogue_alley_tomcat",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_mangy_dog",
+      "name": "Mangy Dog",
+      "atlas_asset": "frames.json#rival_mangy_dog",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_scrapjaw_rat",
+      "name": "Scrapjaw Rat",
+      "atlas_asset": "frames.json#rival_scrapjaw_rat",
+      "attack_style": "melee"
+    },
+    {
+      "rival_id": "rival_trashbird",
+      "name": "Trashbird",
+      "atlas_asset": "frames.json#rival_trashbird",
+      "attack_style": "melee"
+    }
+  ],
+  "buildable_objects": [
+    {
+      "build_order": 0,
+      "object_id": "ranged_weapon_rack_of_tail_slingshots",
+      "display_name": "Ranged Weapon Rack of Tail Slingshots",
+      "sprite_asset": "frames.json#object_ranged_weapon_rack_of_tail_slingshots",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 1,
+      "object_id": "fish_shaped_wooden_cart",
+      "display_name": "Beige Scratching Post",
+      "sprite_asset": "frames.json#object_fish_shaped_wooden_cart",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 2,
+      "object_id": "knotted_rope_ladder",
+      "display_name": "Kitty Condo",
+      "sprite_asset": "frames.json#object_knotted_rope_ladder",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 3,
+      "object_id": "catnip_plant_patch",
+      "display_name": "Cardboard Box",
+      "sprite_asset": "frames.json#object_catnip_plant_patch",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 4,
+      "object_id": "ceramic_water_fountain",
+      "display_name": "Auto Kitty Feeder",
+      "sprite_asset": "frames.json#object_ceramic_water_fountain",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 5,
+      "object_id": "woven_straw_cat_bed",
+      "display_name": "Catnip Octopus",
+      "sprite_asset": "frames.json#object_woven_straw_cat_bed",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 6,
+      "object_id": "miniature_treehouse_workshop",
+      "display_name": "Blue Scratching Post",
+      "sprite_asset": "frames.json#object_miniature_treehouse_workshop",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 7,
+      "object_id": "wooden_barrel_stack",
+      "display_name": "Gray Scratching Post",
+      "sprite_asset": "frames.json#object_wooden_barrel_stack",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 8,
+      "object_id": "clay_pottery_set",
+      "display_name": "Yellow Ball of Yarn",
+      "sprite_asset": "frames.json#object_clay_pottery_set",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 9,
+      "object_id": "fishing_pole_stand",
+      "display_name": "Orange Ball of Yarn",
+      "sprite_asset": "frames.json#object_fishing_pole_stand",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 10,
+      "object_id": "stone_well_with_bucket",
+      "display_name": "How To Please A Cat Book",
+      "sprite_asset": "frames.json#object_stone_well_with_bucket",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 11,
+      "object_id": "scratching_post_tower",
+      "display_name": "Book of the Cat Lady",
+      "sprite_asset": "frames.json#object_scratching_post_tower",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 12,
+      "object_id": "handmade_bell_collar_rack",
+      "display_name": "Hair Bands",
+      "sprite_asset": "frames.json#object_handmade_bell_collar_rack",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 13,
+      "object_id": "patchwork_quilt_table",
+      "display_name": "Cat Tower",
+      "sprite_asset": "frames.json#object_patchwork_quilt_table",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 14,
+      "object_id": "sun_dial_made_of_seashells",
+      "display_name": "Fancy Cat Tower",
+      "sprite_asset": "frames.json#object_sun_dial_made_of_seashells",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 15,
+      "object_id": "glass_jar_of_fireflies",
+      "display_name": "Dark Tower For Cats",
+      "sprite_asset": "frames.json#object_glass_jar_of_fireflies",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 16,
+      "object_id": "stack_of_yarn_balls",
+      "display_name": "Stack of Yarn Balls",
+      "sprite_asset": "frames.json#object_stack_of_yarn_balls",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 17,
+      "object_id": "mini_wind_chimes",
+      "display_name": "Modern Cardboard Scratchpad",
+      "sprite_asset": "frames.json#object_mini_wind_chimes",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 18,
+      "object_id": "automated_fish_stream_conveyor",
+      "display_name": "Fish Stuffed Animal Toy",
+      "sprite_asset": "frames.json#object_automated_fish_stream_conveyor",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 19,
+      "object_id": "spinning_wheel_for_wool",
+      "display_name": "Fishbowl",
+      "sprite_asset": "frames.json#object_spinning_wheel_for_wool",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true
+    },
+    {
+      "build_order": 20,
+      "object_id": "animated_cat_grass_spinner",
+      "display_name": "Cat Contraption",
+      "sprite_asset": "frames.json#object_animated_cat_grass_spinner",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "exclusion_radius": 32,
+      "work_units_required": 100,
+      "anim_fps": 5,
+      "anim_loop": true,
+      "is_turret": true
+    }
+  ],
+  "decor_objects": [
+    {
+      "decor_id": "seat_cozy_straw_cushion",
+      "display_name": "Red Rug",
+      "sprite_asset": "frames.json#decor_seat_cozy_straw_cushion",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_flower_embroidered_bean_bag",
+      "display_name": "White Towel",
+      "sprite_asset": "frames.json#decor_seat_flower_embroidered_bean_bag",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_carved_wooden_bench",
+      "display_name": "Blue Rug",
+      "sprite_asset": "frames.json#decor_seat_carved_wooden_bench",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "seat_patchwork_pillow_seat",
+      "display_name": "Beige pillow",
+      "sprite_asset": "frames.json#decor_seat_patchwork_pillow_seat",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "is_sittable": true,
+      "sit_anchor": [
+        0,
+        -0.03
+      ]
+    },
+    {
+      "decor_id": "decor_blooming_catnip_bush",
+      "display_name": "Trash can",
+      "sprite_asset": "frames.json#decor_decor_blooming_catnip_bush",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_decorative_clay_chimney",
+      "display_name": "Small Nightstand",
+      "sprite_asset": "frames.json#decor_decor_decorative_clay_chimney",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_round_flowerpot_stand",
+      "display_name": "Litter Box",
+      "sprite_asset": "frames.json#decor_decor_round_flowerpot_stand",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_twig_and_leaf_birdhouse",
+      "display_name": "Food Bowl",
+      "sprite_asset": "frames.json#decor_decor_twig_and_leaf_birdhouse",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "decor_id": "decor_glowing_firefly_lantern",
+      "display_name": "Water bowl",
+      "sprite_asset": "frames.json#decor_decor_glowing_firefly_lantern",
+      "anchor_coord": [
+        0.5,
+        0.5
+      ],
+      "anim_fps": 5,
+      "anim_loop": true
+    }
+  ],
+  "badges": [
+    {
+      "badge_id": "build_1",
+      "display_name": "First Build",
+      "description": "Complete your first build.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_0"
+    },
+    {
+      "badge_id": "build_3",
+      "display_name": "Builder",
+      "description": "Build 3 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_1"
+    },
+    {
+      "badge_id": "build_6",
+      "display_name": "Developer",
+      "description": "Build 6 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 6,
+      "icon_asset": "frames.json#achievement_2"
+    },
+    {
+      "badge_id": "build_10",
+      "display_name": "Master Builder",
+      "description": "Build 10 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_3"
+    },
+    {
+      "badge_id": "evict_1",
+      "display_name": "First Eviction",
+      "description": "Evict your first rival.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_4"
+    },
+    {
+      "badge_id": "evict_5",
+      "display_name": "Defender",
+      "description": "Evict 5 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 5,
+      "icon_asset": "frames.json#achievement_5"
+    },
+    {
+      "badge_id": "evict_10",
+      "display_name": "Enforcer",
+      "description": "Evict 10 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_6"
+    },
+    {
+      "badge_id": "evict_20",
+      "display_name": "Warlord",
+      "description": "Evict 20 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 20,
+      "icon_asset": "frames.json#achievement_7"
+    },
+    {
+      "badge_id": "task_1",
+      "display_name": "Getting Started",
+      "description": "Complete your first task.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_8"
+    },
+    {
+      "badge_id": "task_10",
+      "display_name": "Warmed Up",
+      "description": "Complete 10 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_9"
+    },
+    {
+      "badge_id": "task_50",
+      "display_name": "In the Zone",
+      "description": "Complete 50 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 50,
+      "icon_asset": "frames.json#achievement_10"
+    },
+    {
+      "badge_id": "task_150",
+      "display_name": "Grind Master",
+      "description": "Complete 150 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 150,
+      "icon_asset": "frames.json#achievement_11"
+    },
+    {
+      "badge_id": "task_500",
+      "display_name": "Unstoppable",
+      "description": "Complete 500 tasks.",
+      "trigger_type": "TASKS_COMPLETED",
+      "threshold": 500,
+      "icon_asset": "frames.json#achievement_12"
+    },
+    {
+      "badge_id": "evict_35",
+      "display_name": "Turf War",
+      "description": "Evict 35 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 35,
+      "icon_asset": "frames.json#achievement_13"
+    },
+    {
+      "badge_id": "evict_50",
+      "display_name": "Overlord",
+      "description": "Evict 50 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 50,
+      "icon_asset": "frames.json#achievement_14"
+    },
+    {
+      "badge_id": "evict_75",
+      "display_name": "Kingpin",
+      "description": "Evict 75 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 75,
+      "icon_asset": "frames.json#achievement_15"
+    },
+    {
+      "badge_id": "evict_100",
+      "display_name": "Undisputed",
+      "description": "Evict 100 rivals.",
+      "trigger_type": "RIVALS_EVICTED",
+      "threshold": 100,
+      "icon_asset": "frames.json#achievement_16"
+    },
+    {
+      "badge_id": "crew_3",
+      "display_name": "Small Crew",
+      "description": "Have 3 agents active at once.",
+      "trigger_type": "AGENTS_ACTIVE",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_17"
+    },
+    {
+      "badge_id": "crew_6",
+      "display_name": "Full House",
+      "description": "Have 4 agents active at once.",
+      "trigger_type": "AGENTS_ACTIVE",
+      "threshold": 4,
+      "icon_asset": "frames.json#achievement_18"
+    },
+    {
+      "badge_id": "build_13",
+      "display_name": "Property Tycoon",
+      "description": "Build 13 objects.",
+      "trigger_type": "OBJECTS_BUILT",
+      "threshold": 13,
+      "icon_asset": "frames.json#achievement_19"
+    },
+    {
+      "badge_id": "rebirth_1",
+      "display_name": "Reborn",
+      "description": "Rebirth once. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 1,
+      "icon_asset": "frames.json#achievement_20"
+    },
+    {
+      "badge_id": "rebirth_2",
+      "display_name": "Twice Reborn",
+      "description": "Rebirth twice. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 2,
+      "icon_asset": "frames.json#achievement_21"
+    },
+    {
+      "badge_id": "rebirth_3",
+      "display_name": "Transcendent",
+      "description": "Rebirth three times. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 3,
+      "icon_asset": "frames.json#achievement_22"
+    },
+    {
+      "badge_id": "rebirth_5",
+      "display_name": "Reborn Five Times",
+      "description": "Reach Rebirth ×5. This badge is permanent — it survives every future Rebirth.",
+      "trigger_type": "REBIRTH_COUNT",
+      "threshold": 5,
+      "icon_asset": "frames.json#achievement_24"
+    },
+    {
+      "badge_id": "reborn_builder",
+      "display_name": "New Game+",
+      "description": "After at least one Rebirth, build 10 objects in a single cycle.",
+      "trigger_type": "OBJECTS_BUILT_POST_REBIRTH",
+      "threshold": 10,
+      "icon_asset": "frames.json#achievement_23"
+    }
+  ]
+}

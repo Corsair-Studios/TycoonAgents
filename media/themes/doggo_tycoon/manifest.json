@@ -1,7 +1,7 @@
 {
   "manifest_version": "1.0.0",
-  "theme_id": "survivors_vs_zombies",
-  "display_name": "Survivors vs Zombies",
+  "theme_id": "doggo_tycoon",
+  "display_name": "Doggo Tycoon",
   "author": "TycoonAgents Factory",
   "viewport": {
     "native_width": 1280,
@@ -12,330 +12,349 @@
     "projectile_asset": "frames.json#projectile",
     "walkable_nav_polygon": [
       [
-        0.51606,
-        0.32219
+        0.55172,
+        0.24699
       ],
       [
-        0.97003,
-        0.48936
+        0.97334,
+        0.43439
       ],
       [
-        0.96789,
-        0.81003
+        0.96696,
+        0.80995
       ],
       [
-        0.50536,
-        0.97872
+        0.50792,
+        0.9819
       ],
       [
-        0.02784,
-        0.80699
+        0.03183,
+        0.80271
       ],
       [
-        0.03426,
-        0.52736
+        0.03395,
+        0.43976
       ]
     ],
     "overall_scale": 1,
     "enemy_config": {
-      "spawn_interval_seconds": 175,
+      "spawn_interval_seconds": 45,
       "count_mode": "random"
     },
-    "character_scale": 1.1,
-    "object_scale": 1,
+    "character_scale": 1,
+    "object_scale": 1.3,
     "character_scale_overrides": {
-      "agent_2": 1.15,
-      "agent_3": 1.25,
-      "agent_5": 1.35,
-      "agent_7": 1.1,
-      "agent_9": 1.2
+      "agent_1": 1.1,
+      "agent_2": 0.75,
+      "agent_3": 1.35,
+      "agent_4": 1.3,
+      "agent_5": 1.3,
+      "agent_6": 0.75,
+      "agent_7": 1.6,
+      "agent_10": 0.7,
+      "agent_9": 1.35,
+      "agent_11": 1.35
     },
     "object_scale_overrides": {
-      "mechanical_turret": 1.9,
-      "food_drying_rack": 1.45,
-      "barbed_wire_spool": 1.35,
-      "supply_crate_pile": 1.5,
-      "rope_ladder": 1.7,
-      "solar_panel_array": 1.65,
-      "water_purifier_unit": 1.8,
-      "improvised_sniper_nest": 2.4,
-      "radio_antenna_mast": 2.25,
-      "camouflage_netting": 2.3,
-      "barricade_spike_pit": 1.6,
-      "crossbow_rack": 1.2,
-      "makeshift_wooden_barricade": 1.4,
-      "rusted_metal_trap": 1.35,
-      "campfire_with_hanging_pot": 1.5,
-      "medic_supply_tent": 1.95,
-      "blinking_surveillance_drone": 1.85,
-      "wooden_watchtower": 2.5
+      "doggo_tycoon_ranged_weapon_rack": 1.1,
+      "construction_toolkit_box": 1.4,
+      "musical_speaker_pillar": 1.5,
+      "leash_and_collar_rack": 1.4,
+      "grooming_table": 1.25,
+      "treat_baking_oven": 1.2,
+      "doghouse_kennel": 1.3,
+      "research_microscope_stand": 1.3,
+      "security_camera_post": 0.6,
+      "ball_launcher_machine": 1.35,
+      "training_cone_marker": 0.6,
+      "water_fountain_with_paw_spout": 0.7,
+      "bone_shaped_ball_rack": 1.3,
+      "checkpoint_flagpole_with_paw_flag": 0.75,
+      "agility_treadmill": 1.7
     },
     "object_anchor_overrides": {
-      "mechanical_turret": [
-        0.7523394251036527,
-        0.6697530864197531
+      "research_microscope_stand": [
+        0.340031524227529,
+        0.7888386123680241
       ],
-      "food_drying_rack": [
-        0.4710961067992724,
-        0.5957446808510638
+      "doggo_tycoon_ranged_weapon_rack": [
+        0.635433910900195,
+        0.33031674208144796
       ],
-      "barbed_wire_spool": [
-        0.310937970490816,
-        0.47376543209876537
+      "checkpoint_flagpole_with_paw_flag": [
+        0.4271646023108334,
+        0.48114630467571645
       ],
-      "wooden_watchtower": [
-        0.5805625043429921,
-        0.9429012345679012
+      "toy_chest_with_assorted_chew_toys": [
+        0.5398000447112024,
+        0.5957767722473605
       ],
-      "supply_crate_pile": [
-        0.09636056729985117,
-        0.6489361702127658
+      "construction_toolkit_box": [
+        0.7778221116704728,
+        0.6787330316742082
       ],
-      "rope_ladder": [
-        0.750165033701619,
-        0.8842592592592593
+      "leash_and_collar_rack": [
+        0.07650709295119404,
+        0.4358974358974359
       ],
-      "solar_panel_array": [
-        0.6414454635999352,
-        0.7021604938271604
+      "musical_speaker_pillar": [
+        0.2406682144170989,
+        0.3640414534313725
       ],
-      "water_purifier_unit": [
-        0.09207787541985779,
-        0.7097264437689969
+      "grooming_table": [
+        0.22616374471176837,
+        0.8728649828431372
       ],
-      "improvised_sniper_nest": [
-        0.8545358209992355,
-        0.8333333333333333
+      "treat_baking_oven": [
+        0.10413465429468077,
+        0.7481146304675717
       ],
-      "radio_antenna_mast": [
-        0.9132443888541449,
-        0.5679012345679012
+      "doghouse_kennel": [
+        0.7629457324855183,
+        0.5656108597285068
       ],
-      "camouflage_netting": [
-        0.6959374304989252,
-        0.4331306990881459
+      "security_camera_post": [
+        0.9202103124407506,
+        0.5339366515837104
       ],
-      "barricade_spike_pit": [
-        0.3413794501192875,
-        0.7716049382716049
+      "interactive_puzzle_feeder": [
+        0.8048574743759532,
+        0.8677666161387632
       ],
-      "crossbow_rack": [
-        0.2891940564704792,
-        0.5555555555555555
+      "agility_treadmill": [
+        0.6377150856900241,
+        0.474006116207951
       ],
-      "makeshift_wooden_barricade": [
-        0.23918305422370462,
-        0.8734567901234568
+      "bark_meter_display": [
+        0.4244252428409958,
+        0.4266055045871559
       ],
-      "rusted_metal_trap": [
-        0.3696465383457253,
-        0.9166666666666666
+      "fetch_training_dummy": [
+        0.6460598960323052,
+        0.7722473604826546
       ],
-      "explosive_barrel_pile": [
-        0.7130681980188986,
-        0.4057750759878419
+      "mail_delivery_mailbox": [
+        0.9223355094671726,
+        0.4675716440422322
       ],
-      "campfire_with_hanging_pot": [
-        0.4882268743192459,
-        0.6398176291793313
+      "ball_launcher_machine": [
+        0.09563386618899256,
+        0.5384615384615384
       ],
-      "blinking_surveillance_drone": [
-        0.7392930766914506,
-        0.5401234567901234
+      "training_cone_marker": [
+        0.5121724833677156,
+        0.8883861236802413
       ],
-      "medic_supply_tent": [
-        0.45879658582910615,
-        0.5
+      "food_dispenser_station": [
+        0.7331929741156096,
+        0.3785822021116138
+      ],
+      "water_fountain_with_paw_spout": [
+        0.7990740819346933,
+        0.39215686274509803
+      ],
+      "bone_shaped_ball_rack": [
+        0.09775906321541461,
+        0.6304675716440422
       ]
     },
     "decor_anchor_overrides": {
-      "seat_patched_log_bench": [
-        0.1177740266998181,
-        0.5577507598784194
+      "decor_flower_bed": [
+        0.6694370633229478,
+        0.9200603318250377
       ],
-      "decor_glowing_firefly_swarm": [
-        0.40043169077938157,
-        0.40729483282674767
+      "decor_wooden_fence_segment": [
+        0.45266696662789807,
+        0.9713423831070891
       ],
-      "decor_charred_remains_of_campfire": [
-        0.059957686319907395,
-        0.82370820668693
+      "seat_paw_chair": [
+        0.23267982856257635,
+        0.4296636085626911
       ],
-      "decor_rusted_abandoned_bicycle": [
-        0.1541769076797619,
-        0.5167173252279634
+      "decor_stone_garden_statue": [
+        0.3591582974653276,
+        0.2986425339366516
       ],
-      "seat_cracked_barrel_seat": [
-        0.6588405948162045,
-        0.5493827160493826
+      "decor_glowing_lantern_post": [
+        0.3825354647559702,
+        0.3092006033182504
       ],
-      "decor_dead_twisted_tree": [
-        0.13698665832812174,
-        0.8410493827160492
+      "seat_plush_dog_pillow": [
+        0.4059126320466128,
+        0.6546003016591252
       ],
-      "seat_rustic_wooden_chair": [
-        0.5053576418392195,
-        0.384498480243161
+      "decor_old_tree_stump": [
+        0.5100472863412936,
+        0.7843137254901961
       ],
-      "decor_collapsed_wooden_signpost": [
-        0.506633196673847,
-        0.9706790123456789
+      "seat_bone_bench": [
+        0.46754334581285245,
+        0.3363499245852187
       ],
-      "seat_broken_tree_stump_seat": [
-        0.2376893993396329,
-        0.6322188449848023
+      "seat_chew_toy_stool": [
+        0.858579598674511,
+        0.7043740573152337
       ]
     },
-    "decor_flip_overrides": {},
+    "decor_flip_overrides": {
+      "decor_wooden_fence_segment": true,
+      "decor_stone_garden_statue": true,
+      "seat_chew_toy_stool": true
+    },
     "object_flip_overrides": {
-      "makeshift_wooden_barricade": true,
-      "barbed_wire_spool": true,
-      "rusted_metal_trap": true,
-      "crossbow_rack": true
+      "musical_speaker_pillar": true,
+      "leash_and_collar_rack": true,
+      "research_microscope_stand": true,
+      "mail_delivery_mailbox": true,
+      "ball_launcher_machine": true,
+      "bone_shaped_ball_rack": true,
+      "treat_baking_oven": true,
+      "bark_meter_display": true
     },
     "decor_hidden": [],
     "rival_scale": 1,
-    "rival_scale_overrides": {
-      "rival_bloated_corpse": 1.35,
-      "rival_stalker_ghoul": 1.15
-    },
+    "rival_scale_overrides": {},
     "decor_scale": 1,
     "decor_scale_overrides": {
-      "decor_glowing_firefly_swarm": 1.65,
-      "decor_dead_twisted_tree": 1.8,
-      "decor_collapsed_wooden_signpost": 1.35
+      "decor_stone_garden_statue": 1.4,
+      "decor_flower_bed": 1.3,
+      "seat_chew_toy_stool": 1.1,
+      "decor_old_tree_stump": 0.85,
+      "seat_paw_chair": 1.1,
+      "seat_plush_dog_pillow": 1.3,
+      "seat_bone_bench": 1.3
     }
   },
   "roster_agents": [
     {
       "slot_id": 0,
-      "name": "Scout Rick",
+      "name": "Porter",
       "atlas_asset": "frames.json#agent_0",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 1,
-      "name": "Medic Lena",
+      "name": "Bijou",
       "atlas_asset": "frames.json#agent_1",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 2,
-      "name": "Engineer Max",
+      "name": "George",
       "atlas_asset": "frames.json#agent_2",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 3,
-      "name": "Sharpshooter Joe",
+      "name": "Duke",
       "atlas_asset": "frames.json#agent_3",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 4,
-      "name": "Hunter Sarah",
+      "name": "Biggo",
       "atlas_asset": "frames.json#agent_4",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 5,
-      "name": "Heavy Weapons Gus",
+      "name": "Bear",
       "atlas_asset": "frames.json#agent_5",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 6,
-      "name": "Trap Specialist Zoe",
+      "name": "Lucy",
       "atlas_asset": "frames.json#agent_6",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 7,
-      "name": "Forager Eli",
+      "name": "Eli",
       "atlas_asset": "frames.json#agent_7",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 8,
-      "name": "Demolition Expert Cass",
+      "name": "Buddy",
       "atlas_asset": "frames.json#agent_8",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 9,
-      "name": "Infiltrator Dex",
+      "name": "Ruby",
       "atlas_asset": "frames.json#agent_9",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 10,
-      "name": "Survivalist Anna",
+      "name": "Delilah",
       "atlas_asset": "frames.json#agent_10",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 11,
-      "name": "Mechanic Jax",
+      "name": "Bailey",
       "atlas_asset": "frames.json#agent_11",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 12,
-      "name": "Sniper Maya",
+      "name": "Zoe",
       "atlas_asset": "frames.json#agent_12",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 13,
-      "name": "Explorer Finn",
+      "name": "Caydee",
       "atlas_asset": "frames.json#agent_13",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 14,
-      "name": "Wilderness Guide Tara",
+      "name": "Jack",
       "atlas_asset": "frames.json#agent_14",
       "preferred_idle_pose": "pose_crossed"
     },
     {
       "slot_id": 15,
-      "name": "Scavenger Rob",
+      "name": "Arch",
       "atlas_asset": "frames.json#agent_15",
       "preferred_idle_pose": "pose_crossed"
     }
   ],
   "roster_rivals": [
     {
-      "rival_id": "rival_zombie",
-      "name": "Zombie",
-      "atlas_asset": "frames.json#rival_zombie",
+      "rival_id": "rival_stray_wolf_alpha",
+      "name": "Stray Wolf Alpha",
+      "atlas_asset": "frames.json#rival_stray_wolf_alpha",
       "attack_style": "melee"
     },
     {
-      "rival_id": "rival_runner_infected",
-      "name": "Runner Infected",
-      "atlas_asset": "frames.json#rival_runner_infected",
+      "rival_id": "rival_rabid_raccoon",
+      "name": "Rabid Raccoon",
+      "atlas_asset": "frames.json#rival_rabid_raccoon",
       "attack_style": "melee"
     },
     {
-      "rival_id": "rival_bloated_corpse",
-      "name": "Bloated Corpse",
-      "atlas_asset": "frames.json#rival_bloated_corpse",
+      "rival_id": "rival_feral_bobcat",
+      "name": "Feral Bobcat",
+      "atlas_asset": "frames.json#rival_feral_bobcat",
       "attack_style": "melee"
     },
     {
-      "rival_id": "rival_stalker_ghoul",
-      "name": "Stalker Ghoul",
-      "atlas_asset": "frames.json#rival_stalker_ghoul",
+      "rival_id": "rival_hostile_coyote",
+      "name": "Hostile Coyote",
+      "atlas_asset": "frames.json#rival_hostile_coyote",
       "attack_style": "melee"
     }
   ],
   "buildable_objects": [
     {
       "build_order": 0,
-      "object_id": "crossbow_rack",
-      "display_name": "crossbow rack",
-      "sprite_asset": "frames.json#object_crossbow_rack",
+      "object_id": "doggo_tycoon_ranged_weapon_rack",
+      "display_name": "Ball Rack",
+      "sprite_asset": "frames.json#object_doggo_tycoon_ranged_weapon_rack",
       "anchor_coord": [
         0.5,
         0.5
@@ -343,13 +362,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 1,
-      "object_id": "makeshift_wooden_barricade",
-      "display_name": "makeshift wooden barricade",
-      "sprite_asset": "frames.json#object_makeshift_wooden_barricade",
+      "object_id": "bone_shaped_ball_rack",
+      "display_name": "Blue Dog House",
+      "sprite_asset": "frames.json#object_bone_shaped_ball_rack",
       "anchor_coord": [
         0.5,
         0.5
@@ -357,13 +377,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 2,
-      "object_id": "rusted_metal_trap",
-      "display_name": "makeshift metal barricade",
-      "sprite_asset": "frames.json#object_rusted_metal_trap",
+      "object_id": "doghouse_kennel",
+      "display_name": "Doghouse Kennel",
+      "sprite_asset": "frames.json#object_doghouse_kennel",
       "anchor_coord": [
         0.5,
         0.5
@@ -371,13 +392,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 3,
-      "object_id": "campfire_with_hanging_pot",
-      "display_name": "campfire with hanging pot",
-      "sprite_asset": "frames.json#object_campfire_with_hanging_pot",
+      "object_id": "water_fountain_with_paw_spout",
+      "display_name": "Metal Water Dish",
+      "sprite_asset": "frames.json#object_water_fountain_with_paw_spout",
       "anchor_coord": [
         0.5,
         0.5
@@ -385,13 +407,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 4,
-      "object_id": "scrap_metal_forge",
-      "display_name": "scrap metal forge",
-      "sprite_asset": "frames.json#object_scrap_metal_forge",
+      "object_id": "ball_launcher_machine",
+      "display_name": "Green Dog House",
+      "sprite_asset": "frames.json#object_ball_launcher_machine",
       "anchor_coord": [
         0.5,
         0.5
@@ -399,13 +422,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 5,
-      "object_id": "supply_crate_pile",
-      "display_name": "supply crate pile",
-      "sprite_asset": "frames.json#object_supply_crate_pile",
+      "object_id": "food_dispenser_station",
+      "display_name": "Food Dispenser",
+      "sprite_asset": "frames.json#object_food_dispenser_station",
       "anchor_coord": [
         0.5,
         0.5
@@ -413,13 +437,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 6,
-      "object_id": "water_purifier_unit",
-      "display_name": "water purifier unit",
-      "sprite_asset": "frames.json#object_water_purifier_unit",
+      "object_id": "agility_treadmill",
+      "display_name": "Agility Treadmill",
+      "sprite_asset": "frames.json#object_agility_treadmill",
       "anchor_coord": [
         0.5,
         0.5
@@ -427,13 +452,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 7,
-      "object_id": "medic_supply_tent",
-      "display_name": "medic supply tent",
-      "sprite_asset": "frames.json#object_medic_supply_tent",
+      "object_id": "fetch_training_dummy",
+      "display_name": "Fetch Training Dummy",
+      "sprite_asset": "frames.json#object_fetch_training_dummy",
       "anchor_coord": [
         0.5,
         0.5
@@ -441,13 +467,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 8,
-      "object_id": "improvised_sniper_nest",
-      "display_name": "improvised sniper nest",
-      "sprite_asset": "frames.json#object_improvised_sniper_nest",
+      "object_id": "toy_chest_with_assorted_chew_toys",
+      "display_name": "Toy Chest",
+      "sprite_asset": "frames.json#object_toy_chest_with_assorted_chew_toys",
       "anchor_coord": [
         0.5,
         0.5
@@ -455,13 +482,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 9,
-      "object_id": "rope_ladder",
-      "display_name": "rusty gate",
-      "sprite_asset": "frames.json#object_rope_ladder",
+      "object_id": "grooming_table",
+      "display_name": "Grooming Table",
+      "sprite_asset": "frames.json#object_grooming_table",
       "anchor_coord": [
         0.5,
         0.5
@@ -469,13 +497,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 10,
-      "object_id": "wooden_watchtower",
-      "display_name": "wooden watchtower",
-      "sprite_asset": "frames.json#object_wooden_watchtower",
+      "object_id": "leash_and_collar_rack",
+      "display_name": "Leash Rack",
+      "sprite_asset": "frames.json#object_leash_and_collar_rack",
       "anchor_coord": [
         0.5,
         0.5
@@ -483,13 +512,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 11,
-      "object_id": "barbed_wire_spool",
-      "display_name": "barbed wire spool",
-      "sprite_asset": "frames.json#object_barbed_wire_spool",
+      "object_id": "treat_baking_oven",
+      "display_name": "Treat Oven",
+      "sprite_asset": "frames.json#object_treat_baking_oven",
       "anchor_coord": [
         0.5,
         0.5
@@ -497,13 +527,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 12,
-      "object_id": "food_drying_rack",
-      "display_name": "food drying rack",
-      "sprite_asset": "frames.json#object_food_drying_rack",
+      "object_id": "construction_toolkit_box",
+      "display_name": "Pink Dog House",
+      "sprite_asset": "frames.json#object_construction_toolkit_box",
       "anchor_coord": [
         0.5,
         0.5
@@ -511,13 +542,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 13,
-      "object_id": "radio_antenna_mast",
-      "display_name": "radio antenna mast",
-      "sprite_asset": "frames.json#object_radio_antenna_mast",
+      "object_id": "research_microscope_stand",
+      "display_name": "Red Dog House",
+      "sprite_asset": "frames.json#object_research_microscope_stand",
       "anchor_coord": [
         0.5,
         0.5
@@ -525,13 +557,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 14,
-      "object_id": "camouflage_netting",
-      "display_name": "camouflage netting",
-      "sprite_asset": "frames.json#object_camouflage_netting",
+      "object_id": "musical_speaker_pillar",
+      "display_name": "Musical speaker pillar",
+      "sprite_asset": "frames.json#object_musical_speaker_pillar",
       "anchor_coord": [
         0.5,
         0.5
@@ -539,13 +572,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 15,
-      "object_id": "barricade_spike_pit",
-      "display_name": "prison pit",
-      "sprite_asset": "frames.json#object_barricade_spike_pit",
+      "object_id": "checkpoint_flagpole_with_paw_flag",
+      "display_name": "Chew Toy",
+      "sprite_asset": "frames.json#object_checkpoint_flagpole_with_paw_flag",
       "anchor_coord": [
         0.5,
         0.5
@@ -553,13 +587,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 16,
-      "object_id": "explosive_barrel_pile",
-      "display_name": "explosive barrel pile",
-      "sprite_asset": "frames.json#object_explosive_barrel_pile",
+      "object_id": "mail_delivery_mailbox",
+      "display_name": "Mail delivery mailbox",
+      "sprite_asset": "frames.json#object_mail_delivery_mailbox",
       "anchor_coord": [
         0.5,
         0.5
@@ -567,13 +602,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 17,
-      "object_id": "landmine_cluster",
-      "display_name": "Two stacked cars",
-      "sprite_asset": "frames.json#object_landmine_cluster",
+      "object_id": "security_camera_post",
+      "display_name": "Dog Book",
+      "sprite_asset": "frames.json#object_security_camera_post",
       "anchor_coord": [
         0.5,
         0.5
@@ -581,13 +617,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 18,
-      "object_id": "mechanical_turret",
-      "display_name": "Water Well",
-      "sprite_asset": "frames.json#object_mechanical_turret",
+      "object_id": "training_cone_marker",
+      "display_name": "Training cone marker",
+      "sprite_asset": "frames.json#object_training_cone_marker",
       "anchor_coord": [
         0.5,
         0.5
@@ -595,13 +632,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 19,
-      "object_id": "solar_panel_array",
-      "display_name": "Small Campire",
-      "sprite_asset": "frames.json#object_solar_panel_array",
+      "object_id": "interactive_puzzle_feeder",
+      "display_name": "Water Trough",
+      "sprite_asset": "frames.json#object_interactive_puzzle_feeder",
       "anchor_coord": [
         0.5,
         0.5
@@ -609,13 +647,14 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     },
     {
       "build_order": 20,
-      "object_id": "blinking_surveillance_drone",
-      "display_name": "Old Radio Desk",
-      "sprite_asset": "frames.json#object_blinking_surveillance_drone",
+      "object_id": "bark_meter_display",
+      "display_name": "Bark Meter Display",
+      "sprite_asset": "frames.json#object_bark_meter_display",
       "anchor_coord": [
         0.5,
         0.5
@@ -623,14 +662,15 @@
       "exclusion_radius": 32,
       "work_units_required": 100,
       "anim_fps": 5,
-      "anim_loop": true
+      "anim_loop": true,
+      "is_turret": false
     }
   ],
   "decor_objects": [
     {
-      "decor_id": "seat_rustic_wooden_chair",
-      "display_name": "rustic wooden chair",
-      "sprite_asset": "frames.json#decor_seat_rustic_wooden_chair",
+      "decor_id": "seat_bone_bench",
+      "display_name": "Royal Dog Bed",
+      "sprite_asset": "frames.json#decor_seat_bone_bench",
       "anchor_coord": [
         0.5,
         0.5
@@ -642,9 +682,9 @@
       ]
     },
     {
-      "decor_id": "seat_broken_tree_stump_seat",
-      "display_name": "broken tree stump seat",
-      "sprite_asset": "frames.json#decor_seat_broken_tree_stump_seat",
+      "decor_id": "seat_paw_chair",
+      "display_name": "Dog Bed",
+      "sprite_asset": "frames.json#decor_seat_paw_chair",
       "anchor_coord": [
         0.5,
         0.5
@@ -656,9 +696,9 @@
       ]
     },
     {
-      "decor_id": "seat_patched_log_bench",
-      "display_name": "patched log bench",
-      "sprite_asset": "frames.json#decor_seat_patched_log_bench",
+      "decor_id": "seat_chew_toy_stool",
+      "display_name": "Dog Bed",
+      "sprite_asset": "frames.json#decor_seat_chew_toy_stool",
       "anchor_coord": [
         0.5,
         0.5
@@ -670,9 +710,9 @@
       ]
     },
     {
-      "decor_id": "seat_cracked_barrel_seat",
-      "display_name": "cracked barrel seat",
-      "sprite_asset": "frames.json#decor_seat_cracked_barrel_seat",
+      "decor_id": "seat_plush_dog_pillow",
+      "display_name": "Plush dog pillow",
+      "sprite_asset": "frames.json#decor_seat_plush_dog_pillow",
       "anchor_coord": [
         0.5,
         0.5
@@ -684,45 +724,45 @@
       ]
     },
     {
-      "decor_id": "decor_dead_twisted_tree",
-      "display_name": "dead twisted tree",
-      "sprite_asset": "frames.json#decor_decor_dead_twisted_tree",
+      "decor_id": "decor_old_tree_stump",
+      "display_name": "Old tree stump",
+      "sprite_asset": "frames.json#decor_decor_old_tree_stump",
       "anchor_coord": [
         0.5,
         0.5
       ]
     },
     {
-      "decor_id": "decor_collapsed_wooden_signpost",
-      "display_name": "collapsed wooden signpost",
-      "sprite_asset": "frames.json#decor_decor_collapsed_wooden_signpost",
+      "decor_id": "decor_flower_bed",
+      "display_name": "Flower bed",
+      "sprite_asset": "frames.json#decor_decor_flower_bed",
       "anchor_coord": [
         0.5,
         0.5
       ]
     },
     {
-      "decor_id": "decor_rusted_abandoned_bicycle",
-      "display_name": "rusted abandoned bicycle",
-      "sprite_asset": "frames.json#decor_decor_rusted_abandoned_bicycle",
+      "decor_id": "decor_stone_garden_statue",
+      "display_name": "Stone garden statue",
+      "sprite_asset": "frames.json#decor_decor_stone_garden_statue",
       "anchor_coord": [
         0.5,
         0.5
       ]
     },
     {
-      "decor_id": "decor_charred_remains_of_campfire",
-      "display_name": "charred remains of a zombie",
-      "sprite_asset": "frames.json#decor_decor_charred_remains_of_campfire",
+      "decor_id": "decor_wooden_fence_segment",
+      "display_name": "Wooden fence segment",
+      "sprite_asset": "frames.json#decor_decor_wooden_fence_segment",
       "anchor_coord": [
         0.5,
         0.5
       ]
     },
     {
-      "decor_id": "decor_glowing_firefly_swarm",
-      "display_name": "glowing firefly swarm",
-      "sprite_asset": "frames.json#decor_decor_glowing_firefly_swarm",
+      "decor_id": "decor_glowing_lantern_post",
+      "display_name": "Glowing lantern post",
+      "sprite_asset": "frames.json#decor_decor_glowing_lantern_post",
       "anchor_coord": [
         0.5,
         0.5
@@ -932,5 +972,6 @@
       "threshold": 10,
       "icon_asset": "frames.json#achievement_23"
     }
-  ]
+  ],
+  "freed_frames": "v2"
 }

@@ -41,7 +41,7 @@ export const frameCache: Map<string, CachedFrame[]> = new Map();
 // slots defined by FIXED_EXPRESSION_LABELS (src/extension/themePlan.ts),
 // keyed by label rather than a hardcoded index so a future reorder of that
 // array can't silently desync this map. Current theme packs (e.g.
-// survivors_vs_zombies) only ship frames.json keys as
+// catopia) only ship frames.json keys as
 // expression_0..expression_N — never the legacy emote_* aliases directly —
 // so current_emote must be resolved through this map before hitting
 // frameCache.

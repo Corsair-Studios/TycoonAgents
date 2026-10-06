@@ -129,7 +129,7 @@ type ThemeFileStore = import('../src/extension/themeFileStore').ThemeFileStore;
 type ThemeFileStoreEntry = import('../src/extension/themeFileStore').ThemeFileStoreEntry;
 type ThemeFileStoreStat = import('../src/extension/themeFileStore').ThemeFileStoreStat;
 
-const DEFAULT_ID = 'survivors_vs_zombies';
+const DEFAULT_ID = 'catopia';
 
 // --- node-fs ThemeFileStore (same shape as themeDiskSizeRawExclusion) ----
 
@@ -339,7 +339,7 @@ test('seedBundledThemes resolves with an empty result when media/themes does not
 
 test('themeService exports DEFAULT_THEME_ID and BUNDLED_THEME_IDS', async () => {
   const svc = themeService as unknown as { DEFAULT_THEME_ID?: string; BUNDLED_THEME_IDS?: readonly string[] };
-  assert.equal(svc.DEFAULT_THEME_ID, DEFAULT_ID, 'DEFAULT_THEME_ID must be "survivors_vs_zombies"');
+  assert.equal(svc.DEFAULT_THEME_ID, DEFAULT_ID, 'DEFAULT_THEME_ID must be "catopia"');
   assert.ok(
     Array.isArray(svc.BUNDLED_THEME_IDS) && svc.BUNDLED_THEME_IDS.includes(DEFAULT_ID),
     'BUNDLED_THEME_IDS must exist and list the bundled default, so user themes can be told apart from seeds',

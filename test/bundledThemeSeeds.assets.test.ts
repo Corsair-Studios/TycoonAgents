@@ -19,39 +19,42 @@ import * as path from 'node:path';
 // later copies raw art or planning artifacts into this directory they'd
 // ship in the VSIX unnoticed. This test fails loudly if that happens.
 
-const THEME_ID = 'survivors_vs_zombies';
-const THEME_DIR = path.resolve(__dirname, '..', '..', 'media', 'themes', THEME_ID);
+const THEME_IDS = ['catopia', 'doggo_tycoon'] as const;
 
-test('bundled theme media/themes/survivors_vs_zombies/manifest.json parses with the expected theme_id', async () => {
-  const raw = await fsp.readFile(path.join(THEME_DIR, 'manifest.json'), 'utf8');
-  const manifest = JSON.parse(raw) as { theme_id?: string };
-  assert.equal(manifest.theme_id, THEME_ID, 'manifest theme_id must match the seed directory name');
-});
+for (const THEME_ID of THEME_IDS) {
+  const THEME_DIR = path.resolve(__dirname, '..', '..', 'media', 'themes', THEME_ID);
 
-test('bundled theme frames.json parses and contains a non-trivial number of frame entries', async () => {
-  const raw = await fsp.readFile(path.join(THEME_DIR, 'frames.json'), 'utf8');
-  const frames = JSON.parse(raw) as Record<string, unknown[]>;
-  const keys = Object.keys(frames);
-  assert.ok(keys.length > 20, `expected many frame-set keys, got ${keys.length}`);
+  test(`bundled theme media/themes/${THEME_ID}/manifest.json parses with the expected theme_id`, async () => {
+    const raw = await fsp.readFile(path.join(THEME_DIR, 'manifest.json'), 'utf8');
+    const manifest = JSON.parse(raw) as { theme_id?: string };
+    assert.equal(manifest.theme_id, THEME_ID, 'manifest theme_id must match the seed directory name');
+  });
 
-  let totalFrameEntries = 0;
-  for (const key of keys) {
-    const value = frames[key];
-    assert.ok(Array.isArray(value), `frame set "${key}" must be an array`);
-    totalFrameEntries += value.length;
-  }
-  assert.ok(totalFrameEntries > 100, `expected a non-trivial total frame count, got ${totalFrameEntries}`);
-});
+  test(`bundled theme ${THEME_ID} frames.json parses and contains a non-trivial number of frame entries`, async () => {
+    const raw = await fsp.readFile(path.join(THEME_DIR, 'frames.json'), 'utf8');
+    const frames = JSON.parse(raw) as Record<string, unknown[]>;
+    const keys = Object.keys(frames);
+    assert.ok(keys.length > 20, `expected many frame-set keys, got ${keys.length}`);
 
-test('bundled theme seed directory contains ONLY manifest.json and frames.json', async () => {
-  const entries = await fsp.readdir(THEME_DIR, { withFileTypes: true });
-  const names = entries.map((entry) => entry.name).sort();
-  assert.deepEqual(
-    names,
-    ['frames.json', 'manifest.json'],
-    'media/themes/survivors_vs_zombies must ship ONLY manifest.json + frames.json -- ' +
-      'no images/, images/raw/, plan.json, review.json, or backup sidecars. ' +
-      'bundledThemeSeeds.ts only ever reads those two files; anything else here ' +
-      'ships in the VSIX unread and unstripped.',
-  );
-});
+    let totalFrameEntries = 0;
+    for (const key of keys) {
+      const value = frames[key];
+      assert.ok(Array.isArray(value), `frame set "${key}" must be an array`);
+      totalFrameEntries += value.length;
+    }
+    assert.ok(totalFrameEntries > 100, `expected a non-trivial total frame count, got ${totalFrameEntries}`);
+  });
+
+  test(`bundled theme seed directory ${THEME_ID} contains ONLY manifest.json and frames.json`, async () => {
+    const entries = await fsp.readdir(THEME_DIR, { withFileTypes: true });
+    const names = entries.map((entry) => entry.name).sort();
+    assert.deepEqual(
+      names,
+      ['frames.json', 'manifest.json'],
+      `media/themes/${THEME_ID} must ship ONLY manifest.json + frames.json -- ` +
+        'no images/, images/raw/, plan.json, review.json, or backup sidecars. ' +
+        'bundledThemeSeeds.ts only ever reads those two files; anything else here ' +
+        'ships in the VSIX unread and unstripped.',
+    );
+  });
+}

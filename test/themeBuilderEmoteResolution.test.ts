@@ -20,7 +20,7 @@ const FRAMES_PATH = path.join(
   process.cwd(),
   'media',
   'themes',
-  'survivors_vs_zombies',
+  'catopia',
   'frames.json'
 );
 

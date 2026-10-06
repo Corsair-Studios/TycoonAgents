@@ -262,12 +262,12 @@ test('handleGetThemeImageReview: a theme with no review.json and a manifest whos
 // recovers on the VS Code host, and recoverThemeReviewBoards (themeMessages.mjs)
 // must converge on the same on-disk state: review.json + one composed PNG per
 // board group under images/, board items carrying image_src + frame_slots.
-test('handleGetThemeImageReview (bundled survivors_vs_zombies theme, manifest+frames only): recovers board items with image_src + frame_slots, writes review.json + PNGs, and caches on a second call', async () => {
+test('handleGetThemeImageReview (bundled catopia theme, manifest+frames only): recovers board items with image_src + frame_slots, writes review.json + PNGs, and caches on a second call', async () => {
   const root = mkTempRoot();
   try {
     const bundledDir = path.join(
       path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
-      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+      '..', '..', 'media', 'themes', 'catopia',
     );
     const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
     const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));
@@ -324,19 +324,19 @@ test('handleGetThemeImageReview (bundled survivors_vs_zombies theme, manifest+fr
 // unmodified between hosts and driven entirely by THEME_INITIALIZED's
 // manifest+frames payload, so this test asserts THAT payload, produced by
 // handleSelectTheme() exactly as server.mjs's seedBundledThemesIntoStore()
-// writes it from media/themes/survivors_vs_zombies/{manifest,frames}.json,
+// writes it from media/themes/catopia/{manifest,frames}.json,
 // has a frames[] entry for every atlas_asset the bundled manifest's roster
 // arrays reference (roster_agents, roster_rivals, buildable_objects,
 // decor_objects) — covering the rival_* and expression_* keys the bug
 // report called out. It passed against the real bundled theme, confirming
 // the standalone's payload is already complete; the visual bug, if still
 // reproducible, is client-side (media/main.js) and out of this file's scope.
-test('handleSelectTheme (bundled survivors_vs_zombies theme): every roster atlas_asset resolves to a non-empty frames[] entry', async () => {
+test('handleSelectTheme (bundled catopia theme): every roster atlas_asset resolves to a non-empty frames[] entry', async () => {
   const root = mkTempRoot();
   try {
     const bundledDir = path.join(
       path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
-      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+      '..', '..', 'media', 'themes', 'catopia',
     );
     const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
     const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));
@@ -401,12 +401,12 @@ test('handleSelectTheme (bundled survivors_vs_zombies theme): every roster atlas
 // review.json for the bundled theme today, so this test seeds one directly
 // to prove the WIRE CONTRACT is compatible; wiring the standalone host to
 // actually run board-recovery is tracked as an open issue, not fixed here.
-test('handleGetThemeImageReview (bundled survivors_vs_zombies theme): a board-shaped review item (character board, real roster slot) round-trips with image_src set and frame_keys intact', async () => {
+test('handleGetThemeImageReview (bundled catopia theme): a board-shaped review item (character board, real roster slot) round-trips with image_src set and frame_keys intact', async () => {
   const root = mkTempRoot();
   try {
     const bundledDir = path.join(
       path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
-      '..', '..', 'media', 'themes', 'survivors_vs_zombies',
+      '..', '..', 'media', 'themes', 'catopia',
     );
     const bundledManifest = JSON.parse(fs.readFileSync(path.join(bundledDir, 'manifest.json'), 'utf8'));
     const bundledFramesBytes = fs.readFileSync(path.join(bundledDir, 'frames.json'));

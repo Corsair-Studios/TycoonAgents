@@ -545,7 +545,7 @@ test('POST /message {type: "ready"} -> broadcasts THEME_INITIALIZED for the auto
     assert.equal(messageRes.status, 202);
 
     const themeInitialized = await themeInitializedPromise;
-    assert.equal(themeInitialized.payload.manifest.theme_id, 'survivors_vs_zombies');
+    assert.equal(themeInitialized.payload.manifest.theme_id, 'catopia');
   } finally {
     controller.abort();
     await runtime.close();
@@ -699,7 +699,7 @@ test('/events connect (no "ready" POST): THEME_INITIALIZED arrives when the stor
 // listThemesFromStore()) also answers an explicit LIST_THEMES round trip
 // with that theme, in the shape the dialog needs, once the store already
 // has a modern per-directory theme on disk (manifest.json + frames.json)
-// — the survivors_vs_zombies bundled-seed layout described in the bug
+// — the catopia bundled-seed layout described in the bug
 // report.
 test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields the Themes dialog renders', async () => {
   const projectRoot = mkTempProject();
@@ -712,7 +712,7 @@ test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields
   const controller = new AbortController();
   try {
     // startServer() awaits seedBundledThemesIntoStore() before accepting
-    // connections, so a fresh store already has survivors_vs_zombies seeded
+    // connections, so a fresh store already has catopia seeded
     // in the modern per-directory layout (manifest.json/frames.json) —
     // exactly the on-disk shape the bug report describes.
     const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
@@ -731,9 +731,9 @@ test('POST /message LIST_THEMES: THEMES_LIST lists a store theme with the fields
 
     const list = await collectSseEvent(reader, 'THEMES_LIST', 50);
     assert.ok(Array.isArray(list.payload && list.payload.themes), 'THEMES_LIST payload.themes must be an array');
-    const entry = list.payload.themes.find((t) => t.theme_id === 'survivors_vs_zombies');
-    assert.ok(entry, 'survivors_vs_zombies must be listed');
-    assert.equal(entry.display_name, 'Survivors vs Zombies');
+    const entry = list.payload.themes.find((t) => t.theme_id === 'catopia');
+    assert.ok(entry, 'catopia must be listed');
+    assert.equal(entry.display_name, 'Catopia');
     assert.equal(typeof entry.export_ready, 'boolean');
     assert.equal(typeof entry.total, 'number');
     assert.equal(typeof entry.accepted, 'number');
@@ -783,8 +783,7 @@ test('seedBundledThemesIntoStore: an empty theme store gets the bundled default 
   await seedBundledThemesIntoStore(store);
 
   const after = await listThemesFromStore(store);
-  assert.equal(after.length, 1);
-  assert.equal(after[0].theme_id, 'survivors_vs_zombies');
+  assert.deepEqual(after.map((t) => t.theme_id).sort(), ['catopia', 'doggo_tycoon']);
 });
 
 test('seedBundledThemesIntoStore: a store with an existing (user) theme is left untouched', async () => {
