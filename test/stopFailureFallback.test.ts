@@ -11,7 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -251,4 +251,66 @@ test("state: ProviderError keeps an agent active while another spawn is live, er
   st = applyEvent(st, { type: "WorkerStopped", at: 4, workerId: "w", spawnId: "s2" });
   st = applyEvent(st, { type: "ProviderError", at: 4, workerId: "w", message: "m" });
   assert.equal(st.agentMetrics.find((m) => m.id === "w")?.status, "error");
+});
+
+const AGENT_FAIL = { hook_event_name: "PostToolUseFailure", tool_name: "Agent", tool_input: {}, error: "agent failed" };
+
+test("PostToolUseFailure(Agent) delivers pending guidance once, same turn", () => {
+  const proj = makeProject({ agents: { "coding-specialist": { fallback: [{ vendor: "anthropic", model: "haiku" }] } } });
+  spawnCodingSpecialist(proj);
+  run(proj, stopFailure({}));
+  const out = JSON.parse(run(proj, AGENT_FAIL)).hookSpecificOutput;
+  assert.equal(out.hookEventName, "PostToolUseFailure");
+  assert.match(out.additionalContext, /"haiku"/);
+  assert.equal(run(proj, { hook_event_name: "UserPromptSubmit", prompt: "x" }), "", "not delivered twice");
+});
+
+test("PostToolUseFailure(Agent) before StopFailure lands still delivers (race)", () => {
+  const proj = makeProject({ agents: { "coding-specialist": { fallback: [{ vendor: "anthropic", model: "haiku" }] } } });
+  spawnCodingSpecialist(proj);
+  const child = spawn(process.execPath, [HOOK_PATH], {
+    env: { ...process.env, CLAUDE_PROJECT_DIR: proj.root, CLAUDE_CONFIG_DIR: proj.cfg, TYCOON_MANAGED_SETTINGS_DIR: join(proj.cfg, "no-managed") },
+  });
+  let out = "";
+  child.stdout.on("data", (d) => { out += String(d); });
+  child.stdin.end(JSON.stringify({ session_id: SESSION, ...AGENT_FAIL }));
+  return new Promise<void>((resolve) => {
+    setTimeout(() => { run(proj, stopFailure({})); }, 400);
+    child.on("close", () => {
+      assert.match(JSON.parse(out).hookSpecificOutput.additionalContext, /"haiku"/);
+      resolve();
+    });
+  });
+});
+
+test("PostToolUseFailure(Agent) with nothing pending is silent and bounded", () => {
+  const proj = makeProject();
+  const t0 = Date.now();
+  assert.equal(run(proj, AGENT_FAIL), "");
+  assert.ok(Date.now() - t0 < 6000);
+});
+
+test("Stop blocks once with guidance; stop_hook_active or nothing pending leaves output empty", () => {
+  const proj = makeProject({ agents: { "coding-specialist": { fallback: [{ vendor: "anthropic", model: "haiku" }] } } });
+  spawnCodingSpecialist(proj);
+  run(proj, stopFailure({}));
+  const active = run(proj, { hook_event_name: "Stop", stop_hook_active: true });
+  assert.ok(active === "" || active === "{}", "never blocks when stop_hook_active");
+  const blocked = JSON.parse(run(proj, { hook_event_name: "Stop" }));
+  assert.equal(blocked.decision, "block");
+  assert.match(blocked.reason, /"haiku"/);
+  const again = run(proj, { hook_event_name: "Stop" });
+  assert.ok(again === "" || again === "{}", "delivered once");
+  const second = run(proj, { hook_event_name: "Stop", stop_hook_active: true });
+  assert.ok(second === "" || second === "{}");
+});
+
+test("subagent events never receive or consume guidance", () => {
+  const proj = makeProject({ agents: { "coding-specialist": { fallback: [{ vendor: "anthropic", model: "haiku" }] } } });
+  spawnCodingSpecialist(proj);
+  run(proj, stopFailure({}));
+  assert.equal(run(proj, { ...AGENT_FAIL, agent_id: "sub1" }), "");
+  const s = run(proj, { hook_event_name: "Stop", agent_id: "sub1" });
+  assert.ok(s === "" || s === "{}");
+  assert.match(run(proj, { hook_event_name: "UserPromptSubmit" }), /coding-specialist/);
 });

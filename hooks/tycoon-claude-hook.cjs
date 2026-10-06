@@ -653,7 +653,13 @@ function mutateFallbackState(tycoonDir, fn) {
 // (its output cannot reach the orchestrator), so the re-dispatch guidance is
 // persisted in fallback-state.json under the reserved "__pending" key and
 // injected ONCE at the orchestrator's next hook opportunity
-// (UserPromptSubmit / PostToolUse Task|Agent / PreToolUse).
+// (UserPromptSubmit / PostToolUse Task|Agent / PostToolUseFailure Agent|Task /
+// PreToolUse / orchestrator Stop backstop). Every path goes through
+// takePendingGuidance, which deletes what it returns, so each entry is
+// delivered at most once. A failed foreground Agent call fires
+// PostToolUseFailure (same turn). A failed run_in_background agent instead
+// reaches the orchestrator as a task notification, so no PostToolUseFailure
+// fires: the Stop backstop or the next UserPromptSubmit delivers it.
 // ---------------------------------------------------------------------------
 const PENDING_GUIDANCE_KEY = "__pending";
 const PENDING_GUIDANCE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -697,6 +703,26 @@ function takePendingGuidance(tycoonDir, sessionId, now, dropWorkerId) {
   } catch {
     return "";
   }
+}
+
+/** Synchronous bounded sleep (hook scripts are sync); never throws. */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* ignore */ }
+}
+
+/**
+ * takePendingGuidance, but when nothing is queued yet re-checks in short polls
+ * for up to `maxWaitMs`. Covers PostToolUseFailure firing slightly BEFORE the
+ * subagent's StopFailure write lands. Bounded: never hangs the hook.
+ */
+function takePendingGuidanceWithWait(tycoonDir, sessionId, now, maxWaitMs, stepMs) {
+  let text = takePendingGuidance(tycoonDir, sessionId, now);
+  const deadline = Date.now() + maxWaitMs;
+  while (!text && Date.now() < deadline) {
+    sleepSync(stepMs);
+    text = takePendingGuidance(tycoonDir, sessionId, now);
+  }
+  return text;
 }
 
 const STOPFAILURE_KIND_BY_ERROR = {
@@ -2833,6 +2859,22 @@ function main(raw) {
             } catch { /* never let output construction break the hook */ }
           }
         }
+      } else if (hookEvent === "PostToolUseFailure" && (toolName === "Task" || toolName === "Agent")) {
+        // A failed Agent call (e.g. the subagent died on an API error): deliver
+        // the StopFailure re-dispatch guidance in this same turn. Orchestrator
+        // only. StopFailure may land slightly after this event, so poll briefly.
+        const isOrch = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
+        if (isOrch) {
+          const sess = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session";
+          const guidance = takePendingGuidanceWithWait(tycoonDir, sess, at, 1500, 100);
+          if (guidance) {
+            try {
+              process.stdout.write(JSON.stringify({
+                hookSpecificOutput: { hookEventName: "PostToolUseFailure", additionalContext: guidance },
+              }));
+            } catch { /* never let output construction break the hook */ }
+          }
+        }
       } else if (hookEvent === "PostToolUse" && (toolName === "Task" || toolName === "Agent")) {
         // Surface unseen plan-gate approvals/rejections (plan p29-t2). Only
         // this hook's own PostToolUse output for the Task/Agent tool ("Task"
@@ -2911,6 +2953,18 @@ function main(raw) {
         }
       }
     } catch { /* fail open: never affect Stop's own output */ }
+    // Backstop: undelivered fallback guidance (e.g. a background agent failed,
+    // or no hook fired after StopFailure) blocks the stop ONCE so the
+    // orchestrator can act. Never when stop_hook_active (that would loop); the
+    // entry stays queued for the next UserPromptSubmit. Orchestrator only.
+    try {
+      const isOrchStop = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
+      if (isOrchStop && payload.stop_hook_active !== true) {
+        const sess = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session";
+        const guidance = takePendingGuidance(tycoonDir, sess, at);
+        if (guidance) process.stdout.write(JSON.stringify({ decision: "block", reason: guidance }));
+      }
+    } catch { /* fail open */ }
     process.exit(0);
   }
 

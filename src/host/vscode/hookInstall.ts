@@ -63,6 +63,10 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   // the same mcp__.* detection; mergeTycoonHooks adds it to existing installs
   // on the next panel open / repair.
   { event: "PostToolUseFailure", matcher: "mcp__.*" },
+  // A failed Agent/Task call (subagent died on an API error) fires
+  // PostToolUseFailure, not PostToolUse: delivers the queued StopFailure
+  // re-dispatch guidance in the same turn.
+  { event: "PostToolUseFailure", matcher: "Task|Agent" },
   // Runs after a Task/Agent spawn completes so the hook can surface unseen
   // plan-gate approvals/rejections back to the orchestrator (see
   // hooks/tycoon-claude-hook.cjs's PostToolUse Task/Agent branch). "Task" is
@@ -188,6 +192,7 @@ export function migrateLegacyHookMatchers(
  */
 export const AUTO_HEAL_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }> = [
   { event: "StopFailure", matcher: "" },
+  { event: "PostToolUseFailure", matcher: "Task|Agent" },
 ];
 
 /**
