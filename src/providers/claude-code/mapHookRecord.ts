@@ -104,6 +104,29 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
         },
       ];
     }
+    case "StopFailure": {
+      // A turn killed by an API error (usage/rate limit, overloaded, billing,
+      // model_not_found...). A subagent killed this way fires no SubagentStop,
+      // so release its live spawn (WorkerStopped, NO TaskCompleted: it did not
+      // finish) and then flag the error. ORDER MATTERS: WorkerStopped sets idle,
+      // ProviderError afterwards leaves the worker in "error". The main session
+      // (workerId "orchestrator") only gets the ProviderError.
+      const message =
+        record.message ??
+        `${workerId} hit a provider error${record.reason ? ` (${record.reason})` : ""}`;
+      const stopped: NormalizedEvent[] =
+        workerId === "orchestrator"
+          ? []
+          : [
+              {
+                type: "WorkerStopped",
+                at: record.at,
+                workerId,
+                ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
+              },
+            ];
+      return [...stopped, { type: "ProviderError", at: record.at, message, workerId }];
+    }
     case "SubagentStop":
       // ORDER MATTERS: TaskCompleted first so task count increments before the
       // worker goes idle; WorkerStopped last so the idle timer is finalized.

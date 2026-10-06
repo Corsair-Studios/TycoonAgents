@@ -888,13 +888,19 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
-        (m) => ({
-          ...m,
-          status: "error" as const,
-          // Finalize any active time before entering error state.
-          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
-          workStartAt: null,
-        }),
+        (m) =>
+          // Other healthy spawns of this agent are still live (the failed one
+          // was already released by its WorkerStopped): the error belongs to
+          // that spawn only, so the agent stays as it is.
+          m.liveSpawns !== undefined && m.liveSpawns.length > 0
+            ? m
+            : {
+                ...m,
+                status: "error" as const,
+                // Finalize any active time before entering error state.
+                activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+                workStartAt: null,
+              },
         event.provider,
         event.sessionId,
       );

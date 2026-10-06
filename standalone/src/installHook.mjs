@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeTycoonHooks, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile, rewriteMcpJsonBridgePaths, copyMcpBridgeHooks } from './sharedLogic.mjs';
+import { mergeTycoonHooks, addMissingAutoHealSlots, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile, rewriteMcpJsonBridgePaths, copyMcpBridgeHooks } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -435,7 +435,33 @@ export function healInstalledHookCopies(targetDir, opts = {}) {
   } catch (err) {
     warn(`[tycoonagents] .mcp.json bridge path heal failed: ${err instanceof Error ? err.message : err}`);
   }
+  try {
+    healInstalledHookSlots(absTarget);
+  } catch (err) {
+    warn(`[tycoonagents] hook slot heal failed: ${err instanceof Error ? err.message : err}`);
+  }
   return result;
+}
+
+/**
+ * Adds hook slots introduced after install (e.g. StopFailure) to an existing
+ * `.claude/settings.local.json` that already has our hook. Never creates the
+ * file, never touches a project without our hook; returns whether it wrote.
+ *
+ * @param {string} targetDir
+ * @returns {boolean}
+ */
+export function healInstalledHookSlots(targetDir) {
+  const settingsPath = path.join(path.resolve(String(targetDir ?? '')), '.claude', 'settings.local.json');
+  if (!fs.existsSync(settingsPath)) return false;
+  const raw = fs.readFileSync(settingsPath, 'utf8').trim();
+  if (raw === '') return false;
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const { settings, changed } = addMissingAutoHealSlots(parsed);
+  if (!changed) return false;
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  return true;
 }
 
 /**

@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError";
+export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError" | "StopFailure";
 
 /** One JSON line the hook script appends to the activity IPC file. Our contract, not Claude's raw schema. */
 export interface HookRecord {
@@ -82,4 +82,6 @@ export interface HookRecord {
   message?: string;          // ProviderError only: free-form message, used verbatim as the NormalizedEvent's
                               // `message` when present, else derived from `reason`/workerId/model.
   at: number;                // epoch ms
+  // StopFailure (a turn killed by an API error) reuses workerId/spawnId/model/message/reason above:
+  // workerId "orchestrator" = the main session itself hit the error (never a fallback trigger).
 }

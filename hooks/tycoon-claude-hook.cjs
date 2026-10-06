@@ -609,13 +609,276 @@ function readFlatRoutingAgentEntry(tycoonDir, agentId) {
 function saveFallbackStateFile(tycoonDir, data) {
   const file = path.join(tycoonDir, "fallback-state.json");
   try {
-    const keys = Object.keys(data);
+    // Reserved "__"-prefixed keys (e.g. "__pending") are not sessions: never
+    // count them toward, or evict them by, the session cap.
+    const keys = Object.keys(data).filter((k) => k.indexOf("__") !== 0);
     while (keys.length > FALLBACK_STATE_MAX_SESSIONS) {
       delete data[keys.shift()];
     }
     fs.mkdirSync(tycoonDir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data), "utf8");
+    // Atomic: write a temp file then rename over the target so a concurrent
+    // reader never sees a torn file.
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(data), "utf8");
+      fs.renameSync(tmp, file);
+    } catch {
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+      fs.writeFileSync(file, JSON.stringify(data), "utf8");
+    }
   } catch { /* never let persistence failure break the hook */ }
+}
+
+// Locked read-modify-write of fallback-state.json: parallel subagents failing
+// together each re-read the latest file under the lock, so no update is lost.
+// If the lock cannot be taken in time it proceeds unlocked (fail open).
+function mutateFallbackState(tycoonDir, fn) {
+  const lockPath = path.join(tycoonDir, "fallback-state.json.lock");
+  const locked = acquireLock(lockPath, 3000);
+  try {
+    const data = loadFallbackStateFile(tycoonDir);
+    const out = fn(data);
+    saveFallbackStateFile(tycoonDir, data);
+    return out;
+  } finally {
+    if (locked) releaseLock(lockPath);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// StopFailure (a turn killed by an API error): Claude Code fires StopFailure
+// for the main session AND for subagents, with {agent_id, agent_type, error,
+// last_assistant_message}. A subagent killed this way never fires
+// SubagentStop, so this is the only signal. StopFailure is notification-only
+// (its output cannot reach the orchestrator), so the re-dispatch guidance is
+// persisted in fallback-state.json under the reserved "__pending" key and
+// injected ONCE at the orchestrator's next hook opportunity
+// (UserPromptSubmit / PostToolUse Task|Agent / PreToolUse).
+// ---------------------------------------------------------------------------
+const PENDING_GUIDANCE_KEY = "__pending";
+const PENDING_GUIDANCE_TTL_MS = 6 * 60 * 60 * 1000;
+const PENDING_GUIDANCE_MAX = 20;
+
+function queuePendingGuidance(tycoonDir, sessionId, entry) {
+  try {
+    mutateFallbackState(tycoonDir, (data) => {
+      const pending = data[PENDING_GUIDANCE_KEY] && typeof data[PENDING_GUIDANCE_KEY] === "object" ? data[PENDING_GUIDANCE_KEY] : {};
+      const list = Array.isArray(pending[sessionId]) ? pending[sessionId] : [];
+      list.push(entry);
+      pending[sessionId] = list.slice(-PENDING_GUIDANCE_MAX);
+      data[PENDING_GUIDANCE_KEY] = pending;
+    });
+  } catch { /* fail open */ }
+}
+
+/**
+ * Returns the queued guidance text for this session (or "") and clears it.
+ * Entries for `dropWorkerId` (the agent being re-dispatched right now) are
+ * discarded without being delivered; expired entries are discarded too.
+ */
+function takePendingGuidance(tycoonDir, sessionId, now, dropWorkerId) {
+  try {
+    // Cheap unlocked pre-check so ordinary hook calls never take the lock.
+    const peek = loadFallbackStateFile(tycoonDir)[PENDING_GUIDANCE_KEY];
+    if (!peek || !Array.isArray(peek[sessionId]) || peek[sessionId].length === 0) return "";
+    return mutateFallbackState(tycoonDir, (data) => {
+      const pending = data[PENDING_GUIDANCE_KEY];
+      if (!pending || !Array.isArray(pending[sessionId]) || pending[sessionId].length === 0) return "";
+      const texts = [];
+      for (const e of pending[sessionId]) {
+        if (!e || typeof e.text !== "string") continue;
+        if (typeof e.at === "number" && now - e.at > PENDING_GUIDANCE_TTL_MS) continue;
+        if (dropWorkerId && e.workerId === dropWorkerId) continue;
+        texts.push(e.text);
+      }
+      delete pending[sessionId];
+      return texts.join("\n\n");
+    });
+  } catch {
+    return "";
+  }
+}
+
+const STOPFAILURE_KIND_BY_ERROR = {
+  overloaded: "overloaded",
+  billing_error: "billing",
+  authentication_failed: "auth",
+  model_not_found: "not_found",
+  server_error: "server_error",
+  max_output_tokens: "max_output_tokens",
+  invalid_request: "invalid_request",
+};
+// Kinds a different model/provider can plausibly cure. max_output_tokens /
+// invalid_request / unknown are the task's own fault, not an outage.
+const STOPFAILURE_FALLBACK_KINDS = new Set(["rate_limit", "quota", "billing", "overloaded", "not_found", "server_error", "auth", "network"]);
+const STOPFAILURE_KIND_LABEL = {
+  rate_limit: "rate limit",
+  quota: "usage limit",
+  billing: "billing error",
+  overloaded: "API overloaded",
+  not_found: "model not found",
+  server_error: "server error",
+  auth: "authentication failed",
+  network: "network error",
+  max_output_tokens: "max output tokens exceeded",
+  invalid_request: "invalid request",
+  unknown: "API error",
+};
+
+function classifyStopFailure(errorField, text) {
+  const br = getBridgeResultModule();
+  const ef = String(errorField || "").toLowerCase();
+  const textKind = br ? br.classifyProviderError(text) : "unknown";
+  if (ef === "rate_limit") return textKind === "quota" ? "quota" : "rate_limit";
+  if (STOPFAILURE_KIND_BY_ERROR[ef]) return STOPFAILURE_KIND_BY_ERROR[ef];
+  return textKind;
+}
+
+function claudeAliasForModel(model) {
+  const t = String(model || "").toLowerCase();
+  for (const a of ["opus", "sonnet", "haiku"]) if (t.indexOf(a) !== -1) return a;
+  return undefined;
+}
+
+function isAnthropicSlot(slot) {
+  return !!slot && (!slot.vendor || slot.vendor === "anthropic");
+}
+
+/**
+ * Handles StopFailure. Writes the activity record (and, for a subagent,
+ * ProviderError/FallbackTriggered records), pops the dead worker off the
+ * active stack, advances FallbackState, and queues orchestrator guidance.
+ * The main session's own StopFailure (no agent_type) is only recorded.
+ */
+function handleStopFailure(ctx) {
+  const { payload, tycoonDir, activeAgentFile, activityFile, keywordsConfig, delegationMode, at } = ctx;
+  const text = typeof payload.last_assistant_message === "string" ? payload.last_assistant_message : "";
+  const errorField = typeof payload.error === "string" ? payload.error : "";
+  const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session";
+  const kind = classifyStopFailure(errorField, text);
+  const br = getBridgeResultModule();
+  const resetHint = (br && br.extractResetHint(text).resetHint) || "";
+  const limitMatch = /you'?ve (?:hit|reached) your ([\w -]{0,30}?limit)/i.exec(text);
+  const label = (limitMatch && limitMatch[1].toLowerCase()) || STOPFAILURE_KIND_LABEL[kind] || STOPFAILURE_KIND_LABEL.unknown;
+  const reasonText = `${label}${resetHint ? ` (${resetHint})` : ""}`.slice(0, 300);
+
+  const agentType = typeof payload.agent_type === "string" ? payload.agent_type.trim() : "";
+  const isMain = agentType === "";
+
+  /** @type {Record<string, unknown>} */
+  const base = { at };
+  if (delegationMode) base.delegationMode = delegationMode;
+  if (payload.session_id) base.sessionId = payload.session_id;
+
+  if (isMain) {
+    const record = {
+      ...base,
+      event: "StopFailure",
+      workerId: "orchestrator",
+      reason: kind,
+      message: `Orchestrator hit its limit: ${reasonText}`,
+    };
+    try { fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8"); } catch { /* ignore */ }
+    return;
+  }
+
+  const instanceId = typeof payload.agent_id === "string" ? payload.agent_id : "";
+  const popped = popMatchedAgent(activeAgentFile, {
+    subagentType: agentType.toLowerCase(),
+    transcriptPath: payload.agent_transcript_path || payload.transcript_path,
+    keywordsConfig,
+    instanceId,
+  });
+  const workerId = (popped && popped.agentId) || agentType.toLowerCase().replace(/\s+/g, "-");
+  const failedModel = popped && popped.model;
+
+  const stopRecord = {
+    ...base,
+    event: "StopFailure",
+    workerId,
+    reason: kind,
+    message: `${workerId} failed: ${reasonText}`,
+  };
+  if (failedModel) stopRecord.model = failedModel;
+  if (popped && popped.spawnId) stopRecord.spawnId = popped.spawnId;
+  if (instanceId) stopRecord.instanceId = instanceId;
+  try { fs.appendFileSync(activityFile, JSON.stringify(stopRecord) + "\n", "utf8"); } catch { /* ignore */ }
+
+  const fc = getFallbackChainModule();
+  const eligible = STOPFAILURE_FALLBACK_KINDS.has(kind);
+  let guidance;
+  if (!eligible || !fc) {
+    guidance =
+      `agent ${workerId} stopped on an API error (${reasonText}). A different model will not fix this; report it to the user rather than retrying blindly.`;
+  } else {
+    const resolvedRouting = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
+    const resolvedEntry = resolvedRouting && resolvedRouting.agents && resolvedRouting.agents[workerId];
+    const flatEntry = !resolvedEntry ? readFlatRoutingAgentEntry(tycoonDir, workerId) : undefined;
+    const chainRaw = (resolvedEntry && resolvedEntry.fallback) || (flatEntry && flatEntry.chain) || [];
+    const chain = Array.isArray(chainRaw) ? chainRaw : [];
+
+    // fromStopFailure + at: the Stop handler keeps such entries (< 6h) so a
+    // re-dispatch after the turn ends still gets the fallback stamp/model swap;
+    // a successful SubagentStop for this worker clears it.
+    const attempts = mutateFallbackState(tycoonDir, (stateData) => {
+      const perSession = stateData[sessionId] || {};
+      const n = ((perSession[workerId] && perSession[workerId].attemptsSoFar) || 0) + 1;
+      perSession[workerId] = { attemptsSoFar: n, at, fromStopFailure: true };
+      stateData[sessionId] = perSession;
+      return n;
+    });
+
+    const result = fc.resolveNextFallback({
+      slotId: workerId,
+      chain,
+      attemptsSoFar: attempts - 1,
+      defaultFallback: (resolvedRouting && resolvedRouting.defaultFallback) || (flatEntry && flatEntry.defaultFallback),
+      useDefaultFallback: resolvedEntry
+        ? resolvedEntry.useDefaultFallback !== false
+        : flatEntry ? flatEntry.useDefaultFallback : true,
+      failingSlot: { vendor: "anthropic", model: failedModel },
+    });
+
+    const providerRecord = { ...base, event: "ProviderError", workerId, reason: kind, message: `${workerId}: ${reasonText}` };
+    if (failedModel) providerRecord.model = failedModel;
+    try { fs.appendFileSync(activityFile, JSON.stringify(providerRecord) + "\n", "utf8"); } catch { /* ignore */ }
+
+    const fbRecord = result.exhausted || !result.slot ? null : {
+      ...base,
+      event: "FallbackTriggered",
+      workerId,
+      slotId: workerId,
+      failedModel,
+      nextModel: result.slot && result.slot.model,
+      fallbackIsDefault: result.isDefault === true,
+      reason: reasonText,
+      bridgeErrorKind: kind,
+    };
+    if (fbRecord) {
+      try { fs.appendFileSync(activityFile, JSON.stringify(fbRecord) + "\n", "utf8"); } catch { /* ignore */ }
+    }
+
+    if (!result.exhausted && result.slot && isAnthropicSlot(result.slot)) {
+      const alias = claudeAliasForModel(result.slot.model);
+      guidance =
+        `agent ${workerId} failed on anthropic/${failedModel || "unknown model"}: ${reasonText}. ` +
+        `Re-dispatch the same task to ${workerId}` +
+        (alias
+          ? ` with the Agent tool's model parameter set to "${alias}"`
+          : ` on ${result.slot.model || "its fallback model"}`) +
+        ` (fallback ${result.index + 1} of ${Math.max(chain.length, 1)}); it now runs on ${result.slot.model || alias}.`;
+    } else {
+      guidance = fc.buildFallbackInstruction({
+        workerId,
+        failedProvider: "anthropic",
+        failedModel,
+        reason: reasonText,
+        result,
+        chainLength: chain.length,
+      });
+    }
+  }
+  queuePendingGuidance(tycoonDir, sessionId, { workerId, at, text: guidance });
 }
 
 function getShorthandModel() {
@@ -1832,6 +2095,13 @@ function main(raw) {
   // SubagentStop payloads usually omit tool_input/usage, so we fall back to
   // payload.agent_type for matching and the transcript for the token count.
   // -------------------------------------------------------------------------
+  if (hookEvent === "StopFailure") {
+    try {
+      handleStopFailure({ payload, tycoonDir, activeAgentFile, activityFile, keywordsConfig, delegationMode, at });
+    } catch { /* fail open: never break the hook */ }
+    process.exit(0);
+  }
+
   if (hookEvent === "SubagentStop") {
     const ssInput = payload.tool_input || {};
     const subagentType = (ssInput.subagent_type || payload.agent_type || "").toLowerCase();
@@ -1848,6 +2118,21 @@ function main(raw) {
 
     const popped = popMatchedAgent(activeAgentFile, { subagentType, transcriptPath, keywordsConfig, instanceId });
     const workerId = (popped && popped.agentId) || "orchestrator";
+
+    // A successful stop of this worker ends its StopFailure-born fallback
+    // (see handleStopFailure / the Stop handler): clear it.
+    try {
+      const sid = typeof payload.session_id === "string" ? payload.session_id : "";
+      const cur = sid ? loadFallbackStateFile(tycoonDir)[sid] : undefined;
+      if (cur && cur[workerId] && cur[workerId].fromStopFailure === true) {
+        mutateFallbackState(tycoonDir, (stateData) => {
+          if (stateData[sid]) {
+            delete stateData[sid][workerId];
+            if (Object.keys(stateData[sid]).length === 0) delete stateData[sid];
+          }
+        });
+      }
+    } catch { /* fail open */ }
 
     /** @type {Record<string, unknown>} */
     const record = {
@@ -2235,6 +2520,35 @@ function main(raw) {
       try {
         fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
       } catch { /* ignore */ }
+
+      // Anthropic -> Anthropic fallback re-dispatch: make the Agent call
+      // actually run on the fallback model by setting the tool's `model`
+      // parameter via updatedInput. permissionDecision "allow" is required
+      // alongside updatedInput and would auto-approve the spawn, so it is
+      // emitted ONLY when the user's own settings already allow this tool (no
+      // deny/ask, no managed policy) in a prompting permission mode —
+      // otherwise the guidance text asks the orchestrator to pass `model`.
+      // Orchestrator-only (a leaf worker's spawn was denied above).
+      try {
+        const specific = { hookEventName: "PreToolUse" };
+        let emit = false;
+        const spawnSess = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session";
+        const pendingText = !spawnerInstanceId ? takePendingGuidance(tycoonDir, spawnSess, at, agentId) : "";
+        if (pendingText) { specific.additionalContext = pendingText; emit = true; }
+        const swapAlias = fallbackOf !== undefined && (!fallbackVendor || fallbackVendor === "anthropic") ? claudeAliasForModel(model) : undefined;
+        if (
+          swapAlias &&
+          toolInput && typeof toolInput === "object" && !Array.isArray(toolInput) &&
+          toolInput.model !== swapAlias &&
+          isPromptingMode(payload.permission_mode) &&
+          toolAllowedByUserSettings(projectRoot, toolName)
+        ) {
+          specific.permissionDecision = "allow";
+          specific.updatedInput = { ...toolInput, model: swapAlias };
+          emit = true;
+        }
+        if (emit) process.stdout.write(JSON.stringify({ hookSpecificOutput: specific }));
+      } catch { /* never let output construction break the hook */ }
       process.exit(0);
     }
 
@@ -2399,10 +2713,17 @@ function main(raw) {
             }
           : undefined;
 
-      if (nudge || dispatcherUpdate) {
+      // Queued StopFailure re-dispatch guidance: orchestrator-only (a subagent's
+      // own tool call must never consume it), delivered once.
+      const pendingFallback =
+        workerId === "orchestrator" && !instanceId
+          ? takePendingGuidance(tycoonDir, typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session", at)
+          : "";
+
+      if (nudge || dispatcherUpdate || pendingFallback) {
         try {
           const specific = { hookEventName: "PreToolUse" };
-          if (nudge) specific.additionalContext = nudge;
+          if (nudge || pendingFallback) specific.additionalContext = [nudge, pendingFallback].filter(Boolean).join("\n\n");
           if (dispatcherUpdate) {
             specific.permissionDecision = "allow";
             specific.updatedInput = dispatcherUpdate;
@@ -2527,8 +2848,11 @@ function main(raw) {
         // only read/advance the cursor when it is absent/empty.
         const isOrchestrator = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
         const gateEvents = isOrchestrator ? readUnseenGateEvents(tycoonDir) : [];
-        if (gateEvents.length > 0) {
-          const additionalContext = mergeGateEventContext(gateEvents);
+        const pendingFallback = isOrchestrator
+          ? takePendingGuidance(tycoonDir, typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session", at)
+          : "";
+        if (gateEvents.length > 0 || pendingFallback) {
+          const additionalContext = [gateEvents.length > 0 ? mergeGateEventContext(gateEvents) : "", pendingFallback].filter(Boolean).join("\n\n");
           if (additionalContext) {
             try {
               process.stdout.write(JSON.stringify({
@@ -2571,10 +2895,19 @@ function main(raw) {
     // above or any other hook output.
     try {
       if (payload.session_id) {
-        const stateData = loadFallbackStateFile(tycoonDir);
-        if (Object.prototype.hasOwnProperty.call(stateData, payload.session_id)) {
-          delete stateData[payload.session_id];
-          saveFallbackStateFile(tycoonDir, stateData);
+        if (Object.prototype.hasOwnProperty.call(loadFallbackStateFile(tycoonDir), payload.session_id)) {
+          mutateFallbackState(tycoonDir, (stateData) => {
+            // Keep StopFailure-born entries younger than 6h (their re-dispatch
+            // may land after this turn ends); drop everything else.
+            const kept = {};
+            const per = stateData[payload.session_id] || {};
+            for (const w of Object.keys(per)) {
+              const e = per[w];
+              if (e && e.fromStopFailure === true && typeof e.at === "number" && at - e.at < PENDING_GUIDANCE_TTL_MS) kept[w] = e;
+            }
+            if (Object.keys(kept).length > 0) stateData[payload.session_id] = kept;
+            else delete stateData[payload.session_id];
+          });
         }
       }
     } catch { /* fail open: never affect Stop's own output */ }
@@ -2611,8 +2944,11 @@ function main(raw) {
     try {
       const isOrchestrator = !(typeof payload.agent_id === "string" && payload.agent_id !== "");
       const gateEvents = isOrchestrator ? readUnseenGateEvents(tycoonDir) : [];
-      if (gateEvents.length > 0) {
-        const additionalContext = mergeGateEventContext(gateEvents);
+      const pendingFallback = isOrchestrator
+        ? takePendingGuidance(tycoonDir, typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session", at)
+        : "";
+      if (gateEvents.length > 0 || pendingFallback) {
+        const additionalContext = [gateEvents.length > 0 ? mergeGateEventContext(gateEvents) : "", pendingFallback].filter(Boolean).join("\n\n");
         if (additionalContext) {
           try {
             process.stdout.write(JSON.stringify({

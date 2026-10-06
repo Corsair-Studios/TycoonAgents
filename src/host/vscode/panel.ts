@@ -248,6 +248,7 @@ import {
   mergeTycoonHooks,
   mergeManagedSubagentDepthEnv,
   migrateLegacyHookMatchers,
+  addMissingAutoHealSlots,
   cleanupForeignHookArtifacts,
   findLegacyHookCommands,
   LEGACY_STATE_FILE_NAMES,
@@ -6234,10 +6235,13 @@ export class TycoonPanel {
       const parsed: unknown = JSON.parse(raw);
       if (parsed === null || typeof parsed !== "object") return;
 
-      const { settings, changed } = migrateLegacyHookMatchers(parsed as Record<string, unknown>);
-      if (!changed) return; // already current -> no write, no mtime churn
+      const migrated = migrateLegacyHookMatchers(parsed as Record<string, unknown>);
+      // Also add hook slots introduced after the project was installed (e.g.
+      // StopFailure) — only when our hook is already registered.
+      const healed = addMissingAutoHealSlots(migrated.settings);
+      if (!migrated.changed && !healed.changed) return; // already current -> no write, no mtime churn
 
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      fs.writeFileSync(settingsPath, JSON.stringify(healed.settings, null, 2));
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }

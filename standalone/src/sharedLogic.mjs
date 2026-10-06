@@ -228,6 +228,19 @@ export function mergeTycoonHooks(existing, hookCommand) {
   return fn(existing, hookCommand);
 }
 
+/** Silent heal: adds hook slots introduced after install (e.g. StopFailure) to
+ * a settings object that already has our hook — the exact function
+ * `src/host/vscode/hookInstall.ts` exports, required lazily.
+ * @type {(existing: Record<string, unknown>) => { settings: Record<string, unknown>, changed: boolean }} */
+export function addMissingAutoHealSlots(existing) {
+  const fn = assertFn(
+    hookInstallModule().addMissingAutoHealSlots,
+    'addMissingAutoHealSlots',
+    'out/src/host/vscode/hookInstall.js',
+  );
+  return fn(existing);
+}
+
 /** Resolves which provider id (`'claude-code'` | `'opencode'`) the standalone
  * should use, per src/core/providerSelection.ts's precedence: TYCOON_PROVIDER
  * env > `settingValue` (unused by the standalone — it has no VS Code

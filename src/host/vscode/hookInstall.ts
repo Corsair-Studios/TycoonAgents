@@ -69,6 +69,12 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   // a deprecated alias for "Agent" — both are matched.
   { event: "PostToolUse", matcher: "Task|Agent" },
   { event: "SubagentStop", matcher: "" },
+  // Fires when a turn (main session OR a subagent) dies from an API error
+  // (rate/usage limit, overloaded, billing, model_not_found...). A subagent
+  // killed this way fires NO SubagentStop, so this is the only signal; the
+  // hook marks the worker failed and queues fallback guidance for the
+  // orchestrator. Added to existing installs by addMissingAutoHealSlots.
+  { event: "StopFailure", matcher: "" },
   { event: "Stop", matcher: "" },
   { event: "TaskCompleted", matcher: "" },
   { event: "TeammateIdle", matcher: "" },
@@ -170,6 +176,66 @@ export function migrateLegacyHookMatchers(
   if (!changed) {
     return { settings: existing, changed: false };
   }
+  return { settings: { ...existing, hooks: nextHooks }, changed: true };
+}
+
+/**
+ * Slots added to an ALREADY-installed project by the silent panel-open /
+ * standalone-startup heal ({@link addMissingAutoHealSlots}). Deliberately a
+ * short explicit list: a slot is only listed here when it is a new event old
+ * installs cannot have, so the heal never re-adds a slot a user removed on
+ * purpose.
+ */
+export const AUTO_HEAL_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }> = [
+  { event: "StopFailure", matcher: "" },
+];
+
+/**
+ * Narrow, pure heal: when `existing` already has at least one of OUR hook
+ * commands registered (i.e. TycoonAgents is installed), appends any
+ * {@link AUTO_HEAL_HOOK_SLOTS} entry that is missing, reusing the command
+ * string of the existing install. Never touches anything else; never adds
+ * hooks to a project that has no TycoonAgents hook. Returns the SAME object
+ * with `changed: false` when nothing was missing.
+ */
+export function addMissingAutoHealSlots(
+  existing: Record<string, unknown>
+): { settings: Record<string, unknown>; changed: boolean } {
+  const hooksSection = existing.hooks;
+  if (hooksSection === null || typeof hooksSection !== "object" || Array.isArray(hooksSection)) {
+    return { settings: existing, changed: false };
+  }
+  const hooks = hooksSection as Record<string, unknown>;
+  let command: string | undefined;
+  for (const list of Object.values(hooks)) {
+    if (!Array.isArray(list)) continue;
+    for (const e of list as HookEntry[]) {
+      if (e === null || typeof e !== "object" || !Array.isArray(e.hooks)) continue;
+      const h = e.hooks.find((x) => isOurHookCommand(x));
+      if (h) { command = h.command; break; }
+    }
+    if (command) break;
+  }
+  if (!command) return { settings: existing, changed: false };
+
+  let changed = false;
+  const nextHooks: Record<string, unknown> = { ...hooks };
+  for (const slot of AUTO_HEAL_HOOK_SLOTS) {
+    const raw = hooks[slot.event];
+    const list: HookEntry[] = Array.isArray(raw) ? (raw as HookEntry[]) : [];
+    const has = list.some(
+      (e) =>
+        e !== null &&
+        typeof e === "object" &&
+        e.matcher === slot.matcher &&
+        Array.isArray(e.hooks) &&
+        e.hooks.some((h) => isOurHookCommand(h))
+    );
+    if (has) continue;
+    nextHooks[slot.event] = [...list, { matcher: slot.matcher, hooks: [{ type: "command", command }] }];
+    changed = true;
+  }
+  if (!changed) return { settings: existing, changed: false };
   return { settings: { ...existing, hooks: nextHooks }, changed: true };
 }
 
