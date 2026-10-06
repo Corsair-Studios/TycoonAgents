@@ -15,6 +15,8 @@ Sitting on top of that harness is a live, game-style visualization of your agent
 - Tycoon Theme Builder for custom stage art; Project Plan with approval gates (on by default).
 - VS Code extension or standalone app; an in-panel handbook covers everything in depth.
 
+**How sign-in works:** TycoonAgents uses your installed Claude Code, Codex and Antigravity command-line tools under their own sign-in — it never reads, stores or forwards your credentials. The panel itself makes no AI calls; theme generation is a separate opt-in service. OpenAI-compatible endpoints use an endpoint URL/API key you set, stored per user outside your project (never in it).
+
 > **Status:** Working prerelease — not a design sketch. TycoonAgents ships as a real VS Code extension (.vsix) with a small early user base: mandatory delegation, the live visualization, custom themes, an in-panel handbook, and everything else described below runs today. It's still prerelease software — expect rough edges and breaking changes between versions. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
 
 **Ways to run it:**
@@ -45,7 +47,7 @@ The doctrine also builds in **verification discipline**: a "completed" notificat
 
 ## Token savings you can see
 
-Because searches run on Haiku and implementation on Sonnet instead of everything on the orchestrator's (recommended: Opus or higher) model, most of your work runs on models that are **several times cheaper** — Haiku is about **5× cheaper than Opus** per token. The metrics panel makes that concrete, without pretending to be a billing statement:
+Because searches run on Haiku and implementation on Sonnet instead of everything on the orchestrator's (recommended: Opus or higher) model, most of your work is routed to models that are cheaper and better suited to each job — **several times cheaper** per token — Haiku is about **5× cheaper than Opus** per token. The metrics panel makes that concrete, without pretending to be a billing statement:
 
 - **Per-agent "vs. orch." badge** — each delegated agent shows how much cheaper (or pricier) its model is than the orchestrator's, e.g. *"5× cheaper."*
 - **Cost-share bar** — each agent's row fills in proportion to its estimated share of the run's blended cost, so you can see at a glance where the spend went.
