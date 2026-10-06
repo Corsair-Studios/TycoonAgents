@@ -6,7 +6,7 @@
 
 Sitting on top of that harness is a live, game-style visualization of your agent fleet — but the harness is the point. Built for solo developers and small teams working on indie/UGC games and web apps.
 
-![The TycoonAgents panel: the isometric Catopia stage above the live Agent Metrics table](media/readme/stage-metrics.png)
+<img src="media/readme/stage-metrics.png" alt="TycoonAgents panel: the Catopia stage with agents as cats, above the Agent Metrics table comparing each agent's cost against the orchestrator" width="480">
 
 **Features at a glance**
 - Mandatory delegation: the orchestrator coordinates, specialist sub-agents do the work.
