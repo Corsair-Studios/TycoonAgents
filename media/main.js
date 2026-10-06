@@ -17974,6 +17974,7 @@ function themeAnimPreviewDraw(player) {
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
+    "moonshot/kimi-k2.6": { perMtok: 2, weight: 1.5 },
     "alibaba/qwen3": { perMtok: 1.5, weight: 1 },
     // xAI Grok, via OpenCode's built-in xai provider (no native Claude/Codex
     // host) — source https://docs.x.ai/developers/models, fetched 2026-09-23,

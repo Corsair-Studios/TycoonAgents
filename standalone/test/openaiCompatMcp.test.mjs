@@ -143,7 +143,7 @@ test('initialize -> tools/list -> tools/call chat returns text and usage from a 
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
-      params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2', prompt: 'hello there' } },
+      params: { name: 'chat', arguments: { model: 'qwen3:8b', prompt: 'hello there' } },
     });
 
     const line1 = JSON.parse(await nextLine());
@@ -163,7 +163,7 @@ test('initialize -> tools/list -> tools/call chat returns text and usage from a 
     assert.deepEqual(usageLine, { usage: { input_tokens: 12, output_tokens: 5 } });
 
     assert.ok(capturedRequest, 'mock endpoint should have received the chat completion request');
-    assert.equal(capturedRequest.model, 'moonshot/kimi-k2');
+    assert.equal(capturedRequest.model, 'qwen3:8b');
     assert.deepEqual(capturedRequest.messages, [{ role: 'user', content: 'hello there' }]);
 
     assert.equal(getStderr(), '', 'server must not write anything to stderr on a clean run');
@@ -318,11 +318,11 @@ test('xai/ request and a Kimi request stay on separate endpoints/keys even when 
   try {
     await initializeAndListTools(child, nextLine);
 
-    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2', prompt: 'hi' } } });
+    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'qwen3:8b', prompt: 'hi' } } });
     const kimiLine = JSON.parse(await nextLine());
     assert.equal(kimiLine.result.structuredContent.summary, 'kimi reply');
     assert.equal(kimiCapturedAuth, 'Bearer kimi-key');
-    assert.equal(kimiCapturedModel, 'moonshot/kimi-k2');
+    assert.equal(kimiCapturedModel, 'qwen3:8b');
 
     send(child, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'chat', arguments: { model: 'xai/grok-build-0.1', prompt: 'hi' } } });
     const grokLine = JSON.parse(await nextLine());
@@ -405,5 +405,134 @@ test('unprefixed mistral-family ids (mistral:7b, mistral-nemo, dolphin-mistral, 
   } finally {
     child.kill();
     fs.rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+test('VENDOR_DEFAULTS (source) points moonshot/ models at MOONSHOT_BASE_URL / https://api.moonshot.ai/v1 and MOONSHOT_API_KEY', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(HOOK_PATH, 'utf8');
+  assert.match(src, /prefix:\s*"moonshot\/"/);
+  assert.match(src, /baseUrlEnv:\s*"MOONSHOT_BASE_URL"/);
+  assert.match(src, /defaultBaseUrl:\s*"https:\/\/api\.moonshot\.ai\/v1"/);
+  assert.match(src, /apiKeyEnv:\s*"MOONSHOT_API_KEY"/);
+});
+
+test('moonshot/ model: dedicated MOONSHOT_* endpoint/key and prefix stripped; bare qwen3:8b still uses OPENAI_COMPAT_*', async () => {
+  let moonAuth = null;
+  let moonModel = null;
+  const { server: moonServer, baseUrl: moonBaseUrl } = await startMockEndpoint((req, res, body) => {
+    moonAuth = req.headers['authorization'] || null;
+    moonModel = JSON.parse(body).model;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'moon reply' } }] }));
+  });
+  let localAuth = null;
+  let localModel = null;
+  const { server: localServer, baseUrl: localBaseUrl } = await startMockEndpoint((req, res, body) => {
+    localAuth = req.headers['authorization'] || null;
+    localModel = JSON.parse(body).model;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'local reply' } }] }));
+  });
+  const env = {
+    ...process.env,
+    OPENAI_COMPAT_BASE_URL: localBaseUrl,
+    OPENAI_COMPAT_API_KEY: 'local-key',
+    MOONSHOT_BASE_URL: moonBaseUrl,
+    MOONSHOT_API_KEY: 'moon-key',
+  };
+  const { child } = spawnMcpServer(env);
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2.6', prompt: 'hi' } } });
+    const moonLine = JSON.parse(await nextLine());
+    assert.equal(moonLine.result.structuredContent.summary, 'moon reply');
+    assert.equal(moonAuth, 'Bearer moon-key');
+    assert.equal(moonModel, 'kimi-k2.6');
+
+    send(child, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'chat', arguments: { model: 'qwen3:8b', prompt: 'hi' } } });
+    const localLine = JSON.parse(await nextLine());
+    assert.equal(localLine.result.structuredContent.summary, 'local reply');
+    assert.equal(localAuth, 'Bearer local-key');
+    assert.equal(localModel, 'qwen3:8b');
+  } finally {
+    child.kill();
+    await closeServer(moonServer);
+    await closeServer(localServer);
+  }
+});
+
+test('moonshot/ model with no MOONSHOT_API_KEY: error names MOONSHOT_API_KEY, never falls back to OPENAI_COMPAT_API_KEY', async () => {
+  const storeDir = emptyStoreDir();
+  const env = {
+    ...process.env,
+    TYCOON_STANDALONE_DATA_DIR: storeDir,
+    MOONSHOT_BASE_URL: 'http://127.0.0.1:1',
+    OPENAI_COMPAT_API_KEY: 'local-key-must-not-be-used',
+  };
+  delete env.OPENAI_COMPAT_BASE_URL;
+  delete env.MOONSHOT_API_KEY;
+  const { child } = spawnMcpServer(env, { merge: false });
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2.6', prompt: 'hi' } } });
+    const callLine = JSON.parse(await nextLine());
+    assert.equal(callLine.result.isError, true);
+    assert.match(callLine.result.content[0].text, /MOONSHOT_API_KEY/);
+    assert.doesNotMatch(callLine.result.content[0].text, /local-key-must-not-be-used/);
+  } finally {
+    child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+async function moonshotLegacyCall(baseUrl) {
+  const storeDir = emptyStoreDir();
+  const env = {
+    ...process.env,
+    TYCOON_STANDALONE_DATA_DIR: storeDir,
+    OPENAI_COMPAT_BASE_URL: baseUrl,
+    OPENAI_COMPAT_API_KEY: 'legacy-key-value',
+  };
+  delete env.MOONSHOT_API_KEY;
+  delete env.MOONSHOT_BASE_URL;
+  const { child } = spawnMcpServer(env, { merge: false });
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    send(child, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'chat', arguments: { model: 'moonshot/kimi-k2.6', prompt: 'hi' } } });
+    return JSON.parse(await nextLine());
+  } finally {
+    child.kill();
+    fs.rmSync(storeDir, { recursive: true, force: true });
+  }
+}
+
+test('moonshot/ model without MOONSHOT_API_KEY: legacy OPENAI_COMPAT_* pair is used when its host is moonshot.ai (no auth error)', async () => {
+  const callLine = await moonshotLegacyCall('http://unreachable-test.moonshot.ai:1');
+  const text = callLine.result.content[0].text;
+  assert.doesNotMatch(text, /MOONSHOT_API_KEY is not set/);
+  assert.doesNotMatch(text, /legacy-key-value/);
+});
+
+test('moonshot/ model without MOONSHOT_API_KEY: legacy pair is NOT used for a non-moonshot host; error names MOONSHOT_API_KEY and the old vars', async () => {
+  let hit = false;
+  const { server, baseUrl } = await startMockEndpoint((req, res) => {
+    hit = true;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{}');
+  });
+  try {
+    const callLine = await moonshotLegacyCall(baseUrl);
+    assert.equal(callLine.result.isError, true);
+    const text = callLine.result.content[0].text;
+    assert.match(text, /MOONSHOT_API_KEY/);
+    assert.match(text, /OPENAI_COMPAT_BASE_URL/);
+    assert.doesNotMatch(text, /legacy-key-value/);
+    assert.equal(hit, false);
+  } finally {
+    await closeServer(server);
   }
 });

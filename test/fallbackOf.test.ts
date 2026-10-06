@@ -198,6 +198,31 @@ test("cross-agent fallback: spawn of codex-reviewer with fallbackOf gemini-revie
   assert.equal(g2.fallbackCount, 1);
 });
 
+test("cross-agent fallback: target row clears its marker when its spawn stops; failed slot keeps it", () => {
+  const spawn = { event: "PreToolUse", tool: "Agent", workerId: "codex-reviewer", model: "haiku", fallbackOf: "gemini-reviewer", fallbackDepth: 1, fallbackIsDefault: true, spawnId: "c1", sessionId: "s", at: 1000 };
+  const stop = { event: "SubagentStop", workerId: "codex-reviewer", spawnId: "c1", sessionId: "s", at: 1500 };
+  const during = computeStateFromRecords([spawn] as HookRecord[]).agentMetrics.find((x) => x.id === "codex-reviewer")!;
+  assert.equal(during.fallbackOf, "gemini-reviewer");
+  const after = computeStateFromRecords([spawn, stop] as HookRecord[]);
+  const c = after.agentMetrics.find((x) => x.id === "codex-reviewer")!;
+  assert.equal(c.fallbackOf, undefined);
+  assert.equal(c.fallbackDepth, undefined);
+  assert.equal(c.fallbackIsDefault, undefined);
+  const g = after.agentMetrics.find((x) => x.id === "gemini-reviewer")!;
+  assert.equal(g.fallbackOf, "gemini-reviewer");
+  assert.equal(g.fallbackCount, 1);
+});
+
+test("cross-agent fallback: target keeps its marker while another spawn of it is still live", () => {
+  const recs = [
+    { event: "PreToolUse", tool: "Agent", workerId: "codex-reviewer", model: "haiku", fallbackOf: "gemini-reviewer", fallbackDepth: 1, spawnId: "c1", sessionId: "s", at: 1000 },
+    { event: "PreToolUse", tool: "Agent", workerId: "codex-reviewer", model: "haiku", fallbackOf: "gemini-reviewer", fallbackDepth: 1, spawnId: "c2", sessionId: "s", at: 1100 },
+    { event: "SubagentStop", workerId: "codex-reviewer", spawnId: "c1", sessionId: "s", at: 1500 },
+  ] as HookRecord[];
+  const c = computeStateFromRecords(recs).agentMetrics.find((x) => x.id === "codex-reviewer")!;
+  assert.equal(c.fallbackOf, "gemini-reviewer");
+});
+
 test("stale marker: fb marker is cleared for an agent absent from the seeded roster; row and count stay", () => {
   let st = initialWorldState();
   st = applyEvent(st, { type: "WorkerRegistered", at: 1, workerId: "codex-reviewer" });

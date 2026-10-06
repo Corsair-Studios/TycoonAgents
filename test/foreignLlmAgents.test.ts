@@ -8,14 +8,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { buildAgentMarkdown, FOREIGN_LLM_AGENTS, agentMarkdownHasTycoonMarker } from "../src/host/vscode/packCatalog";
+import { resyncAgentFrontmatterFields, buildAgentMarkdown, FOREIGN_LLM_AGENTS, agentMarkdownHasTycoonMarker } from "../src/host/vscode/packCatalog";
 import { readAgentFrontmatter, parseAgentBackend } from "../src/core/agentBackend";
 import { DEFAULT_AGENT_KEYWORDS } from "../src/host/vscode/agentKeywordDefaults";
 
 const EXPECTED_BACKEND: Record<string, { vendor: string; transport: string; model: string; costModelClass: string }> = {
   "codex-reviewer": { vendor: "openai", transport: "mcp", model: "openai/gpt-5.6-sol", costModelClass: "subscription" },
   "gemini-reviewer": { vendor: "google", transport: "mcp", model: "google/gemini-2.5-pro", costModelClass: "metered" },
-  "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2", costModelClass: "local" },
+  "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2.6", costModelClass: "metered" },
   "grok-reviewer": { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },
   "mistral-reviewer": { vendor: "mistral", transport: "openai-compatible", model: "mistral/mistral-large-latest", costModelClass: "metered" },
   "claude-worker": { vendor: "anthropic", transport: "mcp", model: "anthropic/sonnet", costModelClass: "subscription" },
@@ -181,4 +181,47 @@ test("every foreign wrapper agent records a relay/judge classification and its w
       `${agent.id} body missing wrapper-class: ${expected.cls} comment`
     );
   }
+});
+
+test("claude-worker frontmatter disallows direct file/shell/web tools (no tools allowlist); other agents only deny Agent", () => {
+  const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
+  const front = buildAgentMarkdown(worker, "multi-llm").split("---")[1];
+  assert.match(front, /^disallowedTools: Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch$/m);
+  assert.doesNotMatch(front, /^tools:/m);
+  for (const other of FOREIGN_LLM_AGENTS.filter((a) => a.id !== "claude-worker")) {
+    assert.match(buildAgentMarkdown(other, "multi-llm").split("---")[1], /^disallowedTools: Agent$/m);
+  }
+});
+
+test("resyncAgentFrontmatterFields updates disallowedTools only for tycoon_pack-marked claude-worker files", () => {
+  const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
+  const old = buildAgentMarkdown(worker, "multi-llm").replace(/^disallowedTools: .*$/m, "disallowedTools: Agent");
+  const fixed = resyncAgentFrontmatterFields(old, worker);
+  assert.ok(fixed);
+  assert.match(fixed!, /^disallowedTools: Agent, Read, Write,/m);
+  assert.equal(resyncAgentFrontmatterFields(fixed!, worker), null);
+  const unmarked = old.replace(/^tycoon_pack: .*\r?\n/m, "");
+  assert.equal(resyncAgentFrontmatterFields(unmarked, worker), null);
+});
+
+test("kimi-reviewer uses the dedicated MOONSHOT_* env names, never OPENAI_COMPAT_*", () => {
+  const kimi = FOREIGN_LLM_AGENTS.find((a) => a.id === "kimi-reviewer")!;
+  assert.equal(kimi.backend!.endpointEnv, "MOONSHOT_BASE_URL");
+  assert.equal(kimi.backend!.apiKeyEnv, "MOONSHOT_API_KEY");
+});
+
+test("resyncAgentFrontmatterFields: customized or block-list disallowedTools is left alone; legacy Agent upgrades for claude-worker only", () => {
+  const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
+  const base = buildAgentMarkdown(worker, "multi-llm");
+  const custom = base.replace(/^disallowedTools: .*$/m, "disallowedTools: Agent, Bash");
+  assert.equal(resyncAgentFrontmatterFields(custom, worker), null);
+  const block = base.replace(/^disallowedTools: .*$/m, "disallowedTools:\n  - Agent\n  - Bash");
+  assert.equal(resyncAgentFrontmatterFields(block, worker), null);
+  const legacy = base.replace(/^disallowedTools: .*$/m, "disallowedTools: Agent");
+  assert.match(resyncAgentFrontmatterFields(legacy, worker)!, /^disallowedTools: Agent, Read, Write,/m);
+  const kimi = FOREIGN_LLM_AGENTS.find((a) => a.id === "kimi-reviewer")!;
+  const kimiMd = buildAgentMarkdown(kimi, "multi-llm").replace(/^disallowedTools: .*$/m, "disallowedTools: Agent, Bash");
+  assert.equal(resyncAgentFrontmatterFields(kimiMd, kimi), null);
+  const kimiLegacy = buildAgentMarkdown(kimi, "multi-llm").replace(/^disallowedTools: .*\r?\n/m, "");
+  assert.equal(resyncAgentFrontmatterFields(kimiLegacy, kimi), null);
 });

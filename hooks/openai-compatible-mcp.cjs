@@ -141,7 +141,7 @@ const CHAT_TOOL = {
   inputSchema: {
     type: "object",
     properties: {
-      model: { type: "string", description: "Model id as understood by the target endpoint (e.g. \"moonshot/kimi-k2\", \"llama3\", \"qwen2.5\")." },
+      model: { type: "string", description: "Model id as understood by the target endpoint (e.g. \"moonshot/kimi-k2.6\", \"llama3\", \"qwen2.5\")." },
       prompt: { type: "string", description: "User prompt. Ignored if `messages` is given." },
       system: { type: "string", description: "Optional system prompt, prepended when using `prompt`." },
       messages: {
@@ -285,6 +285,11 @@ const VENDOR_DEFAULTS = [
   // "mistral:7b" or "dolphin-mistral" are local Ollama/LM Studio models on the
   // generic OPENAI_COMPAT_* path and must never reach the cloud endpoint.
   { prefix: "mistral/", baseUrlEnv: "MISTRAL_BASE_URL", defaultBaseUrl: "https://api.mistral.ai/v1", apiKeyEnv: "MISTRAL_API_KEY" },
+  // Moonshot (Kimi) routes ONLY on the explicit "moonshot/" prefix, so hosted
+  // Kimi no longer shares OPENAI_COMPAT_* with local models (Qwen via Ollama,
+  // bare ids like "qwen3:8b"), which stay on the generic path. International
+  // endpoint per https://platform.kimi.ai/docs/guide/start-using-kimi-api.
+  { prefix: "moonshot/", baseUrlEnv: "MOONSHOT_BASE_URL", defaultBaseUrl: "https://api.moonshot.ai/v1", apiKeyEnv: "MOONSHOT_API_KEY" },
 ];
 
 function vendorDefaultsFor(model) {
@@ -306,6 +311,21 @@ async function handleChatTool(args) {
     // OPENAI_COMPAT_* pair — see the comment above this table.
     baseUrl = resolveEnvOrLocal(vendorDefault.baseUrlEnv) || vendorDefault.defaultBaseUrl;
     apiKey = resolveEnvOrLocal(vendorDefault.apiKeyEnv);
+    if (!apiKey && vendorDefault.prefix === "moonshot/") {
+      // Existing Kimi installs configured the generic pair. Honor it ONLY when
+      // its host is Moonshot's own, so the key never goes to another host.
+      const legacyBase = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
+      const legacyKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY");
+      let legacyHost = "";
+      try { legacyHost = new URL(legacyBase).hostname.toLowerCase(); } catch { /* not a URL */ }
+      if (legacyKey && /(^|\.)moonshot\.(ai|cn)$/.test(legacyHost)) {
+        baseUrl = legacyBase;
+        apiKey = legacyKey;
+      }
+    }
+    if (!apiKey && vendorDefault.prefix === "moonshot/") {
+      return errorResult(model, `${vendorDefault.apiKeyEnv} is not set — configure it to your Moonshot API key (model "${model}" requires it). The legacy OPENAI_COMPAT_BASE_URL/OPENAI_COMPAT_API_KEY pair is only honored when OPENAI_COMPAT_BASE_URL points at a moonshot.ai or moonshot.cn host.`, undefined, "auth");
+    }
     if (!apiKey) {
       return errorResult(model, `${vendorDefault.apiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).`, undefined, "auth");
     }

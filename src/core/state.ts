@@ -915,6 +915,13 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           return {
             ...m,
             status: stillLive ? ("active" as const) : ("idle" as const),
+            // A cross-agent fallback TARGET row (marker names ANOTHER slot)
+            // drops its marker once its run ends and no other spawn of it is
+            // live. The failed slot's own row and same-agent markers
+            // (fallbackOf === own id) are untouched.
+            ...(!stillLive && m.fallbackOf !== undefined && m.fallbackOf !== event.workerId
+              ? { fallbackOf: undefined, fallbackDepth: undefined, fallbackIsDefault: undefined }
+              : {}),
             ...(nextLiveSpawns !== undefined ? { liveSpawns: nextLiveSpawns } : {}),
             ...(nextSpawnStartAt !== m.spawnStartAt ? { spawnStartAt: nextSpawnStartAt } : {}),
             activeMs: m.activeMs + creditedMs,
