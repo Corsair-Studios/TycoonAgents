@@ -4332,6 +4332,52 @@ test('accent: metrics table colors a fallback agent amber with "(fb)" suffix on 
   }
 });
 
+test('fallback marker: a cleared fallbackOf drops "(fb)" while the tooltip keeps the cumulative count and last model', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    h.dispatch({
+      type: 'settings',
+      payload: {
+        hook: { installed: true, lastActivityAt: null },
+        agents: [],
+        delegation_mode: 'flat',
+        delegationHealth: {},
+        hookHealth: { healthy: true, issueCount: 0 },
+        contextBudget: null,
+        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+      },
+    });
+    h.dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true,
+        completedTasks: 1,
+        idleFreezeMs: 180000,
+        sanityCapMs: 900000,
+        workers: {},
+        agentMetrics: [
+          {
+            id: 'coding-specialist', name: 'Coding Specialist', status: 'active', model: 'sonnet',
+            vendor: 'anthropic', fallbackCount: 2, lastFallbackModel: 'claude-haiku', tokens: 700, activeMs: 20000, taskCount: 1,
+            lastActivityAt: Date.now(),
+          },
+        ],
+      },
+    });
+    h.tick(5);
+    await h.flush();
+    assert.equal(h.errors.length, 0, `errors: ${h.errors.map(String).join('; ')}`);
+    const tbody = h.doc.getElementById('metrics-tbody');
+    const row = [...tbody.querySelectorAll('tr')].find((r: any) => !r.classList.contains('metrics-footer-row'));
+    const nameSpan = row.querySelector('td.col-name span');
+    assert.ok(!/\((d)?fb\)/.test(nameSpan.textContent), 'no fallback suffix once the marker is cleared');
+    assert.ok(!nameSpan.classList.contains('agent-accent-fallback'), 'no amber accent once the marker is cleared');
+    assert.equal(nameSpan.title, 'Fell back 2 times; last: claude-haiku');
+  } finally {
+    h.win.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // p63-t5: buildMetricsRollup / buildMetricsRow — records with no `tokens`
 // field render "n/a" and are excluded from totals ("N tokens (M agents

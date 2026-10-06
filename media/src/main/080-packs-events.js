@@ -1139,10 +1139,16 @@
     nameText.textContent = displayNameWithSuffix;
     // Light-blue foreign-vendor accent applies only while the agent is
     // active (p70-t1); idle/done rows use the default text color. The
-    // amber fallback accent is unchanged — it marks the (fb)/(dfb) row
-    // regardless of status.
+    // amber fallback accent marks the (fb)/(dfb) row regardless of status,
+    // but only while the agent's most recent run was a fallback.
     if (showActive && rowAccentKind === "foreign") nameText.className = "agent-accent-foreign";
     else if (rowAccentKind === "fallback") nameText.className = "agent-accent-fallback";
+    // Cumulative fallback history lives in the tooltip; the (fb)/(dfb)
+    // suffix above reflects only the most recent run.
+    if (typeof agent.fallbackCount === "number" && agent.fallbackCount > 0) {
+      nameText.title = `Fell back ${agent.fallbackCount} time${agent.fallbackCount === 1 ? "" : "s"}` +
+        (agent.lastFallbackModel ? `; last: ${agent.lastFallbackModel}` : "");
+    }
     nameTd.appendChild(nameText);
 
     // Per-spawn instance count (liveSpawns, src/core/state.ts AgentMetric):

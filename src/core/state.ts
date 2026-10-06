@@ -65,9 +65,9 @@ export interface AgentMetric {
   /** Backend cost model class ("metered" | "subscription" | "local"), from the same backend match as `vendor` (p2-t5). Undefined when never reported. */
   costModelClass?: "metered" | "subscription" | "local";
   /**
-   * Originally assigned slot id (agent id) for the most recent fallback
-   * re-dispatch of this agent, per FallbackState (src/core/fallbackChain.ts,
-   * p15-t2). Undefined when this agent has never run on a fallback model.
+   * Originally assigned slot id (agent id) when this agent's most recent run
+   * was a fallback re-dispatch, per FallbackState (src/core/fallbackChain.ts,
+   * p15-t2). Cleared by the next non-fallback spawn; fallbackCount keeps history.
    */
   fallbackOf?: string;
   /** 1-based index into the fallback chain for the most recent fallback dispatch. Undefined when never fallen back. */
@@ -76,6 +76,8 @@ export interface AgentMetric {
    *  defaultFallback rather than the agent's own chain entry. Undefined when never fallen back
    *  or on records predating this field. */
   fallbackIsDefault?: boolean;
+  /** Model the most recent fallback dispatch ran on (survives the marker being cleared). Absent when never fallen back. */
+  lastFallbackModel?: string;
   /** Total number of fallback re-dispatches recorded for this agent. Always present (default 0) so the webview can sum it. */
   fallbackCount: number;
   /** One-line description of this agent's role. */
@@ -633,9 +635,21 @@ export function applyEvent(state: MetricsWorldState, event: NormalizedEvent): Me
           delegationMode: event.delegationMode ?? m.delegationMode,
           vendor: event.vendor ?? m.vendor,
           costModelClass: event.costModelClass ?? m.costModelClass,
-          fallbackOf: event.fallbackOf ?? m.fallbackOf,
-          fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
-          fallbackIsDefault: event.fallbackOf !== undefined ? event.fallbackIsDefault : m.fallbackIsDefault,
+          // The fallback marker describes the most recent run only. A fallback
+          // spawn sets it; a NEW non-fallback spawn clears it. A non-fallback
+          // spawn re-reporting a spawnId already live (same run) keeps it, so
+          // a duplicate start record can never undo the run's own fallback.
+          // fallbackCount stays cumulative history.
+          ...(event.fallbackOf !== undefined
+            ? {
+                fallbackOf: event.fallbackOf,
+                fallbackDepth: event.fallbackDepth ?? m.fallbackDepth,
+                fallbackIsDefault: event.fallbackIsDefault,
+                ...(event.model !== undefined ? { lastFallbackModel: event.model } : {}),
+              }
+            : event.spawnId !== undefined && (m.liveSpawns ?? []).includes(event.spawnId)
+              ? {}
+              : { fallbackOf: undefined, fallbackDepth: undefined, fallbackIsDefault: undefined }),
           fallbackCount: event.fallbackOf !== undefined ? m.fallbackCount + 1 : m.fallbackCount,
           status: "active" as const,
           workStartAt: m.workStartAt ?? event.at,
