@@ -228,10 +228,10 @@ const ABSOLUTE_PATH_PATTERNS: RegExp[] = [
 ];
 
 const SECRET_PATTERNS: RegExp[] = [
-  /sk-[A-Za-z0-9_-]{20,}/,
-  /AIza[0-9A-Za-z_-]{35}/,
-  /ghp_[A-Za-z0-9]+/,
-  /github_pat_[A-Za-z0-9_]+/,
+  /(?<![A-Za-z0-9+/])sk-[A-Za-z0-9_-]{20,}/,
+  /(?<![A-Za-z0-9+/])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_+/-])/,
+  /(?<![A-Za-z0-9+/])ghp_[A-Za-z0-9]+/,
+  /(?<![A-Za-z0-9+/])github_pat_[A-Za-z0-9_]+/,
   /Bearer\s+\S+/,
   /\b[0-9a-fA-F]{32,}\b/,
   /\b[A-Za-z0-9+/]{40,}={0,2}\b/,

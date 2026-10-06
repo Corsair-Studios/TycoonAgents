@@ -48,8 +48,17 @@ export const FORBIDDEN_PACKAGE_IMPORTS = [
 // OpenAI-style keys ("sk-" + 20+ alnum/_/- chars) and Google-style API keys
 // ("AIza" + 35 alnum/_/- chars). The 20-char OpenAI bound is deliberate: it
 // clears benign short "sk-..." model-id-shaped strings that are not keys.
-export const OPENAI_KEY_RE = /sk-[A-Za-z0-9_-]{20,}/;
-export const GOOGLE_KEY_RE = /AIza[0-9A-Za-z_-]{35}/;
+//
+// Both match only at a token boundary: not preceded by a base64/alnum char
+// (so a run inside base64 image data is not a key), and the fixed-length
+// Google key must not be followed by another token char either.
+export const OPENAI_KEY_RE = /(?<![A-Za-z0-9+/])sk-[A-Za-z0-9_-]{20,}/;
+export const GOOGLE_KEY_RE = /(?<![A-Za-z0-9+/])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_+/-])/;
+
+/** Blanks the payload of `data:<mime>;base64,` URIs so image bytes are never key-scanned. */
+export function stripDataUriPayloads(text: string): string {
+  return text.replace(/(data:[\w.+-]+\/[\w.+-]+(?:;[\w=.+-]+)*;base64,)[A-Za-z0-9+/=_-]*/g, "$1");
+}
 
 export const BINARY_EXTENSIONS = new Set([
   ".png",
@@ -90,7 +99,8 @@ export function findForbiddenManifestContent(
 ): Finding[] {
   const findings: Finding[] = [];
 
-  for (const { path: entryPath, text } of entries) {
+  for (const { path: entryPath, text: rawText } of entries) {
+    const text = stripDataUriPayloads(rawText);
     const basename = entryPath.split(/[\\/]/).pop() ?? entryPath;
     if (!FORBIDDEN_MANIFEST_BASENAMES.includes(basename)) continue;
 
@@ -120,7 +130,8 @@ export function findForbiddenProviderStrings(
 ): Finding[] {
   const findings: Finding[] = [];
 
-  for (const { path: entryPath, text } of entries) {
+  for (const { path: entryPath, text: rawText } of entries) {
+    const text = stripDataUriPayloads(rawText);
     for (const dir of FORBIDDEN_PACKAGE_DIRS) {
       if (entryPath.includes(dir)) {
         findings.push({ path: entryPath, pattern: `package:${dir}`, match: entryPath });

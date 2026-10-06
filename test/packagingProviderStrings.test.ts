@@ -15,6 +15,7 @@ import {
   findForbiddenProviderStrings,
   findForbiddenManifestContent,
   isBinaryPath,
+  stripDataUriPayloads,
 } from "./packagingProviderStrings";
 
 test("findForbiddenProviderStrings: flags OpenAI/Google hostnames, package imports, and key-shaped strings", () => {
@@ -71,4 +72,27 @@ test("isBinaryPath: recognizes known binary extensions and rejects text ones", (
   assert.equal(isBinaryPath("extension/media/icon.png"), true);
   assert.equal(isBinaryPath("extension/dist/tycoonagents-0.0.1.vsix"), true);
   assert.equal(isBinaryPath("extension/out/src/core/teamSetup.js"), false);
+});
+
+const FAKE_GOOGLE_KEY = "AIza" + "SyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q";
+
+test("provider key scan: real-looking AIza key is flagged in env and JSON text", () => {
+  const findings = findForbiddenProviderStrings([
+    { path: "a/.env", text: `KEY=${FAKE_GOOGLE_KEY}
+` },
+    { path: "a/c.json", text: `{"k": "${FAKE_GOOGLE_KEY}"}` },
+    { path: "a/d.txt", text: `key: ${FAKE_GOOGLE_KEY}` },
+  ]);
+  assert.equal(findings.filter((f) => f.pattern === "key:google(AIza)").length, 3);
+});
+
+test("provider key scan: key-shaped chars inside base64 runs or data URIs are not flagged", () => {
+  const run = "iVBORw0KGgoAAAANSUhEUgAAAKloO" + FAKE_GOOGLE_KEY + "AAAA/+zz";
+  const findings = findForbiddenProviderStrings([
+    { path: "a/frames.json", text: JSON.stringify({ img: run }) },
+    { path: "a/uri.json", text: JSON.stringify({ img: `data:image/png;base64,${FAKE_GOOGLE_KEY}AAAA` }) },
+    { path: "a/sk.json", text: JSON.stringify({ img: "QUJD" + "sk-abcdefghijklmnopqrstuvwx" }) },
+  ]);
+  assert.deepEqual(findings, []);
+  assert.equal(stripDataUriPayloads("x data:image/png;base64,AAAA y"), "x data:image/png;base64, y");
 });
