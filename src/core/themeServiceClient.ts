@@ -17,6 +17,7 @@
  * "Auth — Supabase GoTrue REST, direct from the client".
  */
 
+import { sanitizeImageProviderText } from "./imageProviderText";
 import type { StructuredGenerateRequest } from "./themePromptTemplates";
 
 // Canonical production endpoints (docs/theme-service-api.md, Conventions),
@@ -1040,7 +1041,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
       if (res.ok) return { status: "ok", value: json };
       if (res.status === 401) return { status: "unauthorized" };
       const errBody = isRecord(json) ? json : {};
-      const errorField = typeof errBody.error === "string" ? errBody.error : undefined;
+      const errorField = typeof errBody.error === "string" ? sanitizeImageProviderText(errBody.error) : undefined;
       const credits = typeof errBody.credits === "number" ? errBody.credits : undefined;
       const refunded = typeof errBody.refunded === "boolean" ? errBody.refunded : undefined;
       const codeField = typeof errBody.code === "string" ? errBody.code : undefined;

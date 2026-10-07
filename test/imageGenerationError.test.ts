@@ -6,7 +6,7 @@ import {
   parseOpenAIImageError,
 } from '../src/extension/imageGenerationError';
 
-test('OpenAI moderation failures retain structured recovery details', () => {
+test('Image provider moderation failures retain structured recovery details', () => {
   const error = parseOpenAIImageError(400, JSON.stringify({
     error: {
       message: 'Your request was rejected by the safety system. Request ID body-request-id.',
@@ -19,7 +19,7 @@ test('OpenAI moderation failures retain structured recovery details', () => {
     },
   }), 'header-request-id');
 
-  assert.equal(error.message, 'OpenAI blocked this image request. Revise the prompt or input images, then retry.');
+  assert.equal(error.message, 'The image provider blocked this image request. Revise the prompt or input images, then retry.');
   assert.equal(error.code, 'moderation_blocked');
   assert.equal(error.requestId, 'header-request-id');
   assert.deepEqual(error.moderationDetails, {
@@ -30,7 +30,7 @@ test('OpenAI moderation failures retain structured recovery details', () => {
   assert.equal(error.retryable, false);
 });
 
-test('OpenAI transient failures are retryable but not user-correctable', () => {
+test('Image provider transient failures are retryable but not user-correctable', () => {
   const error = parseOpenAIImageError(503, 'temporarily unavailable');
   assert.equal(error.retryable, true);
   assert.equal(error.userCorrectable, false);

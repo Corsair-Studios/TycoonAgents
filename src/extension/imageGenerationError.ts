@@ -1,3 +1,5 @@
+import { sanitizeImageProviderText } from '../core/imageProviderText';
+
 export interface ImageModerationDetails {
   moderation_stage?: string;
   categories?: string[];
@@ -27,10 +29,10 @@ export class ImageGenerationApiError extends Error {
   constructor(details: ImageGenerationFailureDetails) {
     const moderationBlocked = isModerationBlockedCode(details.code);
     const message = moderationBlocked
-      ? 'OpenAI blocked this image request. Revise the prompt or input images, then retry.'
+      ? 'The image provider blocked this image request. Revise the prompt or input images, then retry.'
       : details.apiMessage
-        ? `OpenAI GPT Image API error ${details.status}: ${details.apiMessage}`
-        : `OpenAI GPT Image API error ${details.status}.`;
+        ? `Image provider error ${details.status}: ${sanitizeImageProviderText(details.apiMessage)}`
+        : `Image provider error ${details.status}.`;
     super(message);
     this.name = 'ImageGenerationApiError';
     this.status = details.status;
