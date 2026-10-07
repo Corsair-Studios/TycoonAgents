@@ -26,7 +26,15 @@
 // Node built-ins only — standalone/package.json ships zero dependencies.
 
 import { createActivityWatcher } from './activityWatcher.mjs';
-import { computeStateFromRecords, computeDelegationModeStats } from './sharedLogic.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  computeStateFromRecords,
+  computeDelegationModeStats,
+  loadAgentRoster,
+  rosterSeedEvents,
+  stampRosterModels,
+} from './sharedLogic.mjs';
 
 // Mirrors MSG.STATE ("state") from src/host/vscode/messages.ts — see module
 // header. Wire-string duplication only; the VALUE must stay byte-identical
@@ -72,8 +80,38 @@ export function createStateFeed({ projectRoot, broadcast }) {
   // connect.
   let currentState = null;
 
+  // Roster cache keyed on the agents dir mtime + each .md file's mtime/size, so
+  // recompute() stats files but only re-reads them when something changed.
+  let rosterSig = null;
+  let rosterCache = [];
+  function loadRosterCached(agentsDir) {
+    let sig = 'missing';
+    try {
+      const parts = [String(fs.statSync(agentsDir).mtimeMs)];
+      for (const f of fs.readdirSync(agentsDir).filter((n) => n.endsWith('.md')).sort()) {
+        const st = fs.statSync(path.join(agentsDir, f));
+        parts.push(`${f}:${st.mtimeMs}:${st.size}`);
+      }
+      sig = parts.join('|');
+    } catch {
+      /* missing/unreadable dir => empty roster */
+    }
+    if (sig !== rosterSig) {
+      rosterCache = sig === 'missing' ? [] : loadAgentRoster(agentsDir);
+      rosterSig = sig;
+    }
+    return rosterCache;
+  }
+
   function recompute() {
-    const state = computeStateFromRecords(records);
+    // Same roster seeding + model stamping the VS Code host does (extension.ts
+    // WorkerRegistered/RosterSeeded, panel.ts _stampRosterModels) so rows carry
+    // roster display names and the orchestrator's roster model.
+    const agentsDir = path.join(projectRoot, '.claude', 'agents');
+    const roster = loadRosterCached(agentsDir);
+    const seed = roster.length > 0 ? rosterSeedEvents(roster, Date.now()) : [];
+    const raw = computeStateFromRecords(records, undefined, seed);
+    const state = stampRosterModels(raw, roster);
     currentState =
       state !== null && typeof state === 'object' && Array.isArray(state.agentMetrics)
         ? { ...state, modeStats: computeDelegationModeStats(state.agentMetrics) }

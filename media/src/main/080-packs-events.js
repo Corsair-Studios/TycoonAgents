@@ -688,7 +688,15 @@
       ? lastRoutingPayload.agents.find((x) => x && x.id === id)
       : null;
     const m = ra && ra.backend && ra.backend.model;
-    return typeof m === "string" && m.trim() ? m.trim() : null;
+    const model = typeof m === "string" && m.trim() ? m.trim() : null;
+    // Antigravity (agy) always runs Gemini 3.5 Flash, whatever the routing
+    // model says; the routing model only applies on the paid gemini backend.
+    const vendor = ra && ra.backend && typeof ra.backend.vendor === "string" ? ra.backend.vendor.toLowerCase() : "";
+    const gState = model && (vendor === "google" || /^gemini/i.test(model)) ? geminiBackendState() : null;
+    if (gState && gState.known && gState.value === "agy") {
+      return "gemini-3.5-flash (Antigravity)";
+    }
+    return model;
   }
 
   /**
@@ -1136,6 +1144,7 @@
    */
   function shortModelLabel(model) {
     if (!model) return "";
+    if (/\(Antigravity\)\s*$/.test(String(model))) return String(model);
     const family = modelFamily(model);
     if (family) return family;
     let s = String(model);

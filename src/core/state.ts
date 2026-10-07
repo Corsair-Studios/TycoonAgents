@@ -1213,8 +1213,14 @@ export function computeDelegationModeStats(agentMetrics: AgentMetric[]): Delegat
 export function computeStateFromRecords(
   records: RawRecord[],
   filterSessionId?: string,
+  seedEvents?: NormalizedEvent[],
 ): MetricsWorldState {
   let state = initialWorldState();
+  // Roster seeding (WorkerRegistered / RosterSeeded) applied before any record,
+  // mirroring the live runtime where the host seeds the roster at start.
+  for (const event of seedEvents ?? []) {
+    state = applyEvent(state, event);
+  }
   let lastActivityAt: number | null = null;
   for (const record of records) {
     if (filterSessionId !== undefined && record.sessionId !== filterSessionId) continue;

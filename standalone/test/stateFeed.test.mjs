@@ -247,3 +247,76 @@ test('createStateFeed: an empty project (no .claude/tycoon) does not throw and y
     rmTempProject(projectRoot);
   }
 });
+
+test('stateFeed seeds roster display names and stamps the orchestrator roster model', () => {
+  const root = mkTempProject();
+  try {
+    const agentsDir = path.join(root, '.claude', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'orchestrator.md'), '---\nmodel: opus\n---\n# Orchestrator\n', 'utf8');
+    fs.writeFileSync(path.join(agentsDir, 'search-retrieval.md'), '---\nmodel: haiku\n---\n# Search & Retrieval Agent\n', 'utf8');
+    fs.writeFileSync(path.join(agentsDir, 'ux-ui-designer.md'), '---\nmodel: sonnet\n---\n# UX/UI Designer\n', 'utf8');
+    const calls = [];
+    const feed = createStateFeed({ projectRoot: root, broadcast: fakeBroadcast(calls) });
+    try {
+      const metrics = feed.getStateMessage().state.agentMetrics;
+      const byId = Object.fromEntries(metrics.map((m) => [m.id, m]));
+      assert.equal(byId['search-retrieval'].name, 'Search & Retrieval');
+      assert.equal(byId['ux-ui-designer'].name, 'UX/UI Designer');
+      assert.equal(byId['ux-ui-designer'].model, 'sonnet');
+      assert.equal(byId['orchestrator'].rosterModel, 'opus');
+    } finally {
+      feed.close();
+    }
+  } finally {
+    rmTempProject(root);
+  }
+});
+
+test('stateFeed with no .claude/agents dir does not crash and seeds nothing', () => {
+  const root = mkTempProject();
+  try {
+    const feed = createStateFeed({ projectRoot: root, broadcast: fakeBroadcast([]) });
+    try {
+      assert.deepEqual(feed.getStateMessage().state.agentMetrics, []);
+    } finally {
+      feed.close();
+    }
+  } finally {
+    rmTempProject(root);
+  }
+});
+
+test('stateFeed roster cache: unchanged agent files are not re-read; (fb) marker kept for rostered agent', async () => {
+  const root = mkTempProject();
+  const realRead = fs.readFileSync;
+  try {
+    const agentsDir = path.join(root, '.claude', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'coding-specialist.md'), '---\nmodel: sonnet\n---\n# Coding Specialist\n', 'utf8');
+    writeFixture(root, [
+      { event: 'PreToolUse', tool: 'Task', workerId: 'coding-specialist', fallbackOf: 'coding-specialist', fallbackDepth: 1, model: 'sonnet', at: Date.now() },
+    ]);
+    let agentReads = 0;
+    fs.readFileSync = function (p, ...rest) {
+      if (String(p).startsWith(agentsDir)) agentReads += 1;
+      return realRead.call(this, p, ...rest);
+    };
+    const calls = [];
+    const feed = createStateFeed({ projectRoot: root, broadcast: fakeBroadcast(calls) });
+    try {
+      assert.equal(agentReads, 1);
+      await waitFor(() => feed.getStateMessage().state.agentMetrics.some((m) => m.id === 'coding-specialist' && m.fallbackOf));
+      appendFixture(root, [{ event: 'PostToolUse', tool: 'Read', workerId: 'coding-specialist', at: Date.now() }]);
+      await waitFor(() => calls.length >= 2);
+      assert.equal(agentReads, 1, 'roster file must not be re-read while unchanged');
+      const m = feed.getStateMessage().state.agentMetrics.find((x) => x.id === 'coding-specialist');
+      assert.equal(m.fallbackOf, 'coding-specialist');
+    } finally {
+      feed.close();
+    }
+  } finally {
+    fs.readFileSync = realRead;
+    rmTempProject(root);
+  }
+});

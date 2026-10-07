@@ -362,3 +362,34 @@ test("delegation tiers: foreign agents group by backend model in a separate grou
   const grokRow = [...body.querySelectorAll(".delegation-tier-row")].find((r: any) => r.querySelector(".delegation-tier-name").textContent === "grok-4.7");
   assert.doesNotMatch(grokRow.textContent, /%/);
 });
+
+function geminiFixture(geminiValue: string) {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [
+    { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", rosterModel: "opus", tokens: 2000000, activeMs: 1000, taskCount: 0 },
+    { id: "gemini-reviewer", name: "Gemini Reviewer", status: "idle", model: "haiku", vendor: "google", tokens: 10000, activeMs: 5000, taskCount: 1 },
+  ]);
+  dispatch({ type: "settings", payload: agentsPayload() });
+  const payload: any = routingWith([
+    { id: "gemini-reviewer", name: "gemini-reviewer", backend: { vendor: "google", transport: "mcp", model: "gemini-2.5-pro", costModelClass: "metered" }, source: "default" },
+  ]);
+  payload.bridge = { gemini: { serverPresent: true, value: geminiValue }, mcpServers: [] };
+  dispatch({ type: "routing", payload });
+  return openDelegationTab(doc);
+}
+
+test("delegation table: Gemini on Antigravity shows gemini-3.5-flash, not the routing model", () => {
+  const body = geminiFixture("agy");
+  const cell = rowFor(body, "Gemini Reviewer").querySelector(".col-model").textContent;
+  assert.match(cell, /gemini-3\.5-flash \(Antigravity\)/);
+  assert.doesNotMatch(cell, /2\.5-pro/);
+  const tierNames = [...body.querySelectorAll(".delegation-tier-name")].map((n: any) => n.textContent);
+  assert.ok(tierNames.includes("gemini-3.5-flash (Antigravity)"));
+});
+
+test("delegation table: Gemini on the paid gemini backend keeps the routing model", () => {
+  const body = geminiFixture("gemini");
+  const cell = rowFor(body, "Gemini Reviewer").querySelector(".col-model").textContent;
+  assert.match(cell, /gemini-2\.5-pro/);
+  assert.doesNotMatch(cell, /Antigravity/);
+});

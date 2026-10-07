@@ -61,6 +61,7 @@ const CLAUDE_CODE_PROVIDER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 
 const REGISTER_ALL_MAPPERS_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'registerAllMappers.js');
 const HOOK_INSTALL_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'hookInstall.js');
 const PROVIDER_SELECTION_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'providerSelection.js');
+const AGENT_ROSTER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'agentRoster.js');
 const FEEDBACK_SUBMIT_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'feedbackSubmit.js');
 
 const require = createRequire(import.meta.url);
@@ -137,6 +138,14 @@ function providerSelectionModule() {
   return _providerSelectionModule;
 }
 
+let _agentRosterModule;
+function agentRosterModule() {
+  if (!_agentRosterModule) {
+    _agentRosterModule = requireCompiled(AGENT_ROSTER_JS, 'out/src/providers/claude-code/agentRoster.js');
+  }
+  return _agentRosterModule;
+}
+
 let _feedbackSubmitModule;
 function feedbackSubmitModule() {
   if (!_feedbackSubmitModule) {
@@ -157,7 +166,7 @@ function assertFn(fn, name, sourceLabel) {
 }
 
 /** @type {(records: object[], filterSessionId?: string) => import('../../src/core/state').MetricsWorldState} */
-export function computeStateFromRecords(records, filterSessionId) {
+export function computeStateFromRecords(records, filterSessionId, seedEvents) {
   // Ensure every provider's mapper is registered via the real provider
   // modules (loading them also triggers mappingRegistry.js's fail-fast
   // checks). Both are required regardless of the selected --provider since
@@ -165,7 +174,7 @@ export function computeStateFromRecords(records, filterSessionId) {
   registerAllMappersModule();
   claudeCodeProviderModule();
   const fn = assertFn(stateModule().computeStateFromRecords, 'computeStateFromRecords', 'out/src/core/state.js');
-  return fn(records, filterSessionId);
+  return fn(records, filterSessionId, seedEvents);
 }
 
 /** @type {() => import('../../src/core/state').MetricsWorldState} */
@@ -400,4 +409,31 @@ export function buildFeedbackContext(root, opts) {
 export function postFeedback(bodyString, endpoint, fetchImpl, timeoutMs) {
   const fn = assertFn(feedbackSubmitModule().postFeedback, 'postFeedback', 'out/src/host/vscode/feedbackSubmit.js');
   return fn(bodyString, endpoint, fetchImpl, timeoutMs);
+}
+
+/** Roster seed events (WorkerRegistered per agent + RosterSeeded) — the shared
+ * agentRoster.ts helper the VS Code host's seeding mirrors.
+ * @type {(agentsDir: string, at?: number) => object[]} */
+export function buildRosterSeedEvents(agentsDir, at) {
+  const fn = assertFn(agentRosterModule().buildRosterSeedEvents, 'buildRosterSeedEvents', 'out/src/providers/claude-code/agentRoster.js');
+  return fn(agentsDir, at);
+}
+
+/** Load the installed-agent roster (one fs pass).
+ * @type {(agentsDir: string) => object[]} */
+export function loadAgentRoster(agentsDir) {
+  return assertFn(agentRosterModule().loadAgentRoster, 'loadAgentRoster', 'out/src/providers/claude-code/agentRoster.js')(agentsDir);
+}
+
+/** Seed events from an already-loaded roster. */
+export function rosterSeedEvents(roster, at) {
+  return assertFn(agentRosterModule().rosterSeedEvents, 'rosterSeedEvents', 'out/src/providers/claude-code/agentRoster.js')(roster, at);
+}
+
+/** Stamp roster models onto state.agentMetrics from an already-loaded roster. */
+export function stampRosterModels(state, roster) {
+  const mod = agentRosterModule();
+  const stamp = assertFn(mod.stampRosterModels, 'stampRosterModels', 'out/src/providers/claude-code/agentRoster.js');
+  const map = assertFn(mod.rosterModelMap, 'rosterModelMap', 'out/src/providers/claude-code/agentRoster.js');
+  return stamp(state, map(roster));
 }

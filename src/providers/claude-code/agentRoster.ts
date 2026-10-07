@@ -80,3 +80,78 @@ export function loadAgentRoster(agentsDir: string): RosterAgent[] {
   });
   return agents;
 }
+
+/** Roster display name shown on the metrics row (search-retrieval drops its " Agent" suffix). */
+export function rosterDisplayName(agent: RosterAgent): string {
+  return agent.id === "search-retrieval" ? agent.name.replace(/ Agent$/, "") : agent.name;
+}
+
+/**
+ * Events a host ingests to seed the installed-agent roster: one
+ * WorkerRegistered per agent file, then RosterSeeded. Shared by the standalone
+ * server so it stamps the same names/models the VS Code host does.
+ */
+export function buildRosterSeedEvents(agentsDir: string, at: number = Date.now()): any[] {
+  return rosterSeedEvents(loadAgentRoster(agentsDir), at);
+}
+
+/** Same as buildRosterSeedEvents but from an already-loaded roster (no fs access). */
+export function rosterSeedEvents(roster: RosterAgent[], at: number): any[] {
+  const events: any[] = roster.map((agent) => ({
+    type: "WorkerRegistered",
+    at,
+    workerId: agent.id,
+    name: rosterDisplayName(agent),
+    ...(agent.model !== undefined ? { model: agent.model } : {}),
+    ...(agent.description !== undefined ? { description: agent.description } : {}),
+  }));
+  events.push({ type: "RosterSeeded", at });
+  return events;
+}
+
+/**
+ * Pure counterpart of panel.ts's _stampRosterModels: overwrite each metric's
+ * `model` with the roster value (keeping the hook-observed one on
+ * `observedModel`); the orchestrator keeps its observed `model` and gets the
+ * roster value on `rosterModel`.
+ */
+export function stampRosterModels(state: any, roster: Map<string, string>): any {
+  if (state === null || typeof state !== "object" || !Array.isArray(state.agentMetrics)) {
+    return state;
+  }
+  return {
+    ...state,
+    agentMetrics: state.agentMetrics.map((m: any) => {
+      if (m === null || typeof m !== "object" || typeof m.id !== "string") return m;
+      const rm = roster.get(m.id);
+      const observed = typeof m.model === "string" && m.model.trim() !== "" ? m.model : undefined;
+      if (!rm && observed === undefined) return m;
+      if (m.id === "orchestrator") {
+        return {
+          ...m,
+          ...(rm ? { rosterModel: rm } : {}),
+          ...(observed !== undefined ? { observedModel: observed } : {}),
+        };
+      }
+      return {
+        ...m,
+        ...(rm ? { model: rm } : {}),
+        ...(observed !== undefined ? { observedModel: observed } : {}),
+      };
+    }),
+  };
+}
+
+/** Agent id -> frontmatter model for every roster file that declares one. */
+export function loadRosterModelMap(agentsDir: string): Map<string, string> {
+  return rosterModelMap(loadAgentRoster(agentsDir));
+}
+
+/** Agent id -> model map from an already-loaded roster (no fs access). */
+export function rosterModelMap(roster: RosterAgent[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const agent of roster) {
+    if (agent.model) map.set(agent.id, agent.model);
+  }
+  return map;
+}
