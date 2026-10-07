@@ -125,7 +125,21 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
                 ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
               },
             ];
-      return [...stopped, { type: "ProviderError", at: record.at, message, workerId }];
+      const limit: NormalizedEvent[] =
+        workerId === "orchestrator" && record.reason
+          ? [
+              {
+                type: "OrchestratorLimit",
+                at: record.at,
+                kind: record.reason,
+                // Short, capped; the hook never puts secrets in message/resetHint.
+                message: message.slice(0, 200),
+                ...(record.resetHint !== undefined ? { resetHint: record.resetHint.slice(0, 80) } : {}),
+                ...(record.resetAt !== undefined ? { resetAt: record.resetAt } : {}),
+              },
+            ]
+          : [];
+      return [...stopped, { type: "ProviderError", at: record.at, message, workerId }, ...limit];
     }
     case "SubagentStop":
       // ORDER MATTERS: TaskCompleted first so task count increments before the

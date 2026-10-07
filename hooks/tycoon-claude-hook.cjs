@@ -847,6 +847,33 @@ function classifyStopFailure(errorField, text) {
   return textKind;
 }
 
+/**
+ * Best-effort concrete reset instant (epoch ms) from a short reset hint:
+ * "resets at <ISO>" or a clock time ("resets 3pm", "resets 12:30am"; local
+ * time of this machine, next occurrence). Returns undefined when unparseable.
+ */
+function parseResetAt(hint, now) {
+  const t = String(hint || "");
+  // Any timezone name/abbreviation or numeric offset makes the instant
+  // ambiguous: trust only ISO with trailing Z, or a zone-less clock time.
+  if (/\([^)]*\)|\b[A-Za-z]+\/[A-Za-z_]+|\b(?:UTC|GMT|[A-Z]{2,4}T)\b|T[\d:.]+[+-]\d{2}:?\d{2}/.test(t)) return undefined;
+  const iso = /(\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(t);
+  if (iso) {
+    const ms = Date.parse(iso[1]);
+    return Number.isFinite(ms) ? ms : undefined;
+  }
+  const clock = /\bresets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(t);
+  if (clock) {
+    let h = Number(clock[1]) % 12;
+    if (clock[3].toLowerCase() === "pm") h += 12;
+    const d = new Date(now);
+    d.setHours(h, Number(clock[2] || 0), 0, 0);
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  return undefined;
+}
+
 function claudeAliasForModel(model) {
   const t = String(model || "").toLowerCase();
   for (const a of ["opus", "sonnet", "haiku"]) if (t.indexOf(a) !== -1) return a;
@@ -870,7 +897,7 @@ function handleStopFailure(ctx) {
   const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : "unknown-session";
   const kind = classifyStopFailure(errorField, text);
   const br = getBridgeResultModule();
-  const resetHint = (br && br.extractResetHint(text).resetHint) || "";
+  const resetHint = (br && (br.extractResetHint(text).resetHint || br.extractResetHint(errorField).resetHint)) || "";
   const limitMatch = /you'?ve (?:hit|reached) your ([\w -]{0,30}?limit)/i.exec(text);
   const label = (limitMatch && limitMatch[1].toLowerCase()) || STOPFAILURE_KIND_LABEL[kind] || STOPFAILURE_KIND_LABEL.unknown;
   const reasonText = `${label}${resetHint ? ` (${resetHint})` : ""}`.slice(0, 300);
@@ -891,6 +918,11 @@ function handleStopFailure(ctx) {
       reason: kind,
       message: `Orchestrator hit its limit: ${reasonText}`,
     };
+    // OrchestratorLimit inputs (mapHookRecord): resetHint is the short human
+    // string; resetAt only when it parses to a concrete future instant.
+    if (resetHint) record.resetHint = resetHint.split(/[.;\n]/)[0].trim().slice(0, 80);
+    const resetAt = parseResetAt(resetHint, at);
+    if (resetAt) record.resetAt = resetAt;
     try { fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8"); } catch { /* ignore */ }
     return;
   }

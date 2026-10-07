@@ -269,7 +269,7 @@ function parseBridgeResult(toolResponse, opts) {
 // "HTTP 529", "error 529"), never a bare number such as a stack frame "x.js:529:10".
 const OVERLOADED_RE = /overloaded_error|engine_overloaded|(?<![:\w.])529\s+overloaded|(?:status|http|error|code)\W{0,3}529(?![:\w.])/i;
 const BILLING_RE = /billing_error|credit balance is (?:too )?low|insufficient (?:credits?|balance|funds)|payment required|\bArrearage\b/i;
-const QUOTA_SPECIFIC_RE = /you'?ve (?:hit|reached) your [\w -]{0,30}limit|usage limit reached|reached your (?:api )?usage limits?|regain access on|enforced_spend_limit|spend limit|insufficient_quota|exceeded_current_quota|exceeded your current quota|allocated quota exceeded|AllocationQuota|resource has been exhausted|\bTPD\b[^\n]{0,30}rate limit|tokens per day|requests per day/i;
+const QUOTA_SPECIFIC_RE = /you'?ve (?:hit|reached) your [\w -]{0,30}limit|(?:\b(?:5|five)[- ]hour|\bweekly) limit\b.{0,40}\b(?:reached|hit|exceeded|exhausted)\b|\b(?:reached|hit|exceeded|exhausted)\b.{0,40}(?:\b(?:5|five)[- ]hour|\bweekly) limit\b|usage limit reached|reached your (?:api )?usage limits?|regain access on|enforced_spend_limit|spend limit|insufficient_quota|exceeded_current_quota|exceeded your current quota|allocated quota exceeded|AllocationQuota|resource has been exhausted|\bTPD\b[^\n]{0,30}rate limit|tokens per day|requests per day/i;
 // Under an explicit HTTP 429 only machine codes / unambiguous cap wordings
 // refine to quota (a bare prose "exceeded your current quota" stays rate_limit).
 const QUOTA_CODE_RE = /insufficient_quota|exceeded_current_quota|enforced_spend_limit|AllocationQuota|resource has been exhausted|you'?ve (?:hit|reached) your [\w -]{0,30}limit|\bTPD\b[^\n]{0,30}rate limit/i;

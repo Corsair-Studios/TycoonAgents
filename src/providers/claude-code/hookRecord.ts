@@ -82,6 +82,8 @@ export interface HookRecord {
                               // `workerId`/`model` by mapHookRecord into the NormalizedEvent's `message`.
   message?: string;          // ProviderError only: free-form message, used verbatim as the NormalizedEvent's
                               // `message` when present, else derived from `reason`/workerId/model.
+  resetHint?: string;        // StopFailure (orchestrator) only: short human reset text, e.g. "resets 3pm"
+  resetAt?: number;          // StopFailure (orchestrator) only: parsed reset instant (epoch ms), when parseable
   at: number;                // epoch ms
   // StopFailure (a turn killed by an API error) reuses workerId/spawnId/model/message/reason above:
   // workerId "orchestrator" = the main session itself hit the error (never a fallback trigger).

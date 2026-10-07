@@ -286,6 +286,12 @@ export interface MetricsWorldState {
   sanityCapMs: number;
   /** Most recent hook activity timestamp (epoch ms) across all agents, or null if none. */
   lastActivityAt?: number | null;
+  /**
+   * Set when the main session died on an API error / usage limit
+   * (OrchestratorLimit); cleared by the next orchestrator activity
+   * (SessionStart or an orchestrator WorkerActivity after `at`).
+   */
+  orchestratorLimit?: { kind: string; at: number; resetHint?: string; resetAt?: number; message?: string };
   /** Internal: ids seeded via WorkerRegistered (the installed .claude/agents roster). Absent until a roster is seeded. */
   _registeredIds?: string[];
   /** Internal: true once the host signalled (RosterSeeded) that the full roster was seeded. Stale-marker clearing waits for it. */
@@ -305,6 +311,22 @@ function toDisplayName(id: string): string {
   return id
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** How long a limit with no parseable resetAt stays shown (ms). */
+export const ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Pure: is this orchestratorLimit still current at `now`? It expires once
+ * resetAt has passed, or ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS after `at` when
+ * resetAt is absent. For the UI to hide stale limits between events.
+ */
+export function isOrchestratorLimitActive(
+  limit: { at: number; resetAt?: number } | undefined,
+  now: number,
+): boolean {
+  if (!limit) return false;
+  return limit.resetAt !== undefined ? now < limit.resetAt : now - limit.at < ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS;
 }
 
 export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): MetricsWorldState {
@@ -558,7 +580,27 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
   if (typeof event.at === "number") {
     state = { ...state, lastActivityAt: Math.max(state.lastActivityAt ?? 0, event.at) };
   }
+  if (
+    state.orchestratorLimit &&
+    event.type !== "OrchestratorLimit" &&
+    event.at > state.orchestratorLimit.at &&
+    (!isOrchestratorLimitActive(state.orchestratorLimit, event.at) || event.type === "SessionStart" || (event.type === "WorkerActivity" && event.workerId === ORCHESTRATOR_ID))
+  ) {
+    const { orchestratorLimit: _cleared, ...rest } = state;
+    state = rest;
+  }
   switch (event.type) {
+    case "OrchestratorLimit":
+      return {
+        ...state,
+        orchestratorLimit: {
+          kind: event.kind,
+          at: event.at,
+          ...(event.resetHint !== undefined ? { resetHint: event.resetHint } : {}),
+          ...(event.resetAt !== undefined ? { resetAt: event.resetAt } : {}),
+          ...(event.message !== undefined ? { message: event.message } : {}),
+        },
+      };
     case "SessionStart": {
       // The orchestrator (main session) is working for the whole turn — light it
       // up the moment the user submits, covering the thinking phase before any
