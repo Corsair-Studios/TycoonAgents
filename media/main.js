@@ -21735,7 +21735,8 @@ function themeAnimPreviewDraw(player) {
   /** An env-var name input (never a value) + its live status/Set-value controls.
    * `kind` is "credential" (password-type Set value input) or "endpoint"
    * (plain text — a URL is not a secret). */
-  function buildEnvNameField(labelText, value, onChange, kind, fieldKey) {
+  function buildEnvNameField(labelText, value, onChange, kind, fieldKey, opts) {
+    opts = opts || {};
     var wrap = document.createElement("div");
     wrap.className = "routing-env-field";
     wrap.setAttribute("data-env-name", value || "");
@@ -21747,21 +21748,25 @@ function themeAnimPreviewDraw(player) {
     input.type = "text";
     input.className = "routing-env-input";
     input.value = value || "";
-    input.placeholder = "env var NAME, never the value";
+    input.placeholder = opts.placeholder || "env var NAME, never the value";
+    if (opts.optional) wrap.setAttribute("data-env-optional", "1");
     if (fieldKey) input.setAttribute("data-field-key", fieldKey);
     wrap.appendChild(input);
 
     var statusArea = document.createElement("span");
     statusArea.className = "routing-env-status";
+    // Claude Code / Codex custom rows say in words what the dot means (as the fixed rows do).
+    if (opts.stateWords) statusArea.setAttribute("data-fixed", "1");
     wrap.appendChild(statusArea);
-    refreshEnvStatusArea(statusArea, value, kind);
+    refreshEnvStatusArea(statusArea, value, kind, !!opts.optional);
 
     input.addEventListener("input", function () {
       var clean = sanitizeEnvName(input.value);
       if (clean !== input.value) input.value = clean;
       onChange(clean);
       wrap.setAttribute("data-env-name", clean);
-      refreshEnvStatusArea(statusArea, clean, kind);
+      refreshEnvStatusArea(statusArea, clean, kind, !!opts.optional);
+      if (opts.onNameChange) opts.onNameChange(clean);
     });
     input.addEventListener("blur", function () {
       if (input.value) probeEnvName(input.value);
@@ -21841,6 +21846,58 @@ function themeAnimPreviewDraw(player) {
       vendorKeyTestResults[spec.id] = { pending: true };
       applyVendorKeyTestResult(spec.id);
       vscode.postMessage({ type: ROUTING_MSG.TEST_VENDOR_KEY, vendor: spec.id, model: slot && slot.model ? String(slot.model) : undefined });
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(out);
+    return wrap;
+  }
+
+  /** Custom-endpoint credential variable shape (host re-checks this plus a deny-list; src/core/vendorKeys.ts). */
+  var CUSTOM_KEY_NAME_RE_UI = /^[A-Z][A-Z0-9_]*(_API_KEY|_KEY|_TOKEN)$/;
+
+  /**
+   * "Test connection" for a Custom endpoint slot (Claude Code / Codex hosts).
+   * Sends only the slot id and the two variable NAMES (read at click time, so
+   * an unsaved edit is tested); the host validates them and resolves the URL
+   * and key itself. The result line is keyed "custom:<slotId>".
+   */
+  function buildCustomEndpointTestControl(slot, slotId) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-keytest routing-keytest--custom";
+    var id = "custom:" + slotId;
+    wrap.setAttribute("data-spec-id", id);
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "routing-inline-link-btn routing-keytest-btn";
+    btn.textContent = "Test connection";
+    var out = document.createElement("span");
+    out.setAttribute("role", "status");
+    var cur = vendorKeyTestResults[id];
+    btn.disabled = !!(cur && cur.pending);
+    renderVendorKeyTestResult(out, cur);
+    btn.addEventListener("click", function () {
+      if (!slot.endpointEnv) {
+        vendorKeyTestResults[id] = { state: "invalid_config", message: "Not tested: name the base URL variable first." };
+        applyVendorKeyTestResult(id);
+        return;
+      }
+      if (slot.credentialEnv && !CUSTOM_KEY_NAME_RE_UI.test(slot.credentialEnv)) {
+        vendorKeyTestResults[id] = { state: "invalid_config", message: "Not tested: the API key variable must end in _API_KEY, _KEY or _TOKEN." };
+        applyVendorKeyTestResult(id);
+        return;
+      }
+      vendorKeyTestResults[id] = { pending: true };
+      applyVendorKeyTestResult(id);
+      var vendorName = slot.vendor && slot.vendor !== ROUTING_VENDOR_CUSTOM ? String(slot.vendor) : "";
+      vscode.postMessage({
+        type: ROUTING_MSG.TEST_VENDOR_KEY,
+        vendor: "custom",
+        slot: slotId,
+        endpointEnv: String(slot.endpointEnv),
+        apiKeyEnv: slot.credentialEnv ? String(slot.credentialEnv) : undefined,
+        slotVendor: vendorName || undefined,
+        model: slot.model ? String(slot.model) : undefined,
+      });
     });
     wrap.appendChild(btn);
     wrap.appendChild(out);
@@ -22812,7 +22869,27 @@ function themeAnimPreviewDraw(player) {
       fixedNote.textContent = "These names are fixed for this vendor. Values are stored per user in the TycoonAgents app-data folder, never in this project.";
       frag.appendChild(fixedNote);
     } else if (!isNativeVendorSlot) {
-      if (slot.transport === "openai-compatible" || isCustom) {
+      if ((slot.transport === "openai-compatible" || isCustom) && slotHarnessEff !== "opencode") {
+        // Claude Code / Codex: the bridge resolves exactly these names (env, then the per-user store),
+        // so several custom endpoints can sit side by side. Honest labels, set/unset words, Set value, Test.
+        var customSlotId = (keyPrefix || "slot").replace(/[^A-Za-z0-9_.:[]-]/g, "_").slice(0, 120);
+        frag.appendChild(buildEnvNameField("Base URL variable", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv", { placeholder: "e.g. OLLAMA_BASE_URL", stateWords: true }));
+        var keyWarn = document.createElement("div");
+        keyWarn.className = "routing-env-note routing-env-warn";
+        var refreshKeyWarn = function (name) {
+          var bad = !!name && !CUSTOM_KEY_NAME_RE_UI.test(name);
+          keyWarn.hidden = !bad;
+          keyWarn.textContent = bad ? "The API key variable must end in _API_KEY, _KEY or _TOKEN (e.g. GROQ_API_KEY) and cannot be another service's credential such as GITHUB_TOKEN." : "";
+        };
+        frag.appendChild(buildEnvNameField("API key variable — optional for local servers", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv", { placeholder: "e.g. GROQ_API_KEY", optional: true, stateWords: true, onNameChange: refreshKeyWarn }));
+        refreshKeyWarn(slot.credentialEnv);
+        frag.appendChild(keyWarn);
+        var customNote = document.createElement("div");
+        customNote.className = "routing-env-note";
+        customNote.textContent = "Works with any OpenAI-compatible server (Ollama, LM Studio, vLLM, OpenRouter, Groq, DeepSeek…). The URL must be https, or http for localhost. Give each custom endpoint its own variable names.";
+        frag.appendChild(customNote);
+        frag.appendChild(buildCustomEndpointTestControl(slot, customSlotId));
+      } else if (slot.transport === "openai-compatible" || isCustom) {
         frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
         frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
       } else {

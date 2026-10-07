@@ -452,11 +452,17 @@ async function handleDelegateTool(args) {
 
   let currentVendor = vendor;
   let currentModel = model;
+  // Custom endpoint slots: the slot's endpointEnv/apiKeyEnv NAMES (never values) reach the openai-compatible adapter.
+  let currentSlotOpts = dispatcherClaudeChain.parseBackendFromAgentFile(path.join(agentsDir, workerId + ".md")) || {};
+  const adapterInfo = () => Object.assign(
+    { vendor: currentVendor, model: currentModel, workerId, projectDir },
+    dispatcherClaudeChain.customEndpointNames({ vendor: currentVendor, transport: currentSlotOpts.transport, endpointEnv: currentSlotOpts.endpointEnv, apiKeyEnv: currentSlotOpts.apiKeyEnv, credentialEnv: currentSlotOpts.credentialEnv }) || {},
+  );
   let fallbackDepth = 0;
   let fallbackIsDefault = false;
 
   for (;;) {
-    const { fn: adapterFn } = dispatcherAdapters.resolveAdapter(currentVendor);
+    const { fn: adapterFn } = dispatcherAdapters.resolveAdapter(currentVendor, currentSlotOpts);
 
     // Set depth marker for the child adapter process — it must not dispatch again.
     const prevDepth = process.env.TYCOON_DISPATCH_DEPTH;
@@ -464,7 +470,7 @@ async function handleDelegateTool(args) {
     let result;
     try {
       const startedAt = Date.now();
-      result = await adapterFn(task, { vendor: currentVendor, model: currentModel, workerId });
+      result = await adapterFn(task, adapterInfo());
       // Retry policy (bridgeResult.shortRetryDelayMs): rate_limit/overloaded
       // with a named wait <= 10s inside the step budget get ONE same-slot
       // retry; quota/billing and everything else go straight to fallback.
@@ -483,7 +489,7 @@ async function handleDelegateTool(args) {
             if (timer && typeof timer.unref === "function") timer.unref();
           });
           try {
-            result = await Promise.race([adapterFn(task, { vendor: currentVendor, model: currentModel, workerId }), timeout]);
+            result = await Promise.race([adapterFn(task, adapterInfo()), timeout]);
           } finally {
             clearTimeout(timer);
           }
@@ -590,6 +596,7 @@ async function handleDelegateTool(args) {
     fallbackIsDefault = next.isDefault === true;
     currentVendor = next.slot.vendor || currentVendor;
     currentModel = next.slot.model || currentModel;
+    currentSlotOpts = { transport: next.slot.transport, endpointEnv: next.slot.endpointEnv, apiKeyEnv: next.slot.apiKeyEnv, credentialEnv: next.slot.credentialEnv };
     // New spawn instance for the retry -- the failed attempt's spawnId was
     // just closed out above via failedStopRecord, so reusing it here would
     // re-open an id the panel already considers stopped.

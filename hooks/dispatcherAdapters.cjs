@@ -96,9 +96,20 @@ function missingVendorEnvMessage(name) {
   return `${name} is not set in the Codex process environment or the TycoonAgents local env store.`;
 }
 
-/** Resolve which adapter key a vendor string maps to. Pure. */
-function adapterKeyForVendor(vendor) {
+/** Vendors with their own fixed endpoint/key handling; never routed through the custom-endpoint path. */
+const FIXED_OPENAI_COMPAT_VENDORS = ["xai", "mistral", "moonshot", "google", "openai", "anthropic"];
+
+/** True when a slot is a user-defined custom endpoint (any non-fixed vendor on the openai-compatible transport). */
+function isCustomEndpointSlot(vendor, opts) {
   const v = String(vendor || "").toLowerCase();
+  if (!v || FIXED_OPENAI_COMPAT_VENDORS.indexOf(v) !== -1) return false;
+  return !!(opts && (opts.transport === "openai-compatible" || opts.endpointEnv));
+}
+
+/** Resolve which adapter key a vendor string maps to. Pure. `opts` ({transport, endpointEnv}) routes custom-endpoint vendors. */
+function adapterKeyForVendor(vendor, opts) {
+  const v = String(vendor || "").toLowerCase();
+  if (isCustomEndpointSlot(v, opts)) return "openai-compatible";
   if (v === "anthropic") return "anthropic";
   if (v === "openai-compatible" || v === "local" || v === "moonshot") return "openai-compatible";
   if (v === "google") return "google";
@@ -391,12 +402,178 @@ function postJson(urlString, body, apiKey, timeoutMs) {
   });
 }
 
+// Custom endpoint rules - mirrored in src/core/vendorKeys.ts and
+// hooks/openai-compatible-mcp.cjs (a test asserts all three agree).
+const CUSTOM_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*(_API_KEY|_KEY|_TOKEN)$/;
+const CUSTOM_ENDPOINT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}_BASE_URL$/;
+// Sorted; includes every fixed vendor spec key name (src/core/vendorKeys.ts VENDOR_KEY_SPECS).
+const CUSTOM_KEY_DENY_EXACT = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CF_API_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CODECOV_TOKEN", "DEPLOY_TOKEN", "GEMINI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "MISTRAL_API_KEY", "MOONSHOT_API_KEY", "NODE_AUTH_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "SONAR_TOKEN", "TERRAFORM_TOKEN", "TF_TOKEN", "VERCEL_TOKEN", "XAI_API_KEY"];
+const CUSTOM_KEY_DENY_PREFIX = ["ANTHROPIC_", "ASANA_", "ATLASSIAN_", "AWS_", "AZURE_", "BITBUCKET_", "CF_", "CIRCLECI_", "CLAUDE_", "CLOUDFLARE_", "DATADOG_", "DD_", "DIGITALOCEAN_", "DOCKER_", "EXPO_", "FIREBASE_", "GCLOUD_", "GCP_", "GH_", "GITHUB_", "GITLAB_", "GPG_", "HEROKU_", "HF_", "HUGGINGFACE_", "JIRA_", "LINEAR_", "NETLIFY_", "NOTION_", "NPM_", "PAGERDUTY_", "PGP_", "RENDER_", "SENDGRID_", "SENTRY_", "SLACK_", "SSH_", "STRIPE_", "SUPABASE_", "TRAVIS_", "TWILIO_", "TYCOON_", "VERCEL_"];
+const CUSTOM_KEY_DENY_SUBSTR = ["GPG", "PASSPHRASE", "PASSWORD", "PGP", "PRIVATE_KEY", "SSH"];
+const CUSTOM_RULES = {
+  keyNameRe: CUSTOM_KEY_NAME_RE.source,
+  endpointNameRe: CUSTOM_ENDPOINT_NAME_RE.source,
+  denyExact: CUSTOM_KEY_DENY_EXACT,
+  denyPrefix: CUSTOM_KEY_DENY_PREFIX,
+  denySubstr: CUSTOM_KEY_DENY_SUBSTR,
+};
+
+function customKeyNameProblem(name, baseUrl, endpointEnv) {
+  if (typeof name !== "string" || !CUSTOM_KEY_NAME_RE.test(name)) {
+    return `API key variable "${String(name).slice(0, 60)}" must look like a credential name, e.g. GROQ_API_KEY (upper case, ending in _API_KEY, _KEY or _TOKEN).`;
+  }
+  if (name === "OPENAI_COMPAT_API_KEY") {
+    if (endpointEnv === "OPENAI_COMPAT_BASE_URL") return undefined;
+    return "OPENAI_COMPAT_API_KEY belongs to the generic OPENAI_COMPAT_BASE_URL endpoint only; use a dedicated variable (e.g. MYPROVIDER_API_KEY).";
+  }
+  if (name === "OPENAI_API_KEY") {
+    let host = "";
+    try { host = new URL(baseUrl || "").hostname.toLowerCase(); } catch { /* no URL */ }
+    if (host === "api.openai.com") return undefined;
+    return "OPENAI_API_KEY is only sent to api.openai.com; use a separate variable (e.g. MYPROVIDER_API_KEY) for another endpoint.";
+  }
+  if (
+    CUSTOM_KEY_DENY_EXACT.includes(name) ||
+    CUSTOM_KEY_DENY_PREFIX.some((p) => name.startsWith(p)) ||
+    CUSTOM_KEY_DENY_SUBSTR.some((s) => name.includes(s))
+  ) {
+    return `${name} is a credential for another service and is never sent to a custom endpoint; use a dedicated variable (e.g. MYPROVIDER_API_KEY).`;
+  }
+  return undefined;
+}
+
+function customEndpointNameProblem(name) {
+  if (typeof name !== "string" || !CUSTOM_ENDPOINT_NAME_RE.test(name)) {
+    return `Base URL variable "${String(name).slice(0, 60)}" must be an upper-case variable name ending in _BASE_URL, e.g. OLLAMA_BASE_URL.`;
+  }
+  return undefined;
+}
+
+function customEndpointUrlProblem(url) {
+  let u;
+  try {
+    u = new URL(String(url).trim());
+  } catch {
+    return "The base URL is not a valid URL.";
+  }
+  if (u.username || u.password) return "The base URL must not contain credentials.";
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (u.protocol === "https:") return undefined;
+  if (u.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(host)) return undefined;
+  return "The base URL must use https (http is only allowed for localhost, 127.0.0.1 or ::1).";
+}
+
+function isLocalHostUrl(url) {
+  try {
+    const h = new URL(String(url).trim()).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Variable NAMES declared in any env block of the project's .mcp.json (repo-controlled, so untrusted for base URLs). */
+function declaredMcpEnvNames(extraDir) {
+  const names = new Set();
+  const dirs = [extraDir, process.env.TYCOON_PROJECT_DIR, process.env.CLAUDE_PROJECT_DIR, process.cwd()].filter(Boolean);
+  for (const d of dirs) {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(d, ".mcp.json"), "utf8").replace(/^\uFEFF/, ""));
+      const servers = (j && j.mcpServers) || j || {};
+      for (const e of Object.values(servers)) {
+        if (e && typeof e === "object" && e.env && typeof e.env === "object") for (const k of Object.keys(e.env)) names.add(k);
+      }
+    } catch { /* no/invalid .mcp.json: nothing declared */ }
+  }
+  return names;
+}
+
+/**
+ * Base URL values that may receive a key: the per-user store, or the real
+ * process env when the name is NOT declared in the project's .mcp.json (a
+ * cloned repo controls that env block). `untrusted` may be used only for
+ * requests that carry no key.
+ */
+function resolveUrlVar(name, projectDir) {
+  const declared = declaredMcpEnvNames(projectDir).has(name);
+  const fromEnv = typeof process.env[name] === "string" && process.env[name] !== "" ? process.env[name] : undefined;
+  let stored;
+  try {
+    const store = localEnvStore();
+    if (store && typeof store.getValue === "function") stored = store.getValue(name, { env: process.env }) || undefined;
+  } catch { /* fail-open */ }
+  if (!declared) return { trusted: fromEnv || stored };
+  return { trusted: stored, untrusted: fromEnv };
+}
+
+function untrustedUrlMessage(name) {
+  return `${name} is declared in this project's .mcp.json, so its value cannot receive an API key: the base URL must be set in your user settings (Set value…), not in project files.`;
+}
+
+/** Model id sent upstream for a custom endpoint: drop the one leading "<vendor>/" the Routing screen adds at save time. */
+function customUpstreamModel(vendor, model) {
+  const m = String(model || "");
+  const prefix = String(vendor || "").toLowerCase() + "/";
+  return prefix.length > 1 && m.toLowerCase().indexOf(prefix) === 0 && m.length > prefix.length ? m.slice(prefix.length) : m;
+}
+
+/** Custom-endpoint call: names come from the slot (agentInfo), values resolve via env then the per-user store; validated, never logged. */
+async function customEndpointAdapter(task, agentInfo) {
+  const endpointEnv = agentInfo.endpointEnv;
+  const nameProblem = customEndpointNameProblem(endpointEnv);
+  if (nameProblem) return { error: nameProblem };
+  const urlRes = resolveUrlVar(endpointEnv, agentInfo.projectDir);
+  const baseUrlRaw = urlRes.trusted || urlRes.untrusted;
+  if (!baseUrlRaw) return { error: missingVendorEnvMessage(endpointEnv) };
+  const baseUrl = baseUrlRaw.trim();
+  const urlProblem = customEndpointUrlProblem(baseUrl);
+  if (urlProblem) return { error: `${endpointEnv}: ${urlProblem}` };
+  let apiKey;
+  const keyEnv = agentInfo.apiKeyEnv;
+  if (keyEnv) {
+    const keyProblem = customKeyNameProblem(keyEnv, baseUrl, endpointEnv);
+    if (keyProblem) return { error: keyProblem };
+    apiKey = resolveVendorEnv(keyEnv) || undefined;
+    if (!apiKey && !isLocalHostUrl(baseUrl)) return { error: missingVendorEnvMessage(keyEnv) };
+    if (apiKey && !urlRes.trusted) return { error: untrustedUrlMessage(endpointEnv) };
+  }
+  const rawTimeout = resolveVendorEnv("OPENAI_COMPAT_TIMEOUT_MS");
+  const timeoutMs = Number(rawTimeout) > 0 ? Number(rawTimeout) : 120000;
+  const url = buildChatUrl(baseUrl);
+  const scrub = (t) => (apiKey ? String(t).split(apiKey).join("[redacted]") : String(t));
+  let res;
+  try {
+    res = await postJson(url, { model: customUpstreamModel(agentInfo.vendor, agentInfo.model || "default"), messages: [{ role: "user", content: task }] }, apiKey, timeoutMs);
+  } catch (err) {
+    return { error: scrub(`Request to ${url} failed: ${err && err.message ? err.message : String(err)}`) };
+  }
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    return { error: scrub(`Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 500)}`) };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(res.body);
+  } catch {
+    return { error: `Endpoint ${url} returned non-JSON response.` };
+  }
+  const choice = parsed && Array.isArray(parsed.choices) ? parsed.choices[0] : undefined;
+  const text = choice && choice.message && typeof choice.message.content === "string" ? choice.message.content : undefined;
+  if (text === undefined) return { error: `Endpoint ${url} returned an unexpected shape (no choices[0].message.content).` };
+  const usage = {};
+  if (parsed.usage && typeof parsed.usage.prompt_tokens === "number") usage.input_tokens = parsed.usage.prompt_tokens;
+  if (parsed.usage && typeof parsed.usage.completion_tokens === "number") usage.output_tokens = parsed.usage.completion_tokens;
+  return { text, usage: Object.keys(usage).length ? usage : undefined };
+}
+
 /** openai-compatible adapter: reads OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY (names only, never logs values). */
 async function openaiCompatibleAdapter(task, agentInfo) {
-  const baseUrl = resolveVendorEnv("OPENAI_COMPAT_BASE_URL");
+  if (agentInfo && agentInfo.endpointEnv && isCustomEndpointSlot(agentInfo.vendor, agentInfo)) return customEndpointAdapter(task, agentInfo);
+  const genericUrl = resolveUrlVar("OPENAI_COMPAT_BASE_URL", agentInfo && agentInfo.projectDir);
+  const baseUrl = genericUrl.trusted || genericUrl.untrusted;
   if (!baseUrl) return { error: missingVendorEnvMessage("OPENAI_COMPAT_BASE_URL") };
   const model = (agentInfo && agentInfo.model) || "default";
   const apiKey = resolveVendorEnv("OPENAI_COMPAT_API_KEY") || undefined;
+  if (apiKey && !genericUrl.trusted) return { error: untrustedUrlMessage("OPENAI_COMPAT_BASE_URL") };
   const rawTimeout = resolveVendorEnv("OPENAI_COMPAT_TIMEOUT_MS");
   const timeoutMs = Number(rawTimeout) > 0 ? Number(rawTimeout) : 120000;
   const url = buildChatUrl(baseUrl);
@@ -466,11 +643,11 @@ const ADAPTERS = {
 };
 
 /** Resolve which adapter fn to call for a vendor, honoring TYCOON_DISPATCH_ADAPTER=stub for offline tests. */
-function resolveAdapter(vendor) {
+function resolveAdapter(vendor, opts) {
   if (process.env.TYCOON_DISPATCH_ADAPTER === "stub") {
-    return { key: adapterKeyForVendor(vendor), fn: stubAdapter };
+    return { key: adapterKeyForVendor(vendor, opts), fn: stubAdapter };
   }
-  const key = adapterKeyForVendor(vendor);
+  const key = adapterKeyForVendor(vendor, opts);
   return { key, fn: ADAPTERS[key] };
 }
 
@@ -480,6 +657,13 @@ module.exports = {
   resolveAdapter,
   resolveVendorEnv,
   missingVendorEnvMessage,
+  isCustomEndpointSlot,
+  customUpstreamModel,
+  customKeyNameProblem,
+  customEndpointNameProblem,
+  customEndpointUrlProblem,
+  CUSTOM_RULES,
+  declaredMcpEnvNames,
   anthropicAdapter,
   openaiCompatibleAdapter,
   googleAdapter,

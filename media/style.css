@@ -7456,6 +7456,21 @@ button.theme-review-preview:focus-visible::after {
   color: var(--status-error, #c0392b);
 }
 
+/* Custom endpoint rows (Claude Code / Codex): warning under the key variable
+   and the Test connection control spanning the field grid. */
+.routing-env-warn {
+  color: var(--status-error, #c0392b);
+}
+
+.routing-env-warn[hidden] {
+  display: none;
+}
+
+.routing-keytest--custom {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+
 /* Subscription/MCP guidance notice (2026-09-07): appended under the cost
    class select whenever the picked vendor/cost-class or transport combo
    can't actually be wired by this form — see buildSubscriptionMcpNotice in

@@ -1033,16 +1033,29 @@ function handleBrowserMessage(msg) {
       (async () => {
         let payload;
         try {
-          const { runVendorKeyTest } = vendorKeyTestModule();
-          payload = await runVendorKeyTest({
-            vendorId,
-            model,
-            projectRoot: primaryProjectRoot || process.cwd(),
-            hooksDir: path.join(REPO_ROOT, 'hooks'),
-          });
+          const { runVendorKeyTest, runCustomEndpointTest } = vendorKeyTestModule();
+          if (vendorId === 'custom') {
+            // Custom endpoint row: slot id + variable NAMES only; URL/key are resolved server-side.
+            payload = await runCustomEndpointTest({
+              slotId: typeof msg.slot === 'string' ? msg.slot.slice(0, 120) : '',
+              endpointEnv: typeof msg.endpointEnv === 'string' ? msg.endpointEnv.slice(0, 80) : '',
+              apiKeyEnv: typeof msg.apiKeyEnv === 'string' ? msg.apiKeyEnv.slice(0, 80) : undefined,
+              vendor: typeof msg.slotVendor === 'string' ? msg.slotVendor.slice(0, 80) : undefined,
+              model,
+              projectRoot: primaryProjectRoot || process.cwd(),
+            });
+          } else {
+            payload = await runVendorKeyTest({
+              vendorId,
+              model,
+              projectRoot: primaryProjectRoot || process.cwd(),
+              hooksDir: path.join(REPO_ROOT, 'hooks'),
+            });
+          }
         } catch (err) {
           console.error('[tycoonagents-standalone] testVendorKey failed:', err instanceof Error ? err.message : err);
-          payload = { vendor: vendorId, state: 'error', message: 'The test call failed.' };
+          const failedId = vendorId === 'custom' && typeof msg.slot === 'string' ? `custom:${msg.slot.slice(0, 120)}` : vendorId;
+          payload = { vendor: failedId, state: 'error', message: 'The test call failed.' };
         }
         if (vendorKeyTestsShutDown) return;
         broadcast('message', { type: 'vendorKeyTestResult', payload });

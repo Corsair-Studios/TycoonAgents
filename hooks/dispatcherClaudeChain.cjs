@@ -140,8 +140,19 @@ function codexModelArg(model) {
   return prefixed ? bare : undefined;
 }
 
+/** Env var NAMES (never values) a custom-endpoint slot names; a fallback slot calls the key name credentialEnv. */
+function customEndpointNames(slot) {
+  if (!dispatcherAdapters.isCustomEndpointSlot(slot.vendor, slot) || !slot.endpointEnv) return undefined;
+  const names = { endpointEnv: slot.endpointEnv };
+  const keyEnv = slot.apiKeyEnv || slot.credentialEnv;
+  if (keyEnv) names.apiKeyEnv = keyEnv;
+  return names;
+}
+
 function modelArgFor(slot) {
-  if (slot.transport === "openai-compatible") return slot.model;
+  if (slot.transport === "openai-compatible") {
+    return customEndpointNames(slot) ? dispatcherAdapters.customUpstreamModel(slot.vendor, slot.model) : slot.model;
+  }
   if (slot.mcpServer === "claude-cli" && slot.model) return slot.model.replace(/^anthropic\//i, "");
   // The slot's routing model overrides the bridge's baked-in default (.mcp.json -c model= / GEMINI_MODEL); absent keeps that default.
   if (slot.mcpServer === "codex" && slot.model) return codexModelArg(slot.model);
@@ -181,6 +192,9 @@ async function runStep(slot, ctx) {
     const toolArgs = { prompt: ctx.task };
     const model = modelArgFor(slot);
     if (model) toolArgs.model = model;
+    // Custom endpoint: pass the slot's variable NAMES only; the bridge resolves and validates them.
+    const customNames = slot.mcpServer === "openai-compatible" ? customEndpointNames(slot) : undefined;
+    if (customNames) Object.assign(toolArgs, customNames);
     const call = await bridgeClient.callBridgeTool({
       projectDir: ctx.projectDir,
       serverName: slot.mcpServer,
@@ -194,12 +208,13 @@ async function runStep(slot, ctx) {
   }
 
   // No bridge named: fall back to the vendor adapter (claude -p for anthropic, HTTP for openai-compatible/local).
-  const { fn } = dispatcherAdapters.resolveAdapter(slot.vendor);
+  const { fn } = dispatcherAdapters.resolveAdapter(slot.vendor, slot);
   const prev = process.env.TYCOON_DISPATCH_DEPTH;
   process.env.TYCOON_DISPATCH_DEPTH = "1";
   let res;
   try {
-    res = await fn(ctx.task, { vendor: slot.vendor, model: slot.model, workerId: ctx.workerId });
+    const names = customEndpointNames(slot);
+    res = await fn(ctx.task, Object.assign({ vendor: slot.vendor, model: slot.model, workerId: ctx.workerId, projectDir: ctx.projectDir }, names || {}));
   } catch (err) {
     res = { error: err && err.message ? err.message : String(err) };
   } finally {
@@ -455,6 +470,7 @@ module.exports = {
   runStepWithin,
   slotLabel,
   modelArgFor,
+  customEndpointNames,
   CODEX_ACCEPTED_BARE,
   CODEX_REJECTED_BARE,
   describeAttempts,

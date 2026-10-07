@@ -335,3 +335,67 @@ test('slot editor on claude-code: Custom endpoint vendor keeps the free-form nam
     win.close();
   }
 });
+
+for (const harness of ['claude-code', 'codex']) {
+  test('slot editor on ' + harness + ': Custom endpoint says what its fields do and offers Test connection', async () => {
+    const custom = agent('loc', { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'ollama-windows/llama3', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', apiKeyEnv: 'OLLAMA_API_KEY' });
+    const { win, doc, posted, dispatch, flush, assertNoErrors } = await render(harness, [custom]);
+    try {
+      const fields = Array.from(doc.querySelectorAll('.routing-agent-card .routing-env-field')) as any[];
+      const labels = fields.map((f) => f.querySelector('label').textContent);
+      assert.deepEqual(labels, ['Base URL variable', 'API key variable — optional for local servers']);
+      assert.ok(fields.every((f) => f.querySelector('.routing-set-value-btn')), 'Set value on both rows');
+      assert.ok(fields.every((f) => f.querySelector('.routing-env-state')), 'set/unset words on both rows');
+      assert.equal(fields[1].getAttribute('data-env-optional'), '1');
+
+      const btn = doc.querySelector('.routing-keytest--custom .routing-keytest-btn') as any;
+      assert.ok(btn, 'Test connection button');
+      btn.click();
+      await flush();
+      const msg = JSON.parse(JSON.stringify(posted.filter((m) => m && m.type === 'testVendorKey').pop()));
+      assert.equal(msg.vendor, 'custom');
+      assert.equal(msg.endpointEnv, 'OLLAMA_BASE_URL');
+      assert.equal(msg.apiKeyEnv, 'OLLAMA_API_KEY');
+      assert.equal(msg.slotVendor, 'ollama-windows');
+      assert.match(msg.slot, /^agent:loc$/);
+      assert.deepEqual(Object.keys(msg).sort(), ['apiKeyEnv', 'endpointEnv', 'model', 'slot', 'slotVendor', 'type', 'vendor']);
+
+      dispatch({ type: 'vendorKeyTestResult', payload: { vendor: 'custom:' + msg.slot, state: 'not_found', message: 'Model not found at this endpoint.' } });
+      await flush();
+      const result = doc.querySelector('.routing-keytest--custom .routing-keytest-result');
+      assert.match(result.textContent, /Model not found/);
+      assert.ok(result.classList.contains('routing-keytest-result--bad'));
+      assertNoErrors('custom endpoint test result');
+    } finally {
+      win.close();
+    }
+  });
+}
+
+test('slot editor on claude-code: Custom endpoint warns on a key variable that does not look like a credential', async () => {
+  const custom = agent('loc', { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'llama3', costModelClass: 'local', endpointEnv: 'OLLAMA_BASE_URL', apiKeyEnv: 'OLLAMA_PASSWORD' });
+  const { win, doc, posted, flush } = await render('claude-code', [custom]);
+  try {
+    const warn = doc.querySelector('.routing-env-warn') as any;
+    assert.equal(warn.hidden, false);
+    assert.match(warn.textContent, /_API_KEY, _KEY or _TOKEN/);
+    (doc.querySelector('.routing-keytest--custom .routing-keytest-btn') as any).click();
+    await flush();
+    assert.equal(posted.filter((m) => m && m.type === 'testVendorKey').length, 0, 'nothing is sent for an invalid key variable name');
+    assert.match(doc.querySelector('.routing-keytest--custom .routing-keytest-result').textContent, /Not tested/);
+  } finally {
+    win.close();
+  }
+});
+
+test('slot editor on opencode: Custom endpoint keeps the original free-form labels and no Test button', async () => {
+  const custom = agent('loc', { vendor: 'ollama-windows', transport: 'openai-compatible', model: 'llama3', costModelClass: 'local', endpointEnv: 'OLLAMA_URL', apiKeyEnv: 'OLLAMA_KEY' });
+  const { win, doc } = await render('opencode', [custom]);
+  try {
+    const labels = Array.from(doc.querySelectorAll('.routing-agent-card .routing-env-field label')).map((l: any) => l.textContent);
+    assert.deepEqual(labels, ['Endpoint URL env', 'API key env']);
+    assert.equal(doc.querySelector('.routing-keytest--custom'), null);
+  } finally {
+    win.close();
+  }
+});

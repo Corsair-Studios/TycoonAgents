@@ -157,6 +157,8 @@ const CHAT_TOOL = {
         },
       },
       max_tokens: { type: "number", description: "Optional max tokens to generate." },
+      endpointEnv: { type: "string", description: "Custom endpoint: NAME of the env var holding the base URL (never the URL itself), e.g. \"OLLAMA_BASE_URL\". Resolved from the process env, then the per-user store. https, or http only for localhost." },
+      apiKeyEnv: { type: "string", description: "Custom endpoint: NAME of the env var holding the API key (never the key), e.g. \"GROQ_API_KEY\". Optional for local servers. Ignored without endpointEnv." },
     },
     required: ["model"],
   },
@@ -297,24 +299,183 @@ function vendorDefaultsFor(model) {
   return VENDOR_DEFAULTS.find((v) => model.startsWith(v.prefix));
 }
 
+// ---------------------------------------------------------------------------
+// Custom endpoint: an optional `endpointEnv` / `apiKeyEnv` pair of env var
+// NAMES on the chat call selects a user-defined OpenAI-compatible endpoint
+// (Ollama, LM Studio, vLLM, OpenRouter, Groq, DeepSeek...), resolved via
+// resolveEnvOrLocal (process env, then the per-user store). Several custom
+// endpoints can therefore coexist. Only NAMES ever travel in tool arguments;
+// values are resolved here and never echoed. Because a caller-chosen name
+// picks which stored secret goes to which URL, the names and URL are checked.
+// Mirrored in src/core/vendorKeys.ts (customKeyNameProblem & co) and
+// hooks/dispatcherAdapters.cjs; a test asserts the three agree.
+// ---------------------------------------------------------------------------
+const CUSTOM_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*(_API_KEY|_KEY|_TOKEN)$/;
+const CUSTOM_ENDPOINT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}_BASE_URL$/;
+// Sorted; includes every fixed vendor spec key name (src/core/vendorKeys.ts VENDOR_KEY_SPECS).
+const CUSTOM_KEY_DENY_EXACT = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CF_API_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CODECOV_TOKEN", "DEPLOY_TOKEN", "GEMINI_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "MISTRAL_API_KEY", "MOONSHOT_API_KEY", "NODE_AUTH_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "SONAR_TOKEN", "TERRAFORM_TOKEN", "TF_TOKEN", "VERCEL_TOKEN", "XAI_API_KEY"];
+const CUSTOM_KEY_DENY_PREFIX = ["ANTHROPIC_", "ASANA_", "ATLASSIAN_", "AWS_", "AZURE_", "BITBUCKET_", "CF_", "CIRCLECI_", "CLAUDE_", "CLOUDFLARE_", "DATADOG_", "DD_", "DIGITALOCEAN_", "DOCKER_", "EXPO_", "FIREBASE_", "GCLOUD_", "GCP_", "GH_", "GITHUB_", "GITLAB_", "GPG_", "HEROKU_", "HF_", "HUGGINGFACE_", "JIRA_", "LINEAR_", "NETLIFY_", "NOTION_", "NPM_", "PAGERDUTY_", "PGP_", "RENDER_", "SENDGRID_", "SENTRY_", "SLACK_", "SSH_", "STRIPE_", "SUPABASE_", "TRAVIS_", "TWILIO_", "TYCOON_", "VERCEL_"];
+const CUSTOM_KEY_DENY_SUBSTR = ["GPG", "PASSPHRASE", "PASSWORD", "PGP", "PRIVATE_KEY", "SSH"];
+const CUSTOM_RULES = {
+  keyNameRe: CUSTOM_KEY_NAME_RE.source,
+  endpointNameRe: CUSTOM_ENDPOINT_NAME_RE.source,
+  denyExact: CUSTOM_KEY_DENY_EXACT,
+  denyPrefix: CUSTOM_KEY_DENY_PREFIX,
+  denySubstr: CUSTOM_KEY_DENY_SUBSTR,
+};
+
+function customKeyNameProblem(name, baseUrl, endpointEnv) {
+  if (typeof name !== "string" || !CUSTOM_KEY_NAME_RE.test(name)) {
+    return `API key variable "${String(name).slice(0, 60)}" must look like a credential name, e.g. GROQ_API_KEY (upper case, ending in _API_KEY, _KEY or _TOKEN).`;
+  }
+  if (name === "OPENAI_COMPAT_API_KEY") {
+    if (endpointEnv === "OPENAI_COMPAT_BASE_URL") return undefined;
+    return "OPENAI_COMPAT_API_KEY belongs to the generic OPENAI_COMPAT_BASE_URL endpoint only; use a dedicated variable (e.g. MYPROVIDER_API_KEY).";
+  }
+  if (name === "OPENAI_API_KEY") {
+    let host = "";
+    try { host = new URL(baseUrl || "").hostname.toLowerCase(); } catch { /* no URL */ }
+    if (host === "api.openai.com") return undefined;
+    return "OPENAI_API_KEY is only sent to api.openai.com; use a separate variable (e.g. MYPROVIDER_API_KEY) for another endpoint.";
+  }
+  if (
+    CUSTOM_KEY_DENY_EXACT.includes(name) ||
+    CUSTOM_KEY_DENY_PREFIX.some((p) => name.startsWith(p)) ||
+    CUSTOM_KEY_DENY_SUBSTR.some((s) => name.includes(s))
+  ) {
+    return `${name} is a credential for another service and is never sent to a custom endpoint; use a dedicated variable (e.g. MYPROVIDER_API_KEY).`;
+  }
+  return undefined;
+}
+
+function customEndpointNameProblem(name) {
+  if (typeof name !== "string" || !CUSTOM_ENDPOINT_NAME_RE.test(name)) {
+    return `Base URL variable "${String(name).slice(0, 60)}" must be an upper-case variable name ending in _BASE_URL, e.g. OLLAMA_BASE_URL.`;
+  }
+  return undefined;
+}
+
+function customEndpointUrlProblem(url) {
+  let u;
+  try {
+    u = new URL(String(url).trim());
+  } catch {
+    return "The base URL is not a valid URL.";
+  }
+  if (u.username || u.password) return "The base URL must not contain credentials.";
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (u.protocol === "https:") return undefined;
+  if (u.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(host)) return undefined;
+  return "The base URL must use https (http is only allowed for localhost, 127.0.0.1 or ::1).";
+}
+
+function isLocalHostUrl(url) {
+  try {
+    const h = new URL(String(url).trim()).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/** Strip the resolved key value from any text that leaves this process. */
+function scrubSecret(text, secret) {
+  let t = String(text);
+  if (secret) t = t.split(secret).join("[redacted]");
+  return t;
+}
+
+/** Variable NAMES declared in any env block of the project's .mcp.json (repo-controlled, so untrusted for base URLs). */
+function declaredMcpEnvNames() {
+  const names = new Set();
+  const dirs = [process.env.TYCOON_PROJECT_DIR, process.env.CLAUDE_PROJECT_DIR, process.cwd()].filter(Boolean);
+  for (const d of dirs) {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(d, ".mcp.json"), "utf8").replace(/^\uFEFF/, ""));
+      const servers = (j && j.mcpServers) || j || {};
+      for (const e of Object.values(servers)) {
+        if (e && typeof e === "object" && e.env && typeof e.env === "object") for (const k of Object.keys(e.env)) names.add(k);
+      }
+    } catch { /* no/invalid .mcp.json: nothing declared */ }
+  }
+  return names;
+}
+
+/**
+ * Base URL values that may receive a key: the per-user store, or the real
+ * process env when the name is NOT declared in the project's .mcp.json (a
+ * cloned repo controls that env block). `untrusted` is the env value of a
+ * declared name; it may be used only for requests that carry no key.
+ */
+function resolveUrlVar(name) {
+  const declared = declaredMcpEnvNames().has(name);
+  const fromEnv = typeof process.env[name] === "string" && process.env[name] !== "" ? process.env[name] : undefined;
+  let stored;
+  try {
+    const store = localEnvStore();
+    if (store && typeof store.getValue === "function") stored = store.getValue(name) || undefined;
+  } catch { /* fail-open */ }
+  if (!declared) return { trusted: fromEnv || stored };
+  return { trusted: stored, untrusted: fromEnv };
+}
+
+function untrustedUrlMessage(name) {
+  return `${name} is declared in this project's .mcp.json, so its value cannot receive an API key: the base URL must be set in your user settings (Set value…), not in project files.`;
+}
+
 async function handleChatTool(args) {
   const model = args && typeof args.model === "string" ? args.model : undefined;
   if (!model) {
     return errorResult("", "Missing required argument: model", undefined, "unknown");
   }
   const vendorDefault = vendorDefaultsFor(model);
+  const customEndpointEnv = !vendorDefault && typeof args.endpointEnv === "string" && args.endpointEnv ? args.endpointEnv : undefined;
+  const customApiKeyEnv = !vendorDefault && typeof args.apiKeyEnv === "string" && args.apiKeyEnv ? args.apiKeyEnv : undefined;
 
   let baseUrl;
   let apiKey;
-  if (vendorDefault) {
+  let baseUrlVar;
+  let baseUrlUntrusted = false;
+  const pickUrl = (name) => {
+    baseUrlVar = name;
+    const r = resolveUrlVar(name);
+    if (r.trusted) return r.trusted;
+    if (r.untrusted) {
+      baseUrlUntrusted = true;
+      return r.untrusted;
+    }
+    return undefined;
+  };
+  if (customEndpointEnv) {
+    // Custom endpoint: names chosen by the slot, validated, resolved here.
+    const nameProblem = customEndpointNameProblem(customEndpointEnv);
+    if (nameProblem) return errorResult(model, nameProblem, undefined, "unknown");
+    baseUrl = pickUrl(customEndpointEnv);
+    if (!baseUrl) {
+      return errorResult(model, `${customEndpointEnv} is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama).`, undefined, "unknown");
+    }
+    baseUrl = baseUrl.trim();
+    const urlProblem = customEndpointUrlProblem(baseUrl);
+    if (urlProblem) return errorResult(model, `${customEndpointEnv}: ${urlProblem}`, undefined, "unknown");
+    if (customApiKeyEnv) {
+      const keyProblem = customKeyNameProblem(customApiKeyEnv, baseUrl, customEndpointEnv);
+      if (keyProblem) return errorResult(model, keyProblem, undefined, "auth");
+      apiKey = resolveEnvOrLocal(customApiKeyEnv) || undefined;
+      if (!apiKey && !isLocalHostUrl(baseUrl)) {
+        return errorResult(model, `${customApiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it).`, undefined, "auth");
+      }
+    }
+  } else if (customApiKeyEnv) {
+    return errorResult(model, "apiKeyEnv was given without endpointEnv; name the base URL variable too.", undefined, "unknown");
+  } else if (vendorDefault) {
     // Prefixed model: dedicated endpoint/key only, never the generic
     // OPENAI_COMPAT_* pair — see the comment above this table.
-    baseUrl = resolveEnvOrLocal(vendorDefault.baseUrlEnv) || vendorDefault.defaultBaseUrl;
+    baseUrl = pickUrl(vendorDefault.baseUrlEnv) || vendorDefault.defaultBaseUrl;
     apiKey = resolveEnvOrLocal(vendorDefault.apiKeyEnv);
     if (!apiKey && vendorDefault.prefix === "moonshot/") {
       // Existing Kimi installs configured the generic pair. Honor it ONLY when
       // its host is Moonshot's own, so the key never goes to another host.
-      const legacyBase = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
+      const legacyBase = resolveUrlVar("OPENAI_COMPAT_BASE_URL").trusted;
       const legacyKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY");
       let legacyHost = "";
       try { legacyHost = new URL(legacyBase).hostname.toLowerCase(); } catch { /* not a URL */ }
@@ -330,12 +491,13 @@ async function handleChatTool(args) {
       return errorResult(model, `${vendorDefault.apiKeyEnv} is not set — configure it to your API key for this endpoint (model "${model}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).`, undefined, "auth");
     }
   } else {
-    baseUrl = resolveEnvOrLocal("OPENAI_COMPAT_BASE_URL");
+    baseUrl = pickUrl("OPENAI_COMPAT_BASE_URL");
     if (!baseUrl) {
       return errorResult(model, "OPENAI_COMPAT_BASE_URL is not set — configure it to the base URL of your OpenAI-compatible endpoint (e.g. http://localhost:11434 for Ollama, or your vLLM/LM Studio/hosted API base).", undefined, "unknown");
     }
     apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
   }
+  if (apiKey && baseUrlUntrusted) return errorResult(model, untrustedUrlMessage(baseUrlVar), undefined, "auth");
 
   let messages;
   if (Array.isArray(args.messages) && args.messages.length > 0) {
@@ -364,24 +526,24 @@ async function handleChatTool(args) {
     if (err && err.bridgeTimeout) {
       return formatBridgeResult({ status: "timeout", provider: PROVIDER, model, error: { kind: "timeout", message } });
     }
-    return errorResult(model, `Request to ${url} failed: ${message}`);
+    return errorResult(model, scrubSecret(`Request to ${url} failed: ${message}`, apiKey));
   }
 
   if (res.statusCode < 200 || res.statusCode >= 300) {
-    return errorResult(model, `Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 2000)}`, res.statusCode);
+    return errorResult(model, scrubSecret(`Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 2000)}`, apiKey), res.statusCode);
   }
 
   let parsed;
   try {
     parsed = JSON.parse(res.body);
   } catch (err) {
-    return errorResult(model, `Endpoint ${url} returned non-JSON response: ${res.body.slice(0, 2000)}`, undefined, "unknown");
+    return errorResult(model, scrubSecret(`Endpoint ${url} returned non-JSON response: ${res.body.slice(0, 2000)}`, apiKey), undefined, "unknown");
   }
 
   const choice = parsed && Array.isArray(parsed.choices) ? parsed.choices[0] : undefined;
   const text = choice && choice.message && typeof choice.message.content === "string" ? choice.message.content : undefined;
   if (text === undefined) {
-    return errorResult(model, `Endpoint ${url} returned an unexpected shape (no choices[0].message.content): ${res.body.slice(0, 2000)}`, undefined, "unknown");
+    return errorResult(model, scrubSecret(`Endpoint ${url} returned an unexpected shape (no choices[0].message.content): ${res.body.slice(0, 2000)}`, apiKey), undefined, "unknown");
   }
 
   const usageRaw = parsed && parsed.usage;

@@ -913,7 +913,27 @@
       fixedNote.textContent = "These names are fixed for this vendor. Values are stored per user in the TycoonAgents app-data folder, never in this project.";
       frag.appendChild(fixedNote);
     } else if (!isNativeVendorSlot) {
-      if (slot.transport === "openai-compatible" || isCustom) {
+      if ((slot.transport === "openai-compatible" || isCustom) && slotHarnessEff !== "opencode") {
+        // Claude Code / Codex: the bridge resolves exactly these names (env, then the per-user store),
+        // so several custom endpoints can sit side by side. Honest labels, set/unset words, Set value, Test.
+        var customSlotId = (keyPrefix || "slot").replace(/[^A-Za-z0-9_.:[]-]/g, "_").slice(0, 120);
+        frag.appendChild(buildEnvNameField("Base URL variable", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv", { placeholder: "e.g. OLLAMA_BASE_URL", stateWords: true }));
+        var keyWarn = document.createElement("div");
+        keyWarn.className = "routing-env-note routing-env-warn";
+        var refreshKeyWarn = function (name) {
+          var bad = !!name && !CUSTOM_KEY_NAME_RE_UI.test(name);
+          keyWarn.hidden = !bad;
+          keyWarn.textContent = bad ? "The API key variable must end in _API_KEY, _KEY or _TOKEN (e.g. GROQ_API_KEY) and cannot be another service's credential such as GITHUB_TOKEN." : "";
+        };
+        frag.appendChild(buildEnvNameField("API key variable — optional for local servers", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv", { placeholder: "e.g. GROQ_API_KEY", optional: true, stateWords: true, onNameChange: refreshKeyWarn }));
+        refreshKeyWarn(slot.credentialEnv);
+        frag.appendChild(keyWarn);
+        var customNote = document.createElement("div");
+        customNote.className = "routing-env-note";
+        customNote.textContent = "Works with any OpenAI-compatible server (Ollama, LM Studio, vLLM, OpenRouter, Groq, DeepSeek…). The URL must be https, or http for localhost. Give each custom endpoint its own variable names.";
+        frag.appendChild(customNote);
+        frag.appendChild(buildCustomEndpointTestControl(slot, customSlotId));
+      } else if (slot.transport === "openai-compatible" || isCustom) {
         frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
         frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
       } else {

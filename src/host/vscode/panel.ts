@@ -61,7 +61,7 @@ import {
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
-import { runVendorKeyTest, cancelAllVendorKeyTests, type VendorKeyTestResult } from "../../core/vendorKeyTest";
+import { runVendorKeyTest, runCustomEndpointTest, cancelAllVendorKeyTests, type VendorKeyTestResult } from "../../core/vendorKeyTest";
 import { setGeminiBackend } from "../../core/hostBridgeSettings";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, setClaudeSubscriptionOptIn, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
 import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
@@ -1538,7 +1538,19 @@ export class TycoonPanel {
         } else if (message.type === MSG.TEST_VENDOR_KEY) {
           const parsedTestVendorKey = MSG_SCHEMAS.TEST_VENDOR_KEY.safeParse(message);
           if (parsedTestVendorKey.success) {
-            void this._handleTestVendorKey(parsedTestVendorKey.data.vendor, parsedTestVendorKey.data.model);
+            if (parsedTestVendorKey.data.vendor === "custom") {
+              // Custom endpoint row: slot id + variable NAMES only; URL/key are resolved host-side.
+              const m = message as Record<string, unknown>;
+              void this._handleTestCustomEndpoint({
+                slotId: typeof m["slot"] === "string" ? m["slot"] : "",
+                endpointEnv: typeof m["endpointEnv"] === "string" ? m["endpointEnv"] : "",
+                apiKeyEnv: typeof m["apiKeyEnv"] === "string" ? m["apiKeyEnv"] : undefined,
+                slotVendor: typeof m["slotVendor"] === "string" ? m["slotVendor"] : undefined,
+                model: parsedTestVendorKey.data.model,
+              });
+            } else {
+              void this._handleTestVendorKey(parsedTestVendorKey.data.vendor, parsedTestVendorKey.data.model);
+            }
           } else {
             console.error("TycoonAgents: testVendorKey payload rejected:", parsedTestVendorKey.error.message);
           }
@@ -8189,6 +8201,31 @@ export class TycoonPanel {
     } catch (err) {
       console.error("TycoonAgents: testVendorKey failed:", err instanceof Error ? err.message : err);
       payload = { vendor: vendorId, state: "error", message: "The test call failed." };
+    }
+    if (this._disposed) return;
+    void this._panel.webview.postMessage({ type: MSG.VENDOR_KEY_TEST_RESULT, payload });
+  }
+
+  /**
+   * "Test connection" for a Custom endpoint slot row: direct cheapest call to
+   * the base URL named by the slot's endpointEnv (src/core/vendorKeyTest.ts
+   * runCustomEndpointTest). The webview sends only the slot id and variable
+   * NAMES; both are validated host-side. Posts { vendor, state, message }.
+   */
+  private async _handleTestCustomEndpoint(req: { slotId: string; endpointEnv: string; apiKeyEnv?: string; slotVendor?: string; model?: string }): Promise<void> {
+    let payload: VendorKeyTestResult;
+    try {
+      payload = await runCustomEndpointTest({
+        slotId: req.slotId.slice(0, 120),
+        endpointEnv: req.endpointEnv.slice(0, 80),
+        apiKeyEnv: req.apiKeyEnv ? req.apiKeyEnv.slice(0, 80) : undefined,
+        vendor: req.slotVendor ? req.slotVendor.slice(0, 80) : undefined,
+        model: req.model,
+        projectRoot: this._projectRoot(),
+      });
+    } catch (err) {
+      console.error("TycoonAgents: testCustomEndpoint failed:", err instanceof Error ? err.message : err);
+      payload = { vendor: `custom:${req.slotId.slice(0, 120)}`, state: "error", message: "The test call failed." };
     }
     if (this._disposed) return;
     void this._panel.webview.postMessage({ type: MSG.VENDOR_KEY_TEST_RESULT, payload });
