@@ -73,7 +73,7 @@ export function readMcpJson(root: string): McpJsonInfo {
     return { present: false, servers: {} };
   }
   try {
-    const parsed = JSON.parse(text.replace(/^﻿/, "")) as unknown;
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, "")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return { present: false, servers: {}, error: ".mcp.json is not a JSON object" };
     }
@@ -172,7 +172,7 @@ function replaceFile(tmp: string, dest: string): void {
 function applyGeminiBackend(text: string, value: string): { out: string } | { error: string } {
   let doc: unknown;
   try {
-    doc = JSON.parse(text.replace(/^﻿/, ""));
+    doc = JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch {
     return { error: ".mcp.json is not valid JSON; fix it by hand first" };
   }
@@ -195,8 +195,8 @@ function applyGeminiBackend(text: string, value: string): { out: string } | { er
     if (matches.length === 1) {
       const out = text.replace(re, (_m, pre: string) => `${pre}"${value}"`);
       try {
-        const reparsed = JSON.parse(out.replace(/^﻿/, "")) as Record<string, any>;
-        const expected = JSON.parse(text.replace(/^﻿/, "")) as Record<string, any>;
+        const reparsed = JSON.parse(out.replace(/^\uFEFF/, "")) as Record<string, any>;
+        const expected = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, any>;
         expected["mcpServers"][GEMINI_SERVER_NAME]["env"][GEMINI_BACKEND_ENV] = value;
         if (JSON.stringify(reparsed) === JSON.stringify(expected)) return { out };
       } catch {
@@ -213,7 +213,7 @@ function applyGeminiBackend(text: string, value: string): { out: string } | { er
   let out = JSON.stringify(doc, null, indent);
   if (eol === "\r\n") out = out.replace(/\n/g, "\r\n");
   if (/\n$/.test(text)) out += eol;
-  if (text.charCodeAt(0) === 0xfeff) out = "﻿" + out;
+  if (text.charCodeAt(0) === 0xfeff) out = "\uFEFF" + out;
   return { out };
 }
 
