@@ -81,6 +81,7 @@
     <tr><td>Project health scan</td><td>Checks the project for structural issues across its assets and Verse source.</td></tr>
     <tr><td>Asset browsers</td><td>Browse and inspect assets in your project's content.</td></tr>
     <tr><td>IP / Moderation Scan</td><td>Collects the raw asset, Verse, and metadata surfaces Fortnite moderation may flag before submission. The launcher can only show the raw data — run the matching MCP tool from a connected AI assistant for the full analysed report.</td></tr>
+    <tr><td>Build-Mode Cleanup</td><td>Bulk-sets build-mode actor properties such as Register with Structural Grid, Forcibly Structurally Supported and Is Player Buildable across all level actors — each left alone, forced off or forced on. Skips Creative devices. Runs a dry run first, then applies as one undoable change. Useful for improving performance on zero-build maps.</td></tr>
   </tbody>
 </table>
 </div>
@@ -88,8 +89,6 @@
   <img src="power_tools_panel.webp" alt="Trashbyrd's Power Tools panel running inside UEFN, showing the device audit and asset browser tools" width="420" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
   <figcaption style="font-size:0.85rem;margin-top:0.5rem">The Power Tools launcher window inside UEFN.</figcaption>
 </figure>
-
-<p><strong>Build-Mode Cleanup</strong> is one of the launcher's cards. It lets you quickly switch build-mode-related actor properties (such as Register with Structural Grid, Forcibly Structurally Supported, and Is Player Buildable) off or on across every actor in the level, which helps performance on zero-build maps. Each property can be left untouched, forced Off, or forced On. Fortnite Creative devices are skipped entirely, since these properties mean something different on a device. A dry run previews what would change without writing anything, and applying is a single undoable editor step.</p>
 
 <div class="section-head">
   <span class="s-title">§ 13.3 · What agents can do through it</span>
@@ -208,10 +207,6 @@
 <p>The device audit diffs every device's properties against its class defaults, so it can show exactly what a creator changed versus what shipped as the default. The audit window's device list has a <strong>Tuned</strong> column showing how many properties differ from default for each device — when defaults can't be resolved for a class, that column shows a <code>?</code> rather than a fake <code>0</code>, so an unresolved comparison is never mistaken for "nothing changed."</p>
 <p>Opening a device's detail view adds a <strong>Tuned Properties</strong> table listing each changed property alongside its current value and its class default. The same idea carries into the Property Inspector: every current value there is shown beside a Default column, so you can spot a tuned property without cross-referencing anything else.</p>
 <p>Device listings also account for every actor rather than silently dropping ones that fail to resolve: skipped actors are counted, and a device with a field that fails to read is listed anyway, with an error note attached, instead of being omitted from the results.</p>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Device audit window — Tuned column and a device's Tuned Properties table.</p>
-</div>
 
 <div class="section-head">
   <span class="s-title">§ 13.7 · Moderation</span>
