@@ -112,7 +112,9 @@ node standalone/src/cli.mjs watch .</pre>
   <p>
     Swap the coding-agent harness itself: OpenCode's plugin hooks feed the
     same normalized event stream the Claude Code hook produces, so the
-    panel can't tell the difference. From the repo root:
+    panel can't tell the difference. OpenCode (Experimental) has not been
+    tested as thoroughly as Claude Code as a harness, so it is still
+    considered an experimental mode. From the repo root:
   </p>
 <pre>npm run build
 npm run opencode:config
@@ -221,7 +223,9 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     back automatically to <code>codex-app-server-mcp.cjs</code>, a shim over
     Codex's <code>app-server</code> protocol exposing the same
     <code>codex</code> and <code>codex-reply</code> tools. Both the fallback
-    shim and Codex support as a whole are Experimental.
+    shim and Codex support as a whole are Experimental: Codex has not been
+    tested as thoroughly as Claude Code as a harness, so it is still
+    considered an experimental mode.
   </p>
   <div class="callout note">
     <span class="callout-label">Known limitation</span>

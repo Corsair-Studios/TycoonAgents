@@ -408,14 +408,15 @@ pre code {
 
 .hero-logo {
   display: block;
-  width: 120px;
-  height: 120px;
+  width: 240px;
+  max-width: 100%;
+  height: auto;
   margin: 0 0 1rem;
   object-fit: contain;
 }
 
 @media (max-width: 600px) {
-  .hero-logo { width: 96px; height: 96px; }
+  .hero-logo { width: 192px; }
 }
 
 /* ---------- Side rail (wiki-style chapter nav) ---------- */
