@@ -460,7 +460,6 @@ function httpRequest(
     }
     if (apiKey) headers["Authorization"] = "Bearer " + apiKey;
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
     const lib = u.protocol === "https:" ? https : http;
     const abort = (): void => {
       req.destroy();
@@ -492,7 +491,7 @@ function httpRequest(
       }
     );
     slot.aborts.add(abort);
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       req.destroy();
       finish({ error: "timeout" });
     }, timeoutMs);
