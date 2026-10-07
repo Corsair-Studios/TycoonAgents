@@ -766,13 +766,6 @@
   // side (PLAN_STATE comes back with enabled:false, plan:null) when the
   // feature isn't turned on or there's no workspace.
   vscode.postMessage({ type: "REQUEST_PLAN" });
-
-  // Ask the host for the credit-pressure offload offer's persisted
-  // dismissal flag (p6-t1). No-ops host-side (dismissed:false) when there's
-  // no workspace. See OFFLOAD_OFFER_STATE handler below and
-  // checkCreditPressureOffer/renderCreditPressureOffer near renderMetrics.
-  vscode.postMessage({ type: "REQUEST_OFFLOAD_OFFER_STATE" });
-
   // ── Engine connection chips (upper-left overlay) ─────────────────
 
   const engineChipsEl = document.createElement("div");
@@ -2529,6 +2522,7 @@
         }, 5000);
       }
       state = msg.state;
+      showOrchestratorLimitBanner(state && state.orchestratorLimit);
       idleFreezeMs = state.idleFreezeMs ?? 180000;
       sanityCapMs = state.sanityCapMs ?? 900000;
       // Maintain insertion order for stable x positions
@@ -2915,19 +2909,6 @@
       currentPlanHasBackup = !!msg.hasBackup;
       syncProjectPlanSettingsToggle();
       renderProjectPlanSection();
-    } else if (msg && msg.type === "OFFLOAD_OFFER_STATE") {
-      // Credit-pressure offload offer (p6-t1): boot-time reply to
-      // REQUEST_OFFLOAD_OFFER_STATE carrying the two persisted flags plus a
-      // FRESH (non-persisted) host-side providerAvailable check. Detection
-      // re-evaluation happens on the next renderMetrics() call
-      // (checkCreditPressureOffer), not here. `providerAvailable` defaults
-      // false (Boolean(undefined) === false) so an older host build that
-      // predates this field, or any falsy/missing value, fails CLOSED —
-      // never shows an offer for an unconfirmed route.
-      offloadOfferDismissed = Boolean(msg.dismissed);
-      offloadOfferAccepted = Boolean(msg.accepted);
-      offloadProviderAvailable = Boolean(msg.providerAvailable);
-      renderCreditPressureOffer();
     }
   });
 

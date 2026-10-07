@@ -620,8 +620,7 @@ function buildInstallStatePayload() {
 
 /**
  * The full boot-handshake reply set media/main.js posts for at load
- * (checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
- * REQUEST_OFFLOAD_OFFER_STATE — main.js:10948-10971), computed fresh so it
+ * (checkInstall/getPacks/getEngineStatus/REQUEST_PLAN — main.js:10948-10971), computed fresh so it
  * can be registered as an initial-message-provider (see
  * registerInitialMessageProvider, and its call site in startServer()).
  *
@@ -654,7 +653,6 @@ function buildBootHandshakeMessages() {
     { eventName: 'message', data: buildPacksPayload() },
     { eventName: 'message', data: { type: 'engineStatus', chips: [] } },
     { eventName: 'message', data: computePlanState(primaryProjectRoot) },
-    { eventName: 'message', data: computeOffloadOfferState(primaryProjectRoot) },
   ];
 }
 
@@ -902,7 +900,7 @@ function handleBrowserMessage(msg) {
     // Service, which owns provider/model selection.
     // ── Boot-time handshake (media/main.js's boot sequence, ~main.js:10935-
     // 10971: "ready" then checkInstall/getPacks/getEngineStatus/
-    // REQUEST_PLAN/REQUEST_OFFLOAD_OFFER_STATE fired back-to-back before the
+    // REQUEST_PLAN fired back-to-back before the
     // webview's first paint). Every reply here uses the SAME broadcast()
     // fire-and-forget pattern every other case in this switch uses (there is
     // no per-request reply channel — POST /message always 202s immediately;
@@ -1637,10 +1635,6 @@ function handleBrowserMessage(msg) {
       // to "approved", writes plan.json + .bak, archives if complete, and
       // appends a gate-events.jsonl line with source:"standalone".
       handleApprovePhase(primaryProjectRoot, msg.phaseId, broadcast);
-      break;
-    case 'REQUEST_OFFLOAD_OFFER_STATE':
-      // Standalone analog of panel.ts's _postOffloadOfferState (~line 8152).
-      handlePostOffloadOfferState();
       break;
     case 'setDelegationMode':
       // Standalone analog of panel.ts's _handleSetDelegationMode (~line
@@ -3178,55 +3172,6 @@ function handleSetProjectPlanEnabledStandalone(enabled) {
 }
 
 /**
- * Standalone analog of panel.ts's _postOffloadOfferState (~line 8152), as a
- * PURE payload computation (no broadcast) so both the explicit
- * REQUEST_OFFLOAD_OFFER_STATE handler AND buildBootHandshakeMessages()'s
- * per-connection replay compute the identical LIVE payload instead of the
- * replay path hardcoding a stale stub. `dismissed`/`accepted` read from
- * `.claude/tycoon/execution.json`'s `offloadOfferDismissed`/
- * `offloadOfferAccepted` booleans (same file/merge pattern as the Project
- * Plan toggle above); `providerAvailable` is true only when the project's
- * `.mcp.json` has an `mcpServers.codex` entry — fails CLOSED (false) on any
- * missing/unreadable/ambiguous case, same as panel.ts's
- * `offloadProviderAvailable`.
- */
-function computeOffloadOfferState(root) {
-  if (!root) return { type: 'OFFLOAD_OFFER_STATE', dismissed: false, accepted: false, providerAvailable: false };
-  const configPath = path.join(root, '.claude', 'tycoon', 'execution.json');
-  let cfg = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    if (parsed !== null && typeof parsed === 'object') cfg = parsed;
-  } catch {
-    cfg = {};
-  }
-  const dismissed = cfg.offloadOfferDismissed === true;
-  const accepted = cfg.offloadOfferAccepted === true;
-
-  let providerAvailable = false;
-  try {
-    const { hasMcpServer } = mcpCatalogModule();
-    const mcpPath = path.join(root, '.mcp.json');
-    let mcpConfig = {};
-    try {
-      const parsedMcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
-      if (parsedMcp !== null && typeof parsedMcp === 'object') mcpConfig = parsedMcp;
-    } catch {
-      mcpConfig = {};
-    }
-    providerAvailable = hasMcpServer(mcpConfig, 'codex');
-  } catch {
-    providerAvailable = false;
-  }
-
-  return { type: 'OFFLOAD_OFFER_STATE', dismissed, accepted, providerAvailable };
-}
-
-function handlePostOffloadOfferState() {
-  broadcast('message', computeOffloadOfferState(primaryProjectRoot));
-}
-
-/**
  * Boot-time theme resolution for the "ready" handshake — mirrors panel.ts's
  * MSG.READY handler (loadLatestTheme + THEME_INITIALIZED/THEME_NONE) but
  * against the standalone's fs-backed ThemeFileStore, which has no
@@ -4725,8 +4670,7 @@ export async function startServer({
     return [{ eventName: 'message', data: msg }];
   });
   // Boot-handshake catch-up (see buildBootHandshakeMessages()'s doc comment)
-  // — replays checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
-  // REQUEST_OFFLOAD_OFFER_STATE's replies to every new /events connection so
+  // — replays checkInstall/getPacks/getEngineStatus/REQUEST_PLAN replies to every new /events connection so
   // the setup overlay dismisses even when the client's own boot POSTs raced
   // ahead of its SSE connection actually registering.
   const unregisterBootHandshake = registerInitialMessageProvider(() => buildBootHandshakeMessages());

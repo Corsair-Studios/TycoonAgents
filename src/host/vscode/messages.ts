@@ -419,22 +419,6 @@ export const MSG = {
   // panel.ts). No-ops (and reposts current state) when no backup exists.
   RESTORE_PLAN_BACKUP: "RESTORE_PLAN_BACKUP",
 
-  // ---- credit-pressure offload offer (p6-t1) --------------------------
-  // Detection itself runs CLIENT-SIDE in media/main.js against the
-  // already-flowing metrics payload (no new host computation) — these
-  // messages only carry two persisted booleans, exactly mirroring
-  // REQUEST_PLAN/PLAN_STATE/SET_PROJECT_PLAN_ENABLED above:
-  //   - `dismissed`: stop showing the card. Set by BOTH accept and dismiss.
-  //   - `accepted`: the actual recorded CHOICE. Set ONLY by an explicit
-  //     accept-click; dismiss never sets it. This is the field something
-  //     downstream (the orchestrator, out of this task's scope) reads to
-  //     know the user said yes — recording the choice here has ZERO
-  //     rerouting effect of its own (see writeOffloadOfferAccepted's doc in
-  //     panel.ts); this webview never reroutes anything itself.
-  REQUEST_OFFLOAD_OFFER_STATE: "REQUEST_OFFLOAD_OFFER_STATE",
-  OFFLOAD_OFFER_STATE: "OFFLOAD_OFFER_STATE",
-  SET_OFFLOAD_OFFER_DISMISSED: "SET_OFFLOAD_OFFER_DISMISSED",
-
   // ---- Routing panel (p13-t1/t2/t4) --------------------------------------
   // Host-agnostic implementation lives in src/core/routingHostOps.ts
   // (buildRoutingView/saveRoutingProfile/clearRoutingProfile/probeEnv),
@@ -972,28 +956,6 @@ export const MSG_SCHEMAS = {
 
   SET_PROJECT_PLAN_ENABLED: z.object({ enabled: z.boolean() }).passthrough(),
   RESTORE_PLAN_BACKUP: z.object({}).passthrough(),
-
-  // Outbound host -> webview: current persisted state, sent once at boot in
-  // reply to REQUEST_OFFLOAD_OFFER_STATE (mirrors PLAN_STATE). `accepted`
-  // defaults false when the field predates this addition (back-compat).
-  // `providerAvailable` is a FRESH host-side check (not persisted) of
-  // whether a real foreign-provider MCP route (.mcp.json's `codex` entry)
-  // exists for this project — see offloadProviderAvailable in panel.ts. It
-  // is optional for the same back-compat reason as `accepted`: an older
-  // host build predating this field simply omits it, and the webview must
-  // treat that as "not confirmed available" (fail closed), never as true.
-  OFFLOAD_OFFER_STATE: z
-    .object({ dismissed: z.boolean(), accepted: z.boolean().optional(), providerAvailable: z.boolean().optional() })
-    .passthrough(),
-  // Inbound webview -> host: persist the user's action. `accepted` is
-  // OPTIONAL and present only on an accept-click; a plain dismiss omits it
-  // (or sends it false) so the two actions stay distinguishable end to end.
-  // Recording `accepted: true` has no wire-level rerouting effect — see
-  // writeOffloadOfferAccepted's doc in panel.ts for the invariant this
-  // preserves.
-  SET_OFFLOAD_OFFER_DISMISSED: z
-    .object({ dismissed: z.boolean(), accepted: z.boolean().optional() })
-    .passthrough(),
 
   // ---- Theme Service auth / balance / checkout (p42-t1) -------------------
   THEME_SERVICE_GET_STATUS: z.object({}).passthrough(),

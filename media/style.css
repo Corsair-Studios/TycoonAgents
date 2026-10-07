@@ -3470,58 +3470,6 @@ body {
   color: var(--text);
 }
 
-/* Credit-pressure offload offer (p6-t1, media/main.js's
-   renderCreditPressureOffer). Base look reused from .catalog-notice, same
-   family as .orchestrator-model-notice/.legacy-artifacts-notice — but this
-   one renders IN-FLOW inside #metrics-body (not a fixed overlay), since it
-   belongs next to the metrics it's reacting to rather than floating above
-   the whole panel. */
-.credit-pressure-offer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.credit-pressure-offer-text {
-  flex: 1;
-}
-
-.credit-pressure-offer-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.credit-pressure-offer-accept {
-  background: rgba(255, 176, 32, 0.16);
-  border: 1px solid rgba(255, 176, 32, 0.45);
-  color: var(--accent);
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 1.3;
-  padding: 4px 8px;
-  cursor: pointer;
-}
-
-.credit-pressure-offer-accept:hover {
-  background: rgba(255, 176, 32, 0.26);
-}
-
-.credit-pressure-offer-dismiss {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-
-.credit-pressure-offer-dismiss:hover {
-  color: var(--text);
-}
 
 .disclosure {
   display: flex;
@@ -8581,4 +8529,59 @@ button.theme-review-preview:focus-visible::after {
 .routing-external-source {
   color: var(--muted);
   font-size: 10px;
+}
+
+/* "Claude limit reached" banner (p102-t2, media/main.js's
+   showOrchestratorLimitBanner). Informational only - text and a dismiss
+   button, nothing that routes work. Fixed top-centre overlay so it never
+   shoves the scene and clears the top-right model/legacy notices. */
+.orchestrator-limit-banner {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 520;
+  width: min(420px, calc(100% - 20px));
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+}
+
+.orchestrator-limit-banner-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.orchestrator-limit-banner-title {
+  display: block;
+  color: var(--accent);
+}
+
+.orchestrator-limit-banner-reset {
+  margin-top: 2px;
+}
+
+.orchestrator-limit-banner-options {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.orchestrator-limit-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+.orchestrator-limit-banner-dismiss:hover {
+  color: var(--text);
 }

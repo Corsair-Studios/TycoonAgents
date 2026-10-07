@@ -181,49 +181,6 @@
   let projectPlanCheckboxEl = null;
 
   /**
-   * Credit-pressure offload offer (p6-t1). Whether the user has already
-   * dismissed (or accepted) the offer this project — from
-   * OFFLOAD_OFFER_STATE.dismissed, persisted host-side in execution.json's
-   * `offloadOfferDismissed` field (same top-level-boolean pattern as
-   * `projectPlanEnabled`). Default false so a never-answered project can
-   * still surface the offer once detection trips. Set true by EITHER
-   * accept or dismiss — it only gates card visibility.
-   */
-  let offloadOfferDismissed = false;
-  /**
-   * Whether the user's EXPLICIT accept-click was recorded — from
-   * OFFLOAD_OFFER_STATE.accepted, persisted host-side in execution.json's
-   * `offloadOfferAccepted` field. Distinct from `offloadOfferDismissed`
-   * above: this is the actual recorded CHOICE (set ONLY by accept, never by
-   * a plain dismiss) that something downstream reads to know the user said
-   * yes. Recording it here has zero rerouting effect by itself — see
-   * acceptCreditPressureOffer's doc.
-   */
-  let offloadOfferAccepted = false;
-  /**
-   * Whether a foreign-provider offload route (Codex) has been CONFIRMED to
-   * exist for this project — from OFFLOAD_OFFER_STATE.providerAvailable, a
-   * fresh host-side read of the project's real .mcp.json (see
-   * offloadProviderAvailable in panel.ts), never a guess made in this
-   * webview. Defaults `false` (NOT available) so that until the host
-   * explicitly confirms otherwise, the offer stays hidden — fail closed.
-   * This mirrors offloadOfferDismissed's storage pattern but is NOT itself
-   * persisted state.
-   *
-   * Kept live (not just boot-time) by panel.ts, which reposts
-   * OFFLOAD_OFFER_STATE on every channel that can change it: a
-   * FileSystemWatcher on the project's .mcp.json (_setupMcpWatcher, catches
-   * ANY write regardless of source — this panel's own Install/Remove MCP
-   * buttons, a hand-edit in another editor, git, another extension), plus an
-   * immediate repost from _handleInstallMcp/_handleRemoveMcp right after they
-   * write .mcp.json themselves (belt-and-suspenders with the watcher, so the
-   * panel's own buttons don't wait on the watcher's debounce). Because the
-   * watcher covers every write source, there is no known path left where
-   * this variable can go stale short of the panel being closed while the
-   * file changes and no watcher event having fired before it reopens.
-   */
-  let offloadProviderAvailable = false;
-  /**
    * Which array the Metrics tab's TABLE currently displays: "all" (cumulative
    * — totals since the last metrics reset) or "session" (current Claude Code
    * session only). DEFAULT "all" so upgrading users see the exact same

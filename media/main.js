@@ -182,49 +182,6 @@
   let projectPlanCheckboxEl = null;
 
   /**
-   * Credit-pressure offload offer (p6-t1). Whether the user has already
-   * dismissed (or accepted) the offer this project — from
-   * OFFLOAD_OFFER_STATE.dismissed, persisted host-side in execution.json's
-   * `offloadOfferDismissed` field (same top-level-boolean pattern as
-   * `projectPlanEnabled`). Default false so a never-answered project can
-   * still surface the offer once detection trips. Set true by EITHER
-   * accept or dismiss — it only gates card visibility.
-   */
-  let offloadOfferDismissed = false;
-  /**
-   * Whether the user's EXPLICIT accept-click was recorded — from
-   * OFFLOAD_OFFER_STATE.accepted, persisted host-side in execution.json's
-   * `offloadOfferAccepted` field. Distinct from `offloadOfferDismissed`
-   * above: this is the actual recorded CHOICE (set ONLY by accept, never by
-   * a plain dismiss) that something downstream reads to know the user said
-   * yes. Recording it here has zero rerouting effect by itself — see
-   * acceptCreditPressureOffer's doc.
-   */
-  let offloadOfferAccepted = false;
-  /**
-   * Whether a foreign-provider offload route (Codex) has been CONFIRMED to
-   * exist for this project — from OFFLOAD_OFFER_STATE.providerAvailable, a
-   * fresh host-side read of the project's real .mcp.json (see
-   * offloadProviderAvailable in panel.ts), never a guess made in this
-   * webview. Defaults `false` (NOT available) so that until the host
-   * explicitly confirms otherwise, the offer stays hidden — fail closed.
-   * This mirrors offloadOfferDismissed's storage pattern but is NOT itself
-   * persisted state.
-   *
-   * Kept live (not just boot-time) by panel.ts, which reposts
-   * OFFLOAD_OFFER_STATE on every channel that can change it: a
-   * FileSystemWatcher on the project's .mcp.json (_setupMcpWatcher, catches
-   * ANY write regardless of source — this panel's own Install/Remove MCP
-   * buttons, a hand-edit in another editor, git, another extension), plus an
-   * immediate repost from _handleInstallMcp/_handleRemoveMcp right after they
-   * write .mcp.json themselves (belt-and-suspenders with the watcher, so the
-   * panel's own buttons don't wait on the watcher's debounce). Because the
-   * watcher covers every write source, there is no known path left where
-   * this variable can go stale short of the panel being closed while the
-   * file changes and no watcher event having fired before it reopens.
-   */
-  let offloadProviderAvailable = false;
-  /**
    * Which array the Metrics tab's TABLE currently displays: "all" (cumulative
    * — totals since the last metrics reset) or "session" (current Claude Code
    * session only). DEFAULT "all" so upgrading users see the exact same
@@ -2909,6 +2866,136 @@ if (typeof module !== "undefined" && module.exports) {
     const prev = vscode.getState() || {};
     vscode.setState({ ...prev, orchestratorModelNoticeDismissedFor: family });
   }
+
+  // ── "Claude limit reached" banner (p102-t2) ─────────────────────────
+  //
+  // Informational only. Shows while state.orchestratorLimit is active
+  // (MetricsWorldState, src/core/state.ts). It lists what the USER can do
+  // inside Claude Code; it has NO buttons that route, switch or queue work,
+  // and it never touches credentials. Dismissal is keyed by limit instance
+  // (kind + at), so a NEW limit re-surfaces the banner while the same one
+  // stays dismissed. Mirrors ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS in
+  // src/core/state.ts (keep in sync).
+  const ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS = 6 * 60 * 60 * 1000;
+  /** The last orchestratorLimit seen in a STATE push (or undefined). */
+  let lastOrchestratorLimit = undefined;
+  let orchestratorLimitTimer = null;
+  /** In-memory twin of the persisted dismissal key (vscode.getState can be empty). */
+  let dismissedOrchestratorLimitKey = null;
+
+  /** Mirror of isOrchestratorLimitActive in src/core/state.ts. */
+  function isOrchestratorLimitActive(limit, now) {
+    if (!limit || typeof limit.at !== "number") return false;
+    return typeof limit.resetAt === "number" ? now < limit.resetAt : now - limit.at < ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS;
+  }
+
+  function orchestratorLimitKey(limit) {
+    return String(limit.kind) + ":" + String(limit.at);
+  }
+
+  function orchestratorLimitTitle(kind) {
+    switch (kind) {
+      case "quota": return "Claude usage limit reached";
+      case "rate_limit": return "Claude rate limit";
+      case "overloaded": return "Claude is overloaded";
+      case "billing": return "Billing issue";
+      default: return "Claude stopped on an API error";
+    }
+  }
+
+  /** "Resets at 3:00 PM" (local), "Claude says: resets <hint>", or "" when neither is known. */
+  function orchestratorLimitResetLine(limit) {
+    if (typeof limit.resetAt === "number" && isFinite(limit.resetAt)) {
+      const t = new Date(limit.resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      return "Resets at " + t;
+    }
+    if (typeof limit.resetHint === "string" && limit.resetHint.trim() !== "") {
+      return "Claude says: resets " + limit.resetHint.trim();
+    }
+    return "";
+  }
+
+  /**
+   * HOOK POINT for phase p103 (backup harness). Return the option text
+   * ("Continue on a backup harness") ONLY when a backup harness is
+   * configured; there is no such setting yet, so this returns null and the
+   * option is omitted. Informational text only - do not add a routing button.
+   * @returns {string|null}
+   */
+  function getBackupHarnessOptionText() {
+    return null;
+  }
+
+  function dismissOrchestratorLimitBanner(limit) {
+    const el = document.getElementById("orchestrator-limit-banner");
+    if (el) el.remove();
+    dismissedOrchestratorLimitKey = orchestratorLimitKey(limit);
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, orchestratorLimitDismissedFor: orchestratorLimitKey(limit) });
+  }
+
+  /**
+   * Paint or remove the banner for `limit` (state.orchestratorLimit).
+   * Idempotent: called on every STATE push and on a 30s timer so an expired
+   * limit disappears without waiting for a new event.
+   */
+  function showOrchestratorLimitBanner(limit) {
+    lastOrchestratorLimit = limit;
+    const existing = document.getElementById("orchestrator-limit-banner");
+    if (existing) existing.remove();
+    if (!limit || !isOrchestratorLimitActive(limit, Date.now())) return;
+    const limitKey = orchestratorLimitKey(limit);
+    if (dismissedOrchestratorLimitKey === limitKey || (vscode.getState() || {}).orchestratorLimitDismissedFor === limitKey) return;
+
+    const banner = document.createElement("div");
+    banner.id = "orchestrator-limit-banner";
+    banner.className = "catalog-notice orchestrator-limit-banner";
+    banner.setAttribute("role", "status");
+
+    const body = document.createElement("div");
+    body.className = "orchestrator-limit-banner-body";
+
+    const title = document.createElement("strong");
+    title.className = "orchestrator-limit-banner-title";
+    title.textContent = orchestratorLimitTitle(limit.kind);
+    body.appendChild(title);
+
+    const reset = orchestratorLimitResetLine(limit);
+    if (reset) {
+      const resetEl = document.createElement("div");
+      resetEl.className = "orchestrator-limit-banner-reset";
+      resetEl.textContent = reset;
+      body.appendChild(resetEl);
+    }
+
+    const options = [
+      "Try another Claude model with /model (some plans limit models separately)",
+      "Claude Code also offers its own options, such as extra usage or an API key — that’s your choice in Claude Code",
+    ];
+    const backup = getBackupHarnessOptionText();
+    if (backup) options.push(backup);
+    const list = document.createElement("ul");
+    list.className = "orchestrator-limit-banner-options";
+    for (const text of options) {
+      const li = document.createElement("li");
+      li.textContent = text;
+      list.appendChild(li);
+    }
+    body.appendChild(list);
+    banner.appendChild(body);
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "orchestrator-limit-banner-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", () => dismissOrchestratorLimitBanner(limit));
+    banner.appendChild(dismissBtn);
+
+    document.body.appendChild(banner);
+  }
+
+  // Re-evaluate on a timer so an expired limit hides between STATE pushes.
+  orchestratorLimitTimer = setInterval(() => showOrchestratorLimitBanner(lastOrchestratorLimit), 30000);
   
   // Themes Modal Elements
   const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));
@@ -14195,13 +14282,6 @@ if (typeof module !== "undefined" && module.exports) {
   // side (PLAN_STATE comes back with enabled:false, plan:null) when the
   // feature isn't turned on or there's no workspace.
   vscode.postMessage({ type: "REQUEST_PLAN" });
-
-  // Ask the host for the credit-pressure offload offer's persisted
-  // dismissal flag (p6-t1). No-ops host-side (dismissed:false) when there's
-  // no workspace. See OFFLOAD_OFFER_STATE handler below and
-  // checkCreditPressureOffer/renderCreditPressureOffer near renderMetrics.
-  vscode.postMessage({ type: "REQUEST_OFFLOAD_OFFER_STATE" });
-
   // ── Engine connection chips (upper-left overlay) ─────────────────
 
   const engineChipsEl = document.createElement("div");
@@ -15958,6 +16038,7 @@ if (typeof module !== "undefined" && module.exports) {
         }, 5000);
       }
       state = msg.state;
+      showOrchestratorLimitBanner(state && state.orchestratorLimit);
       idleFreezeMs = state.idleFreezeMs ?? 180000;
       sanityCapMs = state.sanityCapMs ?? 900000;
       // Maintain insertion order for stable x positions
@@ -16344,19 +16425,6 @@ if (typeof module !== "undefined" && module.exports) {
       currentPlanHasBackup = !!msg.hasBackup;
       syncProjectPlanSettingsToggle();
       renderProjectPlanSection();
-    } else if (msg && msg.type === "OFFLOAD_OFFER_STATE") {
-      // Credit-pressure offload offer (p6-t1): boot-time reply to
-      // REQUEST_OFFLOAD_OFFER_STATE carrying the two persisted flags plus a
-      // FRESH (non-persisted) host-side providerAvailable check. Detection
-      // re-evaluation happens on the next renderMetrics() call
-      // (checkCreditPressureOffer), not here. `providerAvailable` defaults
-      // false (Boolean(undefined) === false) so an older host build that
-      // predates this field, or any falsy/missing value, fails CLOSED —
-      // never shows an offer for an unconfirmed route.
-      offloadOfferDismissed = Boolean(msg.dismissed);
-      offloadOfferAccepted = Boolean(msg.accepted);
-      offloadProviderAvailable = Boolean(msg.providerAvailable);
-      renderCreditPressureOffer();
     }
   });
 
@@ -19352,10 +19420,6 @@ function themeAnimPreviewDraw(player) {
   function renderMetrics(metrics) {
     lastMetrics = metrics || [];
     renderMetricsTable(currentScopeMetrics());
-    // Detection-only: re-evaluate whether the credit-pressure offer should
-    // be visible. This call can only ever change offer VISIBILITY — see
-    // checkCreditPressureOffer's doc for the routing-neutrality invariant.
-    renderCreditPressureOffer();
   }
 
   /**
@@ -19501,159 +19565,6 @@ function themeAnimPreviewDraw(player) {
         "Relative cost badges compare published list rates and are informational only.";
       metricsBodyEl.appendChild(pricingCaption);
     }
-  }
-
-  // ── Credit-pressure offload offer (p6-t1) ──────────────────────────────
-  //
-  // THE LOAD-BEARING INVARIANT: detection tripping changes EXACTLY ONE
-  // thing — whether the offer element below is visible. It never selects a
-  // model, never queues a task, never touches any routing table. The ONLY
-  // path that has any routing-relevant effect at all is
-  // acceptCreditPressureOffer(), and even that path only records the user's
-  // explicit choice (persisted via SET_OFFLOAD_OFFER_DISMISSED, the same
-  // wire message dismissal uses) for the ORCHESTRATOR to read and act on
-  // elsewhere — this webview never itself reroutes anything. Per the
-  // project's "user is final reviewer" doctrine, the system must never
-  // auto-switch models mid-session; this section is written so that
-  // invariant is visible by inspection, not just by convention: the
-  // detection function below returns a plain boolean and touches no other
-  // state, and acceptCreditPressureOffer's body is a single postMessage
-  // call, nothing else.
-
-  /**
-   * Orchestrator token-count threshold (cumulative, this project, since the
-   * last metrics reset) above which the credit-pressure offer becomes
-   * eligible to show. A single named constant so the trigger point is
-   * inspectable and changeable in one place.
-   *
-   * SIGNAL CHOSEN AND WHY: the orchestrator's own `tokens` field from the
-   * agentMetrics the host already computes and streams to this webview
-   * (the same number the "Coordination (not delegated work)" section
-   * displays, see the `orch.tokens` read a few hundred lines up). The
-   * orchestrator's own token burn is the single best available proxy for
-   * "this session/project is consuming a lot of the expensive model's
-   * capacity" without adding any new host-side computation or data source
-   * — everything else in agentMetrics is delegated-worker spend, which is
-   * already the cheap side of the ledger this feature exists to protect.
-   *
-   * HONEST LIMITATION: this is a raw token COUNT, not a dollar figure or a
-   * plan-quota percentage. Per the metrics panel's documented cost lens,
-   * the TOKENS figures in this UI already sum cache reads at face value,
-   * which overstates real API-dollar spend several-fold for a
-   * subscription-billed orchestrator — so this threshold is deliberately a
-   * round, coarse trip point, not a precise budget calculation. It cannot
-   * know the user's actual plan, quota, or remaining credit; it only knows
-   * "this project's coordinator has burned a lot of tokens by this
-   * approximate count." Treat it as a nudge, not a bill.
-   */
-  const CREDIT_PRESSURE_ORCH_TOKENS_THRESHOLD = 500000;
-
-  /**
-   * Pure detection: does the orchestrator's current cumulative token count
-   * (from `lastMetrics`, already flowing to this webview) exceed the
-   * threshold? Reads existing data only — no new fetch, no new host
-   * plumbing. Returns a plain boolean and has NO side effects: it does not
-   * write state, does not post a message, does not touch routing. Callers
-   * (renderCreditPressureOffer) decide what to do with the answer.
-   * @returns {boolean}
-   */
-  function checkCreditPressureOffer() {
-    const orch = Array.isArray(lastMetrics) ? lastMetrics.find((a) => a && a.id === "orchestrator") : null;
-    if (!orch) return false;
-    const tokens = (orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0);
-    return tokens >= CREDIT_PRESSURE_ORCH_TOKENS_THRESHOLD;
-  }
-
-  /**
-   * Paint (or remove) the dismissible offload-offer card in #metrics-body.
-   * Shown iff ALL THREE hold: detection trips (token threshold), the user
-   * has not already dismissed it this project (offloadOfferDismissed, from
-   * OFFLOAD_OFFER_STATE), AND a foreign-provider route is CONFIRMED to
-   * exist (offloadProviderAvailable, also from OFFLOAD_OFFER_STATE — a
-   * fresh host-side .mcp.json check, never a guess made here). The third
-   * condition is load-bearing: without it, a high orchestrator token count
-   * alone used to be sufficient to show an offer proposing a route
-   * (Codex) that might not be installed at all — a fabricated-state bug,
-   * the same class the panel's "never claim what it hasn't confirmed"
-   * doctrine exists to prevent. All three gates are independent; any one
-   * failing hides the card. Reuses the existing `.catalog-notice` card look
-   * (see .orchestrator-model-notice in style.css) rather than inventing new
-   * styling, and is guarded by a stable element id so repeated
-   * renderMetrics() calls update it in place instead of stacking
-   * duplicates — same pattern as #metrics-stats-caption a few lines up.
-   */
-  function renderCreditPressureOffer() {
-    const metricsBodyEl = document.getElementById("metrics-body");
-    if (!metricsBodyEl) return;
-
-    const existing = document.getElementById("credit-pressure-offer");
-    if (existing) existing.remove(); // re-render clean each call
-
-    if (offloadOfferDismissed) return;
-    if (!offloadProviderAvailable) return; // fail closed: no confirmed route, no offer
-    if (!checkCreditPressureOffer()) return;
-
-    const card = document.createElement("div");
-    card.id = "credit-pressure-offer";
-    card.className = "catalog-notice credit-pressure-offer";
-
-    const text = document.createElement("span");
-    text.className = "credit-pressure-offer-text";
-    text.textContent =
-      "This session has used a lot of orchestrator tokens. Consider routing the next task to a Codex agent (flat-rate) instead of this metered model.";
-    card.appendChild(text);
-
-    const actions = document.createElement("span");
-    actions.className = "credit-pressure-offer-actions";
-
-    const acceptBtn = document.createElement("button");
-    acceptBtn.className = "credit-pressure-offer-accept";
-    acceptBtn.textContent = "Route next task to Codex";
-    acceptBtn.addEventListener("click", acceptCreditPressureOffer);
-    actions.appendChild(acceptBtn);
-
-    const dismissBtn = document.createElement("button");
-    dismissBtn.className = "credit-pressure-offer-dismiss";
-    dismissBtn.setAttribute("aria-label", "Dismiss");
-    dismissBtn.textContent = "×";
-    dismissBtn.addEventListener("click", dismissCreditPressureOffer);
-    actions.appendChild(dismissBtn);
-
-    card.appendChild(actions);
-    metricsBodyEl.appendChild(card);
-  }
-
-  /**
-   * Explicit user accept-click. This is the ONLY code path in this feature
-   * with any routing-relevant effect, and even here the effect is limited
-   * to RECORDING the user's choice — this function does not itself select
-   * a model, spawn an agent, or touch a task queue. It sets BOTH
-   * `dismissed` (stop showing the card, same as a plain dismiss) AND
-   * `accepted: true` (the distinct field a plain dismiss never sets) in one
-   * SET_OFFLOAD_OFFER_DISMISSED message, then hides the card. RECORDING A
-   * CHOICE IS NOT THE SAME AS REROUTING: the orchestrator reads
-   * `offloadOfferAccepted` later and decides what to do with it (out of
-   * this task's scope) — nothing in this function reaches into routing
-   * directly.
-   */
-  function acceptCreditPressureOffer() {
-    offloadOfferDismissed = true;
-    offloadOfferAccepted = true;
-    vscode.postMessage({ type: "SET_OFFLOAD_OFFER_DISMISSED", dismissed: true, accepted: true });
-    renderCreditPressureOffer();
-  }
-
-  /**
-   * Explicit user dismiss-click: persist dismissal so the offer stays gone
-   * and does not nag. Deliberately omits `accepted` (host defaults it to
-   * false/unset) — a plain dismiss must NEVER record acceptance, which is
-   * exactly the distinction that makes accept and dismiss different
-   * end-to-end instead of the same call with two names.
-   */
-  function dismissCreditPressureOffer() {
-    offloadOfferDismissed = true;
-    vscode.postMessage({ type: "SET_OFFLOAD_OFFER_DISMISSED", dismissed: true });
-    renderCreditPressureOffer();
   }
 
   /** Display label for a delegation mode id (the "flat" enum value renders as "Flat (no team leads)"). */

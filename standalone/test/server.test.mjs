@@ -104,7 +104,7 @@ function createSseCollector(reader) {
 /**
  * Like collectSseEvent, but keeps reading past same-`matchType` events that
  * don't satisfy `predicate` instead of returning the first one. Needed for
- * boot-handshake-replayed types (PLAN_STATE, OFFLOAD_OFFER_STATE) that
+ * boot-handshake-replayed types (PLAN_STATE) that
  * `initialMessageProviders`/`sseClients` (server.mjs module-level state
  * shared by every startServer() instance in ONE test process) can also
  * emit for a DIFFERENT, concurrently-running test's server, onto a client
@@ -294,8 +294,7 @@ test('startServer: resolves appData + themeDataDir honoring TYCOON_STANDALONE_DA
 
 // ── Browser boot handshake (checkInstall / ready) ───────────────────────────
 // media/main.js's boot sequence (~main.js:10935-10971) fires "ready" then
-// "checkInstall" (plus getPacks/getEngineStatus/REQUEST_PLAN/
-// REQUEST_OFFLOAD_OFFER_STATE) before its first paint. These used to fall
+// "checkInstall" (plus getPacks/getEngineStatus/REQUEST_PLAN) before its first paint. These used to fall
 // through handleBrowserMessage()'s default case and log
 // "/message (unhandled)", leaving the panel stuck on "Checking
 // installation..." and the theme stage waiting out its 15s pending-fallback
@@ -590,8 +589,8 @@ test('POST /message {type: "getSettings"} -> broadcasts a "settings" reply that 
 
 // ── Full simulated browser boot sequence ────────────────────────────────────
 // media/main.js's actual boot order (main.js:10948-10971): "ready" then
-// checkInstall/getPacks/getEngineStatus/REQUEST_PLAN/
-// REQUEST_OFFLOAD_OFFER_STATE, fired back-to-back BEFORE the browser's own
+// checkInstall/getPacks/getEngineStatus/REQUEST_PLAN,
+// fired back-to-back BEFORE the browser's own
 // EventSource connection is guaranteed to have registered server-side (see
 // buildBootHandshakeMessages()'s doc comment in server.mjs for the exact
 // race). This test connects to /events, posts every boot message in main.js's
@@ -616,7 +615,6 @@ test('simulated browser boot sequence: every boot-handshake message gets a reply
       ['getPacks', 'packs'],
       ['getEngineStatus', 'engineStatus'],
       ['REQUEST_PLAN', 'PLAN_STATE'],
-      ['REQUEST_OFFLOAD_OFFER_STATE', 'OFFLOAD_OFFER_STATE'],
     ];
     const wantedTypes = new Set(expected.map(([, replyType]) => replyType));
 
@@ -656,7 +654,7 @@ test('simulated browser boot sequence: every boot-handshake message gets a reply
 
 // ── Theme boot on plain /events connect (no "ready" POST) ──────────────────
 // Regression coverage: buildBootHandshakeMessages()'s installState/packs/
-// engineStatus/PLAN_STATE/OFFLOAD_OFFER_STATE all replay on every new
+// engineStatus/PLAN_STATE all replay on every new
 // /events connection via registerInitialMessageProvider (synchronous), but
 // the theme boot (handleReadyThemeBoot, THEME_INITIALIZED/THEME_NONE) used
 // to fire ONLY from the 'ready' POST case — dropped if that POST raced
@@ -973,7 +971,7 @@ test('POST /message {type: "confirmFeedbackSend"} -> network failure replies fee
   }
 });
 
-// ── p9-t6: Settings write handlers, PLAN_STATE, OFFLOAD_OFFER_STATE, skill repair ──
+// ── p9-t6: Settings write handlers, PLAN_STATE, skill repair ──
 
 test('POST /message {type: "setDelegationMode", delegation_mode: "team_leads"} -> persists execution.json, installs LEAD_AGENTS, replies settingsUpdated + fresh settings', async () => {
   const projectRoot = mkTempProject();
@@ -1260,62 +1258,3 @@ test('startup: an explicit projectPlanEnabled:false is respected - no skill, no 
   }
 });
 
-test('REQUEST_OFFLOAD_OFFER_STATE reflects execution.json flags and .mcp.json codex entry (fails closed when absent)', async () => {
-  const projectRoot = mkTempProject();
-  const dataDir = path.join(mkTempProject(), 'appdata');
-  const runtime = await startServer({
-    argv: [projectRoot],
-    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
-    cwd: projectRoot,
-  });
-  const controller = new AbortController();
-  try {
-    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
-    const reader = eventsRes.body.getReader();
-
-    // Drain the boot-handshake's own unconditional OFFLOAD_OFFER_STATE
-    // replay (sent to every new /events connection) before the explicit
-    // REQUEST below — otherwise its reply queues up as a second unread
-    // event and the LATER collectSseEvent call (after the .mcp.json/
-    // execution.json writes) would consume this stale leftover instead of
-    // the fresh one its own REQUEST produced.
-    const bootOffer = await collectSseEvent(reader, 'OFFLOAD_OFFER_STATE');
-    assert.equal(bootOffer.dismissed, false);
-    assert.equal(bootOffer.accepted, false);
-    assert.equal(bootOffer.providerAvailable, false);
-
-    const offerPromise1 = collectSseEvent(reader, 'OFFLOAD_OFFER_STATE');
-    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
-    const offer1 = await offerPromise1;
-    assert.equal(offer1.dismissed, false);
-    assert.equal(offer1.accepted, false);
-    assert.equal(offer1.providerAvailable, false);
-
-    fs.writeFileSync(
-      path.join(projectRoot, '.mcp.json'),
-      JSON.stringify({ mcpServers: { codex: { command: 'codex', args: ['mcp-server'] } } }),
-    );
-    fs.mkdirSync(path.join(projectRoot, '.claude', 'tycoon'), { recursive: true });
-    fs.writeFileSync(
-      path.join(projectRoot, '.claude', 'tycoon', 'execution.json'),
-      JSON.stringify({ offloadOfferDismissed: true, offloadOfferAccepted: true }),
-    );
-
-    // Match on all three flags together (not just type) — see
-    // collectSseEventMatching's doc comment on cross-talk from concurrently
-    // running tests sharing server.mjs's module-level SSE state.
-    const offerPromise2 = collectSseEventMatching(
-      reader,
-      'OFFLOAD_OFFER_STATE',
-      (d) => d.dismissed === true && d.accepted === true && d.providerAvailable === true,
-    );
-    await fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify({ type: 'REQUEST_OFFLOAD_OFFER_STATE' }) });
-    const offer2 = await offerPromise2;
-    assert.equal(offer2.dismissed, true);
-    assert.equal(offer2.accepted, true);
-    assert.equal(offer2.providerAvailable, true);
-  } finally {
-    controller.abort();
-    await runtime.close();
-  }
-});

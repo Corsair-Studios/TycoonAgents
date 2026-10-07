@@ -196,7 +196,6 @@ test("_handleInstallMcp refuses the uefn-bridge catalog entry (unresolved <POWER
       _readMcpConfig: (TycoonPanel.prototype as any)._readMcpConfig,
       _resolveConfigTokens: (TycoonPanel.prototype as any)._resolveConfigTokens,
       _buildMcpConfirmMessage: (TycoonPanel.prototype as any)._buildMcpConfirmMessage,
-      _postOffloadOfferState: () => {},
       _projectRoot: () => root,
       _extensionUri: { fsPath: REPO_ROOT },
       _panel: { webview: { postMessage: async (msg: unknown) => { posted.push(msg); return true; } } },

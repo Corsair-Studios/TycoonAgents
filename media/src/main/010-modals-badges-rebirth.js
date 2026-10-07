@@ -1007,6 +1007,136 @@
     const prev = vscode.getState() || {};
     vscode.setState({ ...prev, orchestratorModelNoticeDismissedFor: family });
   }
+
+  // ── "Claude limit reached" banner (p102-t2) ─────────────────────────
+  //
+  // Informational only. Shows while state.orchestratorLimit is active
+  // (MetricsWorldState, src/core/state.ts). It lists what the USER can do
+  // inside Claude Code; it has NO buttons that route, switch or queue work,
+  // and it never touches credentials. Dismissal is keyed by limit instance
+  // (kind + at), so a NEW limit re-surfaces the banner while the same one
+  // stays dismissed. Mirrors ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS in
+  // src/core/state.ts (keep in sync).
+  const ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS = 6 * 60 * 60 * 1000;
+  /** The last orchestratorLimit seen in a STATE push (or undefined). */
+  let lastOrchestratorLimit = undefined;
+  let orchestratorLimitTimer = null;
+  /** In-memory twin of the persisted dismissal key (vscode.getState can be empty). */
+  let dismissedOrchestratorLimitKey = null;
+
+  /** Mirror of isOrchestratorLimitActive in src/core/state.ts. */
+  function isOrchestratorLimitActive(limit, now) {
+    if (!limit || typeof limit.at !== "number") return false;
+    return typeof limit.resetAt === "number" ? now < limit.resetAt : now - limit.at < ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS;
+  }
+
+  function orchestratorLimitKey(limit) {
+    return String(limit.kind) + ":" + String(limit.at);
+  }
+
+  function orchestratorLimitTitle(kind) {
+    switch (kind) {
+      case "quota": return "Claude usage limit reached";
+      case "rate_limit": return "Claude rate limit";
+      case "overloaded": return "Claude is overloaded";
+      case "billing": return "Billing issue";
+      default: return "Claude stopped on an API error";
+    }
+  }
+
+  /** "Resets at 3:00 PM" (local), "Claude says: resets <hint>", or "" when neither is known. */
+  function orchestratorLimitResetLine(limit) {
+    if (typeof limit.resetAt === "number" && isFinite(limit.resetAt)) {
+      const t = new Date(limit.resetAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      return "Resets at " + t;
+    }
+    if (typeof limit.resetHint === "string" && limit.resetHint.trim() !== "") {
+      return "Claude says: resets " + limit.resetHint.trim();
+    }
+    return "";
+  }
+
+  /**
+   * HOOK POINT for phase p103 (backup harness). Return the option text
+   * ("Continue on a backup harness") ONLY when a backup harness is
+   * configured; there is no such setting yet, so this returns null and the
+   * option is omitted. Informational text only - do not add a routing button.
+   * @returns {string|null}
+   */
+  function getBackupHarnessOptionText() {
+    return null;
+  }
+
+  function dismissOrchestratorLimitBanner(limit) {
+    const el = document.getElementById("orchestrator-limit-banner");
+    if (el) el.remove();
+    dismissedOrchestratorLimitKey = orchestratorLimitKey(limit);
+    const prev = vscode.getState() || {};
+    vscode.setState({ ...prev, orchestratorLimitDismissedFor: orchestratorLimitKey(limit) });
+  }
+
+  /**
+   * Paint or remove the banner for `limit` (state.orchestratorLimit).
+   * Idempotent: called on every STATE push and on a 30s timer so an expired
+   * limit disappears without waiting for a new event.
+   */
+  function showOrchestratorLimitBanner(limit) {
+    lastOrchestratorLimit = limit;
+    const existing = document.getElementById("orchestrator-limit-banner");
+    if (existing) existing.remove();
+    if (!limit || !isOrchestratorLimitActive(limit, Date.now())) return;
+    const limitKey = orchestratorLimitKey(limit);
+    if (dismissedOrchestratorLimitKey === limitKey || (vscode.getState() || {}).orchestratorLimitDismissedFor === limitKey) return;
+
+    const banner = document.createElement("div");
+    banner.id = "orchestrator-limit-banner";
+    banner.className = "catalog-notice orchestrator-limit-banner";
+    banner.setAttribute("role", "status");
+
+    const body = document.createElement("div");
+    body.className = "orchestrator-limit-banner-body";
+
+    const title = document.createElement("strong");
+    title.className = "orchestrator-limit-banner-title";
+    title.textContent = orchestratorLimitTitle(limit.kind);
+    body.appendChild(title);
+
+    const reset = orchestratorLimitResetLine(limit);
+    if (reset) {
+      const resetEl = document.createElement("div");
+      resetEl.className = "orchestrator-limit-banner-reset";
+      resetEl.textContent = reset;
+      body.appendChild(resetEl);
+    }
+
+    const options = [
+      "Try another Claude model with /model (some plans limit models separately)",
+      "Claude Code also offers its own options, such as extra usage or an API key — that’s your choice in Claude Code",
+    ];
+    const backup = getBackupHarnessOptionText();
+    if (backup) options.push(backup);
+    const list = document.createElement("ul");
+    list.className = "orchestrator-limit-banner-options";
+    for (const text of options) {
+      const li = document.createElement("li");
+      li.textContent = text;
+      list.appendChild(li);
+    }
+    body.appendChild(list);
+    banner.appendChild(body);
+
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "orchestrator-limit-banner-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", () => dismissOrchestratorLimitBanner(limit));
+    banner.appendChild(dismissBtn);
+
+    document.body.appendChild(banner);
+  }
+
+  // Re-evaluate on a timer so an expired limit hides between STATE pushes.
+  orchestratorLimitTimer = setInterval(() => showOrchestratorLimitBanner(lastOrchestratorLimit), 30000);
   
   // Themes Modal Elements
   const themesModalEl       = /** @type {HTMLElement} */ (document.getElementById("themes-modal"));

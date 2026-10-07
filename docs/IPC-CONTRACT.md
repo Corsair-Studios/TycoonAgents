@@ -131,6 +131,12 @@ The `routing` payload gains two fields:
 - `presets.vendorKeys: VendorKeySpec[]` — fixed env-var NAMES per bridged vendor (`src/core/vendorKeys.ts`): `{ id, label, vendors: string[], modelPrefix?, auth: "key" \| "signin", signIn?, rows: Array<{ env, kind: "credential" \| "endpoint", label, required, defaultValue?, note? }>, test: { server: "openai-compatible" \| "gemini", tool: "chat" \| "ping" } \| null, testModel? }`. On the Claude Code and Codex hosts the webview renders these rows read-only (set/unset from `envProbe`); free-form env-name fields remain only on OpenCode and for Custom endpoint. `test: null` means no Test connection button.
 - `bridge: HostBridgeInfo` (`src/core/hostBridgeSettings.ts`) — `{ mcpJsonPresent: boolean, mcpServers: string[], gemini: { serverPresent: boolean, value: "agy" \| "gemini", source: "mcp-json" \| "default" }, externalSettings: Array<{ name, value, source: "default" \| "environment" \| "mcp-json", server?, note, where }> }`. `externalSettings` feeds the read-only "Set outside the panel" box (bridge timeouts, Codex backend).
 
+## Orchestrator limit banner (p102-t2) and removed offload messages (p102-t3)
+
+The `state` push (host to webview, VS Code and standalone) carries `state.orchestratorLimit?: { kind: string, at: number, resetHint?: string, resetAt?: number, message?: string }` when the main Claude session died on an API error (`quota`, `rate_limit`, `overloaded`, `billing`, ...). No new message type: the webview (`showOrchestratorLimitBanner`) re-evaluates it on every `state` push and on a 30s timer, hiding it once cleared or expired (`isOrchestratorLimitActive`), and remembers a dismissal per limit instance (`kind:at`) in webview state. The banner is informational text only; it posts nothing back to the host.
+
+Removed in p102-t3 (the credit-pressure offload offer): `REQUEST_OFFLOAD_OFFER_STATE`, `OFFLOAD_OFFER_STATE`, `SET_OFFLOAD_OFFER_DISMISSED`. Old `execution.json` files that still carry `offloadOfferDismissed` / `offloadOfferAccepted` load unchanged; the keys are ignored and preserved on the next merge-write.
+
 ## Harness Selection (p13-t7)
 
 The Settings screen's "Which tool runs your agents?" dropdown. Host-agnostic

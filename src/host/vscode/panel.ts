@@ -339,120 +339,6 @@ function writeProjectPlanEnabled(root: string, enabled: boolean): void {
 }
 
 /**
- * Read the credit-pressure offload offer's dismissal flag; missing
- * file/dir/field all default to `false` (not yet dismissed, so a first-time
- * user sees the offer once detection trips). Same execution.json top-level
- * boolean pattern as `readProjectPlanEnabled` above — deliberately not a new
- * storage mechanism. Field name `offloadOfferDismissed` mirrors the existing
- * `projectPlanEnabled` naming style.
- */
-function readOffloadOfferDismissed(root: string): boolean {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
-    return parsed !== null && typeof parsed === "object" && parsed.offloadOfferDismissed === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Persist the offload offer's dismissal flag, preserving any other fields
- * already on disk via the same read-modify-write merge as
- * `writeProjectPlanEnabled` — clobbering sibling fields (projectPlanEnabled,
- * delegation_mode, reviewEnabled, sessionJournalEntries, ...) would break
- * those other features' persisted state.
- *
- * NOTE on the load-bearing invariant: this function is the ENTIRE effect of
- * a user dismissing or accepting the offer. It writes one boolean and
- * nothing else — no model selection, no routing table, no queued task. An
- * "accept" click records the user's choice for the orchestrator to read
- * elsewhere; it never reaches into routing from here. Detection tripping
- * (media/main.js's checkCreditPressureOffer) never calls this function at
- * all — only an explicit user click (accept or dismiss) does.
- */
-function writeOffloadOfferDismissed(root: string, dismissed: boolean): void {
-  const configPath = projectPlanExecutionConfigPath(root);
-  let existing: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-  } catch {
-    /* missing/invalid => start fresh */
-  }
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({ ...existing, offloadOfferDismissed: dismissed }, null, 2));
-}
-
-/**
- * Read the credit-pressure offload offer's ACCEPTANCE flag — distinct from
- * `offloadOfferDismissed` above, which only means "stop showing the card"
- * and is set by BOTH accept and dismiss. This flag is set ONLY by an
- * explicit accept-click and is the actual recorded choice: something
- * downstream (the orchestrator, elsewhere, out of this task's scope) can
- * read this to know the user said yes. Missing file/dir/field default to
- * `false`, same pattern as `readOffloadOfferDismissed`.
- */
-function readOffloadOfferAccepted(root: string): boolean {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(projectPlanExecutionConfigPath(root), "utf8"));
-    return parsed !== null && typeof parsed === "object" && parsed.offloadOfferAccepted === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Persist the offload offer's acceptance flag, same merge-preserving
- * read-modify-write as `writeOffloadOfferDismissed`.
- *
- * RECORDING A CHOICE IS NOT THE SAME AS REROUTING: this function writes one
- * boolean and nothing else — no model selection, no routing table write, no
- * queued task. It makes the user's accept-click legible to whatever reads
- * execution.json next; it does not itself cause any task to run on any
- * model. The orchestrator (or another component, out of this task's scope)
- * is the thing that later reads `offloadOfferAccepted` and decides to act
- * on it — the webview and this handler never reroute anything themselves.
- */
-function writeOffloadOfferAccepted(root: string, accepted: boolean): void {
-  const configPath = projectPlanExecutionConfigPath(root);
-  let existing: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (parsed !== null && typeof parsed === "object") existing = parsed as Record<string, unknown>;
-  } catch {
-    /* missing/invalid => start fresh */
-  }
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify({ ...existing, offloadOfferAccepted: accepted }, null, 2));
-}
-
-/**
- * Whether a foreign-provider offload route actually exists for this
- * project, checked host-side against the project's real `.mcp.json` —
- * NEVER inferred from the webview, and NEVER by spawning a process (e.g.
- * `codex --version`), which would be slow and inappropriate for a cosmetic
- * card. Reuses the exact plumbing `_handleInstallMcp`/`_handleGetMcp`
- * already use to read `.mcp.json` tolerantly (`_readMcpConfig`) and to
- * check for a server entry (`hasMcpServer` from `./mcpCatalog`) — this is
- * deliberately NOT a second reader.
- *
- * SIGNAL CHOSEN AND WHY: an `mcpServers.codex` entry in `.mcp.json` is the
- * most direct evidence the user has actually wired up a Codex route —
- * it's the same catalog id (`codex`, media/mcp/catalog.json) the "Install"
- * button in the MCP panel writes. Fails CLOSED on every ambiguous case:
- * missing `.mcp.json`, unreadable/invalid JSON (both already handled by
- * `_readMcpConfig`'s try/catch → `{}`), or no `codex` key all resolve to
- * `false`/"not available". An offer that names a route which does not
- * exist is worse than no offer at all — this function's whole job is to
- * make that impossible.
- */
-function offloadProviderAvailable(root: string, readMcpConfig: (mcpPath: string) => Record<string, unknown>): boolean {
-  if (root === "") return false;
-  const mcpConfig = readMcpConfig(path.join(root, ".mcp.json"));
-  return hasMcpServer(mcpConfig, "codex");
-}
-
-/**
  * Seed the opt-in `projectPlanEnabled` flag at fresh-install/repair time,
  * mirroring the `reviewEnabled` default-on-install precedent in
  * `_handleInstallHooks`: Project Plan is ON by default for a project that
@@ -895,18 +781,6 @@ export class TycoonPanel {
   private _planWatcher: vscode.FileSystemWatcher | undefined;
   /** Coalesces bursts of rapid on-disk writes (the skill can rewrite plan.json many times in quick succession) into a single PLAN_STATE post. */
   private _planWatcherDebounce: NodeJS.Timeout | undefined;
-  /**
-   * Watches the project's `.mcp.json` so the credit-pressure offload offer's
-   * `providerAvailable` flag (see media/main.js's `offloadProviderAvailable`
-   * doc comment) stays live instead of only being computed once at webview
-   * boot (REQUEST_OFFLOAD_OFFER_STATE). Mirrors `_planWatcher` exactly —
-   * same RelativePattern-scoped FileSystemWatcher pattern, same debounce
-   * shape — this is a sibling watcher, not a new mechanism. `undefined` when
-   * there's no workspace root to scope a `RelativePattern` to.
-   */
-  private _mcpWatcher: vscode.FileSystemWatcher | undefined;
-  /** Coalesces bursts of rapid `.mcp.json` writes into a single OFFLOAD_OFFER_STATE repost. */
-  private _mcpWatcherDebounce: NodeJS.Timeout | undefined;
   private _themeGenerationActive = false;
   /**
    * theme_id of the AI batch generation currently in flight when
@@ -1285,14 +1159,6 @@ export class TycoonPanel {
     // live as the project-plan skill rewrites plan.json during execution
     // (see _postPlanState / _setupPlanWatcher doc comments).
     this._setupPlanWatcher();
-
-    // Watch .mcp.json so the credit-pressure offload offer's provider
-    // availability stays live if the user installs/removes a foreign
-    // provider MCP server outside the panel's own Install/Remove buttons
-    // (e.g. hand-editing .mcp.json, or another tool writing it) — see
-    // _setupMcpWatcher / _postOffloadOfferState doc comments.
-    this._setupMcpWatcher();
-
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
       async (message: {
@@ -3121,37 +2987,6 @@ export class TycoonPanel {
           // resolve to a null plan (and enabled:false) so the webview can
           // no-op cleanly and hide the section.
           this._postPlanState();
-        } else if (message.type === MSG.REQUEST_OFFLOAD_OFFER_STATE) {
-          // Credit-pressure offload offer (p6-t1): boot-time read, now also
-          // reposted live off the .mcp.json watcher and the Install/Remove
-          // MCP handlers — see _postOffloadOfferState's doc comment for the
-          // full set of refresh channels.
-          this._postOffloadOfferState();
-        } else if (message.type === MSG.SET_OFFLOAD_OFFER_DISMISSED) {
-          // Persist the user's explicit accept/dismiss choice. `dismissed`
-          // is set on both actions (stop showing the card); `accepted` is
-          // set ONLY when the payload says so, i.e. only on an accept-click
-          // — a plain dismiss never sets it. RECORDING A CHOICE IS NOT THE
-          // SAME AS REROUTING: writing these two flags is the ONLY effect of
-          // this handler — see writeOffloadOfferAccepted's doc for why that
-          // is the load-bearing invariant of this whole feature: no routing
-          // table write, no model switch, here or anywhere else on this
-          // path. Something downstream reads `offloadOfferAccepted` later
-          // and decides what to do with it; this handler never does.
-          const parsedSetOfferDismissed = MSG_SCHEMAS.SET_OFFLOAD_OFFER_DISMISSED.safeParse(message);
-          if (!parsedSetOfferDismissed.success) {
-            console.error(
-              "TycoonAgents: SET_OFFLOAD_OFFER_DISMISSED payload rejected:",
-              parsedSetOfferDismissed.error.message
-            );
-            return;
-          }
-          const offerRoot = this._projectRoot();
-          if (offerRoot === "") return;
-          writeOffloadOfferDismissed(offerRoot, parsedSetOfferDismissed.data.dismissed);
-          if (parsedSetOfferDismissed.data.accepted === true) {
-            writeOffloadOfferAccepted(offerRoot, true);
-          }
         } else if (message.type === MSG.APPROVE_PHASE) {
           const root = this._projectRoot();
           if (root === "" || !readProjectPlanEnabled(root)) {
@@ -4348,12 +4183,6 @@ export class TycoonPanel {
         ok: true,
         alreadyExisted: false,
       });
-      // Refresh the credit-pressure offload offer's providerAvailable flag
-      // immediately — the .mcp.json watcher (_setupMcpWatcher) will also
-      // catch this write, but that path is debounced fs-event latency; this
-      // is the single most likely way a user installs a foreign provider
-      // (e.g. Codex) mid-session, so push a fresh state right away too.
-      this._postOffloadOfferState();
     } catch (e) {
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
@@ -4410,9 +4239,6 @@ export class TycoonPanel {
       fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
       void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: true });
       this._handleGetMcp();
-      // See _handleInstallMcp's matching call: refresh providerAvailable
-      // immediately rather than waiting on the .mcp.json watcher's debounce.
-      this._postOffloadOfferState();
     } catch (e) {
       void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: String(e) });
     }
@@ -10250,74 +10076,6 @@ export class TycoonPanel {
     this._disposables.push(this._planWatcher);
   }
 
-  /**
-   * Compute and post OFFLOAD_OFFER_STATE (persisted dismissed/accepted flags
-   * plus a FRESH host-side `providerAvailable` read of the project's real
-   * `.mcp.json`) to the webview. Extracted from the former inline
-   * REQUEST_OFFLOAD_OFFER_STATE handler so every refresh channel computes
-   * the same shape identically — matches `_postPlanState`'s role for
-   * PLAN_STATE.
-   *
-   * Refresh channels (this is the full set — see media/main.js's
-   * `offloadProviderAvailable` doc comment, which this list must stay in
-   * sync with):
-   *  1. Webview boot (REQUEST_OFFLOAD_OFFER_STATE, sent once on load).
-   *  2. `_setupMcpWatcher`'s FileSystemWatcher on `.mcp.json` — fires on ANY
-   *     write to that file, regardless of source (this panel's own
-   *     Install/Remove buttons, a hand-edit in another editor, git checkout,
-   *     another extension, etc). This is the general-case live channel.
-   *  3. `_handleInstallMcp` / `_handleRemoveMcp` call this directly right
-   *     after writing `.mcp.json`, so the panel's own Install/Remove
-   *     buttons refresh immediately rather than waiting on the watcher's
-   *     debounce + the OS's fs-event latency — belt-and-suspenders with (2)
-   *     for the single most likely way a user adds/removes Codex mid-session.
-   * There is no residual "can go stale until reload" case left: every write
-   * to `.mcp.json`, from any source, is covered by the watcher in (2).
-   */
-  private _postOffloadOfferState(): void {
-    const root = this._projectRoot();
-    void this._panel.webview.postMessage({
-      type: MSG.OFFLOAD_OFFER_STATE,
-      dismissed: root === "" ? false : readOffloadOfferDismissed(root),
-      accepted: root === "" ? false : readOffloadOfferAccepted(root),
-      providerAvailable: offloadProviderAvailable(root, (p) => this._readMcpConfig(p)),
-    });
-  }
-
-  /**
-   * Watch the project's `.mcp.json` so `_postOffloadOfferState`'s
-   * `providerAvailable` flag stays live without requiring the panel to be
-   * reloaded — mirrors `_setupPlanWatcher` exactly (same RelativePattern
-   * scoping, same debounce-a-burst-of-writes shape). No-ops when there's no
-   * workspace root to scope a `RelativePattern` to, matching `_postPlanState`
-   * / `_postOffloadOfferState`'s own root==="" handling.
-   */
-  private _setupMcpWatcher(): void {
-    const root = this._projectRoot();
-    if (root === "") return;
-
-    const pattern = new vscode.RelativePattern(root, ".mcp.json");
-    this._mcpWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-
-    const scheduleRepost = (): void => {
-      if (this._mcpWatcherDebounce !== undefined) clearTimeout(this._mcpWatcherDebounce);
-      this._mcpWatcherDebounce = setTimeout(() => {
-        this._mcpWatcherDebounce = undefined;
-        this._postOffloadOfferState();
-      }, 150);
-    };
-
-    this._mcpWatcher.onDidChange(scheduleRepost, null, this._disposables);
-    this._mcpWatcher.onDidCreate(scheduleRepost, null, this._disposables);
-    // Deletion (e.g. .mcp.json removed entirely) must also resolve back to
-    // providerAvailable:false rather than leaving a stale "available" card
-    // up — offloadProviderAvailable already reads via this._readMcpConfig,
-    // which resolves a missing file to an empty config, so this reuses the
-    // same fail-closed path.
-    this._mcpWatcher.onDidDelete(scheduleRepost, null, this._disposables);
-    this._disposables.push(this._mcpWatcher);
-  }
-
   public dispose(): void {
     this._disposed = true;
     cancelAllVendorKeyTests();
@@ -10332,10 +10090,6 @@ export class TycoonPanel {
     if (this._planWatcherDebounce !== undefined) {
       clearTimeout(this._planWatcherDebounce);
       this._planWatcherDebounce = undefined;
-    }
-    if (this._mcpWatcherDebounce !== undefined) {
-      clearTimeout(this._mcpWatcherDebounce);
-      this._mcpWatcherDebounce = undefined;
     }
     this._themeServiceHost.dispose();
     this._runtimeDisposable?.dispose();
