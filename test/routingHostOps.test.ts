@@ -586,7 +586,8 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
 
   const codex = byId.get("openai/gpt-5.6-sol");
   assert.ok(codex, "openai/gpt-5.6-sol preset should be present");
-  assert.equal(codex?.label, "openai/gpt-5.6-sol");
+  // p101-t4: Codex-accepted models carry a friendly tier name ahead of the id.
+  assert.equal(codex?.label, "Sol (openai/gpt-5.6-sol)");
 
   for (const m of view.presets.models) {
     assert.ok(
@@ -669,7 +670,7 @@ test("saveRoutingProfile: rejects a defaultFallback vendor codex can't dispatch,
   assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
 });
 
-test("saveRoutingProfile: rejects an agent fallback-chain entry with google vendor under codex when GEMINI_API_KEY is unset", () => {
+test("saveRoutingProfile: accepts an agent fallback-chain entry with google vendor under codex (non-blocking skip warning)", () => {
   const root = tmpRoot();
   const scriptsDir = makeFakeScriptsDir();
   const profile = {
@@ -685,9 +686,8 @@ test("saveRoutingProfile: rejects an agent fallback-chain entry with google vend
 
   const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
 
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.some((e) => e.startsWith("agents.coding-specialist.fallback[0]") && e.includes("GEMINI_API_KEY")));
-  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), false);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "routing.json")), true);
 });
 
 test("saveRoutingProfile: keeps a save whose fallback targets are all valid for the current harness (codex)", () => {
@@ -739,7 +739,7 @@ test("saveRoutingProfile: an undefined effectiveHarness skips dispatchability va
   assert.equal(result.ok, true, JSON.stringify(result));
 });
 
-test("saveRoutingProfile: google defaultFallback under codex is accepted when GEMINI_API_KEY is only in the local env store", () => {
+test("saveRoutingProfile: google defaultFallback under codex is accepted (skip warning only) when GEMINI_API_KEY is in the local env store", () => {
   withIsolatedStoreDir(() => {
     setLocalEnvValue("GEMINI_API_KEY", "test-only-value", {});
     const root = tmpRoot();
@@ -752,7 +752,7 @@ test("saveRoutingProfile: google defaultFallback under codex is accepted when GE
   });
 });
 
-test("saveRoutingProfile: google defaultFallback under codex is refused when GEMINI_API_KEY is set neither in process.env nor the local env store", () => {
+test("saveRoutingProfile: google defaultFallback under codex is accepted when GEMINI_API_KEY is set neither in process.env nor the local env store", () => {
   withIsolatedStoreDir(() => {
     const root = tmpRoot();
     const scriptsDir = makeFakeScriptsDir();
@@ -760,7 +760,6 @@ test("saveRoutingProfile: google defaultFallback under codex is refused when GEM
 
     const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "codex" });
 
-    assert.equal(result.ok, false);
-    assert.ok(result.errors.some((e) => e.startsWith("defaultFallback") && e.includes("GEMINI_API_KEY")));
+    assert.equal(result.ok, true, JSON.stringify(result));
   });
 });

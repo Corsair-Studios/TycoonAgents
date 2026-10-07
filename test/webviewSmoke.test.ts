@@ -5336,7 +5336,8 @@ test('p26-t1: switching an agent slot to the native vendor collapses to the nati
     // and credential-env fields are back (no longer suppressed as "native"),
     // not the exact transport value, which now depends on what the draft
     // already carried.
-    assert.ok(card.querySelector('[data-field-key$=".transport"]'), 'bridge Transport field should reappear once a foreign vendor is selected again');
+    // p101-t4: on non-OpenCode hosts the Transport select is a derived read-only connection line.
+    assert.ok(card.querySelector('[data-field-key$=".transport"], .routing-connection-line'), 'bridge Transport field should reappear once a foreign vendor is selected again');
     assert.ok(card.querySelector('[data-field-key$=".credentialEnv"]'), 'bridge credential env field should reappear once a foreign vendor is selected again');
   } finally {
     h.win.close();
@@ -5927,7 +5928,7 @@ test('p25-t4: an undispatchable fallback vendor warns and disables Save under co
 
   const codexResult = await runWithHarness('codex');
   assert.equal(codexResult.warningPresent, true, 'codex + google fallback with no GEMINI_API_KEY should warn');
-  assert.equal(codexResult.saveDisabled, true, 'Save should be disabled while the warning is present');
+  assert.equal(codexResult.saveDisabled, false, 'Google skip warning is non-blocking');
 
   const claudeResult = await runWithHarness('claude-code');
   assert.equal(claudeResult.warningPresent, false, 'claude-code has no cross-vendor dispatcher gate, so no warning');
@@ -5961,7 +5962,7 @@ test('p27-t5: compact fallback chain rows — one-line entries, details closed/o
             vendor: 'openai', transport: 'claude-native', model: 'gpt-6-astra', costModelClass: 'subscription',
             fallback: [
               { vendor: 'anthropic', model: 'claude-haiku', transport: 'claude-native', costModelClass: 'metered' },
-              { vendor: 'google', model: 'gemini-2.5-pro', transport: 'claude-native', costModelClass: 'subscription' },
+              { vendor: 'mystery', model: 'gemini-2.5-pro', transport: 'claude-native', costModelClass: 'subscription' },
             ],
           },
         },
@@ -5976,7 +5977,7 @@ test('p27-t5: compact fallback chain rows — one-line entries, details closed/o
           source: 'routing',
         },
       ],
-      presets: { vendors: ['anthropic', 'openai', 'google'], models: [] },
+      presets: { vendors: ['anthropic', 'openai', 'mystery'], models: [] },
       envProbe: {},
       errors: [],
     };
@@ -6001,12 +6002,12 @@ test('p27-t5: compact fallback chain rows — one-line entries, details closed/o
     assert.ok(row0.querySelector('.routing-inline-link-btn'), 'row 0 should render up/down/remove controls');
 
     const row1 = rows[1];
-    assert.match(row1.querySelector('.routing-slot-summary-line').textContent, /google .* gemini-2\.5-pro \(fb\)/, 'row 1 summary shows entry 2 vendor/model');
+    assert.match(row1.querySelector('.routing-slot-summary-line').textContent, /mystery .* gemini-2\.5-pro \(fb\)/, 'row 1 summary shows entry 2 vendor/model');
 
     const entryDetailsList = fallbackDetails.querySelectorAll('.routing-fallback-entry-details');
     assert.equal(entryDetailsList.length, 2, 'each entry gets its own per-entry field details');
     assert.equal(entryDetailsList[0].open, false, 'entry 0 (no dispatch warning, not empty) stays closed by default');
-    // entry 1 is google under codex with no GEMINI_API_KEY -> hard dispatch warning -> auto-opens.
+    // entry 1 is mystery under codex with no GEMINI_API_KEY -> hard dispatch warning -> auto-opens.
     assert.equal(entryDetailsList[1].open, true, 'entry 1 with a blocking dispatch warning under codex opens by default');
     assert.ok(fallbackDetails.querySelector('.routing-fallback-dispatch-warning'), 'dispatch warning should render for the undispatchable entry');
 
@@ -6587,8 +6588,9 @@ test('p35-t1: Copy/Paste settings reproduces routing fields on another card, kee
     targetCard = h.doc.querySelector('.routing-agent-card[data-agent-id="coding-specialist"]');
     const targetVendorSel = targetCard.querySelector('.routing-vendor-select') as any;
     assert.equal(targetVendorSel.value, 'openai', 'vendor pasted onto target');
-    const targetTransportSel = targetCard.querySelector('[data-field-key="agent:coding-specialist.transport"]') as any;
-    assert.equal(targetTransportSel.value, 'mcp', 'transport pasted onto target');
+    // p101-t4: transport is shown as a derived read-only line off OpenCode.
+    const targetTransportLine = targetCard.querySelector('[data-field-key="agent:coding-specialist.connection"]') as any;
+    assert.equal(targetTransportLine.textContent, 'Connection: via codex bridge', 'transport pasted onto target');
     const targetMcpInput = targetCard.querySelector('[data-field-key="agent:coding-specialist.mcpServer"]') as any;
     assert.equal(targetMcpInput.value, 'codex', 'mcp server pasted onto target');
     const targetUseDefaultCheckbox = targetCard.querySelector('.routing-use-default-fallback-checkbox') as any;

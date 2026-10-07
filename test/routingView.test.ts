@@ -870,7 +870,7 @@ test('Routing panel: real buildRoutingView payload — every agent row select eq
         const vendorSel = orchSection!.querySelector('.routing-vendor-select') as any;
         const transportSel = vendorSel
           ? (Array.from(orchSection!.querySelectorAll('select')).find(
-              (s: any) => s !== vendorSel && !s.className.includes('routing-model-select')
+              (s: any) => s !== vendorSel && !s.className.includes('routing-model-select') && s.getAttribute('data-field-key') !== 'gemini.backend'
             ) as any)
           : null;
         assert.ok(vendorSel, `orchestrator section dump:
@@ -885,7 +885,7 @@ ${orchSection!.outerHTML}`);
       assert.ok(row, `row should render for agent ${a.id}`);
       const vendorSel = row.querySelector('.routing-vendor-select') as any;
       const transportSel = Array.from(row.querySelectorAll('select')).find(
-        (s: any) => s !== vendorSel && !s.className.includes('routing-model-select')
+        (s: any) => s !== vendorSel && !s.className.includes('routing-model-select') && s.getAttribute('data-field-key') !== 'gemini.backend'
       ) as any;
       assert.ok(vendorSel, `vendor select should render for ${a.id}`);
       assert.ok(transportSel, `transport select should render for ${a.id}`);

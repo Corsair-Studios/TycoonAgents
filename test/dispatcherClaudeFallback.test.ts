@@ -793,3 +793,33 @@ test("retry budget: the same-slot retry runs with only the REMAINING step budget
     cleanup(project);
   }
 });
+
+test("modelArgFor passes the slot model to codex (openai/ stripped) and gemini, nothing when absent", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { modelArgFor } = require("../../hooks/dispatcherClaudeChain.cjs") as { modelArgFor: (s: Record<string, unknown>) => string | undefined };
+  assert.equal(modelArgFor({ mcpServer: "codex", model: "openai/gpt-5.6-sol" }), "gpt-5.6-sol");
+  assert.equal(modelArgFor({ mcpServer: "codex" }), undefined);
+  assert.equal(modelArgFor({ mcpServer: "gemini", model: "google/gemini-3-pro" }), "gemini-3-pro");
+  assert.equal(modelArgFor({ mcpServer: "gemini", model: "gemini-3-pro" }), "gemini-3-pro");
+  assert.equal(modelArgFor({ mcpServer: "gemini" }), undefined);
+});
+
+test("modelArgFor: legacy/non-OpenAI codex values and non-gemini gemini values are not sent; custom openai/* is", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const chain = require("../../hooks/dispatcherClaudeChain.cjs") as { modelArgFor: (s: Record<string, unknown>) => string | undefined; CODEX_ACCEPTED_BARE: string[]; CODEX_REJECTED_BARE: string[] };
+  for (const m of ["gpt-5", "openai/gpt-5", "openai/gpt-6", "gpt-6", "sonnet", "inherit", "anthropic/sonnet"]) assert.equal(chain.modelArgFor({ mcpServer: "codex", model: m }), undefined, m);
+  assert.equal(chain.modelArgFor({ mcpServer: "codex", model: "openai/gpt-6-astra" }), "gpt-6-astra");
+  assert.equal(chain.modelArgFor({ mcpServer: "codex", model: "openai/gpt-4.1-custom" }), "gpt-4.1-custom");
+  assert.equal(chain.modelArgFor({ mcpServer: "gemini", model: "sonnet" }), undefined);
+  assert.equal(chain.modelArgFor({ mcpServer: "gemini", model: "inherit" }), undefined);
+  assert.equal(chain.modelArgFor({ mcpServer: "gemini", model: "google/gemini-3-pro" }), "gemini-3-pro");
+});
+
+test("dispatcher codex model lists mirror src/core/agentsUiMode", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const chain = require("../../hooks/dispatcherClaudeChain.cjs") as { CODEX_ACCEPTED_BARE: string[]; CODEX_REJECTED_BARE: string[] };
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const ui = require("../src/core/agentsUiMode") as { CODEX_ACCEPTED_MODELS: { model: string }[]; CODEX_REJECTED_MODELS: string[] };
+  assert.deepEqual(chain.CODEX_ACCEPTED_BARE, ui.CODEX_ACCEPTED_MODELS.map((t) => t.model.replace(/^openai\//, "")));
+  assert.deepEqual(chain.CODEX_REJECTED_BARE, [...ui.CODEX_REJECTED_MODELS]);
+});

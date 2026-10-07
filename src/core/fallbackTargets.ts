@@ -76,11 +76,11 @@ export function isFallbackTargetDispatchable(
       return { ok: true };
     }
     if (vendor === "google") {
-      const source = env ?? (typeof process !== "undefined" ? process.env : {});
-      const hasKey = typeof source["GEMINI_API_KEY"] === "string" && source["GEMINI_API_KEY"] !== "";
-      return hasKey
-        ? { ok: true }
-        : { ok: false, reason: `vendor "google" needs GEMINI_API_KEY set to dispatch under Codex` };
+      // p101-t6: hooks/dispatcherAdapters.cjs googleAdapter() always returns an
+      // error ("gemini shim not implemented") even with GEMINI_API_KEY set, so
+      // a Google target can never run on the Codex host.
+      // Non-blocking: saved routing must never stop unrelated edits; the chain just skips it.
+      return { ok: true, reason: "Google fallbacks are skipped on the Codex host; the chain moves to the next entry" };
     }
     return { ok: false, reason: `vendor "${vendor}" has no Codex dispatcher adapter` };
   }

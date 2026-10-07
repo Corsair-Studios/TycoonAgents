@@ -234,7 +234,7 @@ function buildAgentsToml(specialists) {
     lines.push(`[agents.${spec.id}]`);
     lines.push(`description = ${tomlString(spec.description)}`);
     if (spec.vendor === "openai" && spec.model) {
-      lines.push(`model = ${tomlString(spec.model)}`);
+      lines.push(`model = ${tomlString(spec.model.replace(/^openai\//i, ""))}`);
     } else {
       lines.push("# dispatched via tycoon delegate");
     }

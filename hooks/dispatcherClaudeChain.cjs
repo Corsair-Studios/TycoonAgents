@@ -126,9 +126,29 @@ function findSpawnContext(activityFile, workerId, hinted) {
   return ctx;
 }
 
+// Mirrors CODEX_ACCEPTED_MODELS / CODEX_REJECTED_MODELS in src/core/agentsUiMode.ts (a test asserts they match).
+const CODEX_ACCEPTED_BARE = ["gpt-5.6-sol", "gpt-6-astra"];
+const CODEX_REJECTED_BARE = ["gpt-5", "gpt-6"];
+
+/** Accepted ids and any other explicit openai/* id are forwarded; known-rejected legacy ids and non-OpenAI values (sonnet, inherit, ...) fall back to the .mcp.json default. */
+function codexModelArg(model) {
+  const m = model.trim();
+  const prefixed = /^openai\//i.test(m);
+  const bare = m.replace(/^openai\//i, "");
+  if (!bare || CODEX_REJECTED_BARE.includes(bare.toLowerCase())) return undefined;
+  if (CODEX_ACCEPTED_BARE.includes(bare)) return bare;
+  return prefixed ? bare : undefined;
+}
+
 function modelArgFor(slot) {
   if (slot.transport === "openai-compatible") return slot.model;
   if (slot.mcpServer === "claude-cli" && slot.model) return slot.model.replace(/^anthropic\//i, "");
+  // The slot's routing model overrides the bridge's baked-in default (.mcp.json -c model= / GEMINI_MODEL); absent keeps that default.
+  if (slot.mcpServer === "codex" && slot.model) return codexModelArg(slot.model);
+  if (slot.mcpServer === "gemini" && slot.model) {
+    const bare = slot.model.trim().replace(/^google\//i, "");
+    return /^gemini-/i.test(bare) ? bare : undefined;
+  }
   return undefined;
 }
 
@@ -434,5 +454,8 @@ module.exports = {
   runProviderChain,
   runStepWithin,
   slotLabel,
+  modelArgFor,
+  CODEX_ACCEPTED_BARE,
+  CODEX_REJECTED_BARE,
   describeAttempts,
 };

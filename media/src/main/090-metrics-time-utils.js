@@ -1098,6 +1098,10 @@
     PROBE_REPLY: "envProbe",
     SET_LOCAL: "setLocalEnvValue",
     CLEAR_LOCAL: "clearLocalEnvValue",
+    TEST_VENDOR_KEY: "testVendorKey",
+    TEST_VENDOR_KEY_RESULT: "vendorKeyTestResult",
+    SET_GEMINI_BACKEND: "setGeminiBackend",
+    SET_GEMINI_BACKEND_RESULT: "setGeminiBackendResult",
   };
 
   // p68-t2: mirrors MSG.GET_KEYWORD_HEALTH / KEYWORD_HEALTH / KEYWORD_HEALTH_FIX
@@ -1322,7 +1326,7 @@
   function updateRoutingEnvDots(name) {
     document.querySelectorAll('.routing-env-field[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (wrap) {
       var area = wrap.querySelector(".routing-env-status");
-      if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential");
+      if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential", wrap.getAttribute("data-env-optional") === "1");
     });
   }
 
@@ -1336,7 +1340,7 @@
    * one env var name. Rebuilt from scratch on every call (cheap — a handful
    * of nodes) so it always reflects the current routingEnvProbe cache.
    */
-  function refreshEnvStatusArea(area, name, kind) {
+  function refreshEnvStatusArea(area, name, kind, optional) {
     area.innerHTML = "";
     var known = !!(name && Object.prototype.hasOwnProperty.call(routingEnvProbe, name));
     var state = known ? routingEnvProbe[name] : { env: false, stored: false };
@@ -1352,6 +1356,10 @@
     } else if (state.stored) {
       dotClass = "routing-env-dot--stored";
       dotTitle = "stored locally on this machine";
+    } else if (optional) {
+      // An unset OPTIONAL value (a base URL with a default) is not an error.
+      dotClass = "routing-env-dot--unknown";
+      dotTitle = "not set - the default is used";
     } else {
       dotClass = "routing-env-dot--unset";
       dotTitle = "not set";
@@ -1360,6 +1368,18 @@
     dot.title = dotTitle;
     dot.setAttribute("data-env-name", name || "");
     area.appendChild(dot);
+
+    // Fixed vendor-key rows say in words what the dot means (set in the
+    // environment vs stored by TycoonAgents vs unset).
+    if (area.getAttribute("data-fixed") === "1") {
+      var stateText = document.createElement("span");
+      stateText.className = "routing-env-state";
+      stateText.textContent = !known ? "checking\u2026"
+        : state.env ? "set in environment"
+        : state.stored ? "stored by TycoonAgents"
+        : optional ? "not set (default used)" : "not set";
+      area.appendChild(stateText);
+    }
 
     var validName = !!(name && ENV_NAME_RE.test(name));
 
@@ -1470,6 +1490,119 @@
   }
 
   var ROUTING_VENDOR_CUSTOM = "custom-endpoint";
+
+  // Latest "Test connection" outcome per vendor-key spec id:
+  // { pending: true } | { state, message }. Never holds a key value.
+  var vendorKeyTestResults = {};
+
+  /** Spec from payload.presets.vendorKeys (src/core/vendorKeys.ts) for a slot vendor, or null (free-form fields stay). */
+  function vendorKeySpecForVendor(presets, vendor) {
+    var specs = (presets && presets.vendorKeys) || [];
+    var v = String(vendor || "").toLowerCase();
+    if (!v || v === ROUTING_VENDOR_CUSTOM) return null;
+    for (var i = 0; i < specs.length; i++) {
+      if ((specs[i].vendors || []).indexOf(v) !== -1) return specs[i];
+    }
+    return null;
+  }
+
+  /** One fixed env var: label, read-only name, live set/unset state, Set value / Clear (existing store plumbing). */
+  function buildFixedKeyRow(row) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-env-field routing-env-field--fixed";
+    wrap.setAttribute("data-env-name", row.env);
+    wrap.setAttribute("data-env-kind", row.kind);
+    wrap.setAttribute("data-env-optional", row.required ? "0" : "1");
+    var label = document.createElement("label");
+    label.textContent = row.label + (row.note ? " (" + row.note + ")" : "");
+    wrap.appendChild(label);
+    var name = document.createElement("code");
+    name.className = "routing-env-fixed-name";
+    name.textContent = row.env;
+    wrap.appendChild(name);
+    if (row.defaultValue) {
+      var dflt = document.createElement("span");
+      dflt.className = "routing-env-default";
+      dflt.textContent = "Default: " + row.defaultValue;
+      wrap.appendChild(dflt);
+    }
+    var statusArea = document.createElement("span");
+    statusArea.className = "routing-env-status";
+    statusArea.setAttribute("data-fixed", "1");
+    wrap.appendChild(statusArea);
+    refreshEnvStatusArea(statusArea, row.env, row.kind, !row.required);
+    if (!Object.prototype.hasOwnProperty.call(routingEnvProbe, row.env)) probeEnvName(row.env);
+    return wrap;
+  }
+
+  function renderVendorKeyTestResult(el, entry) {
+    el.className = "routing-keytest-result";
+    if (!entry) { el.textContent = ""; return; }
+    if (entry.pending) { el.textContent = "Testing\u2026"; return; }
+    el.textContent = entry.message || "";
+    el.classList.add(entry.state === "ok" ? "routing-keytest-result--ok" : "routing-keytest-result--bad");
+  }
+
+  /** "Test connection" button + result line for one vendor-key spec. */
+  function buildVendorKeyTestControl(spec, slot) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-keytest";
+    wrap.setAttribute("data-spec-id", spec.id);
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "routing-inline-link-btn routing-keytest-btn";
+    btn.textContent = "Test connection";
+    var out = document.createElement("span");
+    out.setAttribute("role", "status");
+    var cur = vendorKeyTestResults[spec.id];
+    btn.disabled = !!(cur && cur.pending);
+    renderVendorKeyTestResult(out, cur);
+    btn.addEventListener("click", function () {
+      vendorKeyTestResults[spec.id] = { pending: true };
+      applyVendorKeyTestResult(spec.id);
+      vscode.postMessage({ type: ROUTING_MSG.TEST_VENDOR_KEY, vendor: spec.id, model: slot && slot.model ? String(slot.model) : undefined });
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(out);
+    return wrap;
+  }
+
+  function applyVendorKeyTestResult(specId) {
+    var entry = vendorKeyTestResults[specId];
+    document.querySelectorAll('.routing-keytest[data-spec-id="' + specId + '"]').forEach(function (wrap) {
+      var btn = wrap.querySelector(".routing-keytest-btn");
+      var out = wrap.querySelector('[role="status"]');
+      if (btn) btn.disabled = !!(entry && entry.pending);
+      if (out) renderVendorKeyTestResult(out, entry);
+    });
+  }
+
+  function handleVendorKeyTestResult(msg) {
+    var p = (msg && msg.payload) || {};
+    if (typeof p.vendor !== "string") return;
+    vendorKeyTestResults[p.vendor] = { state: String(p.state || "error"), message: String(p.message || "") };
+    applyVendorKeyTestResult(p.vendor);
+  }
+
+  /**
+   * Claude Code / Codex hosts: the bridges read FIXED env names (see
+   * src/core/vendorKeys.ts), so show those read-only instead of asking the
+   * user to type names that would be ignored. Sign-in vendors say so.
+   */
+  function buildVendorKeyBlock(spec, slot) {
+    var block = document.createElement("div");
+    block.className = "routing-vendor-keys";
+    block.setAttribute("data-vendor-key-spec", spec.id);
+    if (spec.auth === "signin") {
+      var note = document.createElement("div");
+      note.className = "routing-env-note routing-signin-note";
+      note.textContent = "Uses your " + (spec.signIn || spec.label) + " sign-in \u2014 no key needed";
+      block.appendChild(note);
+    }
+    (spec.rows || []).forEach(function (row) { block.appendChild(buildFixedKeyRow(row)); });
+    if (spec.test) block.appendChild(buildVendorKeyTestControl(spec, slot));
+    return block;
+  }
 
   /**
    * Render the editor for one RoutingSlot (orchestrator, an agent row, or a

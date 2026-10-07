@@ -56,6 +56,9 @@ import { hasValue as localEnvHasValue, setValue as localEnvSetValue, clearValue 
 // layout looks "backward" — the alternative (duplicating the table) is
 // explicitly what this task must avoid.
 import { FOREIGN_LLM_AGENTS } from "../host/vscode/packCatalog";
+import { VENDOR_KEY_SPECS, type VendorKeySpec } from "./vendorKeys";
+import { buildHostBridgeInfo, setGeminiBackend, type HostBridgeInfo } from "./hostBridgeSettings";
+import { CODEX_ACCEPTED_MODELS } from "./agentsUiMode";
 
 const ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
@@ -106,7 +109,12 @@ export interface RoutingModelPreset {
 export interface RoutingPresets {
   vendors: string[];
   models: RoutingModelPreset[];
+  /** Fixed per-vendor env names (vendorKeys.ts) the webview renders read-only on the Claude Code and Codex hosts. */
+  vendorKeys: VendorKeySpec[];
 }
+
+/** p101: write GEMINI_MCP_BACKEND into the gemini server env in .mcp.json (shared by both hosts). */
+export { setGeminiBackend };
 
 export interface RoutingLastApplied {
   claude?: string;
@@ -130,6 +138,8 @@ export interface RoutingView {
    *  message type. */
   defaultFallback?: RoutingSlot;
   envProbe: Record<string, EnvProbeEntry>;
+  /** p101-t2/t5/t6: project .mcp.json facts the webview shows read-only or validates against. */
+  bridge: HostBridgeInfo;
   presets: RoutingPresets;
   lastApplied: RoutingLastApplied;
   /** Per-user opt-in (default false) to reach Claude via the user's subscription (`claude -p` bridge) under OpenCode; see claudeSubscriptionBridge.ts. */
@@ -288,6 +298,13 @@ function buildPresets(): RoutingPresets {
     modelsById.set(id, { id, vendor: agent.backend.vendor, costModelClass: agent.backend.costModelClass, label: id });
   }
 
+  // p101-t4: the Codex models accepted under ChatGPT sign-in (single source:
+  // CODEX_ACCEPTED_MODELS); API-key users pick "Custom…" in the webview.
+  for (const m of CODEX_ACCEPTED_MODELS) {
+    vendors.add("openai");
+    modelsById.set(m.model, { id: m.model, vendor: "openai", costModelClass: "subscription", label: `${m.label} (${m.model})` });
+  }
+
   // OpenCode's Zen provider — the standalone's default orchestrator model
   // when OpenCode is the host (see docs/opencode-probe-findings.md,
   // .opencode/agents/orchestrator.md). Free tier, so costModelClass is
@@ -333,7 +350,7 @@ function buildPresets(): RoutingPresets {
     label: "xai/grok-build-0.1 (fast, cheap)",
   });
 
-  return { vendors: Array.from(vendors), models: Array.from(modelsById.values()) };
+  return { vendors: Array.from(vendors), models: Array.from(modelsById.values()), vendorKeys: VENDOR_KEY_SPECS };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +508,7 @@ export function buildRoutingView(opts: BuildRoutingViewOptions): RoutingView {
     defaults: profile?.defaults,
     defaultFallback: profile?.defaultFallback,
     envProbe: probeEnv(Array.from(envNames), env),
+    bridge: buildHostBridgeInfo(root, env),
     presets: buildPresets(),
     lastApplied: readLastApplied(root),
     claudeSubscriptionOptIn: readClaudeSubscriptionOptIn(),

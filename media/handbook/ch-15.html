@@ -157,8 +157,9 @@
   <p><strong>Option A &mdash; in the panel (easiest).</strong></p>
   <ol>
     <li>Open <strong>Routing</strong> and pick the agent.</li>
-    <li>In its <strong>API key env</strong> field (or <strong>Credential env</strong>), type the variable name from the table, e.g. <code>MISTRAL_API_KEY</code>. For a local model, type the name in <strong>Endpoint URL env</strong> too.</li>
-    <li>Click <strong>Set value&hellip;</strong>, paste the key, and press <strong>Save</strong>.</li>
+    <li>On Claude Code and Codex, each provider shows fixed key rows: the variable name is already filled in (e.g. <code>MISTRAL_API_KEY</code>) and the row shows whether it is set or unset. On OpenCode, and for <strong>Custom endpoint&hellip;</strong>, you type the names yourself in the <strong>API key env</strong> / <strong>Endpoint URL env</strong> fields.</li>
+    <li>Click <strong>Set value&hellip;</strong>, paste the key, and press <strong>Save</strong>. <strong>Clear stored value</strong> removes it again.</li>
+    <li>Click <strong>Test connection</strong> to make one tiny real call. The key is only ever sent over https to that provider's own host. If you set a custom base URL, the result says so and nothing is tested automatically.</li>
   </ol>
   <p>
     The value is stored for your user only, never in the project, and
@@ -178,6 +179,30 @@
     Never paste a key into chat or commit it. <code>.mcp.json</code> only
     ever holds names.
   </p>
+  <p>
+    <strong>Gemini backend.</strong> The Gemini agent has a
+    <strong>Gemini backend</strong> select: <em>Antigravity sign-in</em> or
+    <em>Paid key (Gemini CLI)</em>. It writes
+    <code>GEMINI_MCP_BACKEND</code> into the <code>gemini</code> server entry
+    in <code>.mcp.json</code> and nothing else. On Antigravity the model is
+    read-only (&ldquo;Gemini 3.5 Flash &mdash; set by Antigravity&rdquo;) and
+    no key is needed. After switching, reload MCP servers (<code>/mcp</code>
+    or Reload Window).
+  </p>
+  <p>
+    <strong>Set outside the panel.</strong> A collapsed box on the Agents
+    screen lists bridge timeouts and Codex backend settings that change
+    behaviour but live in <code>.mcp.json</code> or your environment. Each
+    shows its value and source (default, environment or <code>.mcp.json</code>)
+    and is read-only; edit it where it lives, then reload MCP servers.
+  </p>
+  <p>
+    <strong>Fallback chains by host.</strong> A note above the chain says what
+    your host supports: Claude Code gets full fallback (dispatcher plus hook),
+    OpenCode is best-effort (it only switches the model string), and Codex
+    only follows vendors with a dispatcher adapter. Google fallbacks are
+    skipped on Codex, and the chain moves to the next entry.
+  </p>
 
   <div class="section-head">
     <div class="s-title">&sect; 15.3 &middot; Option 2 &middot; the Routing view</div>
@@ -196,7 +221,7 @@
     <li>Choose <strong>Custom endpoint&hellip;</strong> as the vendor. Give
     it a <strong>Provider name</strong> (e.g. <code>ollama-windows</code>),
     the exact <strong>Model</strong> id your endpoint serves, and a
-    <strong>Cost class</strong> (<code>metered</code>, <code>subscription</code>,
+    <strong>Billing label</strong> (<code>metered</code>, <code>subscription</code>,
     or <code>local</code>).</li>
     <li>Set <strong>Endpoint URL env</strong> and <strong>API key env</strong>
     to environment variable <em>names</em> only, then click

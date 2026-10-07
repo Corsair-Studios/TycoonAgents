@@ -61,6 +61,8 @@ import {
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
+import { runVendorKeyTest, cancelAllVendorKeyTests, type VendorKeyTestResult } from "../../core/vendorKeyTest";
+import { setGeminiBackend } from "../../core/hostBridgeSettings";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, setClaudeSubscriptionOptIn, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
 import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
 import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
@@ -795,6 +797,8 @@ export class TycoonPanel {
   private _themeServiceGoogleStartInFlight = false;
   private _themeServiceGoogleStartInFlightSince = 0;
   private _enginePollInterval: NodeJS.Timeout | undefined;
+  /** Set in dispose(): in-flight vendor key tests are killed and never post to a closed webview. */
+  private _disposed = false;
   /**
    * Incremental read state for the session-scoped delegationHealth rebuild
    * (see _computeSessionDelegationHealth). Cost is proportional to bytes
@@ -1530,6 +1534,20 @@ export class TycoonPanel {
             this._handleClearLocalEnvValue(parsedClearLocalEnvValue.data.name);
           } else {
             console.error("TycoonAgents: clearLocalEnvValue payload rejected:", parsedClearLocalEnvValue.error.message);
+          }
+        } else if (message.type === MSG.TEST_VENDOR_KEY) {
+          const parsedTestVendorKey = MSG_SCHEMAS.TEST_VENDOR_KEY.safeParse(message);
+          if (parsedTestVendorKey.success) {
+            void this._handleTestVendorKey(parsedTestVendorKey.data.vendor, parsedTestVendorKey.data.model);
+          } else {
+            console.error("TycoonAgents: testVendorKey payload rejected:", parsedTestVendorKey.error.message);
+          }
+        } else if (message.type === MSG.SET_GEMINI_BACKEND) {
+          const parsedSetGeminiBackend = MSG_SCHEMAS.SET_GEMINI_BACKEND.safeParse(message);
+          if (parsedSetGeminiBackend.success) {
+            this._handleSetGeminiBackend(parsedSetGeminiBackend.data.value);
+          } else {
+            console.error("TycoonAgents: setGeminiBackend payload rejected:", parsedSetGeminiBackend.error.message);
           }
         } else if (message.type === MSG.GET_SETTINGS) {
           this._handleGetSettings();
@@ -8154,6 +8172,39 @@ export class TycoonPanel {
     }
   }
 
+  /**
+   * "Test connection" for a fixed vendor key row: runs the vendor's bridge
+   * (src/core/vendorKeyTest.ts) and posts only { vendor, state, message } —
+   * never a key value.
+   */
+  private async _handleTestVendorKey(vendorId: string, model: string | undefined): Promise<void> {
+    let payload: VendorKeyTestResult;
+    try {
+      payload = await runVendorKeyTest({
+        vendorId,
+        model,
+        projectRoot: this._projectRoot(),
+        hooksDir: path.join(this._extensionUri.fsPath, "hooks"),
+      });
+    } catch (err) {
+      console.error("TycoonAgents: testVendorKey failed:", err instanceof Error ? err.message : err);
+      payload = { vendor: vendorId, state: "error", message: "The test call failed." };
+    }
+    if (this._disposed) return;
+    void this._panel.webview.postMessage({ type: MSG.VENDOR_KEY_TEST_RESULT, payload });
+  }
+
+  /**
+   * p101-t2: writes GEMINI_MCP_BACKEND into the gemini server's env in the
+   * project .mcp.json (src/core/hostBridgeSettings.ts; nothing else in the
+   * file changes), replies { ok, error? }, then re-posts MSG.ROUTING.
+   */
+  private _handleSetGeminiBackend(value: "agy" | "gemini"): void {
+    const result = setGeminiBackend(this._projectRoot(), value);
+    void this._panel.webview.postMessage({ type: MSG.SET_GEMINI_BACKEND_RESULT, payload: result });
+    this._handleGetRouting();
+  }
+
   /** Post the current settings snapshot (hook + per-agent model/keywords). */
   private _handleGetSettings(): void {
     const root = this._projectRoot();
@@ -10231,6 +10282,8 @@ export class TycoonPanel {
   }
 
   public dispose(): void {
+    this._disposed = true;
+    cancelAllVendorKeyTests();
     TycoonPanel.currentPanel = undefined;
     this._themeGenerationAbortController?.abort();
     this._themeGenerationAbortController = undefined;

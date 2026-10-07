@@ -29,13 +29,12 @@ test("isFallbackTargetDispatchable: codex accepts anthropic, openai-compatible/l
   assert.equal(isFallbackTargetDispatchable({ vendor: "openai" }, "codex").ok, true);
 });
 
-test("isFallbackTargetDispatchable: codex + google is ok only when GEMINI_API_KEY is set", () => {
-  const withoutKey = isFallbackTargetDispatchable({ vendor: "google" }, "codex", {});
-  assert.equal(withoutKey.ok, false);
-  assert.match(withoutKey.reason ?? "", /GEMINI_API_KEY/);
-
-  const withKey = isFallbackTargetDispatchable({ vendor: "google" }, "codex", { GEMINI_API_KEY: "test-key" });
-  assert.equal(withKey.ok, true);
+test("isFallbackTargetDispatchable: codex + google is a non-blocking skip warning, with or without a key", () => {
+  for (const env of [{}, { GEMINI_API_KEY: "k" }]) {
+    const r = isFallbackTargetDispatchable({ vendor: "google" }, "codex", env);
+    assert.equal(r.ok, true);
+    assert.match(r.reason ?? "", /Google fallbacks are skipped on the Codex host/);
+  }
 });
 
 test("isFallbackTargetDispatchable: codex rejects an unlisted vendor naming it in the reason", () => {
@@ -52,5 +51,6 @@ test("isFallbackTargetDispatchable: opencode is always ok, with a soft not-knowa
 
 test("isFallbackTargetDispatchable: vendor casing is normalized", () => {
   assert.equal(isFallbackTargetDispatchable({ vendor: "Google" }, "codex", { GEMINI_API_KEY: "x" }).ok, true);
+  assert.match(isFallbackTargetDispatchable({ vendor: "Google" }, "codex").reason ?? "", /skipped/);
   assert.equal(isFallbackTargetDispatchable({ vendor: "ANTHROPIC" }, "codex").ok, true);
 });

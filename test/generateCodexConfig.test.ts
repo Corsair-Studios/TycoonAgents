@@ -112,7 +112,7 @@ test("TOML fragment: max_depth = 1, one [agents.<id>] per specialist, model only
     assert.match(agentsToml, /^\[agents\.codex-reviewer\]$/m);
     assert.match(agentsToml, /^\[agents\.coding-specialist\]$/m);
     assert.match(agentsToml, /^\[agents\.search-retrieval\]$/m);
-    assert.match(agentsToml, /model = "openai\/gpt-6-astra"/);
+    assert.match(agentsToml, /model = "gpt-6-astra"/);
     // Anthropic and no-vendor specialists never carry a model key.
     const codingBlock = agentsToml.split("[agents.coding-specialist]")[1].split("[agents.")[0];
     assert.doesNotMatch(codingBlock, /^model = /m);
@@ -237,8 +237,8 @@ test("routing.json override: agents.<id>.model replaces the openai specialist's 
       "utf8"
     );
     const { agentsToml } = generateCodexConfig({ projectDir, routingPath });
-    assert.match(agentsToml, /model = "openai\/gpt-6-astra-alt"/);
-    assert.doesNotMatch(agentsToml, /model = "openai\/gpt-6-astra"\n/);
+    assert.match(agentsToml, /model = "gpt-6-astra-alt"/);
+    assert.ok(!agentsToml.includes("openai/"));
   } finally {
     rmSync(projectDir, { recursive: true, force: true });
   }

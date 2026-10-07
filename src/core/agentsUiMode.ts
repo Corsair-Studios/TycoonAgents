@@ -53,6 +53,22 @@ export interface SingleProviderTiers {
 }
 
 /**
+ * Single source of truth for the Codex models accepted under ChatGPT sign-in
+ * (Sol, then the higher-tier Astra). Import from "src/core/agentsUiMode".
+ */
+export const CODEX_ACCEPTED_MODELS: readonly SingleProviderTier[] = [
+  { id: "sol", label: "Sol", model: "openai/gpt-5.6-sol" },
+  { id: "astra", label: "Astra", model: "openai/gpt-6-astra" },
+];
+
+/**
+ * Bare Codex ids known to be rejected under ChatGPT sign-in. The dispatcher
+ * (hooks/dispatcherClaudeChain.cjs, CommonJS) keeps a mirrored list that a
+ * test asserts equal to this one.
+ */
+export const CODEX_REJECTED_MODELS: readonly string[] = ["gpt-5", "gpt-6"];
+
+/**
  * Model tier lists for the single-provider Agents view, keyed by harness.
  * Claude reuses the SAME alias strings the existing model dropdown writes
  * (MODEL_ALIASES, modelAliases.ts) — never duplicated literals. Codex tiers
@@ -79,10 +95,7 @@ export function singleProviderTiers(harness: string): SingleProviderTiers {
   if (h === "codex") {
     return {
       vendor: "openai",
-      tiers: [
-        { id: "sol", label: "Sol", model: "openai/gpt-5.6-sol" },
-        { id: "astra", label: "Astra", model: "openai/gpt-6-astra" },
-      ],
+      tiers: CODEX_ACCEPTED_MODELS.map((t) => ({ ...t })),
     };
   }
   return { vendor: "", tiers: [] };

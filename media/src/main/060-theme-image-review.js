@@ -2674,6 +2674,11 @@
       handleRoutingSaved(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
       handleEnvProbeReply(msg);
+    } else if (msg && msg.type === ROUTING_MSG.TEST_VENDOR_KEY_RESULT) {
+      handleVendorKeyTestResult(msg);
+    } else if (msg && msg.type === ROUTING_MSG.SET_GEMINI_BACKEND_RESULT) {
+      geminiBackendError = msg.payload && msg.payload.ok === false ? String(msg.payload.error || "Could not update .mcp.json.") : "";
+      if (geminiBackendError) renderRoutingModal();
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "pathOverrideResult") {

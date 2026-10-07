@@ -488,7 +488,7 @@ function timeoutMs() {
 
 /** The model an agent asked for, if any (the app-server picks its own default otherwise). */
 function requestedModel(args) {
-  return args && typeof args.model === "string" ? args.model : "";
+  return args && typeof args.model === "string" ? args.model.trim().replace(/^openai\//i, "") : "";
 }
 
 /** Handles the `codex` tool: initialize (once) -> thread/start -> turn/start -> wait for turn/completed. `client` is injectable so tests can point it at a fake app-server script instead of the real discovered binary. */
@@ -507,7 +507,7 @@ async function handleCodexTool(args, client) {
   const cwd = (args && typeof args.cwd === "string" && args.cwd) || process.cwd();
   let threadResult;
   try {
-    threadResult = await client.request("thread/start", { cwd });
+    threadResult = await client.request("thread/start", model ? { cwd, model } : { cwd });
   } catch (err) {
     return isErrorResult(`codex: thread/start failed: ${err && err.message ? err.message : String(err)}`, undefined, model);
   }

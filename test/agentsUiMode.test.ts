@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveAgentsUiMode, singleProviderTiers } from '../src/core/agentsUiMode';
+import { resolveAgentsUiMode, singleProviderTiers, CODEX_ACCEPTED_MODELS } from '../src/core/agentsUiMode';
 import { MODEL_ALIASES } from '../src/core/modelAliases';
 
 // p74-t3: coverage for resolveAgentsUiMode's harness/flag matrix and
@@ -82,4 +82,9 @@ test('singleProviderTiers: an unknown harness returns empty tiers and an empty v
 test('singleProviderTiers: harness matching is case-insensitive', () => {
   assert.equal(singleProviderTiers('Codex').vendor, 'openai');
   assert.equal(singleProviderTiers('CLAUDE-CODE').vendor, 'anthropic');
+});
+
+test('CODEX_ACCEPTED_MODELS is the codex tier source: Sol and Astra only', () => {
+  assert.deepEqual(CODEX_ACCEPTED_MODELS.map((t) => t.model), ['openai/gpt-5.6-sol', 'openai/gpt-6-astra']);
+  assert.deepEqual(singleProviderTiers('codex').tiers, CODEX_ACCEPTED_MODELS);
 });

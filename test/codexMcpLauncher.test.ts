@@ -607,3 +607,15 @@ test("(backend) version/launch-shape helpers", () => {
   assert.equal(l.wantsMcpServerLaunch(["--version"]), false);
   assert.equal(l.wantsMcpServerLaunch(["hello"]), false);
 });
+
+test("(proxy) mcp-server path forwards a tools/call model argument to the child unchanged", () => {
+  const { createMcpResultProxy } = require("../../hooks/codex-mcp-launcher.cjs");
+  const toChild: string[] = [];
+  const proxy = createMcpResultProxy({ writeClient: () => undefined, writeChild: (l: string) => toChild.push(l), model: "gpt-5.6-sol", timeoutMs: 60000, env: {} });
+  const line = JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "codex", arguments: { prompt: "hi", model: "gpt-6-astra" } } });
+  proxy.onClientLine(line);
+  const forwarded = toChild.map((l) => JSON.parse(l)).find((m) => m.method === "tools/call");
+  assert.equal(forwarded.params.arguments.model, "gpt-6-astra");
+  assert.equal(forwarded.params.arguments.prompt, "hi");
+  proxy.dispose?.();
+});

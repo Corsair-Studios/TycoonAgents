@@ -7388,6 +7388,59 @@ button.theme-review-preview:focus-visible::after {
   margin-top: 2px;
 }
 
+/* Fixed vendor key rows (Claude Code / Codex hosts): the env name is
+   read-only text, not an input, because the bridge ignores any other name. */
+.routing-vendor-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+}
+
+.routing-env-fixed-name {
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.routing-env-default {
+  font-size: 10px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.routing-env-state {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.routing-signin-note {
+  font-size: 11px;
+}
+
+.routing-keytest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.routing-keytest-result {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.routing-keytest-result--ok {
+  color: var(--status-active, #2ecc71);
+}
+
+.routing-keytest-result--bad {
+  color: var(--status-error, #c0392b);
+}
+
 /* Subscription/MCP guidance notice (2026-09-07): appended under the cost
    class select whenever the picked vendor/cost-class or transport combo
    can't actually be wired by this form — see buildSubscriptionMcpNotice in
@@ -8440,4 +8493,62 @@ button.theme-review-preview:focus-visible::after {
     width: 96px;
     height: 96px;
   }
+}
+
+/* p101: derived connection line, read-only Gemini model, host note, "Set outside the panel" box. */
+.routing-connection-line,
+.routing-model-readonly {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text);
+  padding: 3px 6px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.routing-fallback-host-note {
+  margin: 2px 0 6px;
+}
+
+.routing-external-settings {
+  margin: 6px 0 10px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.routing-external-settings > summary {
+  cursor: pointer;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+}
+
+.routing-external-row {
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.routing-external-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.routing-external-head code {
+  overflow-wrap: anywhere;
+}
+
+.routing-external-value {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.routing-external-source {
+  color: var(--muted);
+  font-size: 10px;
 }

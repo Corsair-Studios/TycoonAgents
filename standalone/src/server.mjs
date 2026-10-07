@@ -354,6 +354,14 @@ function claudeSubscriptionModule() {
   return _claudeSubscriptionModule;
 }
 
+const VENDOR_KEY_TEST_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'vendorKeyTest.js');
+let _vendorKeyTestModule;
+let vendorKeyTestsShutDown = false;
+function vendorKeyTestModule() {
+  if (!_vendorKeyTestModule) _vendorKeyTestModule = requireCompiledOrThrow(VENDOR_KEY_TEST_JS, 'vendorKeyTest');
+  return _vendorKeyTestModule;
+}
+
 let _routingHostOpsModule;
 function routingHostOpsModule() {
   if (!_routingHostOpsModule) _routingHostOpsModule = requireCompiledOrThrow(ROUTING_HOST_OPS_JS, 'routingHostOps');
@@ -1016,6 +1024,46 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] clearLocalEnvValue failed:', err instanceof Error ? err.message : err);
       }
       break;
+    case 'testVendorKey': {
+      // Standalone analog of panel.ts's _handleTestVendorKey. Flat
+      // { type, vendor, model? }; replies { vendor, state, message } only —
+      // never a key value.
+      const vendorId = typeof msg.vendor === 'string' ? msg.vendor.slice(0, 40) : '';
+      const model = typeof msg.model === 'string' ? msg.model.slice(0, 200) : undefined;
+      (async () => {
+        let payload;
+        try {
+          const { runVendorKeyTest } = vendorKeyTestModule();
+          payload = await runVendorKeyTest({
+            vendorId,
+            model,
+            projectRoot: primaryProjectRoot || process.cwd(),
+            hooksDir: path.join(REPO_ROOT, 'hooks'),
+          });
+        } catch (err) {
+          console.error('[tycoonagents-standalone] testVendorKey failed:', err instanceof Error ? err.message : err);
+          payload = { vendor: vendorId, state: 'error', message: 'The test call failed.' };
+        }
+        if (vendorKeyTestsShutDown) return;
+        broadcast('message', { type: 'vendorKeyTestResult', payload });
+      })();
+      break;
+    }
+    case 'setGeminiBackend': {
+      // Standalone analog of panel.ts's _handleSetGeminiBackend. Flat
+      // { type, value: 'agy' | 'gemini' }; only the gemini server's
+      // GEMINI_MCP_BACKEND env in .mcp.json changes.
+      try {
+        const { setGeminiBackend } = routingHostOpsModule();
+        const root = primaryProjectRoot || process.cwd();
+        const result = setGeminiBackend(root, msg.value);
+        broadcast('message', { type: 'setGeminiBackendResult', payload: result });
+        broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
+      } catch (err) {
+        console.error('[tycoonagents-standalone] setGeminiBackend failed:', err instanceof Error ? err.message : err);
+      }
+      break;
+    }
     case 'setHarness': {
       // Standalone analog of panel.ts's _handleSetHarness (p13-t7). Writes
       // the `provider` key into execution.json when TYCOON_PROVIDER isn't
@@ -4754,6 +4802,8 @@ export async function startServer({
   function close() {
     if (closed) return Promise.resolve();
     closed = true;
+    vendorKeyTestsShutDown = true;
+    try { vendorKeyTestModule().cancelAllVendorKeyTests(); } catch { /* module not loaded or unavailable */ }
     if (themeServiceHostInstance) themeServiceHostInstance.dispose();
     stateFeed.close();
     for (const feed of secondaryFeeds) feed.close();

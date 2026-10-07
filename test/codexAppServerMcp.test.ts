@@ -606,3 +606,23 @@ test("(launcher fallback, cross-platform) an MCP initialize + tools/list over st
     throw err;
   }
 });
+
+test("(model) handleCodexTool passes the per-call model (openai/ stripped) on thread/start; absent model sends none", async () => {
+  const calls: Array<{ method: string; params: any }> = [];
+  const client = {
+    ensureInitialized: async () => undefined,
+    request: async (method: string, params: any) => {
+      calls.push({ method, params });
+      if (method === "thread/start") return { thread: { id: "t1" } };
+      return { turn: { id: "u1" } };
+    },
+    waitForTurn: async () => ({ threadId: "t1", text: "ok", turn: { status: "completed" } }),
+    dispose: () => undefined,
+  };
+  await shim.handleCodexTool({ prompt: "hi", cwd: process.cwd(), model: "openai/gpt-6-astra" }, client);
+  assert.equal(calls.find((c) => c.method === "thread/start")!.params.model, "gpt-6-astra");
+  calls.length = 0;
+  const res = await shim.handleCodexTool({ prompt: "hi", cwd: process.cwd() }, client);
+  assert.equal("model" in calls.find((c) => c.method === "thread/start")!.params, false);
+  assert.ok(!res.isError);
+});

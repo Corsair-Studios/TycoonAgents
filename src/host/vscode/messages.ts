@@ -459,6 +459,17 @@ export const MSG = {
   // fresh ENV_PROBE reply for the affected name.
   SET_LOCAL_ENV_VALUE: "setLocalEnvValue",
   CLEAR_LOCAL_ENV_VALUE: "clearLocalEnvValue",
+  // Routing screen "Test connection" on a fixed vendor key row. Webview ->
+  // host { vendor: <vendorKeys spec id>, model? }; host replies with
+  // VENDOR_KEY_TEST_RESULT { vendor, state, message }. Never carries a key.
+  TEST_VENDOR_KEY: "testVendorKey",
+  VENDOR_KEY_TEST_RESULT: "vendorKeyTestResult",
+  // p101-t2: webview -> host { value: "agy" | "gemini" }; host writes
+  // GEMINI_MCP_BACKEND into the gemini server's env in the project .mcp.json
+  // (nothing else), then re-posts MSG.ROUTING. The routingSaved-style reply
+  // is SET_GEMINI_BACKEND_RESULT { ok, error? }.
+  SET_GEMINI_BACKEND: "setGeminiBackend",
+  SET_GEMINI_BACKEND_RESULT: "setGeminiBackendResult",
 
   // ---- Theme Service auth / balance / checkout (p42-t1) ------------------
   // Webview -> host, no payload. Host replies with THEME_SERVICE_STATUS.
@@ -629,6 +640,8 @@ export const MSG_SCHEMAS = {
   PROBE_ENV: z.object({ names: z.array(z.string()) }).passthrough(),
   SET_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1), value: z.string() }).passthrough(),
   CLEAR_LOCAL_ENV_VALUE: z.object({ name: z.string().min(1) }).passthrough(),
+  TEST_VENDOR_KEY: z.object({ vendor: z.string().min(1).max(40), model: z.string().max(200).optional() }).passthrough(),
+  SET_GEMINI_BACKEND: z.object({ value: z.enum(["agy", "gemini"]) }).passthrough(),
 
   // ---- theme: stage tuning / background / manual image upload -------------
   SAVE_STAGE_TUNING: z

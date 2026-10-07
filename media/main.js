@@ -16103,6 +16103,11 @@ if (typeof module !== "undefined" && module.exports) {
       handleRoutingSaved(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
       handleEnvProbeReply(msg);
+    } else if (msg && msg.type === ROUTING_MSG.TEST_VENDOR_KEY_RESULT) {
+      handleVendorKeyTestResult(msg);
+    } else if (msg && msg.type === ROUTING_MSG.SET_GEMINI_BACKEND_RESULT) {
+      geminiBackendError = msg.payload && msg.payload.ok === false ? String(msg.payload.error || "Could not update .mcp.json.") : "";
+      if (geminiBackendError) renderRoutingModal();
     } else if (msg && msg.type === "settingsUpdated") {
       handleSettingsUpdated(msg);
     } else if (msg && msg.type === "pathOverrideResult") {
@@ -21197,6 +21202,10 @@ function themeAnimPreviewDraw(player) {
     PROBE_REPLY: "envProbe",
     SET_LOCAL: "setLocalEnvValue",
     CLEAR_LOCAL: "clearLocalEnvValue",
+    TEST_VENDOR_KEY: "testVendorKey",
+    TEST_VENDOR_KEY_RESULT: "vendorKeyTestResult",
+    SET_GEMINI_BACKEND: "setGeminiBackend",
+    SET_GEMINI_BACKEND_RESULT: "setGeminiBackendResult",
   };
 
   // p68-t2: mirrors MSG.GET_KEYWORD_HEALTH / KEYWORD_HEALTH / KEYWORD_HEALTH_FIX
@@ -21421,7 +21430,7 @@ function themeAnimPreviewDraw(player) {
   function updateRoutingEnvDots(name) {
     document.querySelectorAll('.routing-env-field[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (wrap) {
       var area = wrap.querySelector(".routing-env-status");
-      if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential");
+      if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential", wrap.getAttribute("data-env-optional") === "1");
     });
   }
 
@@ -21435,7 +21444,7 @@ function themeAnimPreviewDraw(player) {
    * one env var name. Rebuilt from scratch on every call (cheap — a handful
    * of nodes) so it always reflects the current routingEnvProbe cache.
    */
-  function refreshEnvStatusArea(area, name, kind) {
+  function refreshEnvStatusArea(area, name, kind, optional) {
     area.innerHTML = "";
     var known = !!(name && Object.prototype.hasOwnProperty.call(routingEnvProbe, name));
     var state = known ? routingEnvProbe[name] : { env: false, stored: false };
@@ -21451,6 +21460,10 @@ function themeAnimPreviewDraw(player) {
     } else if (state.stored) {
       dotClass = "routing-env-dot--stored";
       dotTitle = "stored locally on this machine";
+    } else if (optional) {
+      // An unset OPTIONAL value (a base URL with a default) is not an error.
+      dotClass = "routing-env-dot--unknown";
+      dotTitle = "not set - the default is used";
     } else {
       dotClass = "routing-env-dot--unset";
       dotTitle = "not set";
@@ -21459,6 +21472,18 @@ function themeAnimPreviewDraw(player) {
     dot.title = dotTitle;
     dot.setAttribute("data-env-name", name || "");
     area.appendChild(dot);
+
+    // Fixed vendor-key rows say in words what the dot means (set in the
+    // environment vs stored by TycoonAgents vs unset).
+    if (area.getAttribute("data-fixed") === "1") {
+      var stateText = document.createElement("span");
+      stateText.className = "routing-env-state";
+      stateText.textContent = !known ? "checking\u2026"
+        : state.env ? "set in environment"
+        : state.stored ? "stored by TycoonAgents"
+        : optional ? "not set (default used)" : "not set";
+      area.appendChild(stateText);
+    }
 
     var validName = !!(name && ENV_NAME_RE.test(name));
 
@@ -21570,6 +21595,119 @@ function themeAnimPreviewDraw(player) {
 
   var ROUTING_VENDOR_CUSTOM = "custom-endpoint";
 
+  // Latest "Test connection" outcome per vendor-key spec id:
+  // { pending: true } | { state, message }. Never holds a key value.
+  var vendorKeyTestResults = {};
+
+  /** Spec from payload.presets.vendorKeys (src/core/vendorKeys.ts) for a slot vendor, or null (free-form fields stay). */
+  function vendorKeySpecForVendor(presets, vendor) {
+    var specs = (presets && presets.vendorKeys) || [];
+    var v = String(vendor || "").toLowerCase();
+    if (!v || v === ROUTING_VENDOR_CUSTOM) return null;
+    for (var i = 0; i < specs.length; i++) {
+      if ((specs[i].vendors || []).indexOf(v) !== -1) return specs[i];
+    }
+    return null;
+  }
+
+  /** One fixed env var: label, read-only name, live set/unset state, Set value / Clear (existing store plumbing). */
+  function buildFixedKeyRow(row) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-env-field routing-env-field--fixed";
+    wrap.setAttribute("data-env-name", row.env);
+    wrap.setAttribute("data-env-kind", row.kind);
+    wrap.setAttribute("data-env-optional", row.required ? "0" : "1");
+    var label = document.createElement("label");
+    label.textContent = row.label + (row.note ? " (" + row.note + ")" : "");
+    wrap.appendChild(label);
+    var name = document.createElement("code");
+    name.className = "routing-env-fixed-name";
+    name.textContent = row.env;
+    wrap.appendChild(name);
+    if (row.defaultValue) {
+      var dflt = document.createElement("span");
+      dflt.className = "routing-env-default";
+      dflt.textContent = "Default: " + row.defaultValue;
+      wrap.appendChild(dflt);
+    }
+    var statusArea = document.createElement("span");
+    statusArea.className = "routing-env-status";
+    statusArea.setAttribute("data-fixed", "1");
+    wrap.appendChild(statusArea);
+    refreshEnvStatusArea(statusArea, row.env, row.kind, !row.required);
+    if (!Object.prototype.hasOwnProperty.call(routingEnvProbe, row.env)) probeEnvName(row.env);
+    return wrap;
+  }
+
+  function renderVendorKeyTestResult(el, entry) {
+    el.className = "routing-keytest-result";
+    if (!entry) { el.textContent = ""; return; }
+    if (entry.pending) { el.textContent = "Testing\u2026"; return; }
+    el.textContent = entry.message || "";
+    el.classList.add(entry.state === "ok" ? "routing-keytest-result--ok" : "routing-keytest-result--bad");
+  }
+
+  /** "Test connection" button + result line for one vendor-key spec. */
+  function buildVendorKeyTestControl(spec, slot) {
+    var wrap = document.createElement("div");
+    wrap.className = "routing-keytest";
+    wrap.setAttribute("data-spec-id", spec.id);
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "routing-inline-link-btn routing-keytest-btn";
+    btn.textContent = "Test connection";
+    var out = document.createElement("span");
+    out.setAttribute("role", "status");
+    var cur = vendorKeyTestResults[spec.id];
+    btn.disabled = !!(cur && cur.pending);
+    renderVendorKeyTestResult(out, cur);
+    btn.addEventListener("click", function () {
+      vendorKeyTestResults[spec.id] = { pending: true };
+      applyVendorKeyTestResult(spec.id);
+      vscode.postMessage({ type: ROUTING_MSG.TEST_VENDOR_KEY, vendor: spec.id, model: slot && slot.model ? String(slot.model) : undefined });
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(out);
+    return wrap;
+  }
+
+  function applyVendorKeyTestResult(specId) {
+    var entry = vendorKeyTestResults[specId];
+    document.querySelectorAll('.routing-keytest[data-spec-id="' + specId + '"]').forEach(function (wrap) {
+      var btn = wrap.querySelector(".routing-keytest-btn");
+      var out = wrap.querySelector('[role="status"]');
+      if (btn) btn.disabled = !!(entry && entry.pending);
+      if (out) renderVendorKeyTestResult(out, entry);
+    });
+  }
+
+  function handleVendorKeyTestResult(msg) {
+    var p = (msg && msg.payload) || {};
+    if (typeof p.vendor !== "string") return;
+    vendorKeyTestResults[p.vendor] = { state: String(p.state || "error"), message: String(p.message || "") };
+    applyVendorKeyTestResult(p.vendor);
+  }
+
+  /**
+   * Claude Code / Codex hosts: the bridges read FIXED env names (see
+   * src/core/vendorKeys.ts), so show those read-only instead of asking the
+   * user to type names that would be ignored. Sign-in vendors say so.
+   */
+  function buildVendorKeyBlock(spec, slot) {
+    var block = document.createElement("div");
+    block.className = "routing-vendor-keys";
+    block.setAttribute("data-vendor-key-spec", spec.id);
+    if (spec.auth === "signin") {
+      var note = document.createElement("div");
+      note.className = "routing-env-note routing-signin-note";
+      note.textContent = "Uses your " + (spec.signIn || spec.label) + " sign-in \u2014 no key needed";
+      block.appendChild(note);
+    }
+    (spec.rows || []).forEach(function (row) { block.appendChild(buildFixedKeyRow(row)); });
+    if (spec.test) block.appendChild(buildVendorKeyTestControl(spec, slot));
+    return block;
+  }
+
   /**
    * Render the editor for one RoutingSlot (orchestrator, an agent row, or a
    * fallback entry). `opts.presets` is payload.presets. `onStructural` is
@@ -21614,9 +21752,7 @@ function themeAnimPreviewDraw(player) {
         return { ok: true };
       }
       if (vendor === "google") {
-        return geminiKeyPresent
-          ? { ok: true }
-          : { ok: false, reason: 'vendor "google" needs GEMINI_API_KEY set to dispatch under Codex' };
+        return { ok: true, skip: true, reason: "Google fallbacks are skipped on the Codex host; the chain moves to the next entry" };
       }
       return { ok: false, reason: 'vendor "' + vendor + '" has no Codex dispatcher adapter' };
     }
@@ -21647,11 +21783,157 @@ function themeAnimPreviewDraw(player) {
 
   /** Amber footnote (reuses the theme-review-retry-warning accent token) for an undispatchable fallback target. Returns null when `check.ok`. */
   function buildFallbackDispatchWarning(check) {
+    if (check && check.ok === true && check.skip) {
+      var soft = document.createElement("p");
+      soft.className = "routing-fallback-dispatch-warning routing-fallback-skip-warning theme-review-retry-warning";
+      soft.textContent = check.reason;
+      return soft;
+    }
     if (!check || check.ok !== false) return null;
     var note = document.createElement("p");
     note.className = "routing-fallback-dispatch-warning theme-review-retry-warning";
     note.textContent = "Not dispatchable under " + routingCurrentHarness + ": " + (check.reason || "unsupported target");
     return note;
+  }
+
+  // ---------------------------------------------------------------------------
+  // p101: project .mcp.json facts (payload.bridge, computed host-side by
+  // src/core/hostBridgeSettings.ts) used by the slot editor and fallback
+  // editor. Absent on an older host -> every helper degrades to "unknown".
+  // ---------------------------------------------------------------------------
+  var GEMINI_AGY_MODEL_TEXT = "Gemini 3.5 Flash \u2014 set by Antigravity";
+  var geminiBackendError = "";
+
+  function routingBridgeInfo() {
+    return (lastRoutingPayload && lastRoutingPayload.bridge) || null;
+  }
+
+  /** @returns {{known: boolean, serverPresent: boolean, value: string}} value is "agy" (wrapper default) or "gemini". */
+  function geminiBackendState() {
+    var g = routingBridgeInfo() && routingBridgeInfo().gemini;
+    return { known: !!g, serverPresent: !!(g && g.serverPresent), value: g && g.value === "gemini" ? "gemini" : "agy" };
+  }
+
+  /** Warning text when a slot bridges via an MCP server that is not in .mcp.json, else "". */
+  function missingMcpServerWarning(slot) {
+    var bridge = routingBridgeInfo();
+    if (!bridge || !slot || slot.transport !== "mcp" || !slot.mcpServer) return "";
+    var names = bridge.mcpServers || [];
+    if (names.indexOf(slot.mcpServer) !== -1) return "";
+    return 'MCP server "' + slot.mcpServer + '" is not in .mcp.json, so this route cannot run until it is installed or the name is fixed.';
+  }
+
+  function buildMcpServerWarning(text) {
+    if (!text) return null;
+    var note = document.createElement("p");
+    note.className = "routing-mcp-server-warning theme-review-retry-warning";
+    note.textContent = text;
+    return note;
+  }
+
+  /** Derived, read-only connection line for the Claude Code and Codex hosts (transport follows vendor + mcpServer). */
+  function connectionLineText(slot) {
+    var vendor = String(slot.vendor || "").toLowerCase();
+    if (slot.transport === "mcp" && slot.mcpServer) return "Connection: via " + slot.mcpServer + " bridge";
+    if (slot.transport === "openai-compatible") return "Connection: OpenAI-compatible endpoint";
+    return vendor && vendor !== "anthropic" ? "Connection: native " + vendor + " (no bridge)" : "Connection: Native Claude";
+  }
+
+  /**
+   * Gemini backend control: Antigravity sign-in | Paid key (Gemini CLI).
+   * Writes GEMINI_MCP_BACKEND into the gemini server env of the project
+   * .mcp.json (host-side, nothing else in the file changes).
+   */
+  function buildGeminiBackendControl() {
+    var st = geminiBackendState();
+    var row = document.createElement("div");
+    row.className = "routing-field-row routing-field-row--full routing-gemini-backend";
+    var label = document.createElement("label");
+    label.textContent = "Gemini backend";
+    row.appendChild(label);
+    var sel = document.createElement("select");
+    sel.setAttribute("data-field-key", "gemini.backend");
+    [["agy", "Antigravity sign-in"], ["gemini", "Paid key (Gemini CLI)"]].forEach(function (o) {
+      var opt = document.createElement("option");
+      opt.value = o[0];
+      opt.textContent = o[1];
+      if (o[0] === st.value) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.disabled = !st.serverPresent;
+    sel.addEventListener("change", function () {
+      geminiBackendError = "";
+      vscode.postMessage({ type: ROUTING_MSG.SET_GEMINI_BACKEND, value: sel.value });
+    });
+    row.appendChild(sel);
+    var hint = document.createElement("div");
+    hint.className = "routing-env-note routing-gemini-backend-note";
+    hint.textContent = !st.known
+      ? "Backend unknown on this host."
+      : !st.serverPresent
+        ? 'No "gemini" server in .mcp.json; install the Gemini server to choose a backend (default: Antigravity).'
+        : "Saved to .mcp.json (GEMINI_MCP_BACKEND). Claude Code must reload MCP servers (/mcp or Reload Window) after switching.";
+    row.appendChild(hint);
+    if (geminiBackendError) {
+      var err = document.createElement("div");
+      err.className = "routing-env-note theme-review-retry-warning";
+      err.textContent = geminiBackendError;
+      row.appendChild(err);
+    }
+    return row;
+  }
+
+  var EXTERNAL_SOURCE_LABELS = { "default": "default", "environment": "VS Code environment (MCP servers usually inherit it)" };
+
+  /**
+   * p101-t5: collapsible read-only box listing settings that live outside the
+   * panel: effective value, where it comes from, where to change it. The
+   * host computes everything (src/core/hostBridgeSettings.ts); no secrets.
+   */
+  function buildExternalSettingsBox(bridge) {
+    var list = (bridge && bridge.externalSettings) || [];
+    if (!list.length) return null;
+    var box = document.createElement("details");
+    box.className = "routing-external-settings";
+    var summary = document.createElement("summary");
+    summary.textContent = "Set outside the panel (" + list.length + ")";
+    box.appendChild(summary);
+    var help = document.createElement("p");
+    help.className = "routing-defaults-help";
+    help.textContent = "Read-only. These change runtime behaviour but are set in .mcp.json or your environment, then MCP servers must be reloaded.";
+    box.appendChild(help);
+    list.forEach(function (it) {
+      var row = document.createElement("div");
+      row.className = "routing-external-row";
+      row.setAttribute("data-env-name", it.name);
+      var head = document.createElement("div");
+      head.className = "routing-external-head";
+      var name = document.createElement("code");
+      name.textContent = it.name;
+      head.appendChild(name);
+      var val = document.createElement("span");
+      val.className = "routing-external-value";
+      val.textContent = it.value;
+      head.appendChild(val);
+      var src = document.createElement("span");
+      src.className = "routing-external-source";
+      src.textContent = it.source === "mcp-json" ? ".mcp.json " + (it.server || "") + " env" : (EXTERNAL_SOURCE_LABELS[it.source] || it.source);
+      head.appendChild(src);
+      row.appendChild(head);
+      var note = document.createElement("div");
+      note.className = "routing-env-note";
+      note.textContent = it.note + " " + it.where;
+      row.appendChild(note);
+      box.appendChild(row);
+    });
+    return box;
+  }
+
+  /** Per-host note atop the fallback chain editor. */
+  function fallbackHostNoteText(harness) {
+    if (harness === "opencode") return "Best-effort: switches model string";
+    if (harness === "codex") return "Codex host: only vendors with a dispatcher adapter (anthropic, openai, openai-compatible, local, moonshot). Google is not supported on the Codex host.";
+    return "Full fallback (dispatcher + hook)";
   }
 
   /**
@@ -22153,6 +22435,7 @@ function themeAnimPreviewDraw(player) {
     }
 
     // Model: preset select-with-free-text, or a bare free-text input for Custom endpoint.
+    if (String(slot.vendor || "").toLowerCase() === "google") frag.appendChild(buildGeminiBackendControl());
     var modelRow = document.createElement("div");
     // Full row width, always — a model id (e.g. "anthropic/claude-sonnet-
     // 4-6") is the field most likely to overflow a shared 2-col grid cell;
@@ -22161,9 +22444,16 @@ function themeAnimPreviewDraw(player) {
     var modelLabel = document.createElement("label");
     modelLabel.textContent = "Model";
     modelRow.appendChild(modelLabel);
+    var isGoogleSlot = String(slot.vendor || "").toLowerCase() === "google";
+    var geminiState = geminiBackendState();
+    var geminiOnAgy = isGoogleSlot && geminiState.known && geminiState.value === "agy";
     var models = ((presets && presets.models) || []).filter(function (m) {
       return !slot.vendor || slot.vendor === ROUTING_VENDOR_CUSTOM || m.vendor === slot.vendor;
     });
+    // Gemini CLI backend only accepts gemini-* ids (the dispatcher drops anything else).
+    if (isGoogleSlot && geminiState.known && !geminiOnAgy) {
+      models = models.filter(function (m) { return /(^|\/)gemini-/.test(String(m.id || "")); });
+    }
     var matchesPreset = models.some(function (m) { return m.id === slot.model; });
     // Free-text branch: Custom-endpoint vendor, an unrecognized non-empty
     // model, OR the preset select's own "Custom…" option was just picked
@@ -22172,7 +22462,14 @@ function themeAnimPreviewDraw(player) {
     // truthy alone used to send that case straight back into the preset
     // SELECT branch instead (the "Custom…" pick silently failed to open the
     // free-text field for a non-custom vendor with no model chosen yet).
-    if (isCustom || (!matchesPreset && (slot.model || slot._modelCustomEdit))) {
+    if (geminiOnAgy) {
+      // Antigravity picks its own model; nothing the panel writes changes it.
+      var agyModel = document.createElement("div");
+      agyModel.className = "routing-model-readonly";
+      agyModel.setAttribute("data-field-key", keyPrefix + ".model");
+      agyModel.textContent = GEMINI_AGY_MODEL_TEXT;
+      modelRow.appendChild(agyModel);
+    } else if (isCustom || (!matchesPreset && (slot.model || slot._modelCustomEdit))) {
       var modelInput = document.createElement("input");
       modelInput.type = "text";
       modelInput.className = "routing-model-input";
@@ -22234,7 +22531,19 @@ function themeAnimPreviewDraw(player) {
     // Transport — bridge-only field (mcp/openai-compatible are how a
     // foreign vendor gets bridged in); the harness's own native vendor
     // (p26-t1) has nothing to bridge, so this row is skipped for it.
-    if (!isNativeVendorSlot) {
+    var transportDerived = slotHarnessEff !== "opencode";
+    // Transport the slot carried before any MCP server was typed; clearing the field restores it.
+    var storedBaseTransport = slot.transport && slot.transport !== "mcp" ? slot.transport : "claude-native";
+    var connectionLineEl = null;
+    if (!isNativeVendorSlot && transportDerived) {
+      // Claude Code and Codex: the route follows vendor + MCP server (set
+      // below); a separate Transport select changed nothing at runtime.
+      connectionLineEl = document.createElement("div");
+      connectionLineEl.className = "routing-connection-line";
+      connectionLineEl.setAttribute("data-field-key", keyPrefix + ".connection");
+      connectionLineEl.textContent = connectionLineText(slot);
+      frag.appendChild(connectionLineEl);
+    } else if (!isNativeVendorSlot) {
       var transportRow = document.createElement("div");
       transportRow.className = "routing-field-row";
       var transportLabel = document.createElement("label");
@@ -22263,7 +22572,7 @@ function themeAnimPreviewDraw(player) {
     var costRow = document.createElement("div");
     costRow.className = "routing-field-row";
     var costLabel = document.createElement("label");
-    costLabel.textContent = "Cost class";
+    costLabel.textContent = "Billing label";
     costRow.appendChild(costLabel);
     var costSel = document.createElement("select");
     costSel.setAttribute("data-field-key", keyPrefix + ".costModelClass");
@@ -22280,6 +22589,10 @@ function themeAnimPreviewDraw(player) {
     });
     costSel.addEventListener("change", function () { slot.costModelClass = costSel.value; });
     costRow.appendChild(costSel);
+    var costHint = document.createElement("div");
+    costHint.className = "routing-env-note routing-billing-hint";
+    costHint.textContent = "Informational; on OpenCode it also controls the Claude subscription lock";
+    costRow.appendChild(costHint);
     frag.appendChild(costRow);
 
     // Subscription/MCP guidance notice (2026-09-07): a routing form can pick
@@ -22310,7 +22623,19 @@ function themeAnimPreviewDraw(player) {
     // For openai-compatible / Custom endpoint, endpoint comes first and both
     // fields carry connection-specific labels; other transports only need
     // the credential field.
-    if (!isNativeVendorSlot) {
+    var fixedKeySpec = (slotHarnessEff !== "opencode" && !isCustom && !isNativeVendorSlot) ? vendorKeySpecForVendor(presets, slot.vendor) : null;
+    if (fixedKeySpec && fixedKeySpec.id === "google" && geminiOnAgy) {
+      var agyNote = document.createElement("div");
+      agyNote.className = "routing-env-note";
+      agyNote.textContent = "Antigravity sign-in needs no API key. Switch the Gemini backend to Paid key (Gemini CLI) to use GEMINI_API_KEY.";
+      frag.appendChild(agyNote);
+    } else if (fixedKeySpec) {
+      frag.appendChild(buildVendorKeyBlock(fixedKeySpec, slot));
+      var fixedNote = document.createElement("div");
+      fixedNote.className = "routing-env-note";
+      fixedNote.textContent = "These names are fixed for this vendor. Values are stored per user in the TycoonAgents app-data folder, never in this project.";
+      frag.appendChild(fixedNote);
+    } else if (!isNativeVendorSlot) {
       if (slot.transport === "openai-compatible" || isCustom) {
         frag.appendChild(buildEnvNameField("Endpoint URL env", slot.endpointEnv, function (v) { slot.endpointEnv = v; }, "endpoint", keyPrefix + ".endpointEnv"));
         frag.appendChild(buildEnvNameField("API key env", slot.credentialEnv, function (v) { slot.credentialEnv = v; }, "credential", keyPrefix + ".credentialEnv"));
@@ -22324,7 +22649,7 @@ function themeAnimPreviewDraw(player) {
       frag.appendChild(envNote);
     }
 
-    if (!isNativeVendorSlot && slot.transport === "mcp") {
+    if (!isNativeVendorSlot && (slot.transport === "mcp" || (transportDerived && !isCustom))) {
       var mcpRow = document.createElement("div");
       mcpRow.className = "routing-field-row";
       var mcpLabel = document.createElement("label");
@@ -22334,9 +22659,39 @@ function themeAnimPreviewDraw(player) {
       mcpInput.type = "text";
       mcpInput.setAttribute("data-field-key", keyPrefix + ".mcpServer");
       mcpInput.value = slot.mcpServer || "";
-      mcpInput.addEventListener("input", function () { slot.mcpServer = mcpInput.value; });
+      var mcpWarnHolder = document.createElement("div");
+      var refreshMcpWarn = function () {
+        mcpWarnHolder.textContent = "";
+        if (keyPrefix.indexOf(".fallback[") !== -1) return; // the fallback list shows its own warning
+        var w = buildMcpServerWarning(missingMcpServerWarning(slot));
+        if (w) mcpWarnHolder.appendChild(w);
+      };
+      if (transportDerived && !isCustom) {
+        // Naming an MCP server IS the bridge: it sets transport "mcp"; empty is the native route.
+        var mcpList = document.createElement("datalist");
+        mcpList.id = "mcp-servers-" + keyPrefix.replace(/[^a-zA-Z0-9_-]/g, "_");
+        ((routingBridgeInfo() && routingBridgeInfo().mcpServers) || []).forEach(function (n) {
+          var o = document.createElement("option");
+          o.value = n;
+          mcpList.appendChild(o);
+        });
+        mcpInput.setAttribute("list", mcpList.id);
+        mcpInput.placeholder = "(none: native route)";
+        mcpRow.appendChild(mcpList);
+      }
+      mcpInput.addEventListener("input", function () {
+        slot.mcpServer = mcpInput.value;
+        if (transportDerived && !isCustom) {
+          slot.transport = mcpInput.value.trim() ? "mcp" : storedBaseTransport;
+          if (!mcpInput.value.trim()) delete slot.mcpServer;
+          if (connectionLineEl) connectionLineEl.textContent = connectionLineText(slot);
+        }
+        refreshMcpWarn();
+      });
       mcpRow.appendChild(mcpInput);
       frag.appendChild(mcpRow);
+      refreshMcpWarn();
+      frag.appendChild(mcpWarnHolder);
     }
 
     // p27-t3: collapse the vendor..MCP-server field block (everything just
@@ -22364,7 +22719,7 @@ function themeAnimPreviewDraw(player) {
         connDetails.appendChild(frag.firstChild);
       }
       var slotDispatchCheck = isFallbackTargetDispatchableWebview(slot, routingCurrentHarness, routingCurrentGeminiKeyPresent);
-      var openConnection = (subNotice.needsBridge() && !subNotice.bridgeIsSetUp()) || slotDispatchCheck.ok === false;
+      var openConnection = (subNotice.needsBridge() && !subNotice.bridgeIsSetUp()) || slotDispatchCheck.ok === false || !!missingMcpServerWarning(slot);
       if (openConnection) connDetails.open = true;
       frag.appendChild(connDetails);
     }
@@ -22389,6 +22744,10 @@ function themeAnimPreviewDraw(player) {
     var summary = document.createElement("summary");
     summary.textContent = "Fallback chain (" + slot.fallback.length + ")";
     details.appendChild(summary);
+    var hostNote = document.createElement("p");
+    hostNote.className = "routing-fallback-host-note delegation-mode-footnote";
+    hostNote.textContent = fallbackHostNoteText(routingCurrentHarness);
+    details.appendChild(hostNote);
 
     var list = document.createElement("div");
     list.className = "routing-fallback-list";
@@ -22450,9 +22809,19 @@ function themeAnimPreviewDraw(player) {
       var fbCheck = isFallbackTargetDispatchableWebview(fbSlot, routingCurrentHarness, routingCurrentGeminiKeyPresent);
       var fbWarning = buildFallbackDispatchWarning(fbCheck);
       if (fbWarning) {
-        routingHasBlockingDispatchWarning = true;
+        if (fbCheck.ok === false) routingHasBlockingDispatchWarning = true;
         item.appendChild(fbWarning);
       }
+      // Live: typing in the entry's MCP server field updates this warning without a rebuild.
+      var fbMcpHolder = document.createElement("div");
+      var refreshFbMcpWarning = function () {
+        fbMcpHolder.textContent = "";
+        var w = buildMcpServerWarning(missingMcpServerWarning(fbSlot));
+        if (w) fbMcpHolder.appendChild(w);
+      };
+      refreshFbMcpWarning();
+      item.appendChild(fbMcpHolder);
+      item.addEventListener("input", refreshFbMcpWarning);
 
       // p27-t5: full field block moves into a per-entry <details>, closed
       // by default — reusing the .routing-fallback-details class and the
@@ -24001,7 +24370,7 @@ function themeAnimPreviewDraw(player) {
     }
     collectBackendVendor(payload.orchestrator && payload.orchestrator.backend);
     (payload.agents || []).forEach(function (a) { collectBackendVendor(a && a.backend); });
-    var presets = { vendors: Object.keys(vendorSet).sort(), models: rawPresets.models || [] };
+    var presets = { vendors: Object.keys(vendorSet).sort(), models: rawPresets.models || [], vendorKeys: rawPresets.vendorKeys || [] };
 
     if (Array.isArray(payload.errors) && payload.errors.length) {
       var errBox = document.createElement("div");
@@ -24014,6 +24383,9 @@ function themeAnimPreviewDraw(player) {
       });
       routingContentEl.appendChild(errBox);
     }
+
+    var externalBox = buildExternalSettingsBox(payload.bridge);
+    if (externalBox) routingContentEl.appendChild(externalBox);
 
     // ── Orchestrator (p19-t1: read-only session-model card in both
     // densities; full-only slot/fallback editor appended below it) ──
@@ -24082,7 +24454,7 @@ function themeAnimPreviewDraw(player) {
     var defaultFallbackCheck = isFallbackTargetDispatchableWebview(routingDraft.defaultFallback, routingCurrentHarness, routingCurrentGeminiKeyPresent);
     var defaultFallbackWarning = buildFallbackDispatchWarning(defaultFallbackCheck);
     if (defaultFallbackWarning) {
-      routingHasBlockingDispatchWarning = true;
+      if (defaultFallbackCheck.ok === false) routingHasBlockingDispatchWarning = true;
       defaultFallbackDetails.appendChild(defaultFallbackWarning);
     }
 

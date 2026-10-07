@@ -229,16 +229,53 @@ function textOf(result) {
     .join("\n");
 }
 
+/** What the agy backend reports when it names no model itself (agy ignores model selection in print mode). */
+const AGY_MODEL_LABEL = "gemini-3.5-flash (Antigravity)";
+
+/** The per-call model a caller passed to ask-gemini, else "". */
+function callModelOf(msg) {
+  const a = msg && msg.params && msg.params.arguments;
+  return a && typeof a.model === "string" ? a.model.trim() : "";
+}
+
+let _localEnvStore;
+let _localEnvStoreTried = false;
+/** The per-user local env store (hooks/localEnvStore.js, or the compiled core copy in a dev checkout), else undefined. */
+function localEnvStore() {
+  if (_localEnvStoreTried) return _localEnvStore;
+  _localEnvStoreTried = true;
+  for (const candidate of [path.join(__dirname, "localEnvStore.js"), path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")]) {
+    try {
+      if (fs.existsSync(candidate)) {
+        _localEnvStore = require(candidate);
+        return _localEnvStore;
+      }
+    } catch { /* try the next candidate */ }
+  }
+  return undefined;
+}
+
+/** env[name] first, else the per-user local store, else undefined. Never throws, never logs the value. */
+function resolveEnvOrLocal(name, env) {
+  const fromEnv = env[name];
+  if (typeof fromEnv === "string" && fromEnv !== "") return fromEnv;
+  try {
+    const store = localEnvStore();
+    if (store && typeof store.getValue === "function") return (store.getValue(name, { env }) || "").trim() || undefined;
+  } catch { /* fail-open */ }
+  return undefined;
+}
+
 /**
  * The model that actually ran. agy ignores model selection in print mode and
  * gemini-mcp-tool says so in a warning ("... (print-mode is <id>-only) ...");
- * that id wins. Otherwise the agy backend reports "agy-default", and any other
+ * that id wins. Otherwise the agy backend reports AGY_MODEL_LABEL, and any other
  * backend keeps the configured label.
  */
 function actualModel(text, model, isAgy) {
   const m = /Backend "agy" ignores model selection \(print-mode is ([^\s)]+?)-only\)/i.exec(text || "");
   if (m) return m[1];
-  return isAgy ? "agy-default" : model;
+  return isAgy ? AGY_MODEL_LABEL : model;
 }
 
 const ARGV_PROMPT_MAX_CHARS = 30000;
@@ -554,7 +591,7 @@ function parseAgyOutput(code, stdout, stderr, model) {
   }
   if (!json || typeof json !== "object") return fail("agy output could not be parsed as JSON" + (errText ? ": " + errText.slice(0, 400) : ""));
   const reply = typeof json.response === "string" ? json.response : "";
-  const ran = typeof json.model === "string" && json.model ? json.model : "agy-default";
+  const ran = typeof json.model === "string" && json.model ? json.model : AGY_MODEL_LABEL;
   if (reply.trim()) return formatBridgeResult({ status: "ok", provider: PROVIDER, model: ran, text: reply });
   if (Array.isArray(json.denied_actions) && json.denied_actions.length) return fail(toolDeniedMessage(json.denied_actions), "tool_denied");
   if (json.status && String(json.status).toUpperCase() !== "SUCCESS") {
@@ -705,7 +742,7 @@ function run() {
     }
     pending.delete(msg.id);
     if (p.timer) clearTimeout(p.timer);
-    if (p.isCall) p.resolve(normalizeCallResult(msg, model, { isAgy }));
+    if (p.isCall) p.resolve(normalizeCallResult(msg, p.model || model, { isAgy }));
     else out(msg);
   }
 
@@ -723,7 +760,11 @@ function run() {
       startError = agy.error;
       return false;
     }
-    const spawnEnv = childEnv(env, agy);
+    let spawnEnv = childEnv(env, agy);
+    if (!isAgy && !spawnEnv.GEMINI_API_KEY) {
+      const key = resolveEnvOrLocal("GEMINI_API_KEY", env);
+      if (key) spawnEnv = Object.assign({}, spawnEnv, { GEMINI_API_KEY: key });
+    }
     const needsShell = IS_WIN && /\.(cmd|bat)$/i.test(cmd.command);
     const c = needsShell
       ? spawn(shellCommandLine(cmd.command, cmd.args), { stdio: ["pipe", "pipe", "inherit"], detached: !IS_WIN, shell: true, windowsHide: true, env: spawnEnv })
@@ -760,6 +801,7 @@ function run() {
       pending.set(wireId, {
         isCall: true,
         owner,
+        model: callModelOf(msg),
         resolve: (v) => {
           settled = true;
           resolve(v);
@@ -767,7 +809,7 @@ function run() {
       });
     });
     send(Object.assign({}, msg, { id: wireId }));
-    return withTimeout(work, budgetMs, "gemini call", { provider: PROVIDER, model, env }).then((result) => {
+    return withTimeout(work, budgetMs, "gemini call", { provider: PROVIDER, model: callModelOf(msg) || model, env }).then((result) => {
       if (!settled) {
         pending.delete(wireId);
         killTree(owner);
@@ -862,7 +904,7 @@ function run() {
     const name = msg.params && msg.params.name;
     if (name === "ping") {
       const a = (msg.params && msg.params.arguments) || {};
-      out({ jsonrpc: "2.0", id: msg.id, result: formatBridgeResult({ status: "ok", provider: PROVIDER, model: "agy-default", text: typeof a.prompt === "string" && a.prompt ? a.prompt : "Pong!" }) });
+      out({ jsonrpc: "2.0", id: msg.id, result: formatBridgeResult({ status: "ok", provider: PROVIDER, model: AGY_MODEL_LABEL, text: typeof a.prompt === "string" && a.prompt ? a.prompt : "Pong!" }) });
       return;
     }
     if (name !== "ask-gemini") {

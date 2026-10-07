@@ -63,6 +63,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (mode === "agymissing") return text("Error: agy not installed", true);
   if (mode === "pathecho") return text(process.env.PATH || "");
   if (mode === "echo") return text(m.params.arguments.prompt);
+  if (mode === "modelecho") return text(JSON.stringify({ model: m.params.arguments.model, key: process.env.GEMINI_API_KEY || null }));
   if (mode === "empty") return text("   ");
   if (mode === "big") return text("x".repeat(500));
   if (mode === "auth") return text("Error: 401 Unauthorized - please log in again", true);
@@ -454,11 +455,11 @@ test("other error kinds are not retried", async () => {
   assert.equal(r.replies.get(2)!.result.structuredContent.error.kind, "auth");
 });
 
-test("envelope model reflects what ran: parsed from the agy warning, else agy-default, else the label", async () => {
+test("envelope model reflects what ran: parsed from the agy warning, else the Antigravity Flash label, else the label", async () => {
   const warned = await drive({ FAKE_MODE: "agywarn", GEMINI_MCP_BACKEND: "agy", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
   assert.equal((warned.replies.get(2)!.result.structuredContent as any).model, "gemini-3.5-flash");
   const plain = await drive({ FAKE_MODE: "ok", GEMINI_MCP_BACKEND: "agy", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
-  assert.equal((plain.replies.get(2)!.result.structuredContent as any).model, "agy-default");
+  assert.equal((plain.replies.get(2)!.result.structuredContent as any).model, "gemini-3.5-flash (Antigravity)");
   const cli = await drive({ FAKE_MODE: "ok", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
   assert.equal((cli.replies.get(2)!.result.structuredContent as any).model, "gemini-2.5-pro");
 });
@@ -670,11 +671,11 @@ test("direct agy mode: a multi-line prompt reaches agy intact in argv with the e
   assert.ok(replies.get(2)!.result.structuredContent.summary.startsWith(prompt));
 });
 
-test("direct agy mode: model comes from the JSON when present, else agy-default", async () => {
+test("direct agy mode: model comes from the JSON when present, else the Antigravity Flash label", async () => {
   const withModel = await drive(directEnv({ FAKE_AGY_MODE: "model" }), [init, askCall(2, "x")]);
   assert.equal(withModel.replies.get(2)!.result.structuredContent.model, "gemini-9-test");
   const plain = await drive(directEnv(), [init, askCall(2, "x")]);
-  assert.equal(plain.replies.get(2)!.result.structuredContent.model, "agy-default");
+  assert.equal(plain.replies.get(2)!.result.structuredContent.model, "gemini-3.5-flash (Antigravity)");
 });
 
 test("direct agy mode: denied tool use is tool_denied, retried once, and recovers", async () => {
@@ -771,4 +772,31 @@ test("parseAgyOutput finds pretty-printed JSON after banner lines, and a balance
   assert.equal(a.structuredContent.model, "m-1");
   const b = wrapperApi.parseAgyOutput(0, 'banner\n{"status":"SUCCESS","response":"fine"} trailing junk', "", "gemini");
   assert.equal(b.structuredContent.summary, "fine");
+});
+
+test("gemini backend: a per-call model reaches the child and labels the envelope; absent model keeps the default label", async () => {
+  const withModel = await drive({ FAKE_MODE: "modelecho", GEMINI_MODEL: "gemini-2.5-pro" }, [init, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask-gemini", arguments: { prompt: "hi", model: "gemini-3-pro" } } }]);
+  const sc = withModel.replies.get(2)!.result.structuredContent;
+  assert.equal(sc.model, "gemini-3-pro");
+  assert.equal(JSON.parse(sc.summary).model, "gemini-3-pro");
+  const none = await drive({ FAKE_MODE: "modelecho", GEMINI_MODEL: "gemini-2.5-pro" }, [init, call(2)]);
+  assert.equal(none.replies.get(2)!.result.structuredContent.model, "gemini-2.5-pro");
+});
+
+test("agy backend ignores a per-call model and reports Flash in the envelope", async () => {
+  const r = await drive(directEnv(), [init, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "ask-gemini", arguments: { prompt: "x", model: "gemini-3-pro" } } }]);
+  assert.equal(r.replies.get(2)!.result.structuredContent.model, "gemini-3.5-flash (Antigravity)");
+});
+
+test("gemini backend: GEMINI_API_KEY comes from the per-user store when absent from the environment", async () => {
+  const dataDir = fs.mkdtempSync(path.join(root, "store-"));
+  const keyFile = path.join(dataDir, "secrets");
+  fs.mkdirSync(keyFile, { recursive: true });
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const store = require(fs.existsSync(path.join(__dirname, "..", "..", "hooks", "localEnvStore.js")) ? "../../hooks/localEnvStore.js" : "../../out/src/core/localEnvStore.js") as { setValue: (n: string, v: string, o?: { env?: Record<string, string | undefined> }) => void };
+  store.setValue("GEMINI_API_KEY", "stored-key-value", { env: { TYCOON_STANDALONE_DATA_DIR: dataDir } });
+  const stored = await drive({ FAKE_MODE: "modelecho", GEMINI_API_KEY: "", TYCOON_STANDALONE_DATA_DIR: dataDir }, [init, call(2)]);
+  assert.equal(JSON.parse(stored.replies.get(2)!.result.structuredContent.summary).key, "stored-key-value");
+  const fromEnv = await drive({ FAKE_MODE: "modelecho", GEMINI_API_KEY: "env-key", TYCOON_STANDALONE_DATA_DIR: dataDir }, [init, call(2)]);
+  assert.equal(JSON.parse(fromEnv.replies.get(2)!.result.structuredContent.summary).key, "env-key");
 });
