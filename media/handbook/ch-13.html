@@ -54,6 +54,7 @@
   <span class="cap">TycoonAgents' pack, plus Power Tools if you install it</span>
 </div>
 <p>The setup wizard detects a UEFN project on its own. When it does, it offers to install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists, and it points <code>VERSE_LSP_PATH</code> / <code>UEFN_VERSE_PROJECT_DIR</code> at the paths it discovers so the pack's own LSP and project checks work.</p>
+<p>Trashbyrd's UEFN Power Tools (<a href="https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools">GitHub repository</a>) and the TycoonAgents MCP server are separate from, and run alongside, Epic's official UEFN MCP server; neither replaces it.</p>
 <p>If you also want live-editor inspection and audits, install <strong>Power Tools</strong> yourself from its own release, following its own <code>INSTALL.md</code>. Once it's installed, copy the <code>uefn-bridge</code> entry out of this repo's <code>.mcp.json.example</code> into your own (gitignored) <code>.mcp.json</code> and fill in the path to where you unzipped it — TycoonAgents registers it in the catalog as a third-party entry, but one-click install is refused by design; see docs/POWER-TOOLS-COEXISTENCE.md for the exact steps.</p>
 <figure style="margin:1.75rem 0;text-align:center">
   <img src="uefn_setup_detected.webp" alt="Setup screen — UEFN detected, agent install chip" width="420" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
@@ -81,10 +82,12 @@
   </tbody>
 </table>
 </div>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>The Power Tools launcher window, version-stamped title.</p>
-</div>
+<figure style="margin:1.75rem 0;text-align:center">
+  <img src="power_tools_panel.webp" alt="Trashbyrd's Power Tools panel running inside UEFN, showing the device audit and asset browser tools" width="420" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
+  <figcaption style="font-size:0.85rem;margin-top:0.5rem">The Power Tools launcher window inside UEFN.</figcaption>
+</figure>
+
+<p><strong>Build-Mode Cleanup</strong> is one of the launcher's cards. It lets you quickly switch build-mode-related actor properties (such as Register with Structural Grid, Forcibly Structurally Supported, and Is Player Buildable) off or on across every actor in the level, which helps performance on zero-build maps. Each property can be left untouched, forced Off, or forced On. Fortnite Creative devices are skipped entirely, since these properties mean something different on a device. A dry run previews what would change without writing anything, and applying is a single undoable editor step.</p>
 
 <div class="section-head">
   <span class="s-title">§ 13.3 · What agents can do through it</span>
