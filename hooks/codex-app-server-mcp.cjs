@@ -224,6 +224,9 @@ class AppServerClient {
       shell,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
+      // Marks the Codex thread as bridge-started so tycoon-codex-hook.cjs does
+      // not record it again as a separate Codex-host session.
+      env: { ...process.env, TYCOON_CODEX_BRIDGE: "1" },
     });
     this.child = child;
     this.child.on("error", (err) => {

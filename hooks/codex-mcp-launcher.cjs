@@ -903,7 +903,7 @@ function launchAppServerShim(spawnFn, binary, requestedArgs, reason) {
   const child = spawnFn(process.execPath, [shimPath, ...shimArgs], {
     stdio: "inherit",
     windowsHide: true,
-    env: { ...process.env, CODEX_CLI_PATH: binary },
+    env: { ...process.env, CODEX_CLI_PATH: binary, TYCOON_CODEX_BRIDGE: "1" },
   });
   child.on("error", (err) => {
     process.stderr.write(`codex-mcp-launcher: failed to launch app-server shim: ${err && err.message}

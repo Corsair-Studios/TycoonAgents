@@ -258,7 +258,26 @@ function findNewestUserThreadForCwd(cwd, env = process.env) {
   }
 }
 
+/**
+ * True when a Codex thread was started by a TycoonAgents bridge (the app-server
+ * shim or the mcp-server launcher) on behalf of a Claude-side delegate call, as
+ * opposed to a genuine Codex-host session. Its time/tokens are already counted
+ * on the delegating agent (e.g. codex-reviewer), so recording the thread again
+ * as a codex "orchestrator"/"codex-agent" double counts. Signals: rollout
+ * session_meta.originator "tycoon-*" (the app-server shim sets clientInfo.name
+ * "tycoon-codex-app-server-shim", which Codex records as originator), or the
+ * TYCOON_CODEX_BRIDGE=1 env marker the bridges set on the Codex child.
+ */
+function isTycoonBridgeThread(sessionMeta, env = process.env) {
+  // The rollout originator is authoritative when readable: a genuine host
+  // thread stays tracked even if the env marker leaked into this process.
+  const o = sessionMeta && typeof sessionMeta.originator === "string" ? sessionMeta.originator.trim() : "";
+  if (o) return o.toLowerCase().startsWith("tycoon-");
+  return !!(env && env.TYCOON_CODEX_BRIDGE === "1");
+}
+
 module.exports = {
+  isTycoonBridgeThread,
   resolveCodexHome,
   findRolloutFile,
   readSessionMeta,

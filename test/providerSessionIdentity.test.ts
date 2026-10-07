@@ -26,6 +26,12 @@ function metricsFor(agentMetrics: AgentMetric[], id: string): AgentMetric[] {
   return agentMetrics.filter((m) => m.id === id);
 }
 
+// Per-provider live state stays independent internally; the PUBLIC list is
+// merged to one row per agent id (see toPublicMetrics in state.ts).
+function internalsFor(state: ReturnType<typeof initialWorldState>, id: string) {
+  return state._agentMetricsInternal.filter((m) => m.id === id);
+}
+
 test("two providers emitting the same workerId produce two distinct roster entries with independent state", () => {
   let state = initialWorldState();
 
@@ -48,8 +54,8 @@ test("two providers emitting the same workerId produce two distinct roster entri
   state = applyEvent(state, spawnClaude);
   state = applyEvent(state, spawnOther);
 
-  const entries = metricsFor(state.agentMetrics, "coding-specialist");
-  assert.equal(entries.length, 2, "two distinct roster entries expected, one per provider");
+  assert.equal(internalsFor(state, "coding-specialist").length, 2, "two distinct internal entries expected, one per provider");
+  assert.equal(metricsFor(state.agentMetrics, "coding-specialist").length, 1, "public Metrics list shows one row per agent id");
 
   // Complete a task only for the claude-code instance; the opencode instance
   // must be untouched.
@@ -62,7 +68,7 @@ test("two providers emitting the same workerId produce two distinct roster entri
   };
   state = applyEvent(state, complete);
 
-  const afterComplete = metricsFor(state.agentMetrics, "coding-specialist");
+  const afterComplete = internalsFor(state, "coding-specialist");
   const claudeEntry = afterComplete.find((m) => m.taskCount === 1);
   const otherEntry = afterComplete.find((m) => m.taskCount === 0);
   assert.ok(claudeEntry, "claude-code entry should have taskCount 1");
@@ -77,7 +83,7 @@ test("two providers emitting the same workerId produce two distinct roster entri
     sessionId: "session-2",
   };
   state = applyEvent(state, stopOther);
-  const afterStop = metricsFor(state.agentMetrics, "coding-specialist");
+  const afterStop = internalsFor(state, "coding-specialist");
   const claudeStill = afterStop.find((m) => m.status === "active");
   const otherStopped = afterStop.find((m) => m.status === "idle");
   assert.ok(claudeStill, "claude-code entry should remain active after opencode instance stops");

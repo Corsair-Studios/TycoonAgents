@@ -475,3 +475,56 @@ test("(h) readActiveStack prunes entries older than CODEX_STACK_MAX_AGE_MS and k
     assert.ok(threadIds.includes("legacy-no-at"));
   });
 });
+
+test("bridge-started Codex threads are not recorded as a separate Codex-host session", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const rollout = require("../../hooks/codexRollout.cjs") as {
+    isTycoonBridgeThread: (meta: unknown, env?: Record<string, string | undefined>) => boolean;
+  };
+  assert.equal(rollout.isTycoonBridgeThread({ originator: "tycoon-codex-app-server-shim" }, {}), true);
+  assert.equal(rollout.isTycoonBridgeThread({ originator: "codex_vscode" }, {}), false);
+  assert.equal(rollout.isTycoonBridgeThread(null, {}), false);
+  assert.equal(rollout.isTycoonBridgeThread(null, { TYCOON_CODEX_BRIDGE: "1" }), true);
+  const payload = { type: "agent-turn-complete", "thread-id": "bridge-thread-1" };
+  assert.deepEqual(codexHook.mapNotifyPayload(payload, NONEXISTENT_ACTIVITY_FILE, 1000, { TYCOON_CODEX_BRIDGE: "1" }), []);
+  assert.ok(codexHook.mapNotifyPayload(payload, NONEXISTENT_ACTIVITY_FILE, 1000, {}).length > 0, "genuine host session still tracked");
+});
+
+describe_bridge_originator();
+function describe_bridge_originator() {
+  function makeHome(threadId: string, originator: string | undefined): string {
+    const home = fsMod.mkdtempSync(join(os.tmpdir(), "codex-bridge-home-"));
+    const dir = join(home, "sessions", "2026", "10", "06");
+    fsMod.mkdirSync(dir, { recursive: true });
+    const payload: Record<string, unknown> = { id: threadId, cwd: "x", thread_source: "user" };
+    if (originator !== undefined) payload.originator = originator;
+    fsMod.writeFileSync(join(dir, `rollout-2026-10-06T00-00-00-${threadId}.jsonl`), JSON.stringify({ type: "session_meta", payload }) + "\n");
+    return home;
+  }
+  const hookApi = codexHook as unknown as {
+    isBridgeHooksPayload: (p: Record<string, unknown>, env: Record<string, string | undefined>) => boolean;
+  };
+
+  test("originator-based suppression: notify for a tycoon-originated rollout yields no records", () => {
+    const home = makeHome("bridge-thread-aaaa", "tycoon-codex-app-server-shim");
+    const payload = { type: "agent-turn-complete", "thread-id": "bridge-thread-aaaa" };
+    assert.deepEqual(codexHook.mapNotifyPayload(payload, NONEXISTENT_ACTIVITY_FILE, 1, { CODEX_HOME: home }), []);
+  });
+
+  test("genuine originator is kept even when TYCOON_CODEX_BRIDGE=1 is set", () => {
+    const home = makeHome("host-thread-bbbb", "codex_vscode");
+    const payload = { type: "agent-turn-complete", "thread-id": "host-thread-bbbb" };
+    const recs = codexHook.mapNotifyPayload(payload, NONEXISTENT_ACTIVITY_FILE, 1, { CODEX_HOME: home, TYCOON_CODEX_BRIDGE: "1" });
+    assert.ok(recs.length > 0);
+  });
+
+  test("hooks path: bridge originator suppressed, genuine kept, env marker only when originator absent", () => {
+    const bridge = makeHome("hk-bridge-cccc", "tycoon-codex-app-server-shim");
+    const host = makeHome("hk-host-dddd", "codex_vscode");
+    const none = makeHome("hk-none-eeee", undefined);
+    assert.equal(hookApi.isBridgeHooksPayload({ session_id: "hk-bridge-cccc" }, { CODEX_HOME: bridge }), true);
+    assert.equal(hookApi.isBridgeHooksPayload({ session_id: "hk-host-dddd" }, { CODEX_HOME: host, TYCOON_CODEX_BRIDGE: "1" }), false);
+    assert.equal(hookApi.isBridgeHooksPayload({ session_id: "hk-none-eeee" }, { CODEX_HOME: none }), false);
+    assert.equal(hookApi.isBridgeHooksPayload({ session_id: "hk-none-eeee" }, { CODEX_HOME: none, TYCOON_CODEX_BRIDGE: "1" }), true);
+  });
+}

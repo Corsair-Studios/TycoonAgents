@@ -412,7 +412,79 @@ function upsertMetric(
 
 /** Produce the public AgentMetric list (workStartAt is now part of the public shape). */
 function toPublicMetrics(internals: AgentMetricInternal[]): AgentMetric[] {
-  return internals.map(({ _rosterKey, ...rest }) => ({ ...rest }));
+  // Internals stay keyed by (provider, workerId) so live per-provider state
+  // never clobbers across harnesses (p22-t8), but the PUBLIC list is one row
+  // per canonical agent id: the same agent reached through claude-code and a
+  // foreign harness (codex/opencode) must not show as two Metrics rows.
+  const out: AgentMetric[] = [];
+  const byId = new Map<string, number>();
+  for (const { _rosterKey, ...rest } of internals) {
+    const canon = rest.id;
+    const row: AgentMetric = { ...rest };
+    const at = byId.get(canon);
+    if (at === undefined) {
+      byId.set(canon, out.length);
+      out.push(row);
+    } else {
+      out[at] = mergeMetricRows(out[at]!, row);
+    }
+  }
+  return out;
+}
+
+function sumMaps(a?: Record<string, number>, b?: Record<string, number>): Record<string, number> | undefined {
+  if (!a && !b) return undefined;
+  const r: Record<string, number> = { ...(a ?? {}) };
+  for (const [k, v] of Object.entries(b ?? {})) r[k] = (r[k] ?? 0) + v;
+  return r;
+}
+
+/** Fold row b (another provider's entry for the same agent) into a; totals are summed, nothing is dropped. */
+function mergeMetricRows(a: AgentMetric, b: AgentMetric): AgentMetric {
+  const starts = [a.workStartAt, b.workStartAt].filter((x): x is number => x !== null);
+  const lasts = [a.lastActivityAt, b.lastActivityAt].filter((x): x is number => x !== null);
+  const live = a.status === "active" || b.status === "active";
+  // Per-run descriptive fields come from the row that is active, else the
+  // most recently active one (not blindly the first-seen row).
+  const pickB = a.status !== "active" && (b.status === "active" || (b.lastActivityAt ?? -1) > (a.lastActivityAt ?? -1));
+  const cur = pickB ? b : a;
+  const oth = pickB ? a : b;
+  const merged: AgentMetric = {
+    ...b,
+    ...a,
+    currentDescription: cur.currentDescription ?? oth.currentDescription,
+    roleInferred: cur.roleInferred ?? oth.roleInferred,
+    lastReportChars: cur.lastReportChars ?? oth.lastReportChars,
+    model: a.model ?? b.model,
+    vendor: a.vendor ?? b.vendor,
+    costModelClass: a.costModelClass ?? b.costModelClass,
+    description: a.description ?? b.description,
+    tier: a.tier ?? b.tier,
+    parentId: a.parentId ?? b.parentId,
+    delegationMode: a.delegationMode ?? b.delegationMode,
+    lastReport: cur.lastReport ?? oth.lastReport,
+    status: live ? "active" : a.status === "error" || b.status === "error" ? "error" : a.status,
+    fallbackCount: a.fallbackCount + b.fallbackCount,
+    taskCount: a.taskCount + b.taskCount,
+    mcpCount: a.mcpCount + b.mcpCount,
+    activeMs: a.activeMs + b.activeMs,
+    tokens: a.tokens + b.tokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    workStartAt: starts.length ? Math.min(...starts) : null,
+    lastActivityAt: lasts.length ? Math.max(...lasts) : null,
+    directSearches: a.directSearches + b.directSearches,
+    directReads: a.directReads + b.directReads,
+    directEdits: a.directEdits + b.directEdits,
+    delegations: a.delegations + b.delegations,
+  };
+  const mb = sumMaps(a.modelBreakdown, b.modelBreakdown);
+  if (mb) merged.modelBreakdown = mb;
+  const cb = sumMaps(a.cacheReadModelBreakdown, b.cacheReadModelBreakdown);
+  if (cb) merged.cacheReadModelBreakdown = cb;
+  if (a.liveSpawns || b.liveSpawns) merged.liveSpawns = [...(a.liveSpawns ?? []), ...(b.liveSpawns ?? [])];
+  if (a.spawnStartAt || b.spawnStartAt) merged.spawnStartAt = { ...(b.spawnStartAt ?? {}), ...(a.spawnStartAt ?? {}) };
+  if (a.usageReported === false || b.usageReported === false) merged.usageReported = false;
+  return merged;
 }
 
 /** Compute how many ms have elapsed since workStartAt (0 if not active). */

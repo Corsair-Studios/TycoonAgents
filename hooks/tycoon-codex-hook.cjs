@@ -430,6 +430,8 @@ function mapNotifyPayload(payload, activityFile, at, env = process.env) {
     sessionMeta = null;
   }
 
+  if (codexRollout.isTycoonBridgeThread(sessionMeta, env)) return [];
+
   if (!sessionMeta) {
     try {
       process.stderr.write(
@@ -503,6 +505,18 @@ function mapNotifyPayload(payload, activityFile, at, env = process.env) {
   }
   records.push({ event: "Stop", provider: "codex", sessionId: threadId, at: at + 1 });
   return records;
+}
+
+/** True when a hooks-entry payload belongs to a TycoonAgents bridge-started Codex thread. Never throws. */
+function isBridgeHooksPayload(payload, env = process.env) {
+  let meta = null;
+  try {
+    const tid = payload["thread-id"] || payload.thread_id || payload.session_id || "";
+    meta = tid ? codexRollout.resolveSessionMeta(tid, undefined, env) : null;
+  } catch {
+    meta = null;
+  }
+  return codexRollout.isTycoonBridgeThread(meta, env);
 }
 
 /**
@@ -656,6 +670,12 @@ function main() {
       popActiveStackEntry(detected.payload);
     }
 
+    // Same bridge-thread suppression as mapNotifyPayload (notify path).
+    if (detected.kind === "hooks" && isBridgeHooksPayload(detected.payload, process.env)) {
+      process.exit(0);
+      return;
+    }
+
     const records =
       detected.kind === "notify"
         ? mapNotifyPayload(detected.payload, activityFile, at)
@@ -680,6 +700,7 @@ module.exports = {
   detectEntryPoint,
   mapNotifyPayload,
   mapHooksPayload,
+  isBridgeHooksPayload,
   hasSeenSessionStart,
   hasSeenTaskSpawn,
   isSpawnLikeTool,
