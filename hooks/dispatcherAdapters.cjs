@@ -427,10 +427,7 @@ function customKeyNameProblem(name, baseUrl, endpointEnv) {
     return "OPENAI_COMPAT_API_KEY belongs to the generic OPENAI_COMPAT_BASE_URL endpoint only; use a dedicated variable (e.g. MYPROVIDER_API_KEY).";
   }
   if (name === "OPENAI_API_KEY") {
-    let host = "";
-    try { host = new URL(baseUrl || "").hostname.toLowerCase(); } catch { /* no URL */ }
-    if (host === "api.openai.com") return undefined;
-    return "OPENAI_API_KEY is only sent to api.openai.com; use a separate variable (e.g. MYPROVIDER_API_KEY) for another endpoint.";
+    return "OPENAI_API_KEY can't be used for a custom endpoint; store the key under your own name, e.g. MYPROVIDER_API_KEY";
   }
   if (
     CUSTOM_KEY_DENY_EXACT.includes(name) ||

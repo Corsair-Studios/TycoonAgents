@@ -105,10 +105,10 @@ test("custom key variable: must look like a credential and must not be a well-kn
   assert.equal(customKeyNameProblem("OPENAI_COMPAT_API_KEY", "https://x.test", "OPENAI_COMPAT_BASE_URL"), undefined);
   assert.match(customKeyNameProblem("OPENAI_COMPAT_API_KEY", "https://x.test", "OLLAMA_BASE_URL") ?? "", /generic/);
   assert.match(customKeyNameProblem("OPENAI_COMPAT_API_KEY", "https://x.test") ?? "", /generic/);
-  // OPENAI_API_KEY only goes to OpenAI itself.
-  assert.equal(customKeyNameProblem("OPENAI_API_KEY", "https://api.openai.com/v1"), undefined);
-  assert.match(customKeyNameProblem("OPENAI_API_KEY", "https://evil.example/v1") ?? "", /only sent to api\.openai\.com/);
-  assert.match(customKeyNameProblem("OPENAI_API_KEY", "") ?? "", /only sent to api\.openai\.com/);
+  // OPENAI_API_KEY is on the deny-list for every custom endpoint.
+  for (const url of ["https://evil.example/v1", "", undefined]) {
+    assert.match(customKeyNameProblem("OPENAI_API_KEY", url) ?? "", /can't be used for a custom endpoint/);
+  }
 });
 
 test("custom base URL: https, or http only for localhost / 127.0.0.1 / ::1; no embedded credentials", () => {
