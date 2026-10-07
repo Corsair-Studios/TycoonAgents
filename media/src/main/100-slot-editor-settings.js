@@ -1754,6 +1754,8 @@
       return c;
     };
     let chipVsOrchText;
+    let chipForeign = false;
+    let chipCls = "unknown";
     if (a.isOrchestrator) {
       chipVsOrchText = "baseline";
     } else {
@@ -1761,10 +1763,13 @@
       const chipCostModelClass = (m && m.costModelClass) || a.costModelClass || null;
       const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
       const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
-      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass);
+      const chipOrch = (lastMetrics || []).find((x) => x && x.id === "orchestrator");
+      chipForeign = isForeignToOrchestrator({ vendor: a.vendor || (m && m.vendor), model: chipModel }, chipOrch);
+      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass, chipForeign);
+      chipCls = costModelClass(chipModel, chipCostModelClass);
     }
     const vsOrchChip = chip("vs. orch.", chipVsOrchText);
-    vsOrchChip.title = "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
+    vsOrchChip.title = vsOrchTitle(chipForeign, chipCls);
     stats.appendChild(vsOrchChip);
     stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
     stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));

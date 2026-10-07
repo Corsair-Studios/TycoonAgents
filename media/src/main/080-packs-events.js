@@ -607,24 +607,83 @@
    * @param {number|null} orchestratorPrice raw orchestrator $/Mtok rate
    * @returns {string}
    */
-  function vsOrchLabel(agentModel, agentRate, orchestratorPrice, explicitCostModelClass) {
+  function vsOrchLabel(agentModel, agentRate, orchestratorPrice, explicitCostModelClass, foreign) {
     const cls = costModelClass(agentModel, explicitCostModelClass);
-    if (cls === "subscription") return "flat-rate";
-    if (cls === "local") return "local";
+    // Different vendor than the orchestrator: no multiplier and no money
+    // amount (tokenizers, billing and quality differ) — just the billing type.
+    if (foreign) return billingTypeLabel(cls);
+    if (cls === "subscription") return "Subscription";
+    if (cls === "local") return "Free / local";
     if (agentRate != null && orchestratorPrice != null) {
-      // Raw model-rate comparison — NOT a token-volume-weighted blend. The
-      // badge promises "how much cheaper this agent's MODEL is per token
-      // than the orchestrator's" (a model-rate comparison), and a priced
-      // model has a well-defined rate ratio even with zero recorded tokens
-      // so far; gating on agent.tokens > 0 would hide an honest,
-      // already-computable ratio for no reason once the comparison no
-      // longer depends on token volume.
+      // Raw model-rate comparison — NOT a token-volume-weighted blend (see
+      // resolveOrchestratorModelRate's doc). A priced model has a well-defined
+      // rate ratio even with zero recorded tokens.
       const ratio = orchestratorPrice / agentRate;
       if (ratio >= 1.05) return `${fmtRatio(ratio)}× cheaper`;
       if (ratio <= 0.95) return `${fmtRatio(1 / ratio)}× pricier`;
       return "same cost";
     }
     return "—";
+  }
+
+  /**
+   * Plain billing-type badge for a foreign-vendor agent.
+   * @param {string} cls costModelClass
+   * @returns {string}
+   */
+  function billingTypeLabel(cls) {
+    if (cls === "subscription") return "Subscription";
+    if (cls === "local") return "Free / local";
+    if (cls === "metered") return "Pay per use (API)";
+    return "—";
+  }
+
+  /** Tooltip for the "vs. orch." badge, given whether the agent is foreign. */
+  function vsOrchTitle(foreign, cls) {
+    if (!foreign) {
+      return "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — subscription and local models have no comparable per-token rate, so they show their billing type instead of a ratio.";
+    }
+    const why = cls === "subscription" ? "Subscription: flat-rate sign-in, no per-token charge."
+      : cls === "local" ? "Free / local: runs on your own hardware or a free tier, no per-token charge."
+      : cls === "metered" ? "Pay per use (API): billed per token through an API key."
+      : "Billing type unknown.";
+    return `${why} Different vendors count tokens differently, so costs aren't directly comparable to Claude.`;
+  }
+
+  /**
+   * Best-effort vendor id for an agent: explicit `vendor` field first, else
+   * inferred from the model id. Returns "" when unknown.
+   * @param {string|null|undefined} vendor
+   * @param {string|null|undefined} model
+   * @returns {string}
+   */
+  function resolveAgentVendor(vendor, model) {
+    const v = typeof vendor === "string" ? vendor.trim().toLowerCase() : "";
+    if (v) return v;
+    const s = String(model || "").toLowerCase();
+    if (!s) return "";
+    if (/opus|sonnet|haiku|fable|anthropic|claude/.test(s)) return "anthropic";
+    if (/gpt|codex|openai/.test(s)) return "openai";
+    if (/gemini|google/.test(s)) return "google";
+    if (/kimi|moonshot/.test(s)) return "moonshot";
+    if (/grok|xai/.test(s)) return "xai";
+    if (/mistral/.test(s)) return "mistral";
+    if (/qwen|alibaba/.test(s)) return "alibaba";
+    if (/ollama|lmstudio|local:/.test(s)) return "local";
+    const slash = s.indexOf("/");
+    return slash > 0 ? s.slice(0, slash) : "";
+  }
+
+  /**
+   * True when the agent's vendor is known and differs from the orchestrator's
+   * (an orchestrator with no recognizable vendor is a Claude session).
+   * @returns {boolean}
+   */
+  function isForeignToOrchestrator(agent, orchestrator) {
+    const av = resolveAgentVendor(agent && agent.vendor, agent && agent.model);
+    if (!av) return false;
+    const ov = resolveAgentVendor(orchestrator && orchestrator.vendor, orchestrator && orchestrator.model) || "anthropic";
+    return av !== ov;
   }
 
   /**
@@ -759,7 +818,7 @@
     }
     // xAI Grok, via OpenCode's built-in xai provider (see PRICE_TABLE above)
     // — API-key metered, like the Anthropic families, not a CLI subscription.
-    if (s.includes("xai") || s.includes("grok") || s.includes("mistral")) {
+    if (s.includes("xai") || s.includes("grok") || s.includes("mistral") || s.includes("kimi") || s.includes("moonshot")) {
       return "metered";
     }
     // FORWARD-LOOKING, NOT YET VERIFIED: no local provider (Ollama/LM
@@ -1264,7 +1323,9 @@
     } else {
       const agentRate = modelPricePerMtok(agent.model, agent.costModelClass);
       const orchestratorPrice = opts.orchestratorPrice;
-      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, agent.costModelClass);
+      const foreignRow = isForeignToOrchestrator(agent, opts.orchestrator);
+      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, agent.costModelClass, foreignRow);
+      statusTd.title = vsOrchTitle(foreignRow, costModelClass(agent.model, agent.costModelClass));
     }
     label.textContent = showActive ? "active" : vsOrchText;
     track.appendChild(fill);
@@ -1456,7 +1517,7 @@
     }
     tbodyEl.innerHTML = "";
     for (const agent of orderedMetrics) {
-      const agentRow = buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice });
+      const agentRow = buildMetricsRow(agent, maxAgentTasks, { orchestratorPrice, orchestrator: metrics.find((a) => a && a.id === "orchestrator") });
       tbodyEl.appendChild(agentRow);
       // Restore an already-open report disclosure row that this full rebuild
       // just discarded (see openReportAgentIds's doc comment and the fix
@@ -1790,13 +1851,22 @@
 
     // ── Counterfactual ── what it would have cost to run the same billable
     // (non-cache-read) delegated tokens on the orchestrator's own model.
-    const savings = ledger.savings || { eligible: false, reason: "unavailable", agents: [] };
+    // Cross-vendor ratios are meaningless (different tokenizers/billing), so
+    // the headline ratio covers same-vendor (Claude) delegated agents only.
+    const orchForCmp = lastMetrics.find((x) => x && x.id === "orchestrator");
+    const foreignAgents = delegatedAgents.filter((x) => isForeignToOrchestrator(x, orchForCmp));
+    const sameVendorAgents = delegatedAgents.filter((x) => !isForeignToOrchestrator(x, orchForCmp));
+    const cmp = buildDelegationLedger(sameVendorAgents, PRICE_TABLE, orchestratorPrice);
+    const savings = cmp.savings || { eligible: false, reason: "unavailable", agents: [] };
     const counterSection = document.createElement("div");
-    if (ledger.counterfactualUsd == null) {
+    if (sameVendorAgents.length === 0) {
+      // No same-vendor delegated work: no ratio at all.
+      counterSection.className = "delegation-stats-detail";
+    } else if (cmp.counterfactualUsd == null) {
       // No published rate resolved yet for the orchestrator's model, so no
       // relative comparison can be shown — just report the token volume.
       counterSection.className = "delegation-stats-detail";
-      counterSection.textContent = `Relative cost vs. running on the orchestrator's model: rate not detected yet. ${fmtTokens(ledger.billableTokens)} billable tokens delegated so far.`;
+      counterSection.textContent = `Relative cost vs. running on the orchestrator's model: rate not detected yet. ${fmtTokens(cmp.billableTokens)} billable tokens delegated so far.`;
       hero.appendChild(counterSection);
     } else if (!savings.eligible) {
       // The ratio below assumes one shared, priced vendor with real
@@ -1809,7 +1879,7 @@
       hero.appendChild(counterSection);
     } else {
       counterSection.className = "delegation-stats-detail";
-      const ratio = ledger.billedUsd > 0 ? ledger.counterfactualUsd / ledger.billedUsd : null;
+      const ratio = cmp.billedUsd > 0 ? cmp.counterfactualUsd / cmp.billedUsd : null;
       counterSection.textContent =
         ratio != null && ratio >= 1.05
           ? `Delegated work ran at ${fmtRatio(ratio)}× cheaper than running the same billable tokens on the orchestrator's model (estimate, published list rates).`
@@ -1820,6 +1890,14 @@
       caveat.className = "delegation-stats-caption";
       caveat.textContent = "Subscription and local work is excluded from this comparison because it is not billed per token; spawn overhead is included in the estimate.";
       hero.appendChild(caveat);
+    }
+
+    if (foreignAgents.length > 0) {
+      const foreignTasks = foreignAgents.reduce((sum, a) => sum + (a.taskCount ?? 0), 0);
+      const foreignNote = document.createElement("div");
+      foreignNote.className = "delegation-stats-caption delegation-foreign-note";
+      foreignNote.textContent = `Plus ${foreignTasks} task${foreignTasks === 1 ? "" : "s"} on other vendors (not compared).`;
+      hero.appendChild(foreignNote);
     }
 
     const unitNote = document.createElement("div");

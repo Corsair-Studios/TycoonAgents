@@ -6664,7 +6664,7 @@ function buildSavingsEligibilityStatePayload(agentMetrics: unknown[]) {
   };
 }
 
-test('Savings not shown: mixed-vendor delegated agents hide the counterfactual lines and show the reason', async () => {
+test('Mixed-vendor delegated agents: foreign agents excluded from the ratio and noted as not compared', async () => {
   const h = await bootObjScaleHarness();
   try {
     // Orchestrator priced (anthropic/sonnet) + two delegated agents on
@@ -6686,13 +6686,10 @@ test('Savings not shown: mixed-vendor delegated agents hide the counterfactual l
     const delegationBody = h.doc.getElementById('delegation-stats');
     assert.ok(delegationBody, 'delegation-stats body should exist');
 
-    const hiddenLine = delegationBody.querySelector('.delegation-stats-detail.delegation-savings-hidden');
-    assert.ok(hiddenLine, 'the hidden-savings line should render when savings.eligible is false');
-    assert.match(hiddenLine.textContent, /^Relative cost not shown: mixed vendors$/);
-    assert.ok(hiddenLine.title && hiddenLine.title.length > 0, 'the hidden-savings line should carry a title listing the implicated agents');
-
-    const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
-    assert.ok(!details.some((t: string) => /^Delegated work ran at/.test(t)), 'the ratio line must not render when savings are hidden');
+    // Superseded behaviour: foreign agents are excluded from the ratio (not
+    // the whole headline hidden) and a "not compared" line is shown.
+    assert.ok(!delegationBody.querySelector('.delegation-savings-hidden'), 'foreign agents no longer hide the same-vendor headline');
+    assert.match(String(delegationBody.textContent), /Plus 1 task on other vendors \(not compared\)\./);
     assert.doesNotMatch(String(delegationBody.textContent), /\$/, 'the Metrics/Delegation tabs render no dollar figures');
   } finally {
     h.win.close();

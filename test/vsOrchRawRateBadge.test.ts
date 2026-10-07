@@ -691,7 +691,7 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
 // label only, never a numeric ratio. Both render sites.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric ratio badge -- row badge reads 'flat-rate' with no digit or '×'", () => {
+test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric ratio badge -- row badge reads 'Subscription' with no digit or '×'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -700,12 +700,12 @@ test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric r
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
+  assert.equal(text, "Subscription", `expected 'Subscription' for foreign subscription-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: subscription-class model (codex-auto-review) never renders a numeric ratio badge -- settings chip reads 'flat-rate' with no digit or '×'", () => {
+test("PHASE 3: subscription-class model (codex-auto-review) never renders a numeric ratio badge -- settings chip reads 'Subscription' with no digit or '×'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -714,7 +714,7 @@ test("PHASE 3: subscription-class model (codex-auto-review) never renders a nume
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "flat-rate", `expected 'flat-rate' for subscription-class model, got '${text}'`);
+  assert.equal(text, "Subscription", `expected 'Subscription' for foreign subscription-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -739,7 +739,7 @@ test("PHASE 3: subscription-class agent's row renders no dollar figure anywhere 
 // qualitative label only, never a fabricated price or 0x/Infinity/NaN.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated price or 0x/Infinity/NaN -- row badge reads 'local'", () => {
+test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated price or 0x/Infinity/NaN -- row badge reads 'Free / local'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -748,13 +748,13 @@ test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated pric
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
+  assert.equal(text, "Free / local", `expected Free / local for local-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
   assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated price or 0x/Infinity/NaN -- settings chip reads 'local'", () => {
+test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated price or 0x/Infinity/NaN -- settings chip reads 'Free / local'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -763,7 +763,7 @@ test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated p
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "local", `expected 'local' for local-class model, got '${text}'`);
+  assert.equal(text, "Free / local", `expected Free / local for local-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
   assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
@@ -775,11 +775,11 @@ test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated p
 // "subscription"/"local" is the entire point of the phase.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- row badge", () => {
+test("PHASE 3: genuinely unknown model (zzz-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- row badge", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
-    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "zzz-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   pushSettings(doc, dispatch, agentsPayload());
 
@@ -793,11 +793,11 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- settings chip", () => {
+test("PHASE 3: genuinely unknown model (zzz-7b, matches no classifier) prices via DEFAULT_PRICE_KEY, not misclassified as subscription/local -- settings chip", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
-    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "mistral-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
+    { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "zzz-7b", tokens: 100000, cacheReadTokens: 0, activeMs: 5000, taskCount: 4 },
   ]);
   pushSettings(doc, dispatch, agentsPayload());
 
@@ -805,4 +805,88 @@ test("PHASE 3: genuinely unknown model (mistral-7b, matches no classifier) price
   assert.equal(text, cheaperLabel(tableRate("anthropic/opus"), UNKNOWN_RATE), `expected the (opus/DEFAULT_PRICE_KEY table ratio), got '${text}'`);
   assert.doesNotMatch(String(text), /flat-rate|local|nan|infinity/i, "unknown model must not be misclassified as subscription/local or render NaN/Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
+});
+
+
+// ---------------------------------------------------------------------------
+// Cross-vendor badge: same-vendor keeps the multiplier; foreign vendors show a
+// plain billing type with no multiplier and no $ amount.
+// ---------------------------------------------------------------------------
+const ORCH = { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 };
+function foreignRow(extra: any) {
+  return { id: "coding-specialist", name: "Coding Specialist", status: "idle", tokens: 0, cacheReadTokens: 0, activeMs: 0, taskCount: 0, ...extra };
+}
+function badgeFor(extra: any): string | null {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow(extra)]);
+  pushSettings(doc, dispatch, agentsPayload());
+  return rowBadgeText(doc, "Coding Specialist");
+}
+
+test("CROSS-VENDOR: same-vendor (anthropic sonnet vs opus) keeps the 'N× cheaper' multiplier", () => {
+  assert.equal(badgeFor({ model: "sonnet", vendor: "anthropic" }), cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")));
+});
+
+test("CROSS-VENDOR: same-vendor Claude subscription (Claude Worker) reads 'Subscription'", () => {
+  assert.equal(badgeFor({ model: "sonnet", vendor: "anthropic", costModelClass: "subscription" }), "Subscription");
+});
+
+test("CROSS-VENDOR: foreign metered (moonshot, xai, mistral) read 'Pay per use (API)', never a multiplier, even at 0 tasks", () => {
+  for (const [vendor, model] of [["moonshot", "kimi-k2"], ["xai", "xai/grok-4.7"], ["mistral", "mistral-large"]]) {
+    const t = badgeFor({ model, vendor, costModelClass: "metered" });
+    assert.equal(t, "Pay per use (API)", `${vendor}: got '${t}'`);
+    assert.doesNotMatch(String(t), /\d|×|\$/);
+  }
+});
+
+test("CROSS-VENDOR: foreign subscription (codex, gemini via Antigravity) read 'Subscription'", () => {
+  assert.equal(badgeFor({ model: "gpt-5.6-sol", vendor: "openai", costModelClass: "subscription" }), "Subscription");
+  assert.equal(badgeFor({ model: "google/gemini-2.5-pro", vendor: "google", costModelClass: "subscription" }), "Subscription");
+});
+
+test("CROSS-VENDOR: foreign local reads 'Free / local'", () => {
+  assert.equal(badgeFor({ model: "ollama/qwen3", vendor: "ollama", costModelClass: "local" }), "Free / local");
+});
+
+test("CROSS-VENDOR: foreign vendor with unknown billing reads '—'", () => {
+  assert.equal(badgeFor({ model: "acme/mystery-1", vendor: "acme" }), "—");
+});
+
+test("CROSS-VENDOR: foreign badge tooltip carries the token-counting disclaimer", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "kimi-k2", vendor: "moonshot", costModelClass: "metered" })]);
+  pushSettings(doc, dispatch, agentsPayload());
+  const labels = Array.from(doc.querySelectorAll("#metrics-tbody .status-bar-label")) as any[];
+  const titled = labels.map((l) => l.closest("td").title).find((t: string) => /Pay per use/.test(t));
+  assert.ok(titled && titled.includes("Different vendors count tokens differently, so costs aren't directly comparable to Claude."), String(titled));
+});
+
+// ---------------------------------------------------------------------------
+// Delegation tab headline: ratio over same-vendor agents only.
+// ---------------------------------------------------------------------------
+function delegationText(rows: any[]): string {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [{ ...ORCH, tokens: 5000 }, ...rows]);
+  pushSettings(doc, dispatch, agentsPayload());
+  doc.getElementById("delegation-tab-btn").dispatchEvent(new (doc.defaultView as any).MouseEvent("click", { bubbles: true }));
+  return String(doc.getElementById("delegation-stats").textContent);
+}
+const sonnetRow = () => foreignRow({ id: "w1", name: "W1", model: "sonnet", vendor: "anthropic", tokens: 100000, taskCount: 3 });
+const kimiRow = () => foreignRow({ id: "w2", name: "W2", model: "kimi-k2", vendor: "moonshot", costModelClass: "metered", tokens: 100000, taskCount: 2 });
+
+test("DELEGATION HEADLINE: same-vendor ratio kept and foreign agents excluded with a 'not compared' line", () => {
+  const t = delegationText([sonnetRow(), kimiRow()]);
+  assert.match(t, new RegExp(fmtR(tableRate("anthropic/opus") / tableRate("anthropic/sonnet")) + "× cheaper than running"));
+  assert.match(t, /Plus 2 tasks on other vendors \(not compared\)\./);
+});
+
+test("DELEGATION HEADLINE: only foreign delegated agents -> no ratio, only the not-compared line", () => {
+  const t = delegationText([kimiRow()]);
+  assert.doesNotMatch(t, /× cheaper than running/);
+  assert.match(t, /Plus 2 tasks on other vendors \(not compared\)\./);
+});
+
+test("DELEGATION HEADLINE: no foreign agents -> no 'other vendors' line", () => {
+  const t = delegationText([sonnetRow()]);
+  assert.doesNotMatch(t, /other vendors/);
 });
