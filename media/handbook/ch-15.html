@@ -239,8 +239,50 @@
     run on a different model.
   </p>
 
+  <h3>Use any OpenAI-compatible model</h3>
+  <p>
+    Most model servers and hosts speak the same OpenAI-style chat API
+    &mdash; local ones like Ollama, LM Studio, vLLM and the llama.cpp server,
+    and hosted ones like OpenRouter, Groq, Together, DeepSeek and Fireworks.
+    That means a brand-new model usually works the day it appears, with no
+    TycoonAgents update.
+  </p>
+  <ol>
+    <li>Open <strong>Routing</strong>, pick the agent, and set
+    <strong>Vendor</strong> to <strong>Custom endpoint&hellip;</strong>.</li>
+    <li>Fill in <strong>Base URL variable</strong> with a variable
+    <em>name</em> that ends in <code>_BASE_URL</code>, for example
+    <code>OLLAMA_BASE_URL</code>. Its value is the server's address, such as
+    <code>http://localhost:11434/v1</code> for Ollama.</li>
+    <li>Fill in <strong>API key variable &mdash; optional for local
+    servers</strong> with a name that looks like an API key, ending in
+    <code>_API_KEY</code>, <code>_KEY</code> or <code>_TOKEN</code> (for
+    example <code>GROQ_API_KEY</code>). It can't be another service's
+    credential, such as <code>GITHUB_TOKEN</code>; the panel shows a warning
+    if it is. Leave it empty for a local server that needs no key.</li>
+    <li>Click <strong>Set value&hellip;</strong> beside each variable to
+    store its value in your own settings. Each field shows whether the
+    variable is set or unset.</li>
+    <li>Pick the model with <strong>Custom&hellip;</strong> and type its exact
+    name, as the server lists it.</li>
+    <li>Click <strong>Test connection</strong> to confirm it answers.</li>
+  </ol>
+  <p>
+    The URL and key values must come from your own settings
+    (<strong>Set value&hellip;</strong>) or your environment &mdash; never
+    from files in the project. Plain <code>http</code> is accepted only for
+    your own machine (localhost); anything remote needs <code>https</code>.
+    Give each custom endpoint its own variable names, so you can set up
+    several side by side, one per agent or fallback slot.
+  </p>
+  <p>
+    You still need a TycoonAgents update for tools that use their own
+    sign-in (Codex, Antigravity, the Claude CLI) and for vendors without an
+    OpenAI-style API.
+  </p>
+
   <div class="section-head">
-    <div class="s-title">&sect; 15.4 &middot; Copy-paste prompts</div>
+    <div class="s-title">&sect; 15.4&middot; Copy-paste prompts</div>
     <div class="s-caption">create a foreign-backed subagent from scratch</div>
   </div>
   <p>
