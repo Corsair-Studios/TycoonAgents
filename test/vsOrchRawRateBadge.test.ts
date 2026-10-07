@@ -691,7 +691,7 @@ test("PHASE 3 REGRESSION PIN: Anthropic-vs-Anthropic vs-orch values are unchange
 // label only, never a numeric ratio. Both render sites.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric ratio badge -- row badge reads 'Subscription' with no digit or '×'", () => {
+test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric ratio badge -- row badge reads 'Sub' with no digit or '×'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -700,12 +700,12 @@ test("PHASE 3: subscription-class model (gpt-5.4-mini) never renders a numeric r
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "Subscription", `expected 'Subscription' for foreign subscription-class model, got '${text}'`);
+  assert.equal(text, "Sub", `expected 'Sub' for foreign subscription-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: subscription-class model (codex-auto-review) never renders a numeric ratio badge -- settings chip reads 'Subscription' with no digit or '×'", () => {
+test("PHASE 3: subscription-class model (codex-auto-review) never renders a numeric ratio badge -- settings chip reads 'Sub' with no digit or '×'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -714,7 +714,7 @@ test("PHASE 3: subscription-class model (codex-auto-review) never renders a nume
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "Subscription", `expected 'Subscription' for foreign subscription-class model, got '${text}'`);
+  assert.equal(text, "Sub", `expected 'Sub' for foreign subscription-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "subscription-class badge must contain no digit and no × ratio symbol");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
@@ -739,7 +739,7 @@ test("PHASE 3: subscription-class agent's row renders no dollar figure anywhere 
 // qualitative label only, never a fabricated price or 0x/Infinity/NaN.
 // ---------------------------------------------------------------------------
 
-test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated price or 0x/Infinity/NaN -- row badge reads 'Free / local'", () => {
+test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated price or 0x/Infinity/NaN -- row badge reads 'Local'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -748,13 +748,13 @@ test("PHASE 3: local-class model (ollama:llama3) never renders a fabricated pric
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "Free / local", `expected Free / local for local-class model, got '${text}'`);
+  assert.equal(text, "Local", `expected Local for local-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
   assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated price or 0x/Infinity/NaN -- settings chip reads 'Free / local'", () => {
+test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated price or 0x/Infinity/NaN -- settings chip reads 'Local'", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 0, activeMs: 1000, taskCount: 1 },
@@ -763,7 +763,7 @@ test("PHASE 3: local-class model (lmstudio-qwen2.5) never renders a fabricated p
   pushSettings(doc, dispatch, agentsPayload());
 
   const text = chipVsOrchText(doc, "Coding Specialist");
-  assert.equal(text, "Free / local", `expected Free / local for local-class model, got '${text}'`);
+  assert.equal(text, "Local", `expected Local for local-class model, got '${text}'`);
   assert.doesNotMatch(String(text), /\d|×/, "local-class badge must contain no digit and no × ratio symbol");
   assert.doesNotMatch(String(text), /NaN|Infinity|0×|\$/, "local-class badge must never fabricate a price, 0×, NaN, or Infinity");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
@@ -827,25 +827,25 @@ test("CROSS-VENDOR: same-vendor (anthropic sonnet vs opus) keeps the 'N× cheape
   assert.equal(badgeFor({ model: "sonnet", vendor: "anthropic" }), cheaperLabel(tableRate("anthropic/opus"), tableRate("anthropic/sonnet")));
 });
 
-test("CROSS-VENDOR: same-vendor Claude subscription (Claude Worker) reads 'Subscription'", () => {
-  assert.equal(badgeFor({ model: "sonnet", vendor: "anthropic", costModelClass: "subscription" }), "Subscription");
+test("CROSS-VENDOR: same-vendor Claude subscription (Claude Worker) reads 'Sub'", () => {
+  assert.equal(badgeFor({ model: "sonnet", vendor: "anthropic", costModelClass: "subscription" }), "Sub");
 });
 
 test("CROSS-VENDOR: foreign metered (moonshot, xai, mistral) read 'Pay per use (API)', never a multiplier, even at 0 tasks", () => {
   for (const [vendor, model] of [["moonshot", "kimi-k2"], ["xai", "xai/grok-4.7"], ["mistral", "mistral-large"]]) {
     const t = badgeFor({ model, vendor, costModelClass: "metered" });
-    assert.equal(t, "Pay per use (API)", `${vendor}: got '${t}'`);
+    assert.equal(t, "API", `${vendor}: got '${t}'`);
     assert.doesNotMatch(String(t), /\d|×|\$/);
   }
 });
 
-test("CROSS-VENDOR: foreign subscription (codex, gemini via Antigravity) read 'Subscription'", () => {
-  assert.equal(badgeFor({ model: "gpt-5.6-sol", vendor: "openai", costModelClass: "subscription" }), "Subscription");
-  assert.equal(badgeFor({ model: "google/gemini-2.5-pro", vendor: "google", costModelClass: "subscription" }), "Subscription");
+test("CROSS-VENDOR: foreign subscription (codex, gemini via Antigravity) read 'Sub'", () => {
+  assert.equal(badgeFor({ model: "gpt-5.6-sol", vendor: "openai", costModelClass: "subscription" }), "Sub");
+  assert.equal(badgeFor({ model: "google/gemini-2.5-pro", vendor: "google", costModelClass: "subscription" }), "Sub");
 });
 
-test("CROSS-VENDOR: foreign local reads 'Free / local'", () => {
-  assert.equal(badgeFor({ model: "ollama/qwen3", vendor: "ollama", costModelClass: "local" }), "Free / local");
+test("CROSS-VENDOR: foreign local reads 'Local'", () => {
+  assert.equal(badgeFor({ model: "ollama/qwen3", vendor: "ollama", costModelClass: "local" }), "Local");
 });
 
 test("CROSS-VENDOR: foreign vendor with unknown billing reads '—'", () => {
@@ -857,7 +857,7 @@ test("CROSS-VENDOR: foreign badge tooltip carries the token-counting disclaimer"
   dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "kimi-k2", vendor: "moonshot", costModelClass: "metered" })]);
   pushSettings(doc, dispatch, agentsPayload());
   const labels = Array.from(doc.querySelectorAll("#metrics-tbody .status-bar-label")) as any[];
-  const titled = labels.map((l) => l.closest("td").title).find((t: string) => /Pay per use/.test(t));
+  const titled = labels.map((l) => l.closest("td").title).find((t: string) => /Pay per use \(API key\)/.test(t));
   assert.ok(titled && titled.includes("Different vendors count tokens differently, so costs aren't directly comparable to Claude."), String(titled));
 });
 
@@ -889,4 +889,39 @@ test("DELEGATION HEADLINE: only foreign delegated agents -> no ratio, only the n
 test("DELEGATION HEADLINE: no foreign agents -> no 'other vendors' line", () => {
   const t = delegationText([sonnetRow()]);
   assert.doesNotMatch(t, /other vendors/);
+});
+
+
+// ---------------------------------------------------------------------------
+// Backend-first vendor/billing: a wrapper subagent runs on Claude haiku but
+// its backend (settings route fields) decides vendor and billing.
+// ---------------------------------------------------------------------------
+function badgeWithBackend(settingsAgent: any, geminiBackend?: string): string | null {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "haiku", costModelClass: "metered" })]);
+  const menu = doc.getElementById("menu-routing");
+  if (menu) menu.click();
+  const rp: any = routingPayloadFixture();
+  if (geminiBackend) rp.bridge = { mcpJsonPresent: true, mcpServers: ["gemini"], gemini: { serverPresent: true, value: geminiBackend, source: "mcp-json" }, externalSettings: [] };
+  dispatch({ type: "routing", payload: rp });
+  const payload: any = agentsPayload();
+  payload.agents[1] = { ...payload.agents[1], ...settingsAgent };
+  dispatch({ type: "settings", payload });
+  return rowBadgeText(doc, "Coding Specialist");
+}
+
+test("BACKEND: wrapper on haiku with backend xai reads foreign 'API', not a multiplier", () => {
+  assert.equal(badgeWithBackend({ vendor: "xai", costModelClass: "metered" }), "API");
+});
+
+test("BACKEND: wrapper on haiku with no backend vendor keeps the same-vendor multiplier", () => {
+  assert.match(String(badgeWithBackend({})), /× cheaper/);
+});
+
+test("BACKEND: google + agy reads 'Sub'", () => {
+  assert.equal(badgeWithBackend({ vendor: "google", costModelClass: "metered" }, "agy"), "Sub");
+});
+
+test("BACKEND: google + gemini backend reads 'API'", () => {
+  assert.equal(badgeWithBackend({ vendor: "google", costModelClass: "subscription" }, "gemini"), "API");
 });

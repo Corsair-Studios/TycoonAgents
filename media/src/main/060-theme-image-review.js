@@ -2634,6 +2634,8 @@
     } else if (msg && msg.type === "settings") {
       lastSettings = msg.payload || null;
       renderSettings();
+      // Backend-first vendor/billing badges depend on this payload.
+      if (lastMetrics && lastMetrics.length) renderMetricsTable(currentScopeMetrics());
       // p74 first-open fix (2026-09-23): the multi-provider checkbox reads
       // lastRoutingPayload, which previously only arrived once the Agents
       // screen was opened. Request it here too, on Settings' own first

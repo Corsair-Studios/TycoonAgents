@@ -4628,17 +4628,17 @@ tr.metrics-row--child td.col-name {
 
 /* Status progress bar */
 td.col-status {
-  width: 112px;
-  min-width: 112px;
-  max-width: 112px;
+  width: 70px;
+  min-width: 70px;
+  max-width: 70px;
 }
 
 .status-bar-track {
   background: #27272A;
   border-radius: 3px;
   height: 16px;
-  width: 112px;
-  flex: 0 0 112px;
+  width: 70px;
+  flex: 0 0 70px;
   /* prevent grow/shrink in any flex context */
   overflow: hidden;
   position: relative;

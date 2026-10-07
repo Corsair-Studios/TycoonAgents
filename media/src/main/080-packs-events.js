@@ -612,8 +612,8 @@
     // Different vendor than the orchestrator: no multiplier and no money
     // amount (tokenizers, billing and quality differ) — just the billing type.
     if (foreign) return billingTypeLabel(cls);
-    if (cls === "subscription") return "Subscription";
-    if (cls === "local") return "Free / local";
+    if (cls === "subscription") return "Sub";
+    if (cls === "local") return "Local";
     if (agentRate != null && orchestratorPrice != null) {
       // Raw model-rate comparison — NOT a token-volume-weighted blend (see
       // resolveOrchestratorModelRate's doc). A priced model has a well-defined
@@ -632,22 +632,47 @@
    * @returns {string}
    */
   function billingTypeLabel(cls) {
-    if (cls === "subscription") return "Subscription";
-    if (cls === "local") return "Free / local";
-    if (cls === "metered") return "Pay per use (API)";
+    if (cls === "subscription") return "Sub";
+    if (cls === "local") return "Local";
+    if (cls === "metered") return "API";
     return "—";
   }
 
   /** Tooltip for the "vs. orch." badge, given whether the agent is foreign. */
   function vsOrchTitle(foreign, cls) {
-    if (!foreign) {
-      return "How much cheaper this agent's model is per token than the orchestrator's (metered models only) — subscription and local models have no comparable per-token rate, so they show their billing type instead of a ratio.";
-    }
-    const why = cls === "subscription" ? "Subscription: flat-rate sign-in, no per-token charge."
-      : cls === "local" ? "Free / local: runs on your own hardware or a free tier, no per-token charge."
-      : cls === "metered" ? "Pay per use (API): billed per token through an API key."
+    const why = cls === "subscription" ? "Subscription — flat-rate sign-in, no per-token charge."
+      : cls === "local" ? "Free / local endpoint — no per-token charge."
+      : cls === "metered" ? "Pay per use (API key) — billed per token."
       : "Billing type unknown.";
+    if (!foreign) {
+      return "How much cheaper this agent's model is per token than the orchestrator's (metered models only). Subscription and local models show their billing type instead of a ratio. " + why;
+    }
     return `${why} Different vendors count tokens differently, so costs aren't directly comparable to Claude.`;
+  }
+
+  /**
+   * Backend-first identity for an agent: the routed backend's vendor and
+   * billing class (from the Settings payload's route-derived fields, keyed by
+   * agent id) win over the metrics row's run model/vendor, because a wrapper
+   * subagent (Grok/Kimi/Mistral Reviewer) runs on Claude haiku while its work
+   * is billed by the backend vendor. Google follows the actual Gemini bridge
+   * backend: agy (Antigravity sign-in) = subscription, gemini (paid key) =
+   * metered. Falls back to the row's own fields when there is no backend.
+   * @param {{id?:string, vendor?:string, model?:string, costModelClass?:string}} agent
+   * @returns {{vendor:string, costModelClass:string|undefined}}
+   */
+  function backendIdentity(agent) {
+    const id = agent && agent.id;
+    const sa = id && lastSettings && Array.isArray(lastSettings.agents)
+      ? lastSettings.agents.find((x) => x && x.id === id)
+      : null;
+    const vendor = resolveAgentVendor((sa && sa.vendor) || (agent && agent.vendor), (sa && sa.vendor) ? "" : (agent && agent.model));
+    let cls = (sa && sa.costModelClass) || (agent && agent.costModelClass) || undefined;
+    if (vendor === "google" && sa && sa.vendor) {
+      const g = geminiBackendState();
+      cls = g.value === "gemini" ? "metered" : "subscription";
+    }
+    return { vendor, costModelClass: cls };
   }
 
   /**
@@ -680,7 +705,7 @@
    * @returns {boolean}
    */
   function isForeignToOrchestrator(agent, orchestrator) {
-    const av = resolveAgentVendor(agent && agent.vendor, agent && agent.model);
+    const av = backendIdentity(agent).vendor;
     if (!av) return false;
     const ov = resolveAgentVendor(orchestrator && orchestrator.vendor, orchestrator && orchestrator.model) || "anthropic";
     return av !== ov;
@@ -1321,11 +1346,13 @@
     if (agent.id === "orchestrator") {
       vsOrchText = "baseline";
     } else {
-      const agentRate = modelPricePerMtok(agent.model, agent.costModelClass);
-      const orchestratorPrice = opts.orchestratorPrice;
+      const bi = backendIdentity(agent);
       const foreignRow = isForeignToOrchestrator(agent, opts.orchestrator);
-      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, agent.costModelClass, foreignRow);
-      statusTd.title = vsOrchTitle(foreignRow, costModelClass(agent.model, agent.costModelClass));
+      const rowClass = foreignRow ? bi.costModelClass : agent.costModelClass;
+      const agentRate = modelPricePerMtok(agent.model, rowClass);
+      const orchestratorPrice = opts.orchestratorPrice;
+      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, rowClass, foreignRow);
+      statusTd.title = vsOrchTitle(foreignRow, foreignRow ? (rowClass || "unknown") : costModelClass(agent.model, agent.costModelClass));
     }
     label.textContent = showActive ? "active" : vsOrchText;
     track.appendChild(fill);

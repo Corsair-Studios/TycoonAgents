@@ -1764,9 +1764,11 @@
       const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
       const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
       const chipOrch = (lastMetrics || []).find((x) => x && x.id === "orchestrator");
-      chipForeign = isForeignToOrchestrator({ vendor: a.vendor || (m && m.vendor), model: chipModel }, chipOrch);
-      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipCostModelClass, chipForeign);
-      chipCls = costModelClass(chipModel, chipCostModelClass);
+      chipForeign = isForeignToOrchestrator({ id: a.id, vendor: a.vendor || (m && m.vendor), model: chipModel }, chipOrch);
+      const chipBi = backendIdentity({ id: a.id, vendor: a.vendor || (m && m.vendor), model: chipModel, costModelClass: chipCostModelClass });
+      const chipClassEff = chipForeign ? chipBi.costModelClass : chipCostModelClass;
+      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipClassEff, chipForeign);
+      chipCls = chipForeign ? (chipClassEff || "unknown") : costModelClass(chipModel, chipCostModelClass);
     }
     const vsOrchChip = chip("vs. orch.", chipVsOrchText);
     vsOrchChip.title = vsOrchTitle(chipForeign, chipCls);
@@ -3344,6 +3346,8 @@
 
   function handleRoutingPayload(payload) {
     lastRoutingPayload = payload || null;
+    // Gemini backend (agy|gemini) feeds the metrics billing badge.
+    if (lastMetrics && lastMetrics.length) renderMetricsTable(currentScopeMetrics());
     if (routingSuppressNextRebuild) {
       // The save/clear that just failed already left routingDraft (the
       // user's in-progress edits) untouched — keep it. Still refresh the
