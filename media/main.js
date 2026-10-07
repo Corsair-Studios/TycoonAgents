@@ -18519,6 +18519,22 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
+   * The routed backend's model id for an agent (e.g. "grok-4.7",
+   * "gpt-5.6-sol"), from the last routing payload. Null when routing has not
+   * loaded or the agent has no routed backend model.
+   * @param {{id?:string}} agent
+   * @returns {string|null}
+   */
+  function backendModelFor(agent) {
+    const id = agent && agent.id;
+    const ra = id && lastRoutingPayload && Array.isArray(lastRoutingPayload.agents)
+      ? lastRoutingPayload.agents.find((x) => x && x.id === id)
+      : null;
+    const m = ra && ra.backend && ra.backend.model;
+    return typeof m === "string" && m.trim() ? m.trim() : null;
+  }
+
+  /**
    * Best-effort vendor id for an agent: explicit `vendor` field first, else
    * inferred from the model id. Returns "" when unknown.
    * @param {string|null|undefined} vendor
@@ -19761,16 +19777,26 @@ function themeAnimPreviewDraw(player) {
     } else {
       counterSection.className = "delegation-stats-detail";
       const ratio = cmp.billedUsd > 0 ? cmp.counterfactualUsd / cmp.billedUsd : null;
-      counterSection.textContent =
-        ratio != null && ratio >= 1.05
-          ? `Delegated work ran at ${fmtRatio(ratio)}× cheaper than running the same billable tokens on the orchestrator's model (estimate, published list rates).`
-          : "Delegated work ran at roughly the same rate as the orchestrator's model (estimate, published list rates).";
-      hero.appendChild(counterSection);
+      // Only claim what the numbers support: "cheaper" at >= 1.05, "roughly the
+      // same" only inside 0.95-1.05. Below that (orchestrator blended rate is
+      // lower, e.g. mostly discounted cache reads) or with no ratio, say nothing.
+      let ratioText = null;
+      if (ratio != null && ratio >= 1.05) {
+        ratioText = `Delegated work ran at ${fmtRatio(ratio)}× cheaper than running the same billable tokens on the orchestrator's model (estimate, published list rates).`;
+      } else if (ratio != null && ratio > 0.95) {
+        ratioText = "Delegated work ran at roughly the same rate as the orchestrator's model (estimate, published list rates).";
+      }
+      if (ratioText) {
+        counterSection.textContent = ratioText;
+        hero.appendChild(counterSection);
+      }
 
-      const caveat = document.createElement("div");
-      caveat.className = "delegation-stats-caption";
-      caveat.textContent = "Subscription and local work is excluded from this comparison because it is not billed per token; spawn overhead is included in the estimate.";
-      hero.appendChild(caveat);
+      if (ratioText) {
+        const caveat = document.createElement("div");
+        caveat.className = "delegation-stats-caption";
+        caveat.textContent = "Subscription and local work is excluded from this comparison because it is not billed per token; spawn overhead is included in the estimate.";
+        hero.appendChild(caveat);
+      }
     }
 
     if (foreignAgents.length > 0) {
@@ -19820,28 +19846,35 @@ function themeAnimPreviewDraw(player) {
     // (never the orchestrator) by prettified model family, so the bars stay
     // in scope with the hero's "delegated work" savings figure above instead
     // of being dwarfed by the orchestrator's token-heavy Opus coordination.
-    const tierMap = new Map(); // family -> {tasks, tokens}
+    const tierMap = new Map(); // family -> {tasks, tokens} (same-vendor only)
+    const otherMap = new Map(); // backend model -> {tasks, tokens} (foreign vendors)
+    const tierOrch = lastMetrics.find((x) => x && x.id === "orchestrator");
     for (const a of delegatedAgents) {
       if (!a) continue;
       const tasks = a.taskCount ?? 0;
       const tokens = (a.tokens ?? 0) + (a.cacheReadTokens ?? 0);
       if (tasks === 0 && tokens === 0) continue;
-      const family = a.model ? prettyModel(a.model, a.observedModel).split(" ")[0] : "Unknown";
-      const entry = tierMap.get(family) || { tasks: 0, tokens: 0 };
+      const foreign = isForeignToOrchestrator(a, tierOrch);
+      const target = foreign ? otherMap : tierMap;
+      const family = foreign
+        ? shortModelLabel(backendModelFor(a) || a.model || "") || "Unknown"
+        : (a.model ? prettyModel(a.model, a.observedModel).split(" ")[0] : "Unknown");
+      const entry = target.get(family) || { tasks: 0, tokens: 0 };
       entry.tasks += tasks;
       entry.tokens += tokens;
-      tierMap.set(family, entry);
+      target.set(family, entry);
     }
-    if (tierMap.size > 0) {
+    const renderTierGroup = (map, headingText, showPct) => {
+      if (map.size === 0) return;
       const tierSection = document.createElement("div");
       tierSection.className = "delegation-section";
       const tierHeading = document.createElement("div");
       tierHeading.className = "delegation-stats-heading";
-      tierHeading.textContent = "Delegated work by tier";
+      tierHeading.textContent = headingText;
       tierSection.appendChild(tierHeading);
 
-      const totalTierTokens = Math.max(1, [...tierMap.values()].reduce((sum, v) => sum + v.tokens, 0));
-      const tierEntries = [...tierMap.entries()].sort((a, b) => b[1].tokens - a[1].tokens);
+      const totalTierTokens = Math.max(1, [...map.values()].reduce((sum, v) => sum + v.tokens, 0));
+      const tierEntries = [...map.entries()].sort((a, b) => b[1].tokens - a[1].tokens);
       for (const [family, v] of tierEntries) {
         const tierRow = document.createElement("div");
         tierRow.className = "delegation-tier-row";
@@ -19857,19 +19890,22 @@ function themeAnimPreviewDraw(player) {
         track.className = "delegation-tier-bar-track";
         const fill = document.createElement("div");
         fill.className = "delegation-tier-bar-fill";
-        fill.style.width = `${v.tokens > 0 ? Math.max(pct, 2) : 0}%`;
+        fill.style.width = showPct ? `${v.tokens > 0 ? Math.max(pct, 2) : 0}%` : "0%";
         track.appendChild(fill);
         tierRow.appendChild(track);
 
         const meta = document.createElement("span");
         meta.className = "delegation-tier-meta";
-        meta.textContent = `${v.tasks} task${v.tasks === 1 ? "" : "s"} · ${fmtTokens(v.tokens)} tokens · ${pct}%`;
+        meta.textContent = `${v.tasks} task${v.tasks === 1 ? "" : "s"} · ${fmtTokens(v.tokens)} tokens${showPct ? ` · ${pct}%` : ""}`;
         tierRow.appendChild(meta);
 
         tierSection.appendChild(tierRow);
       }
       el.appendChild(tierSection);
-    }
+    };
+    renderTierGroup(tierMap, "Delegated work by tier", true);
+    // Other vendors: tokenizers differ, so no bar or % share across them.
+    renderTierGroup(otherMap, "Other vendors (not compared)", false);
 
     // ── 2b. Coordination (not delegated work) ── the orchestrator's own
     // Opus usage, called out separately rather than folded into the tier
@@ -19891,7 +19927,8 @@ function themeAnimPreviewDraw(player) {
       // orch.model is hook-OBSERVED (untrusted) for the orchestrator; the
       // trusted roster/frontmatter value lives on orch.rosterModel — see
       // panel.ts's _stampRosterModels and buildMetricsRow's identical swap.
-      coordLine.textContent = `${orch.model ? prettyModel(orch.rosterModel, orch.observedModel, true) : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
+      const coordModel = prettyModel(orch.rosterModel, orch.observedModel, true);
+      coordLine.textContent = `${coordModel ? `Orchestrator (${coordModel})` : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");
@@ -19935,7 +19972,11 @@ function themeAnimPreviewDraw(player) {
       agentHeading.textContent = "By agent";
       agentSection.appendChild(agentHeading);
 
-      const totalCost = tableAgents.reduce((sum, a) => sum + (estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass) ?? 0), 0);
+      // Share is a same-vendor comparison only: foreign-vendor agents show "—"
+      // and are left out of the denominator (no cross-vendor cost comparison).
+      const tableOrch = lastMetrics.find((x) => x && x.id === "orchestrator");
+      const isForeignRow = (a) => isForeignToOrchestrator(a, tableOrch);
+      const totalCost = tableAgents.reduce((sum, a) => sum + (isForeignRow(a) ? 0 : (estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass) ?? 0)), 0);
 
       const table = document.createElement("table");
       table.className = "delegation-agent-table";
@@ -19946,7 +19987,7 @@ function themeAnimPreviewDraw(player) {
         { label: "Model", cls: "col-model" },
         { label: "Tasks", cls: "col-tasks" },
         { label: "Tokens", cls: "col-tokens" },
-        { label: "Cost share", cls: "col-share" },
+        { label: "Share", cls: "col-share" },
       ];
       for (const { label, cls } of headCols) {
         const th = document.createElement("th");
@@ -19975,10 +20016,18 @@ function themeAnimPreviewDraw(player) {
         // (older sessions, the orchestrator row) render with no suffix.
         const modelTd = document.createElement("td");
         modelTd.className = "col-model";
-        const fullModelLabel = a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—";
-        modelTd.textContent = a.model ? shortModelLabel(a.model) : "—";
-        const modelVendor = a.vendor && a.vendor !== "anthropic" ? vendorLabelFor(a.vendor) : null;
-        const modelCostTag = a.costModelClass === "subscription" ? "quota" : a.costModelClass === "local" ? "local" : null;
+        // Bridged agents (Grok/Codex/Mistral Reviewer...) run a Claude relay
+        // wrapper; show the routed backend's model and vendor/billing instead.
+        const bi = backendIdentity(a);
+        const bridged = isForeignRow(a);
+        const backendModel = bridged ? backendModelFor(a) : null;
+        const shownModel = backendModel || a.model;
+        const fullModelLabel = backendModel ? backendModel : (a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—");
+        modelTd.textContent = shownModel ? shortModelLabel(shownModel) : "—";
+        const effVendor = bridged ? bi.vendor : a.vendor;
+        const effClass = bridged ? bi.costModelClass : a.costModelClass;
+        const modelVendor = effVendor && effVendor !== "anthropic" ? vendorLabelFor(effVendor) : null;
+        const modelCostTag = effClass === "subscription" ? "quota" : effClass === "local" ? "local" : null;
         const modelExtras = [modelVendor, modelCostTag].filter(Boolean);
         if (modelExtras.length) {
           const suffix = document.createElement("span");
@@ -20002,7 +20051,7 @@ function themeAnimPreviewDraw(player) {
         const shareTd = document.createElement("td");
         shareTd.className = "col-share";
         const cost = estCostUSDWithCache(a.tokens, a.cacheReadTokens, a.model, a.costModelClass);
-        shareTd.textContent = cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
+        shareTd.textContent = !isForeignRow(a) && cost != null && totalCost > 0 ? `${Math.round((cost / totalCost) * 100)}%` : "—";
         tr.appendChild(shareTd);
 
         tbody.appendChild(tr);
@@ -25188,7 +25237,11 @@ function themeAnimPreviewDraw(player) {
   function handleRoutingPayload(payload) {
     lastRoutingPayload = payload || null;
     // Gemini backend (agy|gemini) feeds the metrics billing badge.
-    if (lastMetrics && lastMetrics.length) renderMetricsTable(currentScopeMetrics());
+    if (lastMetrics && lastMetrics.length) {
+      renderMetricsTable(currentScopeMetrics());
+      // Delegation tab's Model column shows the routed backend model.
+      renderDelegationStats(state.modeStats);
+    }
     if (routingSuppressNextRebuild) {
       // The save/clear that just failed already left routingDraft (the
       // user's in-progress edits) untouched — keep it. Still refresh the

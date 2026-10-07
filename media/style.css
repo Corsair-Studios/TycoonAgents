@@ -44,6 +44,21 @@
   /* teal */
 }
 
+/* Themed links: VS Code webviews inherit --vscode-textLink-foreground; the
+   standalone host has no such var, so fall back to the panel's sky-blue
+   accent instead of the browser's default blue/underline. Zero-class
+   specificity so component-level link styles still win. */
+a {
+  color: var(--vscode-textLink-foreground, var(--accent-info));
+  text-decoration: none;
+}
+
+a:hover,
+a:focus-visible {
+  color: var(--vscode-textLink-activeForeground, var(--accent));
+  text-decoration: underline;
+}
+
 *,
 *::before,
 *::after {
@@ -4101,7 +4116,7 @@ tr.metrics-row--child td.col-name {
 
 .delegation-agent-table th.col-name,
 .delegation-agent-table td.col-name {
-  width: 30%;
+  width: 28%;
 }
 
 .delegation-agent-table th.col-model,
@@ -4123,7 +4138,7 @@ tr.metrics-row--child td.col-name {
 
 .delegation-agent-table th.col-share,
 .delegation-agent-table td.col-share {
-  width: 12%;
+  width: 14%;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

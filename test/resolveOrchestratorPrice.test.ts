@@ -556,7 +556,8 @@ test("delegation hero: modelBreakdown of entirely unrecognized models still pric
   // sonnet worker (4 $/Mtok) -- counterfactual (0.30) < billed (0.40), ratio
   // 0.75 is below the 1.05 threshold, so no cheaper-multiplier renders and
   // no negative figure ever appears.
-  assert.match(text, /Delegated work ran at roughly the same rate as the orchestrator's model/i, `expected the "roughly the same rate" line, got: ${text}`);
+  // 0.75 is below the same-rate band: the hero must make no cheaper/same-rate claim at all.
+  assert.doesNotMatch(text, /roughly the same rate|cheaper than running/i, `no relative-cost claim expected, got: ${text}`);
   assert.doesNotMatch(text, /nan|infinity/i, "hero body must never leak NaN/Infinity text");
   assert.doesNotMatch(text, /-\$|\$/, "avoided must never render as a negative dollar figure, and no dollar figures render at all");
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);

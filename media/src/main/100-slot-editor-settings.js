@@ -3347,7 +3347,11 @@
   function handleRoutingPayload(payload) {
     lastRoutingPayload = payload || null;
     // Gemini backend (agy|gemini) feeds the metrics billing badge.
-    if (lastMetrics && lastMetrics.length) renderMetricsTable(currentScopeMetrics());
+    if (lastMetrics && lastMetrics.length) {
+      renderMetricsTable(currentScopeMetrics());
+      // Delegation tab's Model column shows the routed backend model.
+      renderDelegationStats(state.modeStats);
+    }
     if (routingSuppressNextRebuild) {
       // The save/clear that just failed already left routingDraft (the
       // user's in-progress edits) untouched — keep it. Still refresh the
