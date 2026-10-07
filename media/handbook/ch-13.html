@@ -55,10 +55,10 @@
 </div>
 <p>The setup wizard detects a UEFN project on its own. When it does, it offers to install the <strong>Verse Expert</strong> and <strong>UEFN Auditor</strong> agents alongside your other specialists, and it points <code>VERSE_LSP_PATH</code> / <code>UEFN_VERSE_PROJECT_DIR</code> at the paths it discovers so the pack's own LSP and project checks work.</p>
 <p>If you also want live-editor inspection and audits, install <strong>Power Tools</strong> yourself from its own release, following its own <code>INSTALL.md</code>. Once it's installed, copy the <code>uefn-bridge</code> entry out of this repo's <code>.mcp.json.example</code> into your own (gitignored) <code>.mcp.json</code> and fill in the path to where you unzipped it — TycoonAgents registers it in the catalog as a third-party entry, but one-click install is refused by design; see docs/POWER-TOOLS-COEXISTENCE.md for the exact steps.</p>
-<div class="figure-placeholder">
-  <span class="fig-label">Screenshot</span>
-  <p>Setup screen — UEFN detected, agent install chip.</p>
-</div>
+<figure style="margin:1.75rem 0;text-align:center">
+  <img src="uefn_setup_detected.png" alt="Setup screen — UEFN detected, agent install chip" width="420" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
+  <figcaption style="font-size:0.85rem;margin-top:0.5rem">Setup screen — UEFN detected, agent install chip.</figcaption>
+</figure>
 
 <div class="callout note">
   <p class="callout-label">See also</p>
