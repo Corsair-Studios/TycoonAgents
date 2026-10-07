@@ -1496,6 +1496,7 @@
    * see currentScopeMetrics()). Never touches `lastMetrics`.
    * @param {Array<{id:string,name:string,status:string,taskCount:number,mcpCount:number,activeMs:number,tokens:number,model?:string,description?:string,tier?:string,parentId?:string}>|undefined} metrics
    */
+  let metricsBackendRequested = false;
   function renderMetricsTable(metrics) {
     const emptyEl = /** @type {HTMLElement} */ (document.getElementById("metrics-empty"));
     const tableEl = /** @type {HTMLElement} */ (document.getElementById("metrics-table"));
@@ -1507,6 +1508,16 @@
       emptyEl.style.display = "";
       tableEl.hidden = true;
       return;
+    }
+
+    // The vs. orch. badge needs each agent's routed backend (settings payload)
+    // and the Gemini backend state (routing payload). The VS Code host only
+    // sends them on request, so ask once on the first metrics render instead
+    // of waiting for the user to open Settings/Agents.
+    if (!metricsBackendRequested) {
+      metricsBackendRequested = true;
+      if (!lastSettings) vscode.postMessage({ type: "getSettings" });
+      if (!lastRoutingPayload) vscode.postMessage({ type: ROUTING_MSG.GET });
     }
 
     emptyEl.style.display = "none";

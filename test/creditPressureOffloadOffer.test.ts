@@ -265,13 +265,15 @@ test("credit pressure: detection below threshold never shows the offer card", ()
 test("credit pressure: detection tripping shows ONLY the offer card — no other postMessage traffic beyond REQUEST_OFFLOAD_OFFER_STATE boot read", () => {
   const { doc, dispatch, postedMessages } = bootMainJs();
   dispatchOfferState(dispatch, { providerAvailable: true });
-  const messagesBeforeMetrics = postedMessages.length;
+  // The metrics table's own one-time getSettings/getRouting backend request is unrelated to the offer.
+  const offerTraffic = () => postedMessages.filter((m: any) => !(m && (m.type === "getSettings" || m.type === "getRouting"))).length;
+  const messagesBeforeMetrics = offerTraffic();
 
   dispatchMetrics(dispatch, [ABOVE_THRESHOLD_ORCH]);
 
   assert.ok(offerCard(doc), "offer card must render once the threshold trips AND a provider is confirmed available");
   assert.equal(
-    postedMessages.length,
+    offerTraffic(),
     messagesBeforeMetrics,
     "rendering the offer from a tripped detection must not itself post any new message to the host (no routing side effect)"
   );

@@ -182,8 +182,9 @@ function bootMainJs() {
   stage.height = 760;
 
   let stateStore: any = {};
+  const posted: any[] = [];
   win.acquireVsCodeApi = () => ({
-    postMessage: () => {},
+    postMessage: (m: any) => { posted.push(m); },
     getState: () => stateStore,
     setState: (s: any) => {
       stateStore = s;
@@ -224,7 +225,7 @@ function bootMainJs() {
     win.dispatchEvent(new win.MessageEvent("message", { data }));
   }
 
-  return { win, doc, dispatch, getState: () => stateStore, errors };
+  return { win, doc, dispatch, getState: () => stateStore, errors, posted };
 }
 
 function agentsPayload() {
@@ -924,4 +925,21 @@ test("BACKEND: google + agy reads 'Sub'", () => {
 
 test("BACKEND: google + gemini backend reads 'API'", () => {
   assert.equal(badgeWithBackend({ vendor: "google", costModelClass: "subscription" }, "gemini"), "API");
+});
+
+
+test("BACKEND: first metrics render requests settings and routing payloads (so the badge is right without opening Agents)", () => {
+  const { dispatch, posted } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "haiku" })]);
+  const types = posted.map((m: any) => m && m.type);
+  assert.ok(types.includes("getSettings"), "getSettings requested");
+  assert.ok(types.includes("getRouting"), "getRouting requested");
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "haiku" })]);
+  assert.equal(posted.filter((m: any) => m && m.type === "getRouting").length, 1, "requested once");
+});
+
+test("BACKEND (testbed layout): wrappers on haiku whose backend lives only in .md frontmatter read foreign once settings carry the route fields; gemini with no GEMINI_MCP_BACKEND reads Sub", () => {
+  assert.equal(badgeWithBackend({ vendor: "moonshot", costModelClass: "metered" }), "API");
+  assert.equal(badgeWithBackend({ vendor: "mistral", costModelClass: "metered" }), "API");
+  assert.equal(badgeWithBackend({ vendor: "google", costModelClass: "metered" }), "Sub");
 });
