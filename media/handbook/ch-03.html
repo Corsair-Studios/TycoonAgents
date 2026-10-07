@@ -8,7 +8,7 @@
 </head>
 <body class="page">
 <aside class="side-rail">
-<a class="side-rail-brand" href="index.html"><img src="tycoonagents_logo_sm.png" alt="TycoonAgents" width="36" height="36"><span>TycoonAgents</span></a>
+<a class="side-rail-brand" href="index.html"><img src="tycoonagents_logo_sm.webp" alt="TycoonAgents" width="36" height="36"><span>TycoonAgents</span></a>
 <details class="side-rail-toggle" open>
 <summary class="side-rail-summary">Chapters</summary>
 <nav class="side-rail-nav" aria-label="Handbook chapters">
@@ -193,10 +193,10 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     overrides the setting) to select it.
   </p>
   <ol>
-    <li>Install the Codex CLI. This project pins
-    <code>@openai/codex</code> at <code>0.153.0</code> as a devDependency
-    because Codex CLI 0.154+ removed the <code>mcp-server</code> stdio
-    command TycoonAgents' Codex MCP entry used to launch directly.</li>
+    <li>Install the Codex CLI (<code>@openai/codex</code>). Any recent version works:
+    TycoonAgents picks the right connection method automatically, and
+    <code>TYCOON_CODEX_BACKEND</code> (<code>mcp-server</code> or
+    <code>app-server</code>) overrides the choice.</li>
     <li>Run <strong>Install Hooks</strong> (or the portable/team install
     path) at least once so <code>.claude/hooks/</code> has
     <code>codex-mcp-launcher.cjs</code> and its fallback companion
