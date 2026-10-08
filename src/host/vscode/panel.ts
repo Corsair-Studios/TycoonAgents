@@ -3144,7 +3144,7 @@ export class TycoonPanel {
                 delegation_mode,
                 reviewEnabled ?? true,
                 root,
-                sessionJournalEntries ?? 0
+                sessionJournalEntries ?? 3
               );
               if (existingClaudeMd === null || updated !== existingClaudeMd) {
                 fs.writeFileSync(claudeMdPath, updated);
@@ -5760,7 +5760,7 @@ export class TycoonPanel {
         delegation_mode,
         reviewEnabled ?? true,
         root,
-        sessionJournalEntries ?? 0
+        sessionJournalEntries ?? 3
       );
       if (existingClaudeMd !== null && updated === existingClaudeMd) return; // already current — no write, no notice
 
@@ -6628,7 +6628,7 @@ export class TycoonPanel {
     mode: DelegationMode,
     reviewEnabled: boolean,
     root: string,
-    sessionJournalEntries = 0
+    sessionJournalEntries = 3
   ): string {
     const roster = this._buildDoctrineRoster(root);
     const isUefn = detectUefnProject(root).detected;
@@ -6904,7 +6904,7 @@ export class TycoonPanel {
         // above (merge-safe) — read it back rather than assuming a fresh
         // install's default of 0, so a repair run never resets an existing
         // user's session-journal choice.
-        const sessionJournalEntries = readExecutionConfig(claudeDir).sessionJournalEntries ?? 0;
+        const sessionJournalEntries = readExecutionConfig(claudeDir).sessionJournalEntries ?? 3;
         const updated = this._buildClaudeMdDoctrine(
           existingClaudeMd,
           delegationMode,
@@ -7241,7 +7241,7 @@ export class TycoonPanel {
     // Journal sections on/off.
     const execCfgForMode = readExecutionConfig(path.join(root, ".claude"));
     const reviewEnabled = execCfgForMode.reviewEnabled ?? true;
-    const sessionJournalEntries = execCfgForMode.sessionJournalEntries ?? 0;
+    const sessionJournalEntries = execCfgForMode.sessionJournalEntries ?? 3;
 
     let claudeMdError: string | undefined;
     try {
@@ -7322,7 +7322,7 @@ export class TycoonPanel {
     const mode = execCfgForReview.delegation_mode;
     // Read back the current sessionJournalEntries so toggling Review pass
     // never silently strips the (unrelated) Session Journal section.
-    const sessionJournalEntries = execCfgForReview.sessionJournalEntries ?? 0;
+    const sessionJournalEntries = execCfgForReview.sessionJournalEntries ?? 3;
 
     let claudeMdError: string | undefined;
     try {
@@ -8176,7 +8176,7 @@ export class TycoonPanel {
       root !== "" ? readExecutionConfig(path.join(root, ".claude")) : { delegation_mode: "flat" as const, reviewEnabled: true };
     const delegation_mode = execCfg.delegation_mode;
     const reviewEnabled = execCfg.reviewEnabled ?? true;
-    const sessionJournalEntries = execCfg.sessionJournalEntries ?? 0;
+    const sessionJournalEntries = execCfg.sessionJournalEntries ?? 3;
 
     // Generic foreign-managed-block detection — same read/compute
     // _handleCheckInstall does, duplicated here (rather than shared) so the

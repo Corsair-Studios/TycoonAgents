@@ -2661,7 +2661,7 @@ function hooksInstalledForRootStandalone(root) {
  * 5684): full managed CLAUDE.md doctrine (delegation section + code-rules
  * section), splicing into `existingContent`.
  */
-function buildClaudeMdDoctrineStandalone(existingContent, mode, reviewEnabled, root, sessionJournalEntries = 0) {
+function buildClaudeMdDoctrineStandalone(existingContent, mode, reviewEnabled, root, sessionJournalEntries = 3) {
   const { renderDelegationDoctrine, upsertDelegationSection } = delegationDoctrineModule();
   const { renderCodeRules, upsertCodeRulesSection } = codeRulesDoctrineModule();
   const { detectUefnProject } = uefnDetectModule();
@@ -2741,7 +2741,7 @@ function buildStandaloneSettingsPayload() {
 
   let delegation_mode = 'flat';
   let reviewEnabled = true;
-  let sessionJournalEntries = 0;
+  let sessionJournalEntries = 3;
   let agents = [];
   if (primaryProjectRoot) {
     try {
@@ -2749,7 +2749,7 @@ function buildStandaloneSettingsPayload() {
       const execCfg = readExecutionConfig(path.join(primaryProjectRoot, '.claude'));
       delegation_mode = execCfg.delegation_mode;
       reviewEnabled = execCfg.reviewEnabled ?? true;
-      sessionJournalEntries = execCfg.sessionJournalEntries ?? 0;
+      sessionJournalEntries = execCfg.sessionJournalEntries ?? 3;
     } catch (err) {
       console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: readExecutionConfig failed:', err);
     }
@@ -2948,7 +2948,7 @@ function handleSetDelegationModeStandalone(rawMode) {
       root,
       mode,
       execCfg.reviewEnabled ?? true,
-      execCfg.sessionJournalEntries ?? 0,
+      execCfg.sessionJournalEntries ?? 3,
     );
     broadcast('message', {
       type: 'settingsUpdated',
@@ -3000,7 +3000,7 @@ function handleSetReviewEnabledStandalone(enabled) {
       root,
       execCfg.delegation_mode,
       enabled,
-      execCfg.sessionJournalEntries ?? 0,
+      execCfg.sessionJournalEntries ?? 3,
     );
     broadcast('message', {
       type: 'settingsUpdated',
@@ -3160,7 +3160,7 @@ function handleSetProjectPlanEnabledStandalone(enabled) {
         delegation_mode,
         reviewEnabled ?? true,
         root,
-        sessionJournalEntries ?? 0,
+        sessionJournalEntries ?? 3,
       );
       if (existingClaudeMd === null || updated !== existingClaudeMd) fs.writeFileSync(claudeMdPath, updated);
     } catch (err) {
@@ -3939,15 +3939,15 @@ function buildHostHtml(token) {
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-flat" value="flat" checked>
           <span class="delegation-mode-option-body">
-            <span class="delegation-mode-option-label">Flat — no team leads (recommended for most projects)</span>
+            <span class="delegation-mode-option-label">Direct (recommended for most projects)</span>
             <span class="delegation-mode-option-help">The orchestrator briefs specialist workers directly &mdash; it does the reviewing itself. Lowest coordination cost; best for focused fixes.</span>
           </span>
         </label>
         <label class="delegation-mode-option">
           <input type="radio" name="delegation-mode" id="delegation-mode-team-leads" value="team_leads">
           <span class="delegation-mode-option-body">
-            <span class="delegation-mode-option-label">Team leads</span>
-            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.</span>
+            <span class="delegation-mode-option-label">Team Leads</span>
+            <span class="delegation-mode-option-help">Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs &mdash; many features across many files &mdash; where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.</span>
           </span>
         </label>
         <label class="delegation-mode-option review-pass-option">
@@ -4563,7 +4563,7 @@ export async function startServer({
           delegation_mode,
           reviewEnabled ?? true,
           root,
-          sessionJournalEntries ?? 0,
+          sessionJournalEntries ?? 3,
         );
         if (existingClaudeMd === null || updated !== existingClaudeMd) fs.writeFileSync(claudeMdPath, updated);
       }

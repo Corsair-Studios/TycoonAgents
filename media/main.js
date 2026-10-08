@@ -19567,8 +19567,8 @@ function themeAnimPreviewDraw(player) {
     }
   }
 
-  /** Display label for a delegation mode id (the "flat" enum value renders as "Flat (no team leads)"). */
-  const DELEGATION_MODE_LABEL = { flat: "Flat (no team leads)", team_leads: "Team leads" };
+  /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */
+  const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
 
   /**
    * Render the Delegation tab's content (promoted out of #metrics-body into
@@ -25605,13 +25605,13 @@ function themeAnimPreviewDraw(player) {
     const delegOptions = [
       {
         value: "flat",
-        label: "Flat — no team leads (recommended for most projects)",
+        label: "Direct (recommended for most projects)",
         help: "The orchestrator briefs specialist workers directly — it does the reviewing itself. Lowest coordination cost; best for focused fixes.",
       },
       {
         value: "team_leads",
-        label: "Team leads",
-        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Flat.",
+        label: "Team Leads",
+        help: "Adds persistent lead agents that manage domain teams (build, quality). Costs roughly 10-20% more tokens on small tasks and adds a coordination hop. Pays off on large builds from design docs — many features across many files — where it reduces orchestrator context churn, re-briefing, and mid-build context loss. If you mostly do focused fixes, stay Direct.",
       },
     ];
     const delegInputs = [];
@@ -25721,7 +25721,8 @@ function themeAnimPreviewDraw(player) {
     }
     // Clamp defensively — the contract is an integer 0-5, but don't trust
     // a stale/out-of-range value from an older settings payload.
-    const currentJournalEntries = Math.max(0, Math.min(5, parseInt(lastSettings.sessionJournalEntries, 10) || 0));
+    const parsedJournalEntries = parseInt(lastSettings.sessionJournalEntries, 10);
+    const currentJournalEntries = Number.isNaN(parsedJournalEntries) ? 3 : Math.max(0, Math.min(5, parsedJournalEntries));
     journalSelect.value = String(currentJournalEntries);
     const journalWarning = document.createElement("p");
     journalWarning.className = "theme-review-retry-warning";

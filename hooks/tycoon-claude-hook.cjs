@@ -1286,13 +1286,13 @@ function readDelegationMode(tycoonDir) {
 // process, same shape as readDelegationMode above (one hook invocation = one
 // event; re-reading per call inside that single invocation is wasted I/O).
 // Valid values are integers 0-5; anything missing, non-numeric, out of
-// range, or unparseable defaults to 0 (feature off) so existing installs see
-// zero behavior change until the setting is explicitly turned on.
+// range, or unparseable defaults to 3 so existing installs get the standard window; an explicit 0 turns it off
+// until the setting is changed.
 // ---------------------------------------------------------------------------
 let cachedSessionJournalEntries; // undefined until first read this process
 function readSessionJournalEntries(tycoonDir) {
   if (cachedSessionJournalEntries !== undefined) return cachedSessionJournalEntries;
-  let n = 0;
+  let n = 3;
   try {
     const parsed = readJsonSafe(path.join(tycoonDir, "execution.json"));
     const v = parsed && parsed.sessionJournalEntries;
@@ -1300,7 +1300,7 @@ function readSessionJournalEntries(tycoonDir) {
       n = v;
     }
   } catch {
-    n = 0;
+    n = 3;
   }
   cachedSessionJournalEntries = n;
   return n;

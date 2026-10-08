@@ -1656,8 +1656,8 @@
     }
   }
 
-  /** Display label for a delegation mode id (the "flat" enum value renders as "Flat (no team leads)"). */
-  const DELEGATION_MODE_LABEL = { flat: "Flat (no team leads)", team_leads: "Team leads" };
+  /** Display label for a delegation mode id (the "flat" enum value renders as "Direct"). */
+  const DELEGATION_MODE_LABEL = { flat: "Direct", team_leads: "Team Leads" };
 
   /**
    * Render the Delegation tab's content (promoted out of #metrics-body into

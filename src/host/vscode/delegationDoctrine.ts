@@ -31,9 +31,9 @@ export interface ExecutionConfig {
   reviewEnabled?: boolean;
   /**
    * Optional "Session Journal" entry count: how many recent prompts the
-   * `.claude/session-journal.json` rolling journal keeps. `0` (the default)
-   * means the feature is OFF. Valid range is an integer `0`-`5`; anything
-   * else is coerced to `0` — see {@link readExecutionConfig}.
+   * `.claude/session-journal.json` rolling journal keeps. `0` means the feature is OFF; the default is `3`.
+   * Valid range is an integer `0`-`5`; anything
+   * else is coerced to `3` — see {@link readExecutionConfig}.
    */
   sessionJournalEntries?: number;
   /**
@@ -680,8 +680,8 @@ the agent's report claimed.`;
  * by `panel.ts`'s `_buildDoctrineRoster`). Only affects output when
  * `reviewEnabled` is true; ignored otherwise.
  *
- * `sessionJournalEntries` (default `0`, matching execution.json's default —
- * OFF) appends {@link renderSessionJournalSection} last, only when `> 0`.
+ * `sessionJournalEntries` (default `3`, matching execution.json's default;
+ * `0` = OFF) appends {@link renderSessionJournalSection} last, only when `> 0`.
  *
  * `projectPlanEnabled` (default `false`, matching a fresh/never-toggled read
  * of panel.ts's `projectPlanEnabled` flag as `false`) appends
@@ -704,7 +704,7 @@ export function renderDelegationDoctrine(
   reviewEnabled = true,
   rosterAgents?: DoctrineRosterAgent[],
   reviewAgentId?: string,
-  sessionJournalEntries = 0,
+  sessionJournalEntries = 3,
   projectPlanEnabled = false,
   uefn = false
 ): string {
@@ -771,7 +771,7 @@ export function upsertDelegationSection(
 }
 
 /** Default execution config used when none has been written yet. */
-const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat", reviewEnabled: true, sessionJournalEntries: 0 };
+const DEFAULT_EXECUTION_CONFIG: ExecutionConfig = { delegation_mode: "flat", reviewEnabled: true, sessionJournalEntries: 3 };
 
 /** Resolve the path to `<claudeDirPath>/tycoon/execution.json`. */
 function executionConfigPath(claudeDirPath: string): string {
@@ -806,7 +806,7 @@ export function readExecutionConfig(claudeDirPath: string): ExecutionConfig {
           parsed.sessionJournalEntries >= 0 &&
           parsed.sessionJournalEntries <= 5
             ? parsed.sessionJournalEntries
-            : 0,
+            : 3,
       };
     }
   } catch {

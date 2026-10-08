@@ -408,12 +408,13 @@ test("Session Journal: sessionJournalEntries:0 (feature off) creates no journal 
   }
 });
 
-test("Session Journal: a missing sessionJournalEntries key (execution.json absent entirely) creates no journal file", () => {
+test("Session Journal: a missing sessionJournalEntries key (execution.json absent entirely) defaults to a 3-entry window", () => {
   const root = setupProject();
   try {
     // No execution.json written at all.
-    submitPrompt(root, "should not be journaled either");
-    assert.equal(existsSync(journalPath(root)), false, "missing key must default to off and create no file");
+    for (let i = 1; i <= 4; i++) submitPrompt(root, `default window prompt ${i}`);
+    const entries = (JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile).entries;
+    assert.equal(entries.length, 3, "missing key must default to a 3-entry window");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
