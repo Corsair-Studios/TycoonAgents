@@ -34,6 +34,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { isElectronHostBinary, resolveNodeBinary } from "./resolveNodeBinary";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** The 12 hook event names codex-cli 0.153.0's own HookEventName/HookEventsToml enum accepts, per docs/codex-harness-findings.md. */
@@ -111,7 +112,7 @@ export function resolveCodexHome(options: ResolveCodexHomeOptions): { codexHome:
 
 /**
  * Windows-safe command array for the notify entry / hooks.json commands:
- * `[nodePath, <abs script path>]`. `nodePath` defaults to `process.execPath`
+ * `[nodePath, <abs script path>]`. `nodePath` defaults to resolveNodeBinary() (never the VS Code binary)
  * (the absolute path to the currently-running node binary) rather than the
  * bare string "node", so the notify entry still fires in shells/services
  * where "node" is not on PATH (e.g. codex-cli launched from a GUI process on
@@ -121,7 +122,7 @@ export function resolveCodexHome(options: ResolveCodexHomeOptions): { codexHome:
  * written by an older version of this installer with the bare "node" form
  * are still recognized and removed correctly.
  */
-export function buildHookCommand(hookScriptPath: string, nodePath: string = process.execPath): string[] {
+export function buildHookCommand(hookScriptPath: string, nodePath: string = resolveNodeBinary()): string[] {
   return [nodePath, hookScriptPath];
 }
 
@@ -146,6 +147,8 @@ interface StrippedNotify {
   regionEmpty: boolean;
   /** True when a top-level `notify` key inside the markers was removed. */
   droppedNotify: boolean;
+  /** Text of the dropped `notify` key, for inspecting the command it names. */
+  notifyText: string;
   /** Offset where the region began, and the end of the end-marker line's content. */
   start: number;
   end: number;
@@ -181,6 +184,10 @@ function stripManagedNotifyRegion(text: string): StrippedNotify | undefined {
     dropped.add(li);
     while (li + 1 < endLi && lines[li + 1].cont) dropped.add(++li);
   }
+  let notifyText = "";
+  for (const li of dropped) {
+    if (li !== startLi && li !== endLi) notifyText += text.slice(lines[li].start, lines[li].next);
+  }
   let kept = "";
   for (let li = startLi; li <= endLi; li++) {
     if (!dropped.has(li)) kept += text.slice(lines[li].start, lines[li].next);
@@ -188,9 +195,9 @@ function stripManagedNotifyRegion(text: string): StrippedNotify | undefined {
   const start = lines[startLi].start;
   const end = lines[endLi].end;
   if (kept.trim() === "") {
-    return { text: text.slice(0, start) + text.slice(end), regionEmpty: true, droppedNotify, start, end };
+    return { text: text.slice(0, start) + text.slice(end), regionEmpty: true, droppedNotify, notifyText, start, end };
   }
-  return { text: text.slice(0, start) + kept + text.slice(lines[endLi].next), regionEmpty: false, droppedNotify, start, end };
+  return { text: text.slice(0, start) + kept + text.slice(lines[endLi].next), regionEmpty: false, droppedNotify, notifyText, start, end };
 }
 
 export interface MergeNotifyResult {
@@ -205,16 +212,46 @@ export interface MergeNotifyResult {
  *                   `--previous-notify` argument, at the current path
  *   stale-wrapped - same, but the embedded hook path differs from the current one
  *   blocked       - another tool owns `notify` and our hook is not in it
+ *   wrapper-missing - a known wrapper owns `notify` but carries no hook of
+ *                   ours; install can add it (not an error)
+ *   stale-installed - our managed block exists but names the wrong program
+ *                   (e.g. the editor binary) or script path
  *   none          - no top-level notify at all
+ * "stale-wrapped" also covers a wrapped hook whose node element is wrong.
  */
-export type CodexNotifyState = "installed" | "wrapped" | "stale-wrapped" | "blocked" | "none";
+export type CodexNotifyState =
+  | "installed"
+  | "stale-installed"
+  | "wrapped"
+  | "stale-wrapped"
+  | "wrapper-missing"
+  | "blocked"
+  | "none";
 
 export const CODEX_NOTIFY_BLOCKED_MESSAGE =
   "Another tool owns the Codex notify setting — TycoonAgents can't see Codex turns.";
 export const CODEX_NOTIFY_STALE_MESSAGE =
-  "Another tool wraps the Codex notify setting and it still points at an old TycoonAgents hook path. Install again to update it.";
+  "The Codex notify setting points TycoonAgents at an old hook path or the wrong program, so Codex turns may not be seen. Install again to update it.";
 export const CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE =
-  "Another tool wraps the Codex notify setting, so TycoonAgents left it alone. You can remove TycoonAgents from it by hand.";
+  "TycoonAgents could not remove itself from the Codex notify setting that another tool owns. You can remove it by hand.";
+
+/**
+ * Path equality that ignores Windows spelling differences (slash direction,
+ * case, redundant segments); other paths compare exactly.
+ */
+export function samePath(a: string, b: string): boolean {
+  const winLike = (p: string): boolean => /^[a-zA-Z]:[\\/]/.test(p);
+  if (process.platform === "win32" || winLike(a) || winLike(b)) {
+    const norm = (p: string): string => path.win32.normalize(p.replace(/\//g, "\\")).toLowerCase();
+    return norm(a) === norm(b);
+  }
+  return a === b;
+}
+
+/** Wrapper programs we know how to extend with `--previous-notify` (basename, no extension). */
+function isKnownNotifyWrapper(command: string): boolean {
+  return /^codex-computer-use$/i.test((command.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, ""));
+}
 
 const HOOK_SCRIPT_BASENAME = "tycoon-codex-hook.cjs";
 
@@ -275,14 +312,18 @@ interface EmbeddedHook {
   end: number;
   argv: string[];
   scriptPath: string;
+  /** Range covering the `--previous-notify` flag, its value and the separator that joins them to the rest. */
+  pairStart: number;
+  pairEnd: number;
 }
 
-function scriptBasename(p: string): string {
-  return p.split(/[\\/]/).pop() ?? "";
+interface NotifyWrapper {
+  elements: TomlArrayElement[];
+  embedded?: EmbeddedHook;
 }
 
-/** Our hook embedded in the top-level foreign notify's `--previous-notify` argv, if present. */
-function findEmbeddedHook(topLevel: string): EmbeddedHook | undefined {
+/** Parse the top-level `notify = [...]` string array, and our hook inside its `--previous-notify`, if any. */
+function parseNotifyWrapper(topLevel: string): NotifyWrapper | undefined {
   const m = /^[ \t]*notify[ \t]*=[ \t]*\[/m.exec(topLevel);
   if (!m) return undefined;
   const elements = scanTomlStringArray(topLevel, m.index + m[0].length - 1);
@@ -298,9 +339,23 @@ function findEmbeddedHook(topLevel: string): EmbeddedHook | undefined {
     }
     if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) continue;
     const scriptPath = (parsed as string[]).find((x) => scriptBasename(x) === HOOK_SCRIPT_BASENAME);
-    if (scriptPath !== undefined) return { start: el.start, end: el.end, argv: parsed as string[], scriptPath };
+    if (scriptPath === undefined) continue;
+    let pairStart = elements[k].start;
+    let pairEnd = el.end;
+    if (k > 0) pairStart = elements[k - 1].end;
+    else if (k + 2 < elements.length) pairEnd = elements[k + 2].start;
+    return { elements, embedded: { start: el.start, end: el.end, argv: parsed as string[], scriptPath, pairStart, pairEnd } };
   }
-  return undefined;
+  return { elements };
+}
+
+function scriptBasename(p: string): string {
+  return p.split(/[\\/]/).pop() ?? "";
+}
+
+/** Our hook embedded in the top-level foreign notify's `--previous-notify` argv, if present. */
+function findEmbeddedHook(topLevel: string): EmbeddedHook | undefined {
+  return parseNotifyWrapper(topLevel)?.embedded;
 }
 
 /**
@@ -308,16 +363,35 @@ function findEmbeddedHook(topLevel: string): EmbeddedHook | undefined {
  * hook whose script path differs is reported as stale-wrapped (the node path
  * is not compared; install rewrites it anyway).
  */
-export function detectCodexNotifyState(text: string, hookScriptPath?: string): CodexNotifyState {
+export function detectCodexNotifyState(text: string, hookScriptPath?: string, nodePath?: string): CodexNotifyState {
+  const wrongNode = (node: string | undefined): boolean =>
+    node !== undefined && (isElectronHostBinary(node) || (nodePath !== undefined && !samePath(node, nodePath)));
   const stripped = stripManagedNotifyRegion(text);
-  if (stripped?.droppedNotify) return "installed";
+  if (stripped?.droppedNotify) {
+    const open = stripped.notifyText.indexOf("[");
+    const elements = open === -1 ? undefined : scanTomlStringArray(stripped.notifyText, open);
+    const stale =
+      elements !== undefined &&
+      (wrongNode(elements[0]?.value) ||
+        (hookScriptPath !== undefined && elements.length > 1 && !samePath(elements[1].value, hookScriptPath)));
+    return stale ? "stale-installed" : "installed";
+  }
   const rest = stripped ? stripped.text : text;
   const headerIdx = findFirstTableHeaderIndex(rest);
   const topLevel = headerIdx === -1 ? rest : rest.slice(0, headerIdx);
   if (!/^[ \t]*notify[ \t]*=/m.test(topLevel)) return "none";
-  const embedded = findEmbeddedHook(topLevel);
-  if (!embedded) return "blocked";
-  return hookScriptPath !== undefined && embedded.scriptPath !== hookScriptPath ? "stale-wrapped" : "wrapped";
+  const wrapper = parseNotifyWrapper(topLevel);
+  const embedded = wrapper?.embedded;
+  if (!embedded) {
+    const canExtend =
+      wrapper !== undefined &&
+      wrapper.elements.length > 0 &&
+      isKnownNotifyWrapper(wrapper.elements[0].value) &&
+      !wrapper.elements.some((e) => e.value === "--previous-notify");
+    return canExtend ? "wrapper-missing" : "blocked";
+  }
+  const staleScript = hookScriptPath !== undefined && !samePath(embedded.scriptPath, hookScriptPath);
+  return staleScript || wrongNode(embedded.argv[0]) ? "stale-wrapped" : "wrapped";
 }
 
 /**
@@ -376,6 +450,19 @@ export function mergeNotifyIntoConfigToml(
           withoutManaged.slice(embedded.end);
       return { text: rewritten };
     }
+    const wrapper = parseNotifyWrapper(topLevelSection);
+    if (
+      wrapper &&
+      wrapper.elements.length > 0 &&
+      isKnownNotifyWrapper(wrapper.elements[0].value) &&
+      !wrapper.elements.some((e) => e.value === "--previous-notify")
+    ) {
+      // A known wrapper that forwards to a previous notify command: add ours
+      // as that previous command, encoded the way wrappers already do.
+      const last = wrapper.elements[wrapper.elements.length - 1];
+      const pair = `, "--previous-notify", ${JSON.stringify(JSON.stringify(command))}`;
+      return { text: withoutManaged.slice(0, last.end) + pair + withoutManaged.slice(last.end) };
+    }
     warnings.push(
       "config.toml already has a top-level `notify =` entry outside the tycoon-codex-hook managed block; left it untouched.",
     );
@@ -415,6 +502,19 @@ export function removeNotifyFromConfigToml(existing: string): string {
   // `after` began with a blank separator line — strip that leading blank
   // line so removal restores the original bytes exactly.
   return before === "" ? combined.replace(/^\r?\n/, "") : combined;
+}
+
+/**
+ * Remove our hook from another tool's notify wrapper: only the
+ * `"--previous-notify", "<our argv>"` pair goes, every other element and byte
+ * stays. Returns the same string when no wrapper carries our hook.
+ */
+export function removeWrappedHookFromConfigToml(text: string): string {
+  const headerIdx = findFirstTableHeaderIndex(text);
+  const topLevel = headerIdx === -1 ? text : text.slice(0, headerIdx);
+  const embedded = findEmbeddedHook(topLevel);
+  if (!embedded) return text;
+  return text.slice(0, embedded.pairStart) + text.slice(embedded.pairEnd);
 }
 
 /**
@@ -558,9 +658,8 @@ export function uninstallCodexHooks(options: UninstallCodexHooksOptions): { warn
   const configTomlPath = path.join(codexHome, "config.toml");
   if (fs.existsSync(configTomlPath)) {
     const existing = fs.readFileSync(configTomlPath, "utf8");
-    const stripped = removeNotifyFromConfigToml(existing);
+    const stripped = removeWrappedHookFromConfigToml(removeNotifyFromConfigToml(existing));
     if (stripped !== existing) fs.writeFileSync(configTomlPath, stripped, "utf8");
-    // A wrapper owned by another tool is never edited on uninstall.
     const state = detectCodexNotifyState(stripped);
     if (state === "wrapped" || state === "stale-wrapped") warnings.push(CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE);
   }

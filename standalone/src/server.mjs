@@ -1138,8 +1138,8 @@ function handleBrowserMessage(msg) {
       }
       try {
         const { uninstallCodexHooks } = installCodexHooksModule();
-        uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
-        _lastCodexHookWarnings = undefined;
+        const result = uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+        _lastCodexHookWarnings = result && result.warnings;
       } catch (err) {
         console.error('[tycoonagents-standalone] uninstallCodexHooks failed:', err instanceof Error ? err.message : err);
       }

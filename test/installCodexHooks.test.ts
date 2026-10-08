@@ -22,6 +22,7 @@ import {
   resolveCodexHome,
   mergeNotifyIntoConfigToml,
   detectCodexNotifyState,
+  removeWrappedHookFromConfigToml,
   removeNotifyFromConfigToml,
   buildHooksJson,
   buildHookCommand,
@@ -387,16 +388,48 @@ test("(w5) detectCodexNotifyState reports installed for our block and none for n
   assert.equal(detectCodexNotifyState('model = "x"\n', CURRENT_HOOK), "none");
 });
 
-test("(w6) uninstallCodexHooks leaves a wrapper untouched and returns a plain-words warning", () => {
+test("(w6) uninstallCodexHooks removes only our --previous-notify pair from a wrapper, and install adds it back", () => {
   const { codexHome, projectDir } = setupDirs();
   mkdirSync(codexHome, { recursive: true });
   const configPath = join(codexHome, "config.toml");
-  const original = `${wrapperNotify(["node", CURRENT_HOOK])}\n`;
+  const original = `${wrapperNotify(["node", CURRENT_HOOK])}\n\n[windows]\nsandbox = "elevated"\n`;
   writeFileSync(configPath, original, "utf8");
   const result = uninstallCodexHooks({ projectDir, env: { CODEX_HOME: codexHome } });
+  const bare = 'notify = [ "C:\\\\tools\\\\codex-computer-use.exe", "turn-ended" ]\n\n[windows]\nsandbox = "elevated"\n';
+  assert.equal(readFileSync(configPath, "utf8"), bare);
+  assert.equal(result.warnings, undefined);
+  assert.equal(detectCodexNotifyState(bare, CURRENT_HOOK, "node"), "wrapper-missing");
+  installCodexHooks({ projectDir, hookScriptPath: CURRENT_HOOK, nodePath: "node", env: { CODEX_HOME: codexHome } });
   assert.equal(readFileSync(configPath, "utf8"), original);
-  assert.ok(result.warnings && /another tool/i.test(result.warnings[0]));
   rmSync(join(codexHome, ".."), { recursive: true, force: true });
+});
+
+test("(w6b) a notify wrapper that is not a known one stays blocked and gets no pair", () => {
+  const text = 'notify = [ "other.exe", "turn-ended" ]\n';
+  assert.equal(detectCodexNotifyState(text, CURRENT_HOOK, "node"), "blocked");
+  assert.equal(mergeNotifyIntoConfigToml(text, CURRENT_HOOK, "node").text, text);
+  assert.equal(removeWrappedHookFromConfigToml(text), text);
+});
+
+test("(w6c) removal handles the pair being first or last in the wrapper array", () => {
+  const argv = JSON.stringify(JSON.stringify(["node", CURRENT_HOOK]));
+  assert.equal(removeWrappedHookFromConfigToml(`notify = ["--previous-notify", ${argv}, "x"]\n`), 'notify = ["x"]\n');
+  assert.equal(removeWrappedHookFromConfigToml(`notify = ["a", "--previous-notify", ${argv}]\n`), 'notify = ["a"]\n');
+});
+
+test("(w12) a wrapped or managed entry naming the editor binary is stale and install rewrites it", () => {
+  const code = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
+  const wrapped = wrapperNotify([code, CURRENT_HOOK]);
+  assert.equal(detectCodexNotifyState(wrapped + "\n", CURRENT_HOOK), "stale-wrapped");
+  assert.equal(detectCodexNotifyState(wrapped + "\n", CURRENT_HOOK, "node"), "stale-wrapped");
+  const fixed = mergeNotifyIntoConfigToml(wrapped + "\n", CURRENT_HOOK, "node");
+  assert.ok(fixed.text.includes(wrapperNotify(["node", CURRENT_HOOK])));
+  assert.equal(detectCodexNotifyState(fixed.text, CURRENT_HOOK, "node"), "wrapped");
+
+  const managed = mergeNotifyIntoConfigToml(undefined, CURRENT_HOOK, code).text;
+  assert.equal(detectCodexNotifyState(managed, CURRENT_HOOK), "stale-installed");
+  const healed = mergeNotifyIntoConfigToml(managed, CURRENT_HOOK, "node").text;
+  assert.equal(detectCodexNotifyState(healed, CURRENT_HOOK, "node"), "installed");
 });
 
 test("(w7) other tables stranded between the notify markers survive merge and removal", () => {
@@ -446,4 +479,17 @@ test("(w11) header-like lines inside a multi-line value do not end the top-level
   assert.equal(detectCodexNotifyState(text, CURRENT_HOOK), "blocked");
   const merged = mergeNotifyIntoConfigToml(text, CURRENT_HOOK, "node");
   assert.equal(merged.text, text);
+});
+
+test("(w13) Windows path spelling differences are not stale", () => {
+  const managed = mergeNotifyIntoConfigToml(undefined, "c:/ext/hooks/tycoon-codex-hook.cjs", "c:/Program Files/nodejs/node.exe").text;
+  assert.equal(
+    detectCodexNotifyState(managed, "C:\\ext\\hooks\\tycoon-codex-hook.cjs", "C:\\Program Files\\nodejs\\node.exe"),
+    "installed",
+  );
+  const wrapped = wrapperNotify(["c:/Program Files/nodejs/node.exe", "c:/ext/hooks/tycoon-codex-hook.cjs"]) + "\n";
+  assert.equal(
+    detectCodexNotifyState(wrapped, "C:\\ext\\hooks\\tycoon-codex-hook.cjs", "C:\\Program Files\\nodejs\\node.exe"),
+    "wrapped",
+  );
 });

@@ -20,6 +20,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { resolveCodexHome, type ResolveCodexHomeEnv } from "./installCodexHooks";
+import { resolveNodeBinary } from "./resolveNodeBinary";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** Marker delimiting the block this installer owns inside config.toml, so uninstall removes only its own lines. */
@@ -238,7 +239,7 @@ export interface InstallCodexDispatcherOptions {
   platform?: NodeJS.Platform;
   /** Absolute path to hooks/tycoon-dispatcher-mcp.cjs. */
   serverScriptPath: string;
-  /** Absolute node executable path written into the command. Defaults to process.execPath. */
+  /** Absolute node executable path written into the command. Defaults to resolveNodeBinary() (never the VS Code binary). */
   nodePath?: string;
 }
 
@@ -259,7 +260,7 @@ export function installCodexDispatcher(options: InstallCodexDispatcherOptions): 
   const configTomlPath = path.join(codexHome, "config.toml");
   const existing = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : undefined;
   const merged = mergeDispatcherIntoConfigToml(existing, {
-    nodePath: options.nodePath ?? process.execPath,
+    nodePath: options.nodePath ?? resolveNodeBinary(),
     serverScriptPath: options.serverScriptPath,
   });
   fs.writeFileSync(configTomlPath, merged.text, "utf8");

@@ -40,6 +40,7 @@ import {
   CODEX_NOTIFY_STALE_MESSAGE,
   type CodexNotifyState,
 } from "../../providers/codex/installCodexHooks";
+import { resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
@@ -8410,7 +8411,9 @@ export class TycoonPanel {
         }
       }
       const state = this._detectCodexNotifyState();
-      if (state === "blocked" || state === "stale-wrapped") return false;
+      if (state === "blocked" || state === "stale-wrapped" || state === "stale-installed" || state === "wrapper-missing") {
+        return false;
+      }
       return hasToml || hasHooksJson || state === "wrapped";
     } catch {
       return false;
@@ -8423,7 +8426,11 @@ export class TycoonPanel {
       const { codexHome } = resolveCodexHome({ env: process.env, platform: process.platform });
       const configTomlPath = path.join(codexHome, "config.toml");
       if (!fs.existsSync(configTomlPath)) return "none";
-      return detectCodexNotifyState(fs.readFileSync(configTomlPath, "utf8"), this._codexHookScriptPath());
+      return detectCodexNotifyState(
+        fs.readFileSync(configTomlPath, "utf8"),
+        this._codexHookScriptPath(),
+        resolveNodeBinary(),
+      );
     } catch {
       return "none";
     }
@@ -8433,7 +8440,7 @@ export class TycoonPanel {
   private _codexNotifyStateWarning(): string | undefined {
     const state = this._detectCodexNotifyState();
     if (state === "blocked") return CODEX_NOTIFY_BLOCKED_MESSAGE;
-    if (state === "stale-wrapped") return CODEX_NOTIFY_STALE_MESSAGE;
+    if (state === "stale-wrapped" || state === "stale-installed") return CODEX_NOTIFY_STALE_MESSAGE;
     return undefined;
   }
 
