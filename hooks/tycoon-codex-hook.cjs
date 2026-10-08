@@ -67,18 +67,26 @@ const HOOKS_EVENT_MAP = {
   interrupt: "interrupt",
 };
 
+// Project root for this invocation. The notify entry is machine-wide, so the
+// root is discovered from where Codex is running (see main()), never from this
+// script's own location. null = TycoonAgents is not installed for this cwd.
+let resolvedProjectRoot = null;
+
+function getProjectRoot() {
+  const override = process.env.CLAUDE_PROJECT_DIR;
+  if (override && override.trim()) return override.trim();
+  return resolvedProjectRoot;
+}
+
+/** Activity file for the resolved project, or null (no mkdir, no write) when none. */
 function resolveActivityFile() {
-  const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..");
-  const tycoonDir = path.join(projectRoot, ".claude", "tycoon");
-  try {
-    fs.mkdirSync(tycoonDir, { recursive: true });
-  } catch {
-    /* fail-open: appendRecord below no-ops if the dir truly can't be created */
-  }
-  return path.join(tycoonDir, "activity.jsonl");
+  const projectRoot = getProjectRoot();
+  if (!projectRoot) return null;
+  return path.join(projectRoot, ".claude", "tycoon", "activity.jsonl");
 }
 
 function appendRecord(activityFile, record) {
+  if (!activityFile) return;
   try {
     fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
   } catch {
@@ -105,7 +113,8 @@ function appendRecord(activityFile, record) {
 // ---------------------------------------------------------------------------
 
 function resolveActiveStackFile() {
-  const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..");
+  const projectRoot = getProjectRoot();
+  if (!projectRoot) return null;
   return path.join(projectRoot, ".claude", "tycoon", "active-agent-codex.json");
 }
 
@@ -126,6 +135,7 @@ function resolveActiveStackFile() {
 const CODEX_STACK_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 
 function readActiveStack(stackFile) {
+  if (!stackFile) return [];
   try {
     const raw = fs.readFileSync(stackFile, "utf8");
     const parsed = JSON.parse(raw);
@@ -138,6 +148,7 @@ function readActiveStack(stackFile) {
 }
 
 function writeActiveStack(stackFile, stack) {
+  if (!stackFile) return;
   try {
     fs.mkdirSync(path.dirname(stackFile), { recursive: true });
     fs.writeFileSync(stackFile, JSON.stringify({ stack }, null, 2), "utf8");
@@ -234,7 +245,8 @@ function isDispatcherConfigured(env = process.env) {
 
 function evaluateSpawnRouting(eventName, payload, activityFile, env = process.env) {
   try {
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..");
+    const projectRoot = getProjectRoot();
+    if (!projectRoot) return { decision: "allow" };
     const agentsDir = path.join(projectRoot, ".claude", "agents");
     const stackFile = resolveActiveStackFile();
     const threadId = payload["thread-id"] || payload.thread_id || payload.session_id || "";
@@ -443,7 +455,7 @@ function mapNotifyPayload(payload, activityFile, at, env = process.env) {
   }
 
   if (sessionMeta && sessionMeta.thread_source === "subagent") {
-    const projectRoot = process.env.CLAUDE_PROJECT_DIR || path.resolve(__dirname, "..");
+    const projectRoot = getProjectRoot() || process.cwd();
     const agentsDir = path.join(projectRoot, ".claude", "agents");
     let knownAgentIds;
     try {
@@ -609,8 +621,27 @@ function popActiveStackEntry(payload) {
   }
 }
 
+/**
+ * Resolves the project root for a detected payload: env override, payload cwd,
+ * rollout session_meta cwd, process.cwd() - each walked up to the nearest
+ * `.claude/tycoon/`. Sets the module-level root; returns it (null = no-op).
+ */
+function discoverProjectRoot(payload, env = process.env) {
+  const candidates = [];
+  if (payload && typeof payload.cwd === "string" && payload.cwd) candidates.push(payload.cwd);
+  try {
+    const tid = payload && (payload["thread-id"] || payload.thread_id || payload.session_id);
+    const meta = tid ? codexRollout.resolveSessionMeta(tid, undefined, env) : null;
+    if (meta && typeof meta.cwd === "string" && meta.cwd) candidates.push(meta.cwd);
+  } catch {
+    /* fail-open */
+  }
+  candidates.push(process.cwd());
+  resolvedProjectRoot = codexRollout.resolveProjectRoot(candidates, env);
+  return resolvedProjectRoot;
+}
+
 function main() {
-  const activityFile = resolveActivityFile();
   const at = Date.now();
 
   // argv[2]: notify's documented single-JSON-arg shape, OR a bare event
@@ -639,6 +670,14 @@ function main() {
       process.exit(0);
       return;
     }
+
+    // Machine-wide entry: find the project from where Codex runs. No
+    // TycoonAgents project found -> do nothing (no write, no mkdir).
+    if (!discoverProjectRoot(detected.payload)) {
+      process.exit(0);
+      return;
+    }
+    const activityFile = resolveActivityFile();
 
     // Routing policy under Codex (p22-t5): a spawn attempt (subagent_start,
     // or a pre_tool_use whose tool looks like Codex's native agent-spawn
@@ -708,6 +747,8 @@ module.exports = {
   evaluateSpawnRouting,
   isDispatcherConfigured,
   resolveActiveStackFile,
+  resolveActivityFile,
+  discoverProjectRoot,
   readActiveStack,
   writeActiveStack,
   popActiveStackEntry,

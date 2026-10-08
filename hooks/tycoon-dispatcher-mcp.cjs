@@ -61,7 +61,7 @@
  *
  * Path discovery (docs/PATH-DISCOVERY.md ladder) for activity.jsonl:
  *   1. TYCOON_PROJECT_DIR env var, if set.
- *   2. process.cwd().
+ *   2. nearest ancestor of process.cwd() containing .claude/tycoon/; then the Codex rollout containing this call; then <project> when this file is a <project>/.claude/hooks/ copy.
  *   Explicit isError (both for a tools/call and thrown as a startup-time
  *   diagnostic on stderr) when neither resolves to a usable directory — this
  *   never silently drops telemetry.
@@ -121,20 +121,142 @@ function isErrorResult(text) {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
-/** Path discovery for activity.jsonl — override-first, explicit failure on total failure. */
-function resolveActivityFile() {
+/**
+ * Project discovery (docs/PATH-DISCOVERY.md ladder): TYCOON_PROJECT_DIR env
+ * override, else walk up from process.cwd() (Codex starts MCP servers in the
+ * session cwd) to the nearest ancestor containing `.claude/tycoon/`, else
+ * (dispatcher copied into a project's .claude/) <this file>/.. only when that
+ * dir has the marker. Returns null when nothing resolves - never a guess.
+ */
+function resolveProjectDir() {
   const override = process.env.TYCOON_PROJECT_DIR;
-  const projectDir = override && override.trim() ? override.trim() : process.cwd();
-  if (!projectDir) {
-    throw new Error("tycoon-dispatcher-mcp: could not resolve a project directory — set TYCOON_PROJECT_DIR.");
+  if (override && override.trim()) return override.trim();
+  const fromCwd = codexRollout.findTycoonProjectRoot(process.cwd());
+  if (fromCwd) return fromCwd;
+  return copiedProjectDir();
+}
+
+/** True when this file sits in a `<project>/.claude/hooks/` copy (never a source checkout or extension dir). */
+function copiedProjectDir() {
+  if (path.basename(__dirname).toLowerCase() !== "hooks") return null;
+  if (path.basename(path.dirname(__dirname)).toLowerCase() !== ".claude") return null;
+  return codexRollout.findTycoonProjectRoot(path.resolve(__dirname, "..", ".."));
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Per-delegate-call project resolution. Codex does not start MCP servers in
+ * the session cwd and passes no cwd with the call, so the order is:
+ * TYCOON_PROJECT_DIR -> the Codex rollout that contains this very call (task
+ * match, then the recent-call fallback; its session_meta.cwd walked up to
+ * `.claude/tycoon/`) -> process.cwd() walk-up -> project copy location. Returns { projectDir, threadId? } or null.
+ */
+async function resolveProjectForCall(args) {
+  const override = process.env.TYCOON_PROJECT_DIR;
+  if (override && override.trim()) return { projectDir: override.trim() };
+  const task = args && typeof args.task === "string" ? args.task : "";
+  const delay = process.env.TYCOON_ROLLOUT_MATCH_DELAY_MS !== undefined ? Number(process.env.TYCOON_ROLLOUT_MATCH_DELAY_MS) : 150;
+  let matchedOutside = false;
+  const candidates = codexRollout.listCandidateRollouts(process.env);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const m = codexRollout.findThreadForDelegateCall(task, process.env, Date.now(), candidates);
+    if (m) {
+      const root = codexRollout.findTycoonProjectRoot(m.cwd);
+      if (root) return { projectDir: root, threadId: m.threadId };
+      matchedOutside = true; // matched a thread outside any TycoonAgents project: do not guess
+      break;
+    }
+    if (attempt < 2 && delay > 0) await sleep(delay);
   }
+  // No rollout holds this call's literal task (e.g. built dynamically): take
+  // the newest recent rollout that made a tycoon delegate call.
+  const recent = matchedOutside ? null : codexRollout.findRecentDelegateThread(process.env, Date.now(), candidates);
+  if (recent) {
+    const root = codexRollout.findTycoonProjectRoot(recent.cwd);
+    if (root) return { projectDir: root, threadId: recent.threadId };
+  }
+  // Last resorts: this process's own cwd (a long-lived codex.exe can serve
+  // sessions from other folders, so it is NOT trusted before the rollout), then
+  // a <project>/.claude/hooks copy.
+  const fromCwd = codexRollout.findTycoonProjectRoot(process.cwd());
+  if (fromCwd) return { projectDir: fromCwd };
+  const copied = copiedProjectDir();
+  return copied ? { projectDir: copied } : null;
+}
+
+const NO_PROJECT_MESSAGE =
+  "TycoonAgents couldn't tell which project this Codex session is in (no .claude/tycoon/ found from the working directory or the session's rollout). Set TYCOON_PROJECT_DIR or run Codex inside a TycoonAgents project.";
+
+function activityFileFor(projectDir) {
   const tycoonDir = path.join(projectDir, ".claude", "tycoon");
-  try {
-    fs.mkdirSync(tycoonDir, { recursive: true });
-  } catch {
-    /* fail-open: appendRecord below no-ops if the dir truly can't be created */
+  if (process.env.TYCOON_PROJECT_DIR && process.env.TYCOON_PROJECT_DIR.trim()) {
+    try {
+      fs.mkdirSync(tycoonDir, { recursive: true });
+    } catch {
+      /* fail-open: appendRecord below no-ops if the dir truly can't be created */
+    }
   }
   return path.join(tycoonDir, "activity.jsonl");
+}
+
+/** Path discovery for activity.jsonl (synchronous legs only) - explicit failure on total failure. */
+function resolveActivityFile() {
+  const projectDir = resolveProjectDir();
+  if (!projectDir) throw new Error(NO_PROJECT_MESSAGE);
+  return activityFileFor(projectDir);
+}
+
+const ORCHESTRATOR_TAIL_BYTES = 64 * 1024;
+/** Threads this process opened (activityFile|threadId); covers an open start that has scrolled out of the tail window. */
+const openOrchestratorMemo = new Set();
+
+/**
+ * True when the codex thread has an OPEN orchestrator start: within the last
+ * ~64KB of activityFile, its latest UserPromptSubmit/SessionStart is newer than
+ * its latest Stop (the notify hook's end-of-turn record). With neither in the
+ * tail, falls back to a per-process memo of starts this process wrote.
+ */
+function hasOpenOrchestrator(activityFile, threadId) {
+  const memoKey = activityFile + "|" + threadId;
+  try {
+    const fd = fs.openSync(activityFile, "r");
+    let text;
+    try {
+      const size = fs.fstatSync(fd).size;
+      const start = Math.max(0, size - ORCHESTRATOR_TAIL_BYTES);
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString("utf8");
+      if (start > 0) {
+        const nl = text.indexOf("\n");
+        text = nl === -1 ? "" : text.slice(nl + 1);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    let lastStart = -1;
+    let lastStop = -1;
+    let i = 0;
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      i++;
+      try {
+        const r = JSON.parse(line);
+        if (!r || r.provider !== "codex" || r.sessionId !== threadId) continue;
+        if (r.event === "UserPromptSubmit" || r.event === "SessionStart") lastStart = i;
+        else if (r.event === "Stop") lastStop = i;
+      } catch {
+        /* skip bad line */
+      }
+    }
+    if (lastStart === -1 && lastStop === -1) return openOrchestratorMemo.has(memoKey);
+    const open = lastStart > lastStop;
+    if (!open) openOrchestratorMemo.delete(memoKey);
+    return open;
+  } catch {
+    return openOrchestratorMemo.has(memoKey);
+  }
 }
 
 function appendRecord(activityFile, record) {
@@ -165,10 +287,10 @@ function readActiveStack(stackFile) {
 
 /** True when nested delegation must be denied: TYCOON_DISPATCH_DEPTH>=1, or the calling
  * codex thread is itself a bound worker per tycoon-codex-hook.cjs's stack file. */
-function isNestedDelegation(projectDir) {
+function isNestedDelegation(projectDir, resolvedThreadId) {
   const depth = Number(process.env.TYCOON_DISPATCH_DEPTH || "0");
   if (Number.isFinite(depth) && depth >= 1) return true;
-  const threadId = process.env.TYCOON_CODEX_THREAD_ID;
+  const threadId = resolvedThreadId || process.env.TYCOON_CODEX_THREAD_ID;
   if (!threadId) return false;
   const stack = readActiveStack(resolveActiveStackFile(projectDir));
   return stack.some((e) => e.threadId === threadId);
@@ -310,19 +432,14 @@ async function handleDelegateTool(args) {
   const task = args && typeof args.task === "string" ? args.task : undefined;
   if (!task) return isErrorResult("Missing required argument: task");
 
-  const override = process.env.TYCOON_PROJECT_DIR;
-  const projectDir = override && override.trim() ? override.trim() : process.cwd();
+  const resolved = await resolveProjectForCall(args);
+  if (!resolved) return isErrorResult(NO_PROJECT_MESSAGE);
+  const projectDir = resolved.projectDir;
   const agentsDir = path.join(projectDir, ".claude", "agents");
-
-  let activityFile;
-  try {
-    activityFile = resolveActivityFile();
-  } catch (err) {
-    return isErrorResult(err && err.message ? err.message : String(err));
-  }
+  const activityFile = activityFileFor(projectDir);
 
   // Nested-delegation denial — structural, no HookRecord write.
-  if (isNestedDelegation(projectDir)) {
+  if (isNestedDelegation(projectDir, resolved.threadId)) {
     return isErrorResult(LEAF_WORKER_DENY_MESSAGE);
   }
 
@@ -347,7 +464,7 @@ async function handleDelegateTool(args) {
 
   if (routing.denied) {
     if (routing.providerError) {
-      appendRecord(activityFile, { ...routing.providerError, sessionId: process.env.TYCOON_CODEX_THREAD_ID || "dispatcher", at: Date.now() });
+      appendRecord(activityFile, { ...routing.providerError, sessionId: resolved.threadId || process.env.TYCOON_CODEX_THREAD_ID || "dispatcher", at: Date.now() });
     }
     return isErrorResult(routing.message || `delegate: routing denied (${routing.reason || "no-match"})`);
   }
@@ -396,7 +513,7 @@ async function handleDelegateTool(args) {
   // Resolve the calling thread by scanning CODEX_HOME/sessions for the
   // newest user-originated rollout whose cwd matches this project, falling
   // back to "dispatcher" (with one stderr warning) when nothing matches.
-  let threadId = process.env.TYCOON_CODEX_THREAD_ID;
+  let threadId = resolved.threadId || process.env.TYCOON_CODEX_THREAD_ID;
   if (!threadId) {
     let found = null;
     try {
@@ -422,6 +539,14 @@ async function handleDelegateTool(args) {
   // Claude Code hook.
   const genSpawnId = () => (typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `spawn-${Date.now()}`);
   let spawnId = genSpawnId();
+
+  // Show the orchestrator mid-turn while the delegate runs; the notify hook's
+  // end-of-turn Stop closes it. Same shape/sessionId (Codex thread id) the
+  // hook writes for its synthetic start, once per thread.
+  if (threadId !== "dispatcher" && !hasOpenOrchestrator(activityFile, threadId)) {
+    appendRecord(activityFile, { event: "UserPromptSubmit", provider: "codex", sessionId: threadId, at: Date.now() });
+    openOrchestratorMemo.add(activityFile + "|" + threadId);
+  }
 
   const preRecord = {
     event: "PreToolUse",
@@ -725,6 +850,8 @@ function main() {
 
 module.exports = {
   resolveActivityFile,
+  resolveProjectDir,
+  resolveProjectForCall,
   resolveActiveStackFile,
   isNestedDelegation,
   handleDelegateTool,

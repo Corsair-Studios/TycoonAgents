@@ -276,7 +276,260 @@ function isTycoonBridgeThread(sessionMeta, env = process.env) {
   return !!(env && env.TYCOON_CODEX_BRIDGE === "1");
 }
 
+/**
+ * Walks UP from startDir to the nearest ancestor (inclusive) containing
+ * `.claude/tycoon/` - the marker that TycoonAgents is installed there.
+ * Returns that ancestor or null. Never throws, never creates anything.
+ */
+function findTycoonProjectRoot(startDir) {
+  try {
+    if (!startDir || typeof startDir !== "string") return null;
+    let dir = path.resolve(startDir);
+    for (;;) {
+      try {
+        if (fs.statSync(path.join(dir, ".claude", "tycoon")).isDirectory()) return dir;
+      } catch {
+        /* not here, keep walking */
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Project-root discovery for the machine-wide Codex notify hook:
+ * CLAUDE_PROJECT_DIR env (override-first), else the first candidate start dir
+ * (caller passes payload cwd, rollout session_meta cwd, process.cwd() in
+ * order) whose walk-up finds `.claude/tycoon/`. Returns null when nothing
+ * is found (caller must no-op, never write).
+ */
+function resolveProjectRoot(candidateDirs, env = process.env) {
+  const override = env && env.CLAUDE_PROJECT_DIR;
+  if (override && override.trim()) return override.trim();
+  for (const c of candidateDirs || []) {
+    const found = findTycoonProjectRoot(c);
+    if (found) return found;
+  }
+  return null;
+}
+
+const DELEGATE_CALL_WINDOW_MS = 2 * 60 * 1000;
+const DELEGATE_FILE_MAX_AGE_MS = 10 * 60 * 1000;
+const DELEGATE_MATCH_MAX_FILES = 20;
+const DELEGATE_MATCH_TAIL_BYTES = 256 * 1024;
+
+/** Reads at most the last maxBytes of a file as utf8 (drops a possibly-partial first line). */
+function readTail(filePath, maxBytes) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString("utf8");
+    if (start > 0) {
+      const nl = text.indexOf("\n");
+      text = nl === -1 ? "" : text.slice(nl + 1);
+    }
+    return text;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Candidate rollout files for a delegate-call match: only today's and
+ * yesterday's sessions/YYYY/MM/DD directories (local and UTC dates, since the
+ * directory date convention is not guaranteed), modified in the last 10
+ * minutes, newest-modified first, capped at 20. Computed once per delegate
+ * call and reused across retries. Fail-open: [] on any error.
+ */
+function listCandidateRollouts(env = process.env, now = Date.now()) {
+  try {
+    const home = resolveCodexHome(env);
+    if (!home) return [];
+    const dirs = new Set();
+    for (const offset of [0, 1]) {
+      const d = new Date(now - offset * 86400000);
+      dirs.add(path.join(home, "sessions", String(d.getFullYear()), pad2(d.getMonth() + 1), pad2(d.getDate())));
+      dirs.add(path.join(home, "sessions", String(d.getUTCFullYear()), pad2(d.getUTCMonth() + 1), pad2(d.getUTCDate())));
+    }
+    const out = [];
+    for (const dir of dirs) {
+      let names;
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
+        const full = path.join(dir, name);
+        try {
+          const mtime = fs.statSync(full).mtimeMs;
+          if (now - mtime <= DELEGATE_FILE_MAX_AGE_MS) out.push({ full, mtime });
+        } catch {
+          /* skip */
+        }
+      }
+    }
+    out.sort((a, b) => b.mtime - a.mtime);
+    return out.slice(0, DELEGATE_MATCH_MAX_FILES);
+  } catch {
+    return [];
+  }
+}
+
+/** Escapes non-ASCII as \uXXXX (what a JS/JSON producer may emit). */
+function escapeNonAscii(str) {
+  return str.replace(/[^\x00-\x7f]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
+/** Source forms in which a JS exec call may embed `task` as a string literal body. */
+function taskSourceForms(task) {
+  const dq = JSON.stringify(task).slice(1, -1);
+  const sq = task
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
+  return [dq, escapeNonAscii(dq), sq, escapeNonAscii(sq), task];
+}
+
+/**
+ * True when a rollout response_item payload is a call of the tycoon delegate
+ * tool carrying `task`. Two observed shapes (Codex 0.162, rollout-*.jsonl):
+ *  - {type:"custom_tool_call", name:"exec", input:"<JS source>"} where the JS
+ *    contains `tools.mcp__tycoon__delegate({specialist:"..",task:".."})`;
+ *  - {type:"function_call", name:"mcp__tycoon__delegate", arguments:"<JSON>"}.
+ */
+function payloadIsDelegateCallWithTask(payload, task) {
+  if (!payload || typeof payload !== "object") return false;
+  if (payload.type === "function_call") {
+    if (!/delegate/.test(String(payload.name || ""))) return false;
+    try {
+      const a = JSON.parse(payload.arguments);
+      return !!a && a.task === task;
+    } catch {
+      return false;
+    }
+  }
+  if (payload.type === "custom_tool_call") {
+    const src = typeof payload.input === "string" ? payload.input : "";
+    if (!/mcp__tycoon__delegate/.test(src)) return false;
+    return taskSourceForms(task).some((f) => f && src.includes(f));
+  }
+  return false;
+}
+
+/** True when a rollout response_item payload is any call of the tycoon delegate tool. */
+function payloadIsAnyDelegateCall(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  if (payload.type === "function_call") return /delegate/.test(String(payload.name || ""));
+  if (payload.type === "custom_tool_call") return typeof payload.input === "string" && /mcp__tycoon__delegate/.test(payload.input);
+  return false;
+}
+
+/** Delegate-call lines in a rollout's tail: [{ ts (ms from the line's own timestamp), payload }]. */
+function readDelegateCalls(filePath) {
+  const calls = [];
+  let text;
+  try {
+    text = readTail(filePath, DELEGATE_MATCH_TAIL_BYTES);
+  } catch {
+    return calls;
+  }
+  for (const line of text.split("\n")) {
+    if (!line.includes("delegate")) continue;
+    try {
+      const item = JSON.parse(line);
+      if (!item || item.type !== "response_item" || !payloadIsAnyDelegateCall(item.payload)) continue;
+      const ts = Date.parse(item.timestamp);
+      if (Number.isFinite(ts)) calls.push({ ts, payload: item.payload });
+    } catch {
+      /* skip bad line */
+    }
+  }
+  return calls;
+}
+
+/**
+ * Finds the live Codex thread that issued a tycoon delegate call: among the
+ * candidate rollouts, the delegate call line carrying this `task` with the
+ * newest line timestamp (not file mtime), and only if that timestamp is within
+ * the last ~2 minutes. Returns { threadId, cwd, filePath } (id and cwd from the
+ * first-line session_meta) or null. Fail-open, never throws.
+ */
+function findThreadForDelegateCall(task, env = process.env, now = Date.now(), candidates) {
+  try {
+    if (typeof task !== "string" || !task) return null;
+    const files = candidates || listCandidateRollouts(env, now);
+    let best = null;
+    for (const f of files) {
+      for (const c of readDelegateCalls(f.full)) {
+        if (now - c.ts > DELEGATE_CALL_WINDOW_MS || c.ts - now > DELEGATE_CALL_WINDOW_MS) continue;
+        if (!payloadIsDelegateCallWithTask(c.payload, task)) continue;
+        if (!best || c.ts > best.ts) best = { ts: c.ts, full: f.full };
+      }
+    }
+    if (!best) return null;
+    const meta = readSessionMeta(best.full);
+    if (!meta || !meta.id) return null;
+    return { threadId: meta.id, cwd: typeof meta.cwd === "string" ? meta.cwd : undefined, filePath: best.full };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fallback when no rollout contains the call's literal task (e.g. built
+ * dynamically in code-mode JS): rollouts holding a tycoon delegate call whose
+ * line timestamp is within ~2 minutes and whose session_meta.cwd walks up to a
+ * .claude/tycoon/ marker. If those belong to MORE THAN ONE project the caller
+ * cannot be told apart, so this returns null rather than guess; within one
+ * project the newest call wins. Returns { threadId, cwd, filePath } or null.
+ */
+function findRecentDelegateThread(env = process.env, now = Date.now(), candidates) {
+  try {
+    const files = candidates || listCandidateRollouts(env, now);
+    const qualifying = [];
+    for (const f of files) {
+      let newest = -Infinity;
+      for (const c of readDelegateCalls(f.full)) {
+        if (now - c.ts <= DELEGATE_CALL_WINDOW_MS && c.ts - now <= DELEGATE_CALL_WINDOW_MS && c.ts > newest) newest = c.ts;
+      }
+      if (newest === -Infinity) continue;
+      const meta = readSessionMeta(f.full);
+      if (!meta || !meta.id || typeof meta.cwd !== "string") continue;
+      const root = findTycoonProjectRoot(meta.cwd);
+      if (!root) continue;
+      qualifying.push({ ts: newest, root, threadId: meta.id, cwd: meta.cwd, filePath: f.full });
+    }
+    if (!qualifying.length) return null;
+    const roots = new Set(qualifying.map((q) => normalizePathForCompare(q.root)));
+    if (roots.size > 1) return null; // concurrent sessions in different projects: ambiguous
+    qualifying.sort((a, b) => b.ts - a.ts);
+    const q = qualifying[0];
+    return { threadId: q.threadId, cwd: q.cwd, filePath: q.filePath };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
+  listCandidateRollouts,
+  findThreadForDelegateCall,
+  findRecentDelegateThread,
+  findTycoonProjectRoot,
+  resolveProjectRoot,
   isTycoonBridgeThread,
   resolveCodexHome,
   findRolloutFile,
