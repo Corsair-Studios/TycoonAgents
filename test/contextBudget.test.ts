@@ -11,6 +11,10 @@ import {
   gradeClaudeMd,
   gradeAgent,
   buildContextBudget,
+  stripManagedBlocks,
+  TRIM_REVIEW_THRESHOLDS,
+  TRIM_REVIEW_DISABLED_TIP,
+  TRIM_REVIEW_PROMPT,
 } from "../src/host/vscode/contextBudget";
 
 // ---------------------------------------------------------------------------
@@ -135,4 +139,76 @@ test("buildContextBudget: claudeMd (warn grade) + high-grade agent -> overall us
   assert.equal(budget.overall, "warn", "overall must follow claudeMd grade, not worst agent grade");
   assert.equal(budget.claudeMd!.grade, "warn");
   assert.equal(budget.agents[0].grade, "high");
+});
+
+// ---------------------------------------------------------------------------
+// trimReview gate ("Review for trimming" button)
+// ---------------------------------------------------------------------------
+
+import { upsertDelegationSection } from "../src/host/vscode/delegationDoctrine";
+import { REGULAR_AGENTS, buildAgentMarkdown } from "../src/host/vscode/packCatalog";
+
+test("trimReview: fresh install fixture (managed block + pack agents) is disabled", () => {
+  const claudeMd = upsertDelegationSection("# Project\n", "x".repeat(40000));
+  const agents = REGULAR_AGENTS.map((a) => ({ name: `${a.id}.md`, content: buildAgentMarkdown(a, "core") }));
+  const small = upsertDelegationSection("# Project\n", "x".repeat(8000));
+  const budget = buildContextBudget(small, agents);
+  assert.ok(budget.perPromptTokens < TRIM_REVIEW_THRESHOLDS.perPromptTokens);
+  assert.equal(budget.trimReview.enabled, false);
+  assert.equal(budget.trimReview.tip, TRIM_REVIEW_DISABLED_TIP);
+});
+
+test("trimReview: no CLAUDE.md and no agents -> disabled", () => {
+  assert.equal(buildContextBudget(null, []).trimReview.enabled, false);
+});
+
+test("trimReview: large user section outside managed blocks -> enabled", () => {
+  const base = upsertDelegationSection("# Project\n", "managed body");
+  const withUser = base + "\n" + "my own long notes. ".repeat(500);
+  const budget = buildContextBudget(withUser, []);
+  assert.ok(budget.trimReview.userClaudeMdTokens > TRIM_REVIEW_THRESHOLDS.userClaudeMdTokens);
+  assert.equal(budget.trimReview.enabled, true);
+});
+
+test("trimReview: per-prompt total above the high bar -> enabled", () => {
+  const big = upsertDelegationSection("", "m".repeat((TRIM_REVIEW_THRESHOLDS.perPromptTokens + 100) * 4));
+  assert.equal(buildContextBudget(big, []).trimReview.enabled, true);
+});
+
+test("trimReview: pack agent with user additions -> enabled; unmarked agent ignored", () => {
+  const def = REGULAR_AGENTS[0];
+  const marked = buildAgentMarkdown(def, "core") + "\n## My notes\n" + "extra guidance. ".repeat(400);
+  assert.equal(buildContextBudget(null, [{ name: `${def.id}.md`, content: marked }]).trimReview.enabled, true);
+  const unmarked = "---\nname: " + def.id + "\n---\n" + "extra guidance. ".repeat(400);
+  assert.equal(buildContextBudget(null, [{ name: `${def.id}.md`, content: unmarked }]).trimReview.enabled, false);
+});
+
+test("stripManagedBlocks removes tycoon:* blocks only", () => {
+  const out = stripManagedBlocks("a\n<!-- tycoon:delegation -->\nX\n<!-- /tycoon:delegation -->\nb");
+  assert.equal(out.replace(/\s+/g, ""), "ab");
+});
+
+test("trim review prompt carries the protection clause and approval gate", () => {
+  assert.match(TRIM_REVIEW_PROMPT, /Do not modify[\s\S]*managed block/);
+  assert.match(TRIM_REVIEW_PROMPT, /delegation/);
+  assert.match(TRIM_REVIEW_PROMPT, /OWN additions/);
+  assert.match(TRIM_REVIEW_PROMPT, /Do NOT edit any file directly[\s\S]*approval/);
+  assert.equal(buildContextBudget(null, []).trimReview.prompt, TRIM_REVIEW_PROMPT);
+});
+
+test("stripManagedBlocks: orphan open marker strips to EOF", () => {
+  assert.equal(stripManagedBlocks("keep\n<!-- tycoon:delegation -->\nno close").trim(), "keep");
+  const damaged = "<!-- tycoon:delegation -->\n" + "z".repeat(20000);
+  assert.equal(buildContextBudget(damaged, []).trimReview.userClaudeMdTokens, 0);
+});
+
+test("trimReview: frontmatter growth never counts; per-file not summed", () => {
+  const def = REGULAR_AGENTS[0];
+  const fm = buildAgentMarkdown(def, "core").replace("---\n", "---\nbackend:\n  note: " + "r".repeat(8000) + "\n");
+  assert.equal(buildContextBudget(null, [{ name: `${def.id}.md`, content: fm }]).trimReview.enabled, false);
+  const many = REGULAR_AGENTS.slice(0, 4).map((a) => ({
+    name: `${a.id}.md`,
+    content: buildAgentMarkdown(a, "core") + "\n" + "y".repeat(1200),
+  }));
+  assert.equal(buildContextBudget(null, many).trimReview.enabled, false);
 });

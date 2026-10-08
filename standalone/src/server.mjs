@@ -2727,6 +2727,46 @@ function refreshDelegationSectionStandalone(root, mode, reviewEnabled, sessionJo
  * stubs — no per-project hook-diagnostic pass or context-budget scan is
  * wired up in the standalone yet (out of this task's scope).
  */
+let _contextBudgetModule;
+/** Same buildContextBudget the VS Code host uses; null when no project or on failure. */
+function buildStandaloneContextBudget() {
+  if (!primaryProjectRoot) return null;
+  try {
+    if (!_contextBudgetModule) {
+      _contextBudgetModule = requireCompiledOrThrow(
+        path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'contextBudget.js'),
+        'contextBudget',
+      );
+    }
+    let claudeMd = null;
+    try {
+      claudeMd = fs.readFileSync(path.join(primaryProjectRoot, 'CLAUDE.md'), 'utf8');
+    } catch {
+      claudeMd = null;
+    }
+    const entries = [];
+    const agentsDir = path.join(primaryProjectRoot, '.claude', 'agents');
+    try {
+      for (const f of fs.readdirSync(agentsDir).filter((n) => n.endsWith('.md'))) {
+        try {
+          entries.push({ name: f, content: fs.readFileSync(path.join(agentsDir, f), 'utf8') });
+        } catch {
+          /* skip unreadable */
+        }
+      }
+    } catch {
+      /* no agents dir */
+    }
+    const budget = _contextBudgetModule.buildContextBudget(claudeMd, entries);
+    // The browser has no host clipboard bridge: the page copies itself.
+    budget.trimReview.clientCopy = true;
+    return budget;
+  } catch (err) {
+    console.error('[tycoonagents-standalone] buildStandaloneContextBudget failed:', err);
+    return null;
+  }
+}
+
 function buildStandaloneSettingsPayload() {
   let lastActivityAt = null;
   if (primaryProjectRoot) {
@@ -2814,7 +2854,7 @@ function buildStandaloneSettingsPayload() {
       sessionId: null,
     },
     hookHealth: { healthy: true, issueCount: 0 },
-    contextBudget: null,
+    contextBudget: buildStandaloneContextBudget(),
     foreignManagedBlocks: [],
     harness: buildStandaloneHarnessSettings(),
     routing: buildStandaloneRoutingVisibility(),

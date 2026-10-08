@@ -1106,6 +1106,45 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('delegation-chooser-visibility');
     });
 
+    await t.test('10a. settings: Review for trimming is disabled unless host says enabled', async () => {
+      const find = () =>
+        [...doc.getElementById('setup-config').querySelectorAll('button')].find(
+          (b: any) => (b.textContent || '').trim() === 'Review for trimming'
+        ) as any;
+      const budget = (trimReview: any) => ({
+        claudeMd: { name: 'CLAUDE.md', tokens: 2300, grade: 'ok' },
+        agents: [],
+        perPromptTokens: 2300,
+        agentsTotalTokens: 0,
+        overall: 'ok',
+        trimReview,
+      });
+      const send = (trimReview: any) =>
+        dispatch({
+          type: 'settings',
+          payload: {
+            hook: { installed: true, lastActivityAt: null },
+            agents: [],
+            delegation_mode: 'flat',
+            delegationHealth: {},
+            hookHealth: { healthy: true, issueCount: 0 },
+            contextBudget: budget(trimReview),
+          },
+        });
+      send({ enabled: false, tip: "Nothing to trim yet \u2014 these are TycoonAgents' own setup files.", prompt: 'P' });
+      await flush();
+      let btn = find();
+      assert.ok(btn, 'button should render');
+      assert.equal(btn.disabled, true);
+      assert.match(btn.title, /Nothing to trim yet/);
+      send({ enabled: true, tip: 'go', prompt: 'P' });
+      await flush();
+      btn = find();
+      assert.equal(btn.disabled, false);
+      assert.equal(btn.title, 'go');
+      assertNoErrors('trim-review-button');
+    });
+
     // ── Step 10b: Settings "Delegation Health" section removed ──────────────
     // The Settings panel used to render a "Delegation Health" section reading
     // directSearches/directReads/directEdits/delegations off

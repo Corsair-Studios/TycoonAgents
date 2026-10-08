@@ -4143,8 +4143,21 @@
       const trimBtn = document.createElement("button");
       trimBtn.className = "skill-btn settings-btn";
       trimBtn.textContent = "Review for trimming";
+      // Enabled only when there is user-authored content worth reviewing
+      // (host-computed cb.trimReview; see contextBudget.ts). The prompt text
+      // also comes from the host so the protection clause has one source.
+      const trimReview = cb.trimReview || null;
+      const trimEnabled = !!(trimReview && trimReview.enabled && trimReview.prompt);
+      trimBtn.disabled = !trimEnabled;
+      trimBtn.title = trimEnabled
+        ? trimReview.tip
+        : (trimReview && trimReview.tip) || "Nothing to trim yet \u2014 these are TycoonAgents' own setup files.";
       trimBtn.addEventListener("click", () => {
-        vscode.postMessage({ type: "copyPrompt", text: "Do not modify, reword, condense, or remove the TycoonAgents-managed block in CLAUDE.md or any delegation routing rule anywhere in CLAUDE.md or the agent definitions, and never remove or alter the <!-- tycoon:delegation --> and <!-- /tycoon:delegation --> comment markers that bound that block — TycoonAgents uses them to locate and repair its section, and trimming that content or those markers breaks agent delegation. Outside of that, review CLAUDE.md and the agent definition files in .claude/agents/ for context that can be tightened: flag verbose, duplicated, or non-essential lines and propose a tighter rewrite that preserves every behavioral rule and the delegation routing. Then look at each .claude/agents/*.md (loaded per spawn, not every prompt) — but only flag a file if it has genuine verbosity or duplication to cut; a large reference/knowledge agent (e.g. a domain-expert agent with a big fact table) can be intentionally large and should not be flagged just because of its size. For any file with real cuts available, give a before/after token estimate and the specific cuts." });
+        if (!trimEnabled) return;
+        vscode.postMessage({ type: "copyPrompt", text: trimReview.prompt });
+        if (trimReview.clientCopy && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(trimReview.prompt).catch(() => {});
+        }
       });
       budgetSection.appendChild(trimBtn);
     }
