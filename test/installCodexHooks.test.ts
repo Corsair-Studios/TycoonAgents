@@ -21,6 +21,7 @@ import {
   uninstallCodexHooks,
   resolveCodexHome,
   mergeNotifyIntoConfigToml,
+  detectCodexNotifyState,
   removeNotifyFromConfigToml,
   buildHooksJson,
   buildHookCommand,
@@ -326,4 +327,123 @@ test("(q) the written hooks.json's top-level keys are exactly `description` and 
   const result = installCodexHooks({ projectDir, hookScriptPath, env: { CODEX_HOME: codexHome } });
   const written = JSON.parse(readFileSync(result.hooksJsonPath, "utf8"));
   assert.deepEqual(Object.keys(written).sort(), ["description", "hooks"]);
+});
+
+// Computer-use style wrapper: another tool moved our notify into its own
+// notify argv, passing ours as a JSON-encoded --previous-notify argument.
+function wrapperNotify(embeddedArgv: string[]): string {
+  const previous = JSON.stringify(JSON.stringify(embeddedArgv));
+  return `notify = [ "C:\\\\tools\\\\codex-computer-use.exe", "turn-ended", "--previous-notify", ${previous} ]`;
+}
+const WRAPPER_MARKERS =
+  "# tycoon-codex-hook: managed notify entry (do not edit by hand)\n# tycoon-codex-hook: end managed notify entry";
+const CURRENT_HOOK = "C:\\ext\\hooks\\tycoon-codex-hook.cjs";
+
+test("(w1) wrapped notify with the current hook path is kept as-is (empty markers removed) and reports wrapped", () => {
+  const body = `${WRAPPER_MARKERS}\n${wrapperNotify(["node", CURRENT_HOOK])}\n\n[windows]\nsandbox = "elevated"\n`;
+  const merged = mergeNotifyIntoConfigToml(body, CURRENT_HOOK, "node");
+  assert.equal(merged.warnings, undefined);
+  assert.ok(!merged.text.includes("tycoon-codex-hook: managed"));
+  assert.ok(merged.text.includes(wrapperNotify(["node", CURRENT_HOOK])));
+  assert.equal(detectCodexNotifyState(merged.text, CURRENT_HOOK), "wrapped");
+  assert.equal((merged.text.match(/^notify\s*=/gm) ?? []).length, 1);
+});
+
+test("(w2) wrapped notify with a stale hook path is rewritten inside --previous-notify only, and is idempotent", () => {
+  const stale = "D:\\ACode\\TycoonAgents\\hooks\\tycoon-codex-hook.cjs";
+  const original = `${WRAPPER_MARKERS}\n${wrapperNotify(["node", stale])}\n\n[windows]\nsandbox = "elevated"\n`;
+  assert.equal(detectCodexNotifyState(original, CURRENT_HOOK), "stale-wrapped");
+  const first = mergeNotifyIntoConfigToml(original, CURRENT_HOOK, "node");
+  assert.ok(first.text.includes(wrapperNotify(["node", CURRENT_HOOK])));
+  assert.ok(!first.text.includes("ACode"));
+  assert.ok(first.text.includes('[windows]\nsandbox = "elevated"'));
+  assert.equal(detectCodexNotifyState(first.text, CURRENT_HOOK), "wrapped");
+  const second = mergeNotifyIntoConfigToml(first.text, CURRENT_HOOK, "node");
+  assert.equal(second.text, first.text);
+});
+
+test("(w3) the literal computer-use wrapper string keeps its other elements and yields valid TOML escaping", () => {
+  const exact = String.raw`notify = [ "C:\\Users\\x\\codex-computer-use.exe", "turn-ended", "--previous-notify", "[\"node\",\"D:\\\\ACode\\\\TycoonAgents\\\\hooks\\\\tycoon-codex-hook.cjs\"]" ]` + "\n";
+  assert.equal(detectCodexNotifyState(exact, CURRENT_HOOK), "stale-wrapped");
+  const merged = mergeNotifyIntoConfigToml(exact, CURRENT_HOOK, "node");
+  const head = String.raw`notify = [ "C:\\Users\\x\\codex-computer-use.exe", "turn-ended", "--previous-notify", `;
+  assert.ok(merged.text.startsWith(head));
+  assert.ok(merged.text.endsWith(" ]\n"));
+  const encoded = merged.text.slice(head.length, merged.text.length - " ]\n".length);
+  assert.deepEqual(JSON.parse(JSON.parse(encoded)), ["node", CURRENT_HOOK]);
+});
+
+test("(w4) foreign notify without our hook is blocked: skipped with a warning, file unchanged", () => {
+  const original = 'notify = [ "other.exe", "--previous-notify", "[\\"node\\",\\"/x/other-hook.cjs\\"]" ]\n';
+  assert.equal(detectCodexNotifyState(original, CURRENT_HOOK), "blocked");
+  const merged = mergeNotifyIntoConfigToml(original, CURRENT_HOOK, "node");
+  assert.ok(merged.warnings && merged.warnings.length > 0);
+  assert.equal(merged.text, original);
+});
+
+test("(w5) detectCodexNotifyState reports installed for our block and none for no notify", () => {
+  const fresh = mergeNotifyIntoConfigToml(undefined, CURRENT_HOOK, "node").text;
+  assert.equal(detectCodexNotifyState(fresh, CURRENT_HOOK), "installed");
+  assert.equal(detectCodexNotifyState('model = "x"\n', CURRENT_HOOK), "none");
+});
+
+test("(w6) uninstallCodexHooks leaves a wrapper untouched and returns a plain-words warning", () => {
+  const { codexHome, projectDir } = setupDirs();
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = join(codexHome, "config.toml");
+  const original = `${wrapperNotify(["node", CURRENT_HOOK])}\n`;
+  writeFileSync(configPath, original, "utf8");
+  const result = uninstallCodexHooks({ projectDir, env: { CODEX_HOME: codexHome } });
+  assert.equal(readFileSync(configPath, "utf8"), original);
+  assert.ok(result.warnings && /another tool/i.test(result.warnings[0]));
+  rmSync(join(codexHome, ".."), { recursive: true, force: true });
+});
+
+test("(w7) other tables stranded between the notify markers survive merge and removal", () => {
+  const reordered = [
+    "# tycoon-codex-hook: managed notify entry (do not edit by hand)",
+    "[mcp_servers.blender]",
+    'command = "blender-mcp"',
+    "# tycoon-codex-hook: end managed notify entry",
+    "",
+  ].join("\n");
+  const removed = removeNotifyFromConfigToml(reordered);
+  assert.ok(removed.includes('[mcp_servers.blender]\ncommand = "blender-mcp"'));
+  assert.ok(!removed.includes("tycoon-codex-hook:"));
+  const merged = mergeNotifyIntoConfigToml(reordered, CURRENT_HOOK, "node");
+  assert.ok(merged.text.includes('[mcp_servers.blender]\ncommand = "blender-mcp"'));
+  assert.equal(merged.text.split("tycoon-codex-hook: managed").length - 1, 1);
+  assert.equal(mergeNotifyIntoConfigToml(merged.text, CURRENT_HOOK, "node").text, merged.text);
+});
+
+const NS = "# tycoon-codex-hook: managed notify entry (do not edit by hand)";
+const NE = "# tycoon-codex-hook: end managed notify entry";
+
+test("(w8) notify keys inside tables between the markers are never touched", () => {
+  const text = `${NS}\nnotify = ["n"]\n[foo]\nnotify = "keep"\n${NE}\n`;
+  assert.equal(removeNotifyFromConfigToml(text), '[foo]\nnotify = "keep"\n');
+});
+
+test("(w9) a multi-line notify array inside the markers is removed whole; sibling keys survive", () => {
+  const text = `${NS}\nnotify = [\n"node",\n"x"\n]\nmodel = "gpt"\n${NE}\n[a]\nb = 1\n`;
+  assert.equal(removeNotifyFromConfigToml(text), 'model = "gpt"\n[a]\nb = 1\n');
+  const merged = mergeNotifyIntoConfigToml(text, CURRENT_HOOK, "node");
+  assert.ok(merged.text.includes('model = "gpt"\n'));
+  assert.ok(!merged.text.includes('"x"'));
+  assert.equal(merged.text.split(NS).length - 1, 1);
+  assert.equal(mergeNotifyIntoConfigToml(merged.text, CURRENT_HOOK, "node").text, merged.text);
+});
+
+test("(w10) CRLF: notify removal and merge keep line endings consistent", () => {
+  const text = `a = 1\r\n${NS}\r\nnotify = ["n"]\r\n${NE}\r\n[t]\r\n`;
+  assert.equal(removeNotifyFromConfigToml(text), "a = 1\r\n\r\n[t]\r\n");
+  const merged = mergeNotifyIntoConfigToml("a = 1\r\n[t]\r\nx = 1\r\n", CURRENT_HOOK, "node").text;
+  assert.ok(!/(^|[^\r])\n/.test(merged), "lone LF found");
+});
+
+test("(w11) header-like lines inside a multi-line value do not end the top-level section", () => {
+  const text = 'long = [\n["a"],\n]\nnotify = ["other.exe"]\n[t]\nx = 1\n';
+  assert.equal(detectCodexNotifyState(text, CURRENT_HOOK), "blocked");
+  const merged = mergeNotifyIntoConfigToml(text, CURRENT_HOOK, "node");
+  assert.equal(merged.text, text);
 });

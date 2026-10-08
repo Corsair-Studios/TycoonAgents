@@ -31,7 +31,15 @@ import {
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
 import { mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, withDispatcherProjectDir, type McpPlatformsEntry } from "./mcpCatalog";
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
-import { installCodexHooks, uninstallCodexHooks, resolveCodexHome } from "../../providers/codex/installCodexHooks";
+import {
+  installCodexHooks,
+  uninstallCodexHooks,
+  resolveCodexHome,
+  detectCodexNotifyState,
+  CODEX_NOTIFY_BLOCKED_MESSAGE,
+  CODEX_NOTIFY_STALE_MESSAGE,
+  type CodexNotifyState,
+} from "../../providers/codex/installCodexHooks";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
@@ -8290,9 +8298,7 @@ export class TycoonPanel {
         ? {
             codexHooksInstalled: this._detectCodexHooksInstalled(root),
             codexDispatcherInstalled: this._detectCodexDispatcherInstalled(),
-            ...(this._codexHookWarnings && this._codexHookWarnings.length > 0
-              ? { codexHooksWarning: this._codexHookWarnings.join(" ") }
-              : {}),
+            ...this._codexHooksWarningField(),
             ...(this._codexDispatcherWarnings && this._codexDispatcherWarnings.length > 0
               ? { codexDispatcherWarning: this._codexDispatcherWarnings.join(" ") }
               : {}),
@@ -8403,10 +8409,32 @@ export class TycoonPanel {
           }
         }
       }
-      return hasToml || hasHooksJson;
+      const state = this._detectCodexNotifyState();
+      if (state === "blocked" || state === "stale-wrapped") return false;
+      return hasToml || hasHooksJson || state === "wrapped";
     } catch {
       return false;
     }
+  }
+
+  /** Bounded, never-throwing read of how config.toml routes Codex's notify. */
+  private _detectCodexNotifyState(): CodexNotifyState {
+    try {
+      const { codexHome } = resolveCodexHome({ env: process.env, platform: process.platform });
+      const configTomlPath = path.join(codexHome, "config.toml");
+      if (!fs.existsSync(configTomlPath)) return "none";
+      return detectCodexNotifyState(fs.readFileSync(configTomlPath, "utf8"), this._codexHookScriptPath());
+    } catch {
+      return "none";
+    }
+  }
+
+  /** Warning shown beside "Codex hooks" when another tool owns the notify setting. */
+  private _codexNotifyStateWarning(): string | undefined {
+    const state = this._detectCodexNotifyState();
+    if (state === "blocked") return CODEX_NOTIFY_BLOCKED_MESSAGE;
+    if (state === "stale-wrapped") return CODEX_NOTIFY_STALE_MESSAGE;
+    return undefined;
   }
 
   /** Bounded, never-throwing detection of whether the tycoon-dispatcher MCP
@@ -8419,6 +8447,14 @@ export class TycoonPanel {
     } catch {
       return false;
     }
+  }
+
+  private _codexHooksWarningField(): { codexHooksWarning?: string } {
+    const stateWarning = this._codexNotifyStateWarning();
+    if (stateWarning !== undefined) return { codexHooksWarning: stateWarning };
+    return this._codexHookWarnings && this._codexHookWarnings.length > 0
+      ? { codexHooksWarning: this._codexHookWarnings.join(" ") }
+      : {};
   }
 
   private _codexHookWarnings?: string[];
@@ -8488,8 +8524,8 @@ export class TycoonPanel {
       return;
     }
     try {
-      uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
-      this._codexHookWarnings = undefined;
+      const result = uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+      this._codexHookWarnings = result.warnings;
     } catch (err) {
       console.error("TycoonAgents: uninstallCodexHooks failed:", err instanceof Error ? err.message : err);
     }

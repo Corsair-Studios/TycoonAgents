@@ -34,6 +34,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** The 12 hook event names codex-cli 0.153.0's own HookEventName/HookEventsToml enum accepts, per docs/codex-harness-findings.md. */
 export const CODEX_HOOK_EVENTS: readonly string[] = [
@@ -135,14 +136,188 @@ function tomlStringArray(items: string[]): string {
  * after a table header becomes a member of that table per TOML semantics.
  */
 function findFirstTableHeaderIndex(text: string): number {
-  const re = /^[ \t]*\[/m;
-  const m = re.exec(text);
-  return m ? m.index : -1;
+  const header = scanTomlLines(text).find((l) => l.header !== undefined);
+  return header ? header.start : -1;
+}
+
+interface StrippedNotify {
+  text: string;
+  /** True when nothing but our own marker and notify lines sat between the markers. */
+  regionEmpty: boolean;
+  /** True when a top-level `notify` key inside the markers was removed. */
+  droppedNotify: boolean;
+  /** Offset where the region began, and the end of the end-marker line's content. */
+  start: number;
+  end: number;
+}
+
+/**
+ * Text with the managed notify block removed. Removal is line-scoped: the two
+ * marker lines and the `notify` key that opens the block (before any table
+ * header inside the markers; its whole value, including a multi-line array) go; anything else another tool left between
+ * the markers is kept byte-for-byte, and a `notify` key inside a table is
+ * never touched. Returns undefined when there is no marker pair.
+ */
+function stripManagedNotifyRegion(text: string): StrippedNotify | undefined {
+  const lines = scanTomlLines(text);
+  const isMarker = (l: TomlLine, marker: string): boolean => !l.cont && text.slice(l.start, l.end).trim() === marker;
+  const startLi = lines.findIndex((l) => isMarker(l, TOML_MARKER_START));
+  if (startLi === -1) return undefined;
+  let endLi = -1;
+  for (let li = startLi + 1; li < lines.length; li++) {
+    if (isMarker(lines[li], TOML_MARKER_END)) {
+      endLi = li;
+      break;
+    }
+  }
+  if (endLi === -1) return undefined;
+  const dropped = new Set<number>([startLi, endLi]);
+  let droppedNotify = false;
+  for (let li = startLi + 1; li < endLi; li++) {
+    const l = lines[li];
+    if (l.header) break;
+    if (l.header || l.cont || !/^[ \t]*notify[ \t]*=/.test(text.slice(l.start, l.end))) continue;
+    droppedNotify = true;
+    dropped.add(li);
+    while (li + 1 < endLi && lines[li + 1].cont) dropped.add(++li);
+  }
+  let kept = "";
+  for (let li = startLi; li <= endLi; li++) {
+    if (!dropped.has(li)) kept += text.slice(lines[li].start, lines[li].next);
+  }
+  const start = lines[startLi].start;
+  const end = lines[endLi].end;
+  if (kept.trim() === "") {
+    return { text: text.slice(0, start) + text.slice(end), regionEmpty: true, droppedNotify, start, end };
+  }
+  return { text: text.slice(0, start) + kept + text.slice(lines[endLi].next), regionEmpty: false, droppedNotify, start, end };
 }
 
 export interface MergeNotifyResult {
   text: string;
   warnings?: string[];
+}
+
+/**
+ * How the user-level config.toml currently routes Codex's `notify`:
+ *   installed     - our managed block holds the notify entry
+ *   wrapped       - another tool owns `notify` and carries our hook inside its
+ *                   `--previous-notify` argument, at the current path
+ *   stale-wrapped - same, but the embedded hook path differs from the current one
+ *   blocked       - another tool owns `notify` and our hook is not in it
+ *   none          - no top-level notify at all
+ */
+export type CodexNotifyState = "installed" | "wrapped" | "stale-wrapped" | "blocked" | "none";
+
+export const CODEX_NOTIFY_BLOCKED_MESSAGE =
+  "Another tool owns the Codex notify setting — TycoonAgents can't see Codex turns.";
+export const CODEX_NOTIFY_STALE_MESSAGE =
+  "Another tool wraps the Codex notify setting and it still points at an old TycoonAgents hook path. Install again to update it.";
+export const CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE =
+  "Another tool wraps the Codex notify setting, so TycoonAgents left it alone. You can remove TycoonAgents from it by hand.";
+
+const HOOK_SCRIPT_BASENAME = "tycoon-codex-hook.cjs";
+
+interface TomlArrayElement {
+  start: number;
+  end: number;
+  value: string;
+}
+
+/**
+ * Scan a TOML array of single-line strings whose `[` is at `openIdx`. Returns
+ * undefined for anything it cannot decode exactly (multi-line strings, non-
+ * string elements), so callers treat the entry as opaque.
+ */
+function scanTomlStringArray(text: string, openIdx: number): TomlArrayElement[] | undefined {
+  const elements: TomlArrayElement[] = [];
+  let i = openIdx + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "]") return elements;
+    if (ch === "," || ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+      i++;
+    } else if (ch === "#") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (ch === '"') {
+      if (text.startsWith('"""', i)) return undefined;
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === "\n") return undefined;
+        j += text[j] === "\\" ? 2 : 1;
+      }
+      if (j >= text.length) return undefined;
+      let value: unknown;
+      try {
+        value = JSON.parse(text.slice(i, j + 1));
+      } catch {
+        return undefined;
+      }
+      if (typeof value !== "string") return undefined;
+      elements.push({ start: i, end: j + 1, value });
+      i = j + 1;
+    } else if (ch === "'") {
+      if (text.startsWith("'''", i)) return undefined;
+      const j = text.indexOf("'", i + 1);
+      if (j === -1 || text.slice(i, j).includes("\n")) return undefined;
+      elements.push({ start: i, end: j + 1, value: text.slice(i + 1, j) });
+      i = j + 1;
+    } else {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+interface EmbeddedHook {
+  /** Offsets of the `--previous-notify` string element in the scanned text. */
+  start: number;
+  end: number;
+  argv: string[];
+  scriptPath: string;
+}
+
+function scriptBasename(p: string): string {
+  return p.split(/[\\/]/).pop() ?? "";
+}
+
+/** Our hook embedded in the top-level foreign notify's `--previous-notify` argv, if present. */
+function findEmbeddedHook(topLevel: string): EmbeddedHook | undefined {
+  const m = /^[ \t]*notify[ \t]*=[ \t]*\[/m.exec(topLevel);
+  if (!m) return undefined;
+  const elements = scanTomlStringArray(topLevel, m.index + m[0].length - 1);
+  if (!elements) return undefined;
+  for (let k = 0; k + 1 < elements.length; k++) {
+    if (elements[k].value !== "--previous-notify") continue;
+    const el = elements[k + 1];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(el.value);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) continue;
+    const scriptPath = (parsed as string[]).find((x) => scriptBasename(x) === HOOK_SCRIPT_BASENAME);
+    if (scriptPath !== undefined) return { start: el.start, end: el.end, argv: parsed as string[], scriptPath };
+  }
+  return undefined;
+}
+
+/**
+ * Classify config.toml's notify routing. With `hookScriptPath`, an embedded
+ * hook whose script path differs is reported as stale-wrapped (the node path
+ * is not compared; install rewrites it anyway).
+ */
+export function detectCodexNotifyState(text: string, hookScriptPath?: string): CodexNotifyState {
+  const stripped = stripManagedNotifyRegion(text);
+  if (stripped?.droppedNotify) return "installed";
+  const rest = stripped ? stripped.text : text;
+  const headerIdx = findFirstTableHeaderIndex(rest);
+  const topLevel = headerIdx === -1 ? rest : rest.slice(0, headerIdx);
+  if (!/^[ \t]*notify[ \t]*=/m.test(topLevel)) return "none";
+  const embedded = findEmbeddedHook(topLevel);
+  if (!embedded) return "blocked";
+  return hookScriptPath !== undefined && embedded.scriptPath !== hookScriptPath ? "stale-wrapped" : "wrapped";
 }
 
 /**
@@ -163,19 +338,23 @@ export function mergeNotifyIntoConfigToml(
   nodePath?: string,
 ): MergeNotifyResult {
   const command = buildHookCommand(hookScriptPath, nodePath);
-  const block = [TOML_MARKER_START, `notify = ${tomlStringArray(command)}`, TOML_MARKER_END].join("\n");
-
   const text = existing ?? "";
-  const startIdx = text.indexOf(TOML_MARKER_START);
-  const endIdx = text.indexOf(TOML_MARKER_END);
-  const hasManagedBlock = startIdx !== -1 && endIdx !== -1 && endIdx > startIdx;
+  const eol = detectEol(text);
+  const block = [TOML_MARKER_START, `notify = ${tomlStringArray(command)}`, TOML_MARKER_END].join(eol);
 
   // Text with the existing managed block (if any) removed, so we can check
   // for a foreign top-level `notify =` and re-derive the header boundary
   // cleanly regardless of where the old block currently sits.
-  const withoutManaged = hasManagedBlock
-    ? text.slice(0, startIdx) + text.slice(endIdx + TOML_MARKER_END.length)
-    : text;
+  const stripped = stripManagedNotifyRegion(text);
+  const hasManagedBlock = stripped !== undefined;
+  let withoutManaged = stripped ? stripped.text : text;
+  if (stripped?.regionEmpty) {
+    // A block that sat at the very top leaves blank lines behind; drop them so re-install is stable.
+    withoutManaged =
+      stripped.start === 0
+        ? withoutManaged.replace(/^(?:\r?\n)+/, "")
+        : collapseBlankRunAt(withoutManaged, stripped.start, eol);
+  }
 
   const headerIdx = findFirstTableHeaderIndex(withoutManaged);
   const topLevelSection = headerIdx === -1 ? withoutManaged : withoutManaged.slice(0, headerIdx);
@@ -183,45 +362,59 @@ export function mergeNotifyIntoConfigToml(
 
   const warnings: string[] = [];
   if (foreignNotify) {
+    // Another tool may have moved our notify into its own wrapper's
+    // --previous-notify argv. Refresh only that embedded argv; the wrapper's
+    // other bytes stay as they were, and no managed notify is added (Codex
+    // allows one notify).
+    const embedded = findEmbeddedHook(topLevelSection);
+    if (embedded) {
+      const same = embedded.argv.length === command.length && embedded.argv.every((v, k) => v === command[k]);
+      const rewritten = same
+        ? withoutManaged
+        : withoutManaged.slice(0, embedded.start) +
+          JSON.stringify(JSON.stringify(command)) +
+          withoutManaged.slice(embedded.end);
+      return { text: rewritten };
+    }
     warnings.push(
       "config.toml already has a top-level `notify =` entry outside the tycoon-codex-hook managed block; left it untouched.",
     );
     // Leave the file exactly as-is apart from removing our own stale block
     // (if any), so we never sit alongside a duplicate managed entry.
-    const cleaned = hasManagedBlock ? withoutManaged.replace(/\n{3,}/g, "\n\n") : withoutManaged;
-    return { text: cleaned, warnings };
+    return { text: withoutManaged, warnings };
   }
 
   if (headerIdx === -1) {
     // No table headers at all: append at the end of the (already
     // managed-block-free) top-level-only file.
     const t = withoutManaged;
-    const separator = t.length > 0 && !t.endsWith("\n") ? "\n" : "";
-    const blank = t.length > 0 ? "\n" : "";
-    return { text: `${t}${separator}${blank}${block}\n`, warnings: warnings.length ? warnings : undefined };
+    const separator = t.length > 0 && !t.endsWith("\n") ? eol : "";
+    const blank = t.length > 0 ? eol : "";
+    return { text: `${t}${separator}${blank}${block}${eol}`, warnings: warnings.length ? warnings : undefined };
   }
 
   // Insert the block just before the first table header, preserving
   // everything before and after byte-for-byte.
   const before = withoutManaged.slice(0, headerIdx);
   const after = withoutManaged.slice(headerIdx);
-  const beforeTrimmed = before.length > 0 && !before.endsWith("\n") ? `${before}\n` : before;
-  const blank = beforeTrimmed.length > 0 ? "\n" : "";
-  return { text: `${beforeTrimmed}${blank}${block}\n\n${after}`, warnings: warnings.length ? warnings : undefined };
+  const beforeTrimmed = before.trim() === "" ? "" : before.replace(/(?:\r?\n)*$/, eol);
+  const blank = beforeTrimmed.length > 0 ? eol : "";
+  return { text: `${beforeTrimmed}${blank}${block}${eol}${eol}${after}`, warnings: warnings.length ? warnings : undefined };
 }
 
 /** Remove exactly the managed notify block (and nothing else) from config.toml text. Returns the SAME string reference when there was nothing to remove. */
 export function removeNotifyFromConfigToml(existing: string): string {
-  const startIdx = existing.indexOf(TOML_MARKER_START);
-  const endIdx = existing.indexOf(TOML_MARKER_END);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return existing;
-  const before = existing.slice(0, startIdx).replace(/\n+$/, "\n");
-  const after = existing.slice(endIdx + TOML_MARKER_END.length).replace(/^\n+/, "\n");
-  const combined = (before + after).replace(/\n{3,}/g, "\n\n");
+  const stripped = stripManagedNotifyRegion(existing);
+  if (!stripped) return existing;
+  if (!stripped.regionEmpty) return stripped.text;
+  const eol = detectEol(existing);
+  const before = existing.slice(0, stripped.start).replace(/(?:\r?\n)+$/, eol);
+  const after = existing.slice(stripped.end).replace(/^(?:\r?\n)+/, eol);
+  const combined = before + after;
   // If the block sat at the very start of the file, `before` was empty and
   // `after` began with a blank separator line — strip that leading blank
   // line so removal restores the original bytes exactly.
-  return before === "" ? combined.replace(/^\n/, "") : combined;
+  return before === "" ? combined.replace(/^\r?\n/, "") : combined;
 }
 
 /**
@@ -359,13 +552,17 @@ export interface UninstallCodexHooksOptions {
  * ONLY if it carries our HOOKS_JSON_MARKER (never deletes a hooks.json a
  * user or another tool authored without that marker).
  */
-export function uninstallCodexHooks(options: UninstallCodexHooksOptions): void {
+export function uninstallCodexHooks(options: UninstallCodexHooksOptions): { warnings?: string[] } {
+  const warnings: string[] = [];
   const { codexHome } = resolveCodexHome({ env: options.env, platform: options.platform });
   const configTomlPath = path.join(codexHome, "config.toml");
   if (fs.existsSync(configTomlPath)) {
     const existing = fs.readFileSync(configTomlPath, "utf8");
     const stripped = removeNotifyFromConfigToml(existing);
     if (stripped !== existing) fs.writeFileSync(configTomlPath, stripped, "utf8");
+    // A wrapper owned by another tool is never edited on uninstall.
+    const state = detectCodexNotifyState(stripped);
+    if (state === "wrapped" || state === "stale-wrapped") warnings.push(CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE);
   }
 
   const hooksJsonPath = path.join(options.projectDir, ".codex", "hooks.json");
@@ -397,4 +594,5 @@ export function uninstallCodexHooks(options: UninstallCodexHooksOptions): void {
       // Unparseable/foreign file — never delete something we can't confirm is ours.
     }
   }
+  return warnings.length ? { warnings } : {};
 }

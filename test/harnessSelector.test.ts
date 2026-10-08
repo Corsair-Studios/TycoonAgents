@@ -81,6 +81,9 @@ function makeFakePanel(root: string, extra: Record<string, unknown> = {}): any {
     // codex-doctrine-gap follow-up: _handleInstallCodexHooks/_handleSetHarness
     // call this on `this` too — bind it like the others above.
     _runCodexConfigGenerator: (TycoonPanel.prototype as any)._runCodexConfigGenerator,
+    _detectCodexNotifyState: (TycoonPanel.prototype as any)._detectCodexNotifyState,
+    _codexNotifyStateWarning: (TycoonPanel.prototype as any)._codexNotifyStateWarning,
+    _codexHooksWarningField: (TycoonPanel.prototype as any)._codexHooksWarningField,
     ...extra,
   };
 }

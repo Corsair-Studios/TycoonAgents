@@ -12,14 +12,15 @@
 // (never spliced before the first table header) and must never split an
 // existing table's body. See docs/codex-cross-vendor-bridge.md Option A.
 //
-// No secret values are written to config.toml: only TYCOON_PROJECT_DIR and
-// TYCOON_CODEX_DISPATCHER_CONFIGURED go into the managed `env` map.
+// No secret values are written to config.toml: only
+// TYCOON_CODEX_DISPATCHER_CONFIGURED goes into the managed `env` map.
 // CLAUDE_CLI_*/OPENAI_COMPAT_* secrets are read by the server itself from
 // the process environment it is launched with.
 
 import * as fs from "fs";
 import * as path from "path";
 import { resolveCodexHome, type ResolveCodexHomeEnv } from "./installCodexHooks";
+import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** Marker delimiting the block this installer owns inside config.toml, so uninstall removes only its own lines. */
 const DISPATCHER_MARKER_START = "# tycoon-dispatcher: managed mcp server (do not edit by hand)";
@@ -44,13 +45,14 @@ function tomlInlineEnvTable(env: Record<string, string>): string {
 export interface BuildDispatcherBlockOptions {
   nodePath: string;
   serverScriptPath: string;
-  projectDir: string;
 }
 
 /** Build the managed `[mcp_servers.tycoon]` block text (without surrounding blank-line separators). */
 export function buildDispatcherBlock(options: BuildDispatcherBlockOptions): string {
+  // No TYCOON_PROJECT_DIR: config.toml is user-level (machine-wide), so a
+  // project path here would pin every Codex session to the last installer's
+  // project. The dispatcher resolves the project per call instead.
   const env = {
-    TYCOON_PROJECT_DIR: options.projectDir,
     TYCOON_CODEX_DISPATCHER_CONFIGURED: "1",
   };
   return [
@@ -63,17 +65,74 @@ export function buildDispatcherBlock(options: BuildDispatcherBlockOptions): stri
   ].join("\n");
 }
 
+const DISPATCHER_SCRIPT_BASENAME = "tycoon-dispatcher-mcp.cjs";
+const TYCOON_TABLE_NAME = "mcp_servers.tycoon";
+const TYCOON_TOOLS_PREFIX = "mcp_servers.tycoon.tools.";
+
+function isTycoonTableName(name: string): boolean {
+  return name === TYCOON_TABLE_NAME || name.startsWith(TYCOON_TABLE_NAME + ".");
+}
+
 /**
- * Find the byte index of a foreign (non-managed) `[mcp_servers.tycoon]`
- * table header line in `textWithoutManagedBlock` — i.e. one that exists
- * outside our own marker pair. Matches the header line exactly (ignoring
- * surrounding whitespace), which is sufficient to detect a real conflicting
- * table since TOML table headers must appear at the start of a line.
+ * Copy of `text[from, to)` (line offsets) without any `[mcp_servers.tycoon]` /
+ * `[mcp_servers.tycoon.*]` table (a table runs until the next real header
+ * line). `keepTools` keeps `[mcp_servers.tycoon.tools.*]`, the user's tool
+ * approvals. Also drops the lines listed in `dropLines`.
  */
-function findForeignDispatcherTableIndex(textWithoutManagedBlock: string): number {
-  const re = /^[ \t]*\[mcp_servers\.tycoon\][ \t]*$/m;
-  const m = re.exec(textWithoutManagedBlock);
-  return m ? m.index : -1;
+function dropTycoonTables(
+  text: string,
+  lines: TomlLine[],
+  firstLine: number,
+  lastLine: number,
+  keepTools: boolean,
+  dropLines: ReadonlySet<number>,
+): string {
+  let dropping = false;
+  let out = "";
+  for (let li = firstLine; li <= lastLine; li++) {
+    const line = lines[li];
+    if (line.header) {
+      dropping = isTycoonTableName(line.header.name) && !(keepTools && line.header.name.startsWith(TYCOON_TOOLS_PREFIX));
+    }
+    if (!dropping && !dropLines.has(li)) out += text.slice(line.start, line.next);
+  }
+  return out;
+}
+
+interface StrippedRegion {
+  text: string;
+  /** True when nothing but our own tables and marker lines sat between the markers. */
+  regionEmpty: boolean;
+  /** Offset where the region began, and the end of the end-marker line's content. */
+  start: number;
+  end: number;
+}
+
+/**
+ * Codex rewrites config.toml and may reorder tables, leaving other servers'
+ * tables between our two marker comments. So removal is table-scoped: inside
+ * the marker pair, drop only the marker lines and our `mcp_servers.tycoon`
+ * tables; every other line stays byte-for-byte. Returns undefined when there
+ * is no marker pair.
+ */
+function stripManagedRegion(text: string, keepTools: boolean): StrippedRegion | undefined {
+  const lines = scanTomlLines(text);
+  const isMarker = (l: TomlLine, marker: string): boolean => !l.cont && text.slice(l.start, l.end).trim() === marker;
+  const startLi = lines.findIndex((l) => isMarker(l, DISPATCHER_MARKER_START));
+  if (startLi === -1) return undefined;
+  let endLi = -1;
+  for (let li = startLi + 1; li < lines.length; li++) {
+    if (isMarker(lines[li], DISPATCHER_MARKER_END)) {
+      endLi = li;
+      break;
+    }
+  }
+  if (endLi === -1) return undefined;
+  const start = lines[startLi].start;
+  const end = lines[endLi].end;
+  const kept = dropTycoonTables(text, lines, startLi, endLi, keepTools, new Set([startLi, endLi]));
+  if (kept.trim() === "") return { text: text.slice(0, start) + text.slice(end), regionEmpty: true, start, end };
+  return { text: text.slice(0, start) + kept + text.slice(lines[endLi].next), regionEmpty: false, start, end };
 }
 
 export interface MergeDispatcherResult {
@@ -91,60 +150,86 @@ export interface MergeDispatcherResult {
  * following bare keys/tables into it, or split an existing table's body if
  * inserted mid-table. If a foreign `[mcp_servers.tycoon]` table exists
  * outside our markers, the file is left untouched (aside from stripping our
- * own stale managed block, if any) and a warning is returned.
+ * own stale managed block, if any) and a warning is returned. A table that
+ * runs our dispatcher script is treated as ours and rewritten. The file's
+ * line ending (LF or CRLF) is kept.
  */
 export function mergeDispatcherIntoConfigToml(
   existing: string | undefined,
   options: BuildDispatcherBlockOptions,
 ): MergeDispatcherResult {
-  const block = buildDispatcherBlock(options);
   const text = existing ?? "";
+  const eol = detectEol(text);
+  const block = buildDispatcherBlock(options).split("\n").join(eol);
 
-  const startIdx = text.indexOf(DISPATCHER_MARKER_START);
-  const endIdx = text.indexOf(DISPATCHER_MARKER_END);
-  const hasManagedBlock = startIdx !== -1 && endIdx !== -1 && endIdx > startIdx;
+  const stripped = stripManagedRegion(text, true);
+  let working = text;
+  if (stripped) {
+    working = stripped.regionEmpty ? collapseBlankRunAt(stripped.text, stripped.start, eol) : stripped.text;
+  }
+  let changed = stripped !== undefined;
 
-  const withoutManaged = hasManagedBlock
-    ? text.slice(0, startIdx) + text.slice(endIdx + DISPATCHER_MARKER_END.length)
-    : text;
-
-  const warnings: string[] = [];
-  const foreignIdx = findForeignDispatcherTableIndex(withoutManaged);
-  if (foreignIdx !== -1) {
-    warnings.push(
-      "config.toml already has a [mcp_servers.tycoon] table outside the tycoon-dispatcher managed block; left it untouched.",
-    );
-    const cleaned = withoutManaged.replace(/\n{3,}/g, "\n\n");
-    return { text: cleaned, warnings };
+  const lines = scanTomlLines(working);
+  const mainLi = lines.findIndex((l) => l.header !== undefined && !l.header.array && l.header.name === TYCOON_TABLE_NAME);
+  if (mainLi !== -1) {
+    let endLi = lines.length - 1;
+    for (let li = mainLi + 1; li < lines.length; li++) {
+      const h = lines[li].header;
+      if (h && !(h.name.startsWith(TYCOON_TABLE_NAME + ".") && !h.array)) {
+        endLi = li - 1;
+        break;
+      }
+    }
+    const regionText = working.slice(lines[mainLi].start, lines[endLi].next);
+    if (regionText.includes(DISPATCHER_SCRIPT_BASENAME)) {
+      // Our own table sitting outside the markers (e.g. stale path): drop it
+      // and append the managed block with current values instead.
+      const before = working.slice(0, lines[mainLi].start);
+      const rest = dropTycoonTables(working, lines, mainLi, endLi, true, new Set());
+      working = collapseBlankRunAt(before + rest + working.slice(lines[endLi].next), before.length, eol);
+      changed = true;
+    } else {
+      return {
+        text: working,
+        warnings: [
+          "config.toml already has a [mcp_servers.tycoon] table outside the tycoon-dispatcher managed block; left it untouched.",
+        ],
+      };
+    }
   }
 
-  const t = withoutManaged;
+  const t = changed && working.trim() !== "" ? working.replace(/\s+$/, "") + eol : working;
   const isEffectivelyEmpty = t.trim() === "";
-  const separator = !isEffectivelyEmpty && !t.endsWith("\n") ? "\n" : "";
-  const blank = !isEffectivelyEmpty ? "\n" : "";
+  const separator = !isEffectivelyEmpty && !t.endsWith("\n") ? eol : "";
+  const blank = !isEffectivelyEmpty ? eol : "";
   const prefix = isEffectivelyEmpty ? "" : t;
-  return { text: `${prefix}${separator}${blank}${block}\n`, warnings: warnings.length ? warnings : undefined };
+  return { text: `${prefix}${separator}${blank}${block}${eol}` };
 }
 
-/** Remove exactly the managed dispatcher block (and nothing else) from config.toml text. Returns the SAME string reference when there was nothing to remove. */
+/**
+ * Remove the managed dispatcher block from config.toml text. Only the marker
+ * lines and our own tables go; other tables that ended up between the markers
+ * stay. Returns the SAME string reference when there was nothing to remove.
+ */
 export function removeDispatcherFromConfigToml(existing: string): string {
-  const startIdx = existing.indexOf(DISPATCHER_MARKER_START);
-  const endIdx = existing.indexOf(DISPATCHER_MARKER_END);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return existing;
-  const beforeRaw = existing.slice(0, startIdx);
-  const afterRaw = existing.slice(endIdx + DISPATCHER_MARKER_END.length);
+  const stripped = stripManagedRegion(existing, false);
+  if (!stripped) return existing;
+  if (!stripped.regionEmpty) return stripped.text;
+  const eol = detectEol(existing);
+  const beforeRaw = existing.slice(0, stripped.start);
+  const afterRaw = existing.slice(stripped.end);
   // Our block is always appended after all other content, separated by a
   // blank line, so `after` is normally empty (aside from a trailing
-  // newline) — strip it entirely rather than normalizing it to "\n" the
-  // way a mid-file removal would, or we'd leave a stray trailing blank line.
+  // newline) — strip it entirely rather than normalizing it to one newline
+  // the way a mid-file removal would, or we'd leave a stray trailing blank line.
   const isEndOfFile = afterRaw.trim() === "";
-  const before = beforeRaw.replace(/\n+$/, "\n");
+  const before = beforeRaw.replace(/(?:\r?\n)+$/, eol);
   if (isEndOfFile) {
     return before === "" ? "" : before;
   }
-  const after = afterRaw.replace(/^\n+/, "\n");
-  const combined = (before + after).replace(/\n{3,}/g, "\n\n");
-  return before === "" ? combined.replace(/^\n/, "") : combined;
+  const after = afterRaw.replace(/^(?:\r?\n)+/, eol);
+  const combined = before + after;
+  return before === "" ? combined.replace(/^\r?\n/, "") : combined;
 }
 
 export interface InstallCodexDispatcherOptions {
@@ -176,7 +261,6 @@ export function installCodexDispatcher(options: InstallCodexDispatcherOptions): 
   const merged = mergeDispatcherIntoConfigToml(existing, {
     nodePath: options.nodePath ?? process.execPath,
     serverScriptPath: options.serverScriptPath,
-    projectDir: options.projectDir,
   });
   fs.writeFileSync(configTomlPath, merged.text, "utf8");
   return { configTomlPath, ...(merged.warnings ? { warnings: merged.warnings } : {}) };
