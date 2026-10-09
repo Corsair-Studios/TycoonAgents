@@ -43,6 +43,7 @@ import {
 } from "./routingProfile";
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
 import { isFallbackTargetDispatchable } from "./fallbackTargets";
+import { describeProviderSelection } from "./providerSelection";
 import { readClaudeSubscriptionOptIn, writeClaudeSubscriptionOptIn, usesClaudeSubscriptionRoute, claudeSubscriptionBlockedMessage, type ClaudeRouteSlotLike } from "./claudeSubscriptionBridge";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
 import { loadAgentRoster } from "../providers/claude-code/agentRoster";
@@ -165,6 +166,18 @@ export interface SaveRoutingResult {
 }
 
 const EMPTY_SCRIPT_RESULT: ScriptRunResult = { code: -1, output: "" };
+/** Reported for the OpenCode generator when another harness is active: not run, not a failure. */
+const OPENCODE_SKIPPED_RESULT: ScriptRunResult = { code: 0, output: "skipped: OpenCode is not the active harness" };
+
+/** The harness a save/clear runs under: the caller's value, else resolved from the project; claude-code on failure. */
+function resolveHarnessFor(root: string, given?: string): string {
+  if (given) return given;
+  try {
+    return describeProviderSelection({ cwd: root }).effective;
+  } catch {
+    return "claude-code";
+  }
+}
 const EMPTY_SAVE_RESULT_SCRIPTS = {
   claude: EMPTY_SCRIPT_RESULT,
   opencode: EMPTY_SCRIPT_RESULT,
@@ -376,13 +389,13 @@ function readLastApplied(root: string): RoutingLastApplied {
   }
 }
 
-function writeLastApplied(root: string, write: { claude: ScriptRunResult; opencode: ScriptRunResult }): void {
+function writeLastApplied(root: string, write: { claude: ScriptRunResult; opencode: ScriptRunResult }, opencodeRan = true): void {
   try {
     const existing = readLastApplied(root);
     const now = new Date().toISOString();
     const next: RoutingLastApplied = { ...existing };
     if (write.claude.code === 0) next.claude = now;
-    if (write.opencode.code === 0) next.opencode = now;
+    if (opencodeRan && write.opencode.code === 0) next.opencode = now;
     const dir = path.dirname(lastAppliedPath(root));
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(lastAppliedPath(root), JSON.stringify(next, null, 2) + "\n", "utf8");
@@ -913,15 +926,17 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
     };
   }
 
+  // The OpenCode generator (project .opencode/ + opencode.json + the global config) only runs when OpenCode is the harness.
+  const runOpencode = resolveHarnessFor(root, opts.effectiveHarness) === "opencode";
   const check = {
     claude: runScript(nodeBin, scripts.claude, root, ["--check"]),
-    opencode: runScript(nodeBin, scripts.opencode, root, ["--check"]),
+    opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, ["--check"]) : OPENCODE_SKIPPED_RESULT,
   };
   const write = {
     claude: runScript(nodeBin, scripts.claude, root, []),
-    opencode: runScript(nodeBin, scripts.opencode, root, []),
+    opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, []) : OPENCODE_SKIPPED_RESULT,
   };
-  writeLastApplied(root, write);
+  writeLastApplied(root, write, runOpencode);
 
   // Codex-doctrine-gap follow-up (trigger (c)): a Routing save only needs
   // to refresh AGENTS.md's Codex block / codex-agents.toml.generated when
@@ -947,6 +962,8 @@ export interface ClearRoutingProfileOptions {
   root: string;
   scriptsDir: string;
   nodeBin?: string;
+  /** Effective harness; resolved from the project when omitted. The OpenCode generator runs only under "opencode". */
+  effectiveHarness?: string;
 }
 
 /** Delete routing.json (if present) and rerun both generators so agents fall back to frontmatter/alias/default. Never throws. */
@@ -972,15 +989,17 @@ export function clearRoutingProfile(opts: ClearRoutingProfileOptions): SaveRouti
     };
   }
 
+  // The OpenCode generator (project .opencode/ + opencode.json + the global config) only runs when OpenCode is the harness.
+  const runOpencode = resolveHarnessFor(root, opts.effectiveHarness) === "opencode";
   const check = {
     claude: runScript(nodeBin, scripts.claude, root, ["--check"]),
-    opencode: runScript(nodeBin, scripts.opencode, root, ["--check"]),
+    opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, ["--check"]) : OPENCODE_SKIPPED_RESULT,
   };
   const write = {
     claude: runScript(nodeBin, scripts.claude, root, []),
-    opencode: runScript(nodeBin, scripts.opencode, root, []),
+    opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, []) : OPENCODE_SKIPPED_RESULT,
   };
-  writeLastApplied(root, write);
+  writeLastApplied(root, write, runOpencode);
 
   const ok = write.claude.code === 0 && write.opencode.code === 0;
   return { ok, errors: [], check, write };

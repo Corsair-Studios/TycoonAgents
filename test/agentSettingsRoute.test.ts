@@ -477,3 +477,26 @@ test("clearAgentRoute (real scripts): strips the managed backend block, or resto
     assert.doesNotMatch(clearedContent, /managed-by: tycoon-routing/, "clearAgentRoute must re-run apply-routing-profile.mjs to strip the managed block");
   });
 });
+
+test("clearAgentRoute / overrideAgentToClaudeTier thread the caller's effective harness: opencode selected without execution.json still regenerates; others do not", async () => {
+  const REPO_ROOT = path.resolve(__dirname, "..", "..");
+  for (const harness of ["opencode", "codex"] as const) {
+    await withIsolatedStoreDirs(async () => {
+      const root = tmpRoot();
+      writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
+      // No execution.json anywhere: the provider is only known to the caller (e.g. the VS Code setting).
+      const saved = saveRoutingProfileRetrying({
+        root,
+        scriptsDir: REPO_ROOT,
+        effectiveHarness: harness,
+        profile: { version: 1, agents: { worker: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } } },
+      });
+      assert.equal(saved.ok, true, JSON.stringify(saved));
+      for (const f of ["opencode.json", ".opencode"]) fs.rmSync(path.join(root, f), { recursive: true, force: true });
+      const result = await clearAgentRouteRetrying(root, "worker", { scriptsDir: REPO_ROOT, effectiveHarness: harness });
+      assert.equal(result.ok, true, JSON.stringify(result.errors));
+      const generated = fs.existsSync(path.join(root, "opencode.json")) || fs.existsSync(path.join(root, ".opencode"));
+      assert.equal(generated, harness === "opencode", `harness ${harness}`);
+    });
+  }
+});

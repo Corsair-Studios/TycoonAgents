@@ -778,7 +778,7 @@ function opencodeProvidersAfterSave(slots: Record<string, Record<string, unknown
   try {
     const profile = { version: 1, agents: slots };
     writeRouting(root, profile);
-    const saved = saveRoutingProfileRetrying({ root, scriptsDir: REPO_ROOT, profile } as never);
+    const saved = saveRoutingProfileRetrying({ root, scriptsDir: REPO_ROOT, profile, effectiveHarness: "opencode" } as never);
     assert.equal(saved.ok, true, JSON.stringify(saved));
     const cfgPath = path.join(opencodeConfigDir, "opencode.json");
     if (!fs.existsSync(cfgPath)) return {};
@@ -807,4 +807,34 @@ test("opencode generator: xai/mistral openai-compatible slots without endpointEn
   });
   assert.ok(withEnv["xai"]?.tycoonManaged, "user-set endpointEnv -> managed provider");
   assert.match(String(withEnv["xai"].options?.baseURL ?? ""), /MY_XAI_URL/);
+});
+
+test("saveRoutingProfile: the OpenCode generator runs only under the opencode harness (no opencode.json/.opencode on codex or claude-code)", () => {
+  for (const harness of ["codex", "claude-code", "opencode"]) {
+    const root = tmpRoot();
+    writeAgent(root, "worker.md", ["name: worker", "description: A worker agent.", "tier: worker"]);
+    const prevData = process.env.TYCOON_STANDALONE_DATA_DIR;
+    const prevCfg = process.env.OPENCODE_CONFIG_DIR;
+    const cfgDir = tmpRoot();
+    process.env.TYCOON_STANDALONE_DATA_DIR = tmpRoot();
+    process.env.OPENCODE_CONFIG_DIR = cfgDir;
+    try {
+      const profile = { version: 1, agents: { worker: { vendor: "anthropic", transport: "claude-native", model: "sonnet", costModelClass: "subscription" } } };
+      const saved = saveRoutingProfileRetrying({ root, scriptsDir: REPO_ROOT, profile, effectiveHarness: harness } as never);
+      assert.equal(saved.ok, true, JSON.stringify(saved));
+      const opencodeFiles = fs.existsSync(path.join(root, "opencode.json")) || fs.existsSync(path.join(root, ".opencode"));
+      const globalFile = fs.existsSync(path.join(cfgDir, "opencode.json"));
+      if (harness === "opencode") {
+        assert.equal(opencodeFiles || globalFile, true, "generated under opencode");
+      } else {
+        assert.equal(opencodeFiles, false, `no project OpenCode files under ${harness}`);
+        assert.equal(globalFile, false, `no global OpenCode config under ${harness}`);
+      }
+    } finally {
+      if (prevData === undefined) delete process.env.TYCOON_STANDALONE_DATA_DIR;
+      else process.env.TYCOON_STANDALONE_DATA_DIR = prevData;
+      if (prevCfg === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = prevCfg;
+    }
+  }
 });

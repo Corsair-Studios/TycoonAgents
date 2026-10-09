@@ -200,6 +200,8 @@ export interface OverrideAgentToClaudeTierOptions {
    *  resolveGeneratorScripts). Defaults to `root` (the standalone's own
    *  layout); the VS Code host must pass its extension install root. */
   scriptsDir?: string;
+  /** Effective harness of the caller (the OpenCode generator runs only under "opencode"). */
+  effectiveHarness?: string;
 }
 
 export async function overrideAgentToClaudeTier(
@@ -230,13 +232,15 @@ export async function overrideAgentToClaudeTier(
   };
 
   const scriptsDir = options.scriptsDir ?? root;
-  const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir });
+  const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir, effectiveHarness: options.effectiveHarness });
   return { handled: true, ok: result.ok, errors: result.errors };
 }
 
 export interface ClearAgentRouteOptions {
   /** See OverrideAgentToClaudeTierOptions.scriptsDir — defaults to `root`. */
   scriptsDir?: string;
+  /** Effective harness of the caller (the OpenCode generator runs only under "opencode"). */
+  effectiveHarness?: string;
 }
 
 export interface ClearAgentRouteResult {
@@ -273,6 +277,6 @@ export async function clearAgentRoute(
   const nextProfile: RoutingProfile = { ...existing, version: existing.version, agents: nextAgents };
 
   const scriptsDir = options.scriptsDir ?? root;
-  const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir });
+  const result = saveRoutingProfile({ root, profile: nextProfile, scriptsDir, effectiveHarness: options.effectiveHarness });
   return { handled: true, ok: result.ok, errors: result.errors };
 }

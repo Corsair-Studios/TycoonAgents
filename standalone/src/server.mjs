@@ -967,7 +967,7 @@ function handleBrowserMessage(msg) {
       try {
         const { clearRoutingProfile } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
-        const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT });
+        const result = clearRoutingProfile({ root, scriptsDir: REPO_ROOT, effectiveHarness: resolveEffectiveHarness(root) });
         broadcast('message', { type: 'routingSaved', ...result });
         broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
       } catch (err) {
@@ -1138,7 +1138,12 @@ function handleBrowserMessage(msg) {
       }
       try {
         const { uninstallCodexHooks } = installCodexHooksModule();
-        const result = uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+        const result = uninstallCodexHooks({
+          projectDir: root,
+          env: process.env,
+          platform: process.platform,
+          resolveHookSource: (fileName) => path.join(REPO_ROOT, 'hooks', fileName),
+        });
         _lastCodexHookWarnings = result && result.warnings;
       } catch (err) {
         console.error('[tycoonagents-standalone] uninstallCodexHooks failed:', err instanceof Error ? err.message : err);
@@ -1224,7 +1229,7 @@ function handleBrowserMessage(msg) {
         }
         try {
           const { overrideAgentToClaudeTier } = agentSettingsRouteModule();
-          const override = await overrideAgentToClaudeTier(root, id, model, { scriptsDir: REPO_ROOT });
+          const override = await overrideAgentToClaudeTier(root, id, model, { scriptsDir: REPO_ROOT, effectiveHarness: resolveEffectiveHarness(root) });
           if (override.handled) {
             broadcast('message', {
               type: 'settingsUpdated',
@@ -1269,7 +1274,7 @@ function handleBrowserMessage(msg) {
         }
         try {
           const { clearAgentRoute } = agentSettingsRouteModule();
-          const result = await clearAgentRoute(root, id, { scriptsDir: REPO_ROOT });
+          const result = await clearAgentRoute(root, id, { scriptsDir: REPO_ROOT, effectiveHarness: resolveEffectiveHarness(root) });
           if (result.handled && !result.ok) {
             console.error('[tycoonagents-standalone] clearAgentRoute failed:', result.errors.join('; '));
           }

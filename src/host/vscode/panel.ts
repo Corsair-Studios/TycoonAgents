@@ -8020,7 +8020,7 @@ export class TycoonPanel {
     }
     const root = this._projectRoot();
     try {
-      const result = await clearAgentRoute(root, agentId, { scriptsDir: this._extensionUri.fsPath });
+      const result = await clearAgentRoute(root, agentId, { scriptsDir: this._extensionUri.fsPath, effectiveHarness: this._resolveEffectiveHarness(root) });
       if (result.handled && !result.ok) {
         console.error("TycoonAgents: clearAgentRoute failed:", result.errors.join("; "));
       }
@@ -8035,7 +8035,7 @@ export class TycoonPanel {
   /** Delete routing.json and rerun both generators, then re-post a fresh MSG.ROUTING. */
   private _handleClearRouting(): void {
     const root = this._projectRoot();
-    const result = clearRoutingProfile({ root, scriptsDir: this._extensionUri.fsPath });
+    const result = clearRoutingProfile({ root, scriptsDir: this._extensionUri.fsPath, effectiveHarness: this._resolveEffectiveHarness(root) });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
     this._handleGetRouting();
   }
@@ -8672,7 +8672,12 @@ export class TycoonPanel {
       return;
     }
     try {
-      const result = uninstallCodexHooks({ projectDir: root, env: process.env, platform: process.platform });
+      const result = uninstallCodexHooks({
+        projectDir: root,
+        env: process.env,
+        platform: process.platform,
+        resolveHookSource: (fileName) => vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath,
+      });
       this._codexHookWarnings = result.warnings;
     } catch (err) {
       console.error("TycoonAgents: uninstallCodexHooks failed:", err instanceof Error ? err.message : err);
@@ -8761,7 +8766,7 @@ export class TycoonPanel {
     }
     try {
       const root = this._projectRoot();
-      const override = await overrideAgentToClaudeTier(root, id, model as ClaudeTier, { scriptsDir: this._extensionUri.fsPath });
+      const override = await overrideAgentToClaudeTier(root, id, model as ClaudeTier, { scriptsDir: this._extensionUri.fsPath, effectiveHarness: this._resolveEffectiveHarness(root) });
       if (override.handled) {
         this._rosterModelCache = undefined;
         void this._panel.webview.postMessage({
