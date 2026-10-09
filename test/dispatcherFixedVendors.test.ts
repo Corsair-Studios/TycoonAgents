@@ -386,7 +386,7 @@ test("codex chain: HTTP 400 invalid_model advances to the xai fallback (even wit
     await twoServers(400, 200, async (mUrl, xUrl) => {
       const { res, records } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
       assert.equal(res.isError, undefined);
-      assert.equal(res.content[0].text, "grok reviewed");
+      assert.ok(res.content[0].text.endsWith("grok reviewed"));
       const fbPre = records.find((r) => r.event === "PreToolUse" && r.fallbackOf === "mistral-reviewer");
       assert.ok(fbPre, "fallback PreToolUse written");
       assert.equal(fbPre.vendor, "xai");
@@ -432,7 +432,7 @@ test("codex chain: missing GEMINI_API_KEY advances to the xai fallback", async (
     await twoServers(400, 200, async (_mUrl, xUrl) => {
       const { res } = await runChain(dir, { GEMINI_API_KEY: undefined, XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
       assert.equal(res.isError, undefined);
-      assert.equal(res.content[0].text, "grok reviewed");
+      assert.ok(res.content[0].text.endsWith("grok reviewed"));
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -444,7 +444,7 @@ test("codex chain: HTTP 401 on the primary advances to the fallback", async () =
   try {
     await twoServers(401, 200, async (mUrl, xUrl) => {
       const { res } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
-      assert.equal(res.content[0].text, "grok reviewed");
+      assert.ok(res.content[0].text.endsWith("grok reviewed"));
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -458,7 +458,7 @@ test("codex chain: a missing claude binary advances to the fallback", async () =
     await twoServers(400, 200, async (_mUrl, xUrl) => {
       const { res } = await runChain(dir, { CLAUDE_CLI_BIN: path.join(dir, "no-such-claude-binary"), XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
       assert.equal(res.isError, undefined, res.content[0].text);
-      assert.equal(res.content[0].text, "grok reviewed");
+      assert.ok(res.content[0].text.endsWith("grok reviewed"));
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -485,4 +485,77 @@ test("classifyProviderError: 'log in' needs a word boundary", () => {
   assert.notEqual(classifyProviderError("catalog index failed"), "auth");
   assert.equal(classifyProviderError("please log in"), "auth");
   assert.equal(classifyProviderError("login required"), "auth");
+});
+
+// --- fallback attribution header ---
+
+test("codex chain: depth-1 success is prefixed with who answered and why the first failed; structured too", async () => {
+  const dir = makeGeminiChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(400, 200, async (_mUrl, xUrl) => {
+      const { res } = await runChain(dir, { GEMINI_API_KEY: undefined, XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      const text = res.content[0].text;
+      assert.ok(text.startsWith("Answered by xai/grok-build-0.1 (fallback — google/gemini-2.5-pro: needs GEMINI_API_KEY)"), text);
+      assert.ok(text.endsWith("grok reviewed"));
+      const sc = (res as unknown as { structuredContent: { answeredBy: { vendor: string; model: string }; fallbackDepth: number; failedAttempts: Array<{ model: string; kind: string }> } }).structuredContent;
+      assert.deepEqual(sc.answeredBy, { vendor: "xai", model: "xai/grok-build-0.1" });
+      assert.equal(sc.fallbackDepth, 1);
+      assert.deepEqual(sc.failedAttempts, [{ model: "google/gemini-2.5-pro", kind: "not_configured" }]);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: multi-hop header lists every failed entry", async () => {
+  const dir = makeChainProject([{ vendor: "mistral", model: "mistral/also-bad" }, { vendor: "xai", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(400, 200, async (mUrl, xUrl) => {
+      const { res } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      const first = res.content[0].text.split("\n")[0];
+      assert.match(first, /^Answered by xai\/grok-build-0\.1 \(fallback — mistral\/does-not-exist: invalid model; mistral\/also-bad: invalid model\)$/);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: no header when the first entry answers", async () => {
+  const dir = makeChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(200, 200, async (mUrl, xUrl) => {
+      const { res } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.doesNotMatch(res.content[0].text, /Answered by/);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("shortFailureReason: <=80 chars and key-looking tokens are scrubbed", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { shortFailureReason } = require("../../hooks/bridge-result.cjs") as { shortFailureReason: (k: string | undefined, m: string) => string };
+  const r = shortFailureReason(undefined, "weird failure with key sk-abcdef1234567890abcdef and Bearer abc.def " + "x".repeat(200));
+  assert.ok(r.length <= 80);
+  assert.doesNotMatch(r, /sk-abcdef/);
+  assert.doesNotMatch(r, /Bearer abc/);
+});
+
+test("shortFailureReason: URL credentials and query secrets are stripped", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { shortFailureReason } = require("../../hooks/bridge-result.cjs") as { shortFailureReason: (k: string | undefined, m: string) => string };
+  const a = shortFailureReason(undefined, "GET https://user:pw@host.example/v1 refused");
+  assert.doesNotMatch(a, /user:pw/);
+  assert.match(a, /https:\/\/\[redacted\]@host\.example/);
+  const b = shortFailureReason(undefined, "GET https://h.example/v1?api_key=abc123&x=1&token=zzz refused");
+  assert.doesNotMatch(b, /abc123|zzz/);
+  assert.match(b, /api_key=\[redacted\]/);
+});
+
+test("Claude-host envelope summary keeps the 'Answered by' header line intact", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const br = require("../../hooks/bridge-result.cjs") as { fallbackAttribution: (a: string, f: Array<{ label: string; kind?: string }>) => { header: string }; formatBridgeResult: (o: Record<string, unknown>) => { structuredContent: { summary: string } } };
+  const { header } = br.fallbackAttribution("xai/grok-build-0.1", [{ label: "google/gemini-2.5-pro", kind: "not_configured" }]);
+  const res = br.formatBridgeResult({ status: "ok", provider: "xai", model: "xai/grok-build-0.1", text: header + "\n\nreviewed" });
+  assert.ok(res.structuredContent.summary.startsWith(header));
 });

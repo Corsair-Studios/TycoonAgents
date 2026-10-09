@@ -263,6 +263,7 @@ function attemptEntry(slot, attempt, depth, isDefault) {
   };
   if (slot.mcpServer) e.mcpServer = slot.mcpServer;
   if (attempt.error && attempt.error.kind) e.kind = attempt.error.kind;
+  if (attempt.status !== "ok") e.reason = bridgeResult.shortFailureReason(e.kind, attempt.error && attempt.error.message);
   if (attempt.error && attempt.error.resetHint) e.resetHint = attempt.error.resetHint;
   if (isDefault) e.isDefault = true;
   return e;
@@ -394,16 +395,24 @@ async function runProviderChain(ctx) {
         attempts,
         answeredBy: { provider: slot.vendor || slot.mcpServer || "", model: slot.model || "", depth, isDefault },
       };
+      let answerText = attempt.summary;
       if (depth > 0) {
         extra.fellBackFrom = slotLabel(ctx.primary);
         extra.fallbackDepth = depth;
+        const failedEntries = attempts.filter((x) => x.status !== "ok" && x.status !== "skipped" && x.retriedAfterMs === undefined);
+        const attribution = bridgeResult.fallbackAttribution(
+          bridgeResult.vendorModelLabel(attempt.provider, attempt.model),
+          failedEntries.map((x) => ({ label: bridgeResult.vendorModelLabel(x.provider, x.model), kind: x.kind, reason: x.reason })),
+        );
+        extra.failedAttempts = attribution.failedAttempts;
+        answerText = attribution.header + "\n\n" + (attempt.summary || "");
       }
       if (attempt.usage) extra.usage = attempt.usage;
       return bridgeResult.formatBridgeResult({
         status: "ok",
         provider: attempt.provider,
         model: attempt.model,
-        text: attempt.summary,
+        text: answerText,
         extra,
       });
     }

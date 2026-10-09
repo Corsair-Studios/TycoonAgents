@@ -304,6 +304,56 @@ function classifyProviderError(message, opts) {
   return "unknown";
 }
 
+/** "vendor/model" label; the model is used as-is when it already starts with "<vendor>/". */
+function vendorModelLabel(vendor, model) {
+  const v = String(vendor || "");
+  const m = String(model || "");
+  if (!m) return v;
+  return v && m.toLowerCase().indexOf(v.toLowerCase() + "/") !== 0 ? v + "/" + m : m;
+}
+
+const SHORT_REASONS = {
+  auth: "sign-in or key rejected",
+  cli_missing: "CLI not installed",
+  not_found: "invalid model",
+  rate_limit: "rate limited",
+  quota: "usage limit reached",
+  billing: "billing problem",
+  overloaded: "provider overloaded",
+  network: "unreachable",
+  timeout: "timed out",
+  sandbox_unavailable: "sandbox unavailable",
+};
+
+/** Plain, <=80-char, secret-scrubbed summary of why an attempt failed. */
+function shortFailureReason(kind, message) {
+  const msg = String(message === undefined || message === null ? "" : message);
+  if (kind === "not_configured" || (!kind && /is not set in the/.test(msg))) {
+    const name = /\b([A-Z][A-Z0-9_]*_(?:API_KEY|BASE_URL|BINARY_PATH))\b/.exec(msg);
+    return name ? "needs " + name[1] : "not configured";
+  }
+  if (kind && SHORT_REASONS[kind]) return SHORT_REASONS[kind];
+  const scrubbed = msg
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1[redacted]@")
+    .replace(/([?&](?:key|api_key|apikey|token|access_token|sig|signature)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\b(?:sk|xai|gsk|pk|rk)[-_][A-Za-z0-9_-]{8,}/g, "[redacted]")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (scrubbed || kind || "failed").slice(0, 80);
+}
+
+/**
+ * Fallback attribution for a successful non-first attempt. failed: [{ label, kind?, reason? }]
+ * (reason already short; derived from kind when absent). Returns { header, failedAttempts }.
+ */
+function fallbackAttribution(answeredLabel, failed) {
+  const list = (failed || []).map((f) => ({ label: f.label, kind: f.kind, reason: f.reason || shortFailureReason(f.kind, "") }));
+  const header = "Answered by " + answeredLabel + " (fallback \u2014 " + list.map((f) => f.label + ": " + f.reason).join("; ") + ")";
+  return { header, failedAttempts: list.map((f) => ({ model: f.label, kind: f.kind || "unknown" })) };
+}
+
 function validRetryAfter(ms) {
   return typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
 }
@@ -412,6 +462,9 @@ function providerErrorResult(opts) {
 }
 
 module.exports = {
+  vendorModelLabel,
+  shortFailureReason,
+  fallbackAttribution,
   ENVELOPE_VERSION,
   STATUSES,
   DEFAULT_MAX_CHARS,

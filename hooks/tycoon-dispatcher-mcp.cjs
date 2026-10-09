@@ -733,8 +733,21 @@ async function handleDelegateTool(args) {
         if (gateLines) resultText = gateLines + "\n\n" + resultText;
       } catch { /* fail open: never let gate-event surfacing break a dispatch */ }
 
+      const structured = {};
+      if (result.usage) structured.usage = result.usage;
+      if (fallbackDepth > 0) {
+        // Say who really answered: the orchestrator would otherwise credit the first entry.
+        const attribution = bridgeResult.fallbackAttribution(
+          bridgeResult.vendorModelLabel(currentVendor, currentModel),
+          attempts.map((a) => ({ label: bridgeResult.vendorModelLabel(a.vendor, a.model), kind: a.kind, reason: bridgeResult.shortFailureReason(a.kind, a.error) })),
+        );
+        resultText = attribution.header + "\n\n" + resultText;
+        structured.answeredBy = { vendor: currentVendor, model: currentModel };
+        structured.fallbackDepth = fallbackDepth;
+        structured.failedAttempts = attribution.failedAttempts;
+      }
       const out = { content: [{ type: "text", text: resultText }] };
-      if (result.usage) out.structuredContent = { usage: result.usage };
+      if (Object.keys(structured).length) out.structuredContent = structured;
       return out;
     }
 
@@ -755,7 +768,7 @@ async function handleDelegateTool(args) {
       errorRecord.fallbackIsDefault = fallbackIsDefault;
     }
     appendRecord(activityFile, errorRecord);
-    attempts.push({ vendor: currentVendor, model: currentModel, error: result.error });
+    attempts.push({ vendor: currentVendor, model: currentModel, error: result.error, kind: result.kind || bridgeResult.classifyProviderError(result.error) });
 
     // p-dispatcher-leak: a failed attempt must close out its own spawnId
     // with a SubagentStop (tokens absent, usageReported false) exactly like
