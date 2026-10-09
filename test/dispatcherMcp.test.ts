@@ -820,7 +820,7 @@ async function runAnthropicWithFake(
   agents: Record<string, string>,
   workerId: string,
   env: Record<string, string> = {},
-): Promise<{ mode: string; cwd: string; args: string[]; projectDir: string; bridge?: string }> {
+): Promise<{ mode: string; cwd: string; args: string[]; projectDir: string; bridge?: string; stdin?: string }> {
   const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-claude-perm-"));
   const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-perm-project-")));
   fs.mkdirSync(path.join(projectDir, ".claude", "agents"), { recursive: true });
@@ -828,9 +828,10 @@ async function runAnthropicWithFake(
     fs.writeFileSync(path.join(projectDir, ".claude", "agents", `${name}.md`), body);
   }
   const body = [
-    "process.stdin.resume();",
+    "let stdin = '';",
+    "process.stdin.on('data', (c) => { stdin += c; });",
     "process.stdin.on('end', () => {",
-    "  process.stdout.write(JSON.stringify({ result: JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), bridge: process.env.TYCOON_BRIDGE_CHILD }) }));",
+    "  process.stdout.write(JSON.stringify({ result: JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), bridge: process.env.TYCOON_BRIDGE_CHILD, stdin }) }));",
     "});",
   ].join("\n");
   let claudeBin: string;
@@ -856,7 +857,7 @@ async function runAnthropicWithFake(
     assert.ok(!res.error, `unexpected error: ${res.error}`);
     const parsed = JSON.parse(res.text as string);
     const args: string[] = parsed.args;
-    return { mode: args[args.indexOf("--permission-mode") + 1], cwd: fs.realpathSync(parsed.cwd), args, projectDir, bridge: parsed.bridge };
+    return { mode: args[args.indexOf("--permission-mode") + 1], cwd: fs.realpathSync(parsed.cwd), args, projectDir, bridge: parsed.bridge, stdin: parsed.stdin };
   } finally {
     for (const k of keys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; }
     fs.rmSync(fakeDir, { recursive: true, force: true });
@@ -871,6 +872,49 @@ test("anthropicAdapter permission mode: builder gets acceptEdits, cwd is the pro
   assert.equal(r.mode, "acceptEdits");
   assert.equal(r.cwd, r.projectDir);
   assert.ok(!r.args.includes("--add-dir"));
+});
+
+const WRAPPER_FM = (name: string) =>
+  `---
+name: ${name}
+disallowedTools: Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch
+backend:
+  vendor: anthropic
+  transport: mcp
+  mcpServer: claude-cli
+  tools: [claude]
+  model: anthropic/sonnet
+---
+Use the \`claude\` tool WRAPPER-BODY-MARKER
+`;
+
+test("bridge wrapper builder (claude-worker): acceptEdits in the project, leaf preamble, wrapper body never sent", async () => {
+  const r = await runAnthropicWithFake({ "claude-worker": WRAPPER_FM("claude-worker") }, "claude-worker");
+  assert.equal(r.mode, "acceptEdits");
+  assert.equal(r.cwd, r.projectDir);
+  assert.equal(r.bridge, "1");
+  assert.ok(r.args.includes("--append-system-prompt"));
+  assert.equal(r.args[r.args.indexOf("--disallowedTools") + 1], "Task,Agent");
+  assert.ok(!r.args.includes("--add-dir"));
+  assert.doesNotMatch(r.stdin as string, /WRAPPER-BODY-MARKER/);
+});
+
+test("bridge wrapper reviewer (gemini-reviewer): plan, scratch cwd, project readable via --add-dir", async () => {
+  const r = await runAnthropicWithFake({ "gemini-reviewer": WRAPPER_FM("gemini-reviewer") }, "gemini-reviewer");
+  assert.equal(r.mode, "plan");
+  assert.notEqual(r.cwd, r.projectDir);
+  assert.equal(r.args[r.args.indexOf("--add-dir") + 1], r.projectDir);
+});
+
+test("bridge wrapper with a non-claude-cli mcpServer (second-opinion) stays plan", async () => {
+  const fm = WRAPPER_FM("second-opinion").replace("mcpServer: claude-cli", "mcpServer: other-bridge");
+  const r = await runAnthropicWithFake({ "second-opinion": fm }, "second-opinion");
+  assert.equal(r.mode, "plan");
+});
+
+test("non-wrapper agent with disallowedTools Edit stays plan (wrapper rule does not apply)", async () => {
+  const r = await runAnthropicWithFake({ "coding-specialist": "---\ndisallowedTools: Edit, Write\nbackend:\n  vendor: anthropic\n---\n" }, "coding-specialist");
+  assert.equal(r.mode, "plan");
 });
 
 test("anthropicAdapter permission mode: builder without a tools line (inherits all) gets acceptEdits", async () => {

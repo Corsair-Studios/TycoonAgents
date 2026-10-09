@@ -346,6 +346,11 @@ function readAgentFrontmatter(agentFilePath) {
   return out;
 }
 
+/** True when the agent's backend block declares transport: mcp (a wrapper around a bridge tool). */
+function isBridgeWrapperFrontmatter(fm) {
+  return !!fm && typeof fm.backend === "string" && /\btransport:\s*mcp(?=[\s]|$)/i.test(fm.backend);
+}
+
 function toolTokens(text) {
   return String(text || "").split(/[\s,\[\]'"]+/).map((s) => s.replace(/^-+/, "").trim()).filter(Boolean);
 }
@@ -367,6 +372,10 @@ function baseClaudePermissionMode(agentInfo) {
   const fromFile = validPermissionMode(fm.permissionMode);
   if (fromFile) return fromFile;
   if (READ_ONLY_NAME_RE.test(workerId)) return "plan";
+  // Bridge wrappers (backend.transport: mcp) restrict tools only to force the wrapper through its
+  // bridge tool; the dispatcher runs the backend directly, so those lists say nothing about the role.
+  // Only the claude-cli wrapper is a builder; any other bridge wrapper stays read-only.
+  if (isBridgeWrapperFrontmatter(fm)) return /\bmcpServer:\s*["']?claude-cli["']?(?=[\s]|$)/i.test(fm.backend) ? "acceptEdits" : "plan";
   if (typeof fm.tools === "string" && !toolTokens(fm.tools).some((t) => EDIT_TOOLS.includes(t))) return "plan";
   if (toolTokens(fm.disallowedTools).some((t) => t === "Edit" || t === "Write")) return "plan";
   return "acceptEdits";
@@ -415,6 +424,13 @@ async function anthropicAdapter(task, agentInfo) {
     "--model", model,
     "--permission-mode", permissionMode,
   ];
+  if (permissionMode === "plan") {
+    // Plan mode cannot write, so the project can be exposed for reading from the scratch cwd.
+    const projectDir = agentInfo && agentInfo.projectDir;
+    try {
+      if (typeof projectDir === "string" && projectDir && fs.statSync(projectDir).isDirectory()) cliArgs.push("--add-dir", projectDir);
+    } catch { /* no readable project: scratch only */ }
+  }
   if (permissionMode === "acceptEdits") {
     cliArgs.push("--append-system-prompt", LEAF_PREAMBLE, "--disallowedTools", "Task,Agent");
   }
