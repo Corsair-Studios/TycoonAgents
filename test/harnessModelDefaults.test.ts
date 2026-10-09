@@ -119,6 +119,12 @@ test("dispatcher on the Codex harness records the effective openai model (execut
     const sonnet = await delegate(dir, "coding-specialist", {});
     assert.deepEqual([sonnet.pre.vendor, sonnet.pre.model], ["openai", "gpt-5.6-sol"]);
     assert.equal(sonnet.res.content[0].text.startsWith("stub:openai:"), true);
+    const mod = require("../../hooks/tycoon-dispatcher-mcp.cjs") as { resolveActivityFile: () => string };
+    const prevDir = process.env.TYCOON_PROJECT_DIR;
+    process.env.TYCOON_PROJECT_DIR = dir;
+    const okStops = fs.readFileSync(mod.resolveActivityFile(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.event === "SubagentStop");
+    if (prevDir === undefined) delete process.env.TYCOON_PROJECT_DIR; else process.env.TYCOON_PROJECT_DIR = prevDir;
+    assert.ok(okStops.length >= 1 && okStops.every((x) => x.ok === true));
     const haiku = await delegate(dir, "search-retrieval", {});
     assert.deepEqual([haiku.pre.vendor, haiku.pre.model], ["openai", "gpt-5.6-sol"]);
     const kimi = await delegate(dir, "kimi-reviewer", {});
@@ -150,7 +156,7 @@ test("dispatcher without a Codex harness signal keeps the agent's own vendor/mod
   }
 });
 
-function makeFakeCodex(recordFile: string): { dir: string; bin: string } {
+function makeFakeCodex(recordFile: string, output = "fake codex done", stderrLine = ""): { dir: string; bin: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-codex-"));
   const body = [
     "const fs = require('fs');",
@@ -159,7 +165,8 @@ function makeFakeCodex(recordFile: string): { dir: string; bin: string } {
     "process.stdin.on('data', (c) => { stdin += c; });",
     "process.stdin.on('end', () => {",
     `  fs.writeFileSync(${JSON.stringify(recordFile)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin, bridgeChild: process.env.TYCOON_BRIDGE_CHILD, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE }));`,
-    "  console.log('fake codex done');",
+    `  if (${JSON.stringify(stderrLine)}) console.error(${JSON.stringify(stderrLine)});`,
+    `  console.log(${JSON.stringify(output)});`,
     "});",
   ].join("\n");
   let bin: string;
@@ -204,6 +211,7 @@ test("codex exec adapter: builder gets workspace-write, project cwd, model, effo
     assert.equal(argv[argv.indexOf("-m") + 1], "gpt-5.6-sol");
     assert.ok(argv.includes("model_reasoning_effort=low"));
     assert.ok(argv.includes("approval_policy=never"));
+    assert.ok(argv.includes("mcp_servers.tycoon.enabled=false"));
     assert.equal(fs.realpathSync(rec.cwd), fs.realpathSync(dir));
     assert.match(rec.stdin, /leaf worker/);
     assert.match(rec.stdin, /review this/);
@@ -228,6 +236,78 @@ test("codex exec adapter: reviewer is read-only, not in the project cwd, no bypa
     assert.equal(argv.some((a) => /danger|bypass/i.test(a)), false);
     assert.equal(argv.some((a) => a.startsWith("model_reasoning_effort")), false);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const SANDBOX_MESSAGE = "Codex's Windows sandbox couldn't start on this machine, so the worker couldn't run commands. Repair it in Codex, or set windows.sandbox = \"unelevated\" in your Codex config (config.toml).";
+
+test("codex exec adapter: sandbox failure output becomes kind sandbox_unavailable", async () => {
+  const dir = makeProject({ "coding-specialist": "---\nmodel: sonnet\n---\nbody" });
+  const recordFile = path.join(os.tmpdir(), `tycoon-fake-codex-sbx-${process.pid}-${Date.now()}.json`);
+  const fake = makeFakeCodex(recordFile, "", "2026-10-09T10:00:00Z ERROR Failed to create unified exec process: helper_unknown_error: setup refresh had errors");
+  const prev = process.env.CODEX_BINARY_PATH;
+  process.env.CODEX_BINARY_PATH = fake.bin;
+  try {
+    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-5.6-sol", workerId: "coding-specialist", projectDir: dir })) as { error?: string; kind?: string };
+    assert.equal(res.kind, "sandbox_unavailable");
+    assert.equal(res.error, SANDBOX_MESSAGE);
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_BINARY_PATH; else process.env.CODEX_BINARY_PATH = prev;
+    fs.rmSync(fake.dir, { recursive: true, force: true });
+    fs.rmSync(recordFile, { force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex exec adapter: a successful answer quoting the sandbox strings is not flagged", async () => {
+  const dir = makeProject({ "coding-specialist": "---\nmodel: sonnet\n---\nbody" });
+  const recordFile = path.join(os.tmpdir(), `tycoon-fake-codex-fp-${process.pid}-${Date.now()}.json`);
+  const fake = makeFakeCodex(recordFile, "the code says: CreateProcess failed Rejected; setup refresh had errors; Failed to create unified exec process");
+  const prev = process.env.CODEX_BINARY_PATH;
+  process.env.CODEX_BINARY_PATH = fake.bin;
+  try {
+    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-5.6-sol", workerId: "coding-specialist", projectDir: dir })) as { text?: string; error?: string; kind?: string };
+    assert.equal(res.kind, undefined);
+    assert.equal(res.error, undefined);
+    assert.match(res.text as string, /setup refresh had errors/);
+  } finally {
+    if (prev === undefined) delete process.env.CODEX_BINARY_PATH; else process.env.CODEX_BINARY_PATH = prev;
+    fs.rmSync(fake.dir, { recursive: true, force: true });
+    fs.rmSync(recordFile, { force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dispatcher: sandbox failure returns structured provider_error and writes one CodexSandboxUnavailable record", async () => {
+  const dir = makeProject(AGENTS, { "execution.json": { provider: "codex" } });
+  const recordFile = path.join(os.tmpdir(), `tycoon-fake-codex-sbx2-${process.pid}-${Date.now()}.json`);
+  const fake = makeFakeCodex(recordFile, "", "exec_command failed: CreateProcess { message: \"Rejected(setup refresh had errors)\" }");
+  try {
+    const env = { TYCOON_DISPATCH_ADAPTER: undefined, CODEX_BINARY_PATH: fake.bin };
+    const first = await delegate(dir, "coding-specialist", env);
+    const r = first.res as unknown as { isError?: boolean; structuredContent?: { status?: string; error?: { kind?: string; message?: string } } };
+    assert.equal(r.isError, true);
+    assert.equal(r.structuredContent?.status, "provider_error");
+    assert.equal(r.structuredContent?.error?.kind, "sandbox_unavailable");
+    assert.equal(r.structuredContent?.error?.message, SANDBOX_MESSAGE);
+    // Second call in the same (cached) module: the record must not repeat.
+    const mod = require("../../hooks/tycoon-dispatcher-mcp.cjs") as { handleDelegateTool: (a: Record<string, unknown>) => Promise<unknown>; resolveActivityFile: () => string };
+    process.env.TYCOON_PROJECT_DIR = dir;
+    process.env.CODEX_BINARY_PATH = fake.bin;
+    delete process.env.TYCOON_DISPATCH_ADAPTER;
+    await mod.handleDelegateTool({ specialist: "coding-specialist", task: "again" });
+    const recs = fs.readFileSync(mod.resolveActivityFile(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.event === "CodexSandboxUnavailable");
+    const stops = fs.readFileSync(mod.resolveActivityFile(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((x) => x.event === "SubagentStop");
+    delete process.env.TYCOON_PROJECT_DIR;
+    delete process.env.CODEX_BINARY_PATH;
+    assert.equal(recs.length, 1);
+    assert.ok(stops.length >= 1 && stops.every((x) => x.ok === false));
+    assert.equal(recs[0].provider, "codex");
+    assert.equal(typeof recs[0].at, "number");
+  } finally {
+    fs.rmSync(fake.dir, { recursive: true, force: true });
+    fs.rmSync(recordFile, { force: true });
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

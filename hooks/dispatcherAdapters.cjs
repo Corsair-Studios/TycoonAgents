@@ -703,6 +703,15 @@ async function googleAdapter(_task, _agentInfo) {
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh"];
 const CODEX_BRIDGE_ORIGINATOR = "tycoon-dispatcher-exec";
 
+/** Codex's elevated Windows sandbox could not start: every shell command in the child fails. */
+const CODEX_SANDBOX_SIGNATURE_RE = /setup refresh had errors|Failed to create unified exec process|CreateProcess[^\n]{0,120}Rejected|Rejected[^\n]{0,120}CreateProcess/i;
+const CODEX_LOG_LINE_RE = /^\s*(?:\S+\s+)?(?:ERROR|WARN)\b|exec_command failed:/;
+/** Only Codex's own stderr log/error lines count; stdout (the worker's answer) may quote these strings legitimately. */
+function isCodexSandboxUnavailable(stderr) {
+  return String(stderr || "").split(/\r?\n/).some((l) => CODEX_LOG_LINE_RE.test(l) && CODEX_SANDBOX_SIGNATURE_RE.test(l));
+}
+const CODEX_SANDBOX_UNAVAILABLE_MESSAGE = "Codex's Windows sandbox couldn't start on this machine, so the worker couldn't run commands. Repair it in Codex, or set windows.sandbox = \"unelevated\" in your Codex config (config.toml).";
+
 /** Runs `codex exec` for an openai slot on the Codex harness; elsewhere an openai specialist is Codex-native. */
 async function openaiAdapter(task, agentInfo) {
   if (!agentInfo || agentInfo.harness !== "codex") return { error: "use Codex native agents" };
@@ -730,7 +739,8 @@ async function openaiAdapter(task, agentInfo) {
       if (typeof projectDir === "string" && projectDir && fs.statSync(projectDir).isDirectory()) cwd = projectDir;
     } catch { /* keep the scratch dir: edits cannot reach the project */ }
   }
-  const args = ["exec", "--skip-git-repo-check", "-s", readOnly ? "read-only" : "workspace-write", "-c", "approval_policy=never"];
+  // mcp_servers.tycoon.enabled=false: the child must not see the machine-wide tycoon MCP server and delegate again.
+  const args = ["exec", "--skip-git-repo-check", "-s", readOnly ? "read-only" : "workspace-write", "-c", "approval_policy=never", "-c", "mcp_servers.tycoon.enabled=false"];
   if (model) args.push("-m", model);
   const effort = agentInfo && typeof agentInfo.effort === "string" ? agentInfo.effort.trim().toLowerCase() : "";
   if (CODEX_EFFORTS.includes(effort)) args.push("-c", `model_reasoning_effort=${effort}`);
@@ -747,6 +757,9 @@ ${task}`;
   };
   const run = await runClaudeCli(bin, args, cwd, resolveTimeoutMs(), prompt, childEnv, { shell: launcher.needsShell(bin), label: "codex exec" });
   if (run.error) return { error: `${run.error} (argv: ${redactSecrets([bin, ...args].join(" "))})` };
+  if (isCodexSandboxUnavailable(run.stderr)) {
+    return { error: CODEX_SANDBOX_UNAVAILABLE_MESSAGE, kind: "sandbox_unavailable" };
+  }
   if (run.code !== 0) {
     const tail = redactSecrets(run.stderr || "").slice(-500);
     return { error: `codex exec exited ${run.code} (argv: ${redactSecrets([bin, ...args].join(" "))}).${tail ? ` stderr: ${tail}` : ""}` };

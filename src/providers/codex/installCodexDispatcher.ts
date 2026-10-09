@@ -19,7 +19,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { resolveCodexHome, type ResolveCodexHomeEnv } from "./installCodexHooks";
+import { resolveCodexHome, samePath, isNewerExtensionPath, type ResolveCodexHomeEnv } from "./installCodexHooks";
 import { resolveNodeBinary } from "./resolveNodeBinary";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
@@ -299,5 +299,66 @@ export function isDispatcherMarkerInConfigToml(env: ResolveCodexHomeEnv, platfor
     return text.includes(DISPATCHER_MARKER_START);
   } catch {
     return false;
+  }
+}
+
+export const CODEX_DISPATCHER_STALE_MESSAGE =
+  "The Codex dispatcher entry points at an old or missing TycoonAgents file, so Codex can't start it. Install again to update it.";
+
+/** `tycoonagents.tycoonagents-<version>` folder name inside an install path, if any. */
+function extensionVersionDir(p: string): string | undefined {
+  const m = /[\\/](tycoonagents\.tycoonagents-[^\\/]+)[\\/]/i.exec(p);
+  return m ? m[1].toLowerCase() : undefined;
+}
+
+/**
+ * Classify the managed dispatcher block against the script path this host
+ * would install now. "none": no managed block (never installed, or only a
+ * foreign table); "installed": block present and usable; "stale": the block's
+ * script is missing on disk, or lives in a different TycoonAgents extension
+ * version folder than the current one. A differing path that still exists and
+ * is not a versioned extension folder (e.g. a standalone checkout) is left
+ * alone so two hosts don't keep overwriting each other.
+ */
+export function detectCodexDispatcherState(
+  text: string,
+  currentScriptPath: string,
+  fileExists: (p: string) => boolean = fs.existsSync,
+): "none" | "installed" | "stale" {
+  const stripped = stripManagedRegion(text, true);
+  if (!stripped) return "none";
+  const region = text.slice(stripped.start, stripped.end);
+  const m = /^[ \t]*args[ \t]*=[ \t]*(\[[^\r\n]*\])/m.exec(region);
+  if (!m) return "stale";
+  let args: unknown;
+  try {
+    args = JSON.parse(m[1]);
+  } catch {
+    return "stale";
+  }
+  const script = Array.isArray(args) && typeof args[0] === "string" ? args[0] : undefined;
+  if (script === undefined) return "stale";
+  if (samePath(script, currentScriptPath)) return fileExists(script) ? "installed" : "stale";
+  if (!fileExists(script)) return "stale";
+  const oldDir = extensionVersionDir(script);
+  const curDir = extensionVersionDir(currentScriptPath);
+  // A newer extension version's path belongs to another window; leave it.
+  if (isNewerExtensionPath(script, currentScriptPath)) return "installed";
+  return oldDir !== undefined && curDir !== undefined && oldDir !== curDir ? "stale" : "installed";
+}
+
+/** Bounded, never-throwing config.toml read + detectCodexDispatcherState. */
+export function readCodexDispatcherState(
+  env: ResolveCodexHomeEnv,
+  platform: NodeJS.Platform | undefined,
+  currentScriptPath: string,
+): "none" | "installed" | "stale" {
+  try {
+    const { codexHome } = resolveCodexHome({ env, platform });
+    const configTomlPath = path.join(codexHome, "config.toml");
+    if (!fs.existsSync(configTomlPath)) return "none";
+    return detectCodexDispatcherState(fs.readFileSync(configTomlPath, "utf8"), currentScriptPath);
+  } catch {
+    return "none";
   }
 }

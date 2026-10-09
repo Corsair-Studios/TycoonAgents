@@ -292,6 +292,10 @@ export interface MetricsWorldState {
    * (SessionStart or an orchestrator WorkerActivity after `at`).
    */
   orchestratorLimit?: { kind: string; at: number; resetHint?: string; resetAt?: number; message?: string };
+  /** Newest CodexSandboxUnavailable record (epoch ms): Codex's Windows sandbox could not start. */
+  codexSandboxUnavailableAt?: number;
+  /** Newest Codex worker run that finished with vendor-reported usage (a real success). */
+  lastCodexWorkerOkAt?: number;
   /** Internal: ids seeded via WorkerRegistered (the installed .claude/agents roster). Absent until a roster is seeded. */
   _registeredIds?: string[];
   /** Internal: true once the host signalled (RosterSeeded) that the full roster was seeded. Stale-marker clearing waits for it. */
@@ -327,6 +331,28 @@ export function isOrchestratorLimitActive(
 ): boolean {
   if (!limit) return false;
   return limit.resetAt !== undefined ? now < limit.resetAt : now - limit.at < ORCHESTRATOR_LIMIT_FALLBACK_TTL_MS;
+}
+
+/**
+ * Pure: should the Codex sandbox warning show? True when a
+ * CodexSandboxUnavailable record exists and no Codex worker run has finished
+ * successfully (with vendor-reported usage) since.
+ */
+export function isCodexSandboxWarningActive(
+  state: { codexSandboxUnavailableAt?: number; lastCodexWorkerOkAt?: number } | undefined,
+): boolean {
+  if (!state || state.codexSandboxUnavailableAt === undefined) return false;
+  return state.lastCodexWorkerOkAt === undefined || state.lastCodexWorkerOkAt < state.codexSandboxUnavailableAt;
+}
+
+export const CODEX_SANDBOX_WARNING_MESSAGE =
+  "Codex's Windows sandbox couldn't start on this machine, so Codex workers can't run commands. Repair it in Codex, or set windows.sandbox = \"unelevated\" in your Codex config.";
+
+/** The Settings warning text while the Codex sandbox warning is active, else undefined. */
+export function codexSandboxWarning(
+  state: { codexSandboxUnavailableAt?: number; lastCodexWorkerOkAt?: number } | undefined,
+): string | undefined {
+  return isCodexSandboxWarningActive(state) ? CODEX_SANDBOX_WARNING_MESSAGE : undefined;
 }
 
 export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): MetricsWorldState {
@@ -589,7 +615,12 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
     const { orchestratorLimit: _cleared, ...rest } = state;
     state = rest;
   }
+  if (event.type === "WorkerStopped" && event.provider === "codex" && event.ok === true) {
+    state = { ...state, lastCodexWorkerOkAt: Math.max(state.lastCodexWorkerOkAt ?? 0, event.at) };
+  }
   switch (event.type) {
+    case "CodexSandboxUnavailable":
+      return { ...state, codexSandboxUnavailableAt: Math.max(state.codexSandboxUnavailableAt ?? 0, event.at) };
     case "OrchestratorLimit":
       return {
         ...state,

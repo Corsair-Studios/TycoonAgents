@@ -157,6 +157,10 @@ export function createStateFeed({ projectRoot, broadcast }) {
     getStateMessage() {
       return { type: MSG_STATE, state: currentState };
     },
+    /** Current computed state (null before the first compute). */
+    getState() {
+      return currentState;
+    },
     close() {
       watcher.close();
     },

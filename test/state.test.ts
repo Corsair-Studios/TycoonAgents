@@ -553,3 +553,36 @@ test("applyEvent: TaskCompleted for a real worker still increments completedTask
   assert.equal(state.unattributedTasks, 0, "a real worker's completion must not touch unattributedTasks");
   assert.equal(state.completedTasks, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Codex sandbox warning: CodexSandboxUnavailable record vs. last good Codex run
+// ---------------------------------------------------------------------------
+
+import { mapHookRecord } from "../src/providers/claude-code/mapHookRecord";
+import { codexSandboxWarning, isCodexSandboxWarningActive } from "../src/core/state";
+
+test("CodexSandboxUnavailable record maps to an event and sets the warning until a later successful Codex worker run", () => {
+  const events = mapHookRecord({ event: "CodexSandboxUnavailable", provider: "codex", at: T + 100 } as HookRecord);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "CodexSandboxUnavailable");
+
+  let state = initialWorldState();
+  assert.equal(codexSandboxWarning(state), undefined);
+  for (const e of events) state = applyEvent(state, e);
+  assert.equal(state.codexSandboxUnavailableAt, T + 100);
+  assert.match(codexSandboxWarning(state) ?? "", /Windows sandbox couldn't start/);
+
+  // A failed Codex run (no vendor-reported usage) does not clear it.
+  state = applyEvent(state, { type: "WorkerStopped", at: T + 110, workerId: "coding-specialist", provider: "codex", ok: false });
+  assert.equal(isCodexSandboxWarningActive(state), true);
+  // A successful Codex run older than the record does not clear it.
+  state = applyEvent(state, { type: "WorkerStopped", at: T + 50, workerId: "coding-specialist", provider: "codex", ok: true });
+  assert.equal(isCodexSandboxWarningActive(state), true);
+  // A non-Codex run does not clear it.
+  state = applyEvent(state, { type: "WorkerStopped", at: T + 200, workerId: "coding-specialist", provider: "claude-code", ok: true });
+  assert.equal(isCodexSandboxWarningActive(state), true);
+  // A newer successful Codex run does.
+  state = applyEvent(state, { type: "WorkerStopped", at: T + 300, workerId: "coding-specialist", provider: "codex", ok: true });
+  assert.equal(isCodexSandboxWarningActive(state), false);
+  assert.equal(codexSandboxWarning(state), undefined);
+});

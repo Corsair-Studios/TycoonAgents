@@ -1476,6 +1476,36 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       uninstallButtons[1].dispatchEvent(new win.Event('click'));
       assert.equal(posted[posted.length - 1].type, 'uninstallCodexDispatcher');
 
+      // Sandbox warning: display only, rendered beside the Codex rows, no extra button.
+      dispatch({
+        type: 'settings',
+        payload: {
+          ...baseSettings,
+          harness: {
+            effective: 'codex',
+            source: 'execution',
+            fileValue: 'codex',
+            running: 'codex',
+            mismatch: false,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+            codexHooksInstalled: true,
+            codexDispatcherInstalled: true,
+            codexSandboxWarning: "Codex's Windows sandbox couldn't start on this machine.",
+          },
+        },
+      });
+      await flush();
+      const sandboxConfig = doc.getElementById('setup-config');
+      const sandboxEl = sandboxConfig.querySelector('.harness-codex-sandbox-warning') as any;
+      assert.ok(sandboxEl, 'codexSandboxWarning must render');
+      assert.ok((sandboxEl.textContent || '').includes("Windows sandbox couldn't start"));
+      assert.equal(sandboxEl.querySelectorAll('button').length, 0, 'no action button on the sandbox warning');
+      assert.equal(sandboxConfig.querySelectorAll('.harness-codex-install-btn').length, 2, 'only the two install buttons');
+
       assertNoErrors('codex-install-rows');
     });
 

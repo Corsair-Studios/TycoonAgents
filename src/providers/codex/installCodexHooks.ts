@@ -248,6 +248,29 @@ export function samePath(a: string, b: string): boolean {
   return a === b;
 }
 
+/** `tycoonagents.tycoonagents-<ver>` version in an install path, as numbers, if present. */
+function extensionVersion(p: string): number[] | undefined {
+  const m = /[\\/]tycoonagents\.tycoonagents-(\d+(?:\.\d+)*)[^\\/]*[\\/]/i.exec(p);
+  return m ? m[1].split(".").map(Number) : undefined;
+}
+
+/**
+ * True when `candidate` lives in a tycoonagents extension folder with a
+ * HIGHER version than `current`. Another VS Code window on a newer extension
+ * owns that path; treating it as stale would make two windows overwrite each
+ * other on every open.
+ */
+export function isNewerExtensionPath(candidate: string, current: string): boolean {
+  const a = extensionVersion(candidate);
+  const b = extensionVersion(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
 /** Wrapper programs we know how to extend with `--previous-notify` (basename, no extension). */
 function isKnownNotifyWrapper(command: string): boolean {
   return /^codex-computer-use$/i.test((command.split(/[\\/]/).pop() ?? "").replace(/\.exe$/i, ""));
@@ -373,7 +396,7 @@ export function detectCodexNotifyState(text: string, hookScriptPath?: string, no
     const stale =
       elements !== undefined &&
       (wrongNode(elements[0]?.value) ||
-        (hookScriptPath !== undefined && elements.length > 1 && !samePath(elements[1].value, hookScriptPath)));
+        (hookScriptPath !== undefined && elements.length > 1 && !samePath(elements[1].value, hookScriptPath) && !(isNewerExtensionPath(elements[1].value, hookScriptPath) && fs.existsSync(elements[1].value))));
     return stale ? "stale-installed" : "installed";
   }
   const rest = stripped ? stripped.text : text;
@@ -390,7 +413,10 @@ export function detectCodexNotifyState(text: string, hookScriptPath?: string, no
       !wrapper.elements.some((e) => e.value === "--previous-notify");
     return canExtend ? "wrapper-missing" : "blocked";
   }
-  const staleScript = hookScriptPath !== undefined && !samePath(embedded.scriptPath, hookScriptPath);
+  const staleScript =
+    hookScriptPath !== undefined &&
+    !samePath(embedded.scriptPath, hookScriptPath) &&
+    !(isNewerExtensionPath(embedded.scriptPath, hookScriptPath) && fs.existsSync(embedded.scriptPath));
   return staleScript || wrongNode(embedded.argv[0]) ? "stale-wrapped" : "wrapped";
 }
 

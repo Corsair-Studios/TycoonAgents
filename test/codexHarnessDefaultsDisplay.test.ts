@@ -389,6 +389,13 @@ test('Codex harness (metrics): default agents show Sol/Astra with OpenAI quota; 
     const orchRow = metricRows.find((r: any) => r.querySelector('.col-tokens') && /Orchestrator/i.test(r.textContent)) as any;
     assert.ok(orchRow, 'expected an orchestrator metrics row');
     assert.equal(orchRow.querySelector('.col-tokens').textContent, 'n/a');
+
+    // Hover tooltip on the metrics row shows the harness default, not the agent file's Claude tier.
+    const csRow = metricRows.find((r: any) => /Coding Specialist/.test(r.textContent)) as any;
+    assert.ok(csRow, 'expected a Coding Specialist metrics row');
+    const csTitle = csRow.querySelector('.col-name').title as string;
+    assert.match(csTitle, /Coding Specialist — Sol/);
+    assert.doesNotMatch(csTitle, /Sonnet/);
   } finally {
     win.close();
   }

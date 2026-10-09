@@ -77,10 +77,14 @@ export type NormalizedEvent =
   // transcript was unavailable — never an empty string standing in for that.
   // reportChars: the report's ORIGINAL (pre-truncation) length, present iff
   // report is — lets consumers tell a short report from a truncated one.
-  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string; usageReported?: boolean; spawnId?: string }
+  | { type: "WorkerStopped"; at: number; workerId: WorkerId; tokens?: number; cacheReadTokens?: number; report?: string; reportChars?: number; provider?: string; sessionId?: string; usageReported?: boolean; ok?: boolean; spawnId?: string }
   | { type: "ProviderError"; at: number; workerId?: WorkerId; message: string; provider?: string; sessionId?: string }
   // The main (orchestrator) session was killed by an API error / usage limit.
   // kind: quota | rate_limit | overloaded | billing | auth | not_found | unknown | ...
-  | { type: "OrchestratorLimit"; at: number; kind: string; message?: string; resetHint?: string; resetAt?: number; provider?: string; sessionId?: string };
+  | { type: "OrchestratorLimit"; at: number; kind: string; message?: string; resetHint?: string; resetAt?: number; provider?: string; sessionId?: string }
+  // Codex's Windows sandbox could not start on this machine, so Codex workers
+  // cannot run commands. Written once per dispatcher process; the host shows a
+  // Settings warning until a later Codex worker run succeeds.
+  | { type: "CodexSandboxUnavailable"; at: number; provider?: string; sessionId?: string };
 
 export type EventSink = (event: NormalizedEvent) => void;

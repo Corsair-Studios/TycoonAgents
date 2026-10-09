@@ -85,6 +85,10 @@ function makeFakePanel(root: string, extra: Record<string, unknown> = {}): any {
     _detectCodexNotifyState: (TycoonPanel.prototype as any)._detectCodexNotifyState,
     _codexNotifyStateWarning: (TycoonPanel.prototype as any)._codexNotifyStateWarning,
     _codexHooksWarningField: (TycoonPanel.prototype as any)._codexHooksWarningField,
+    _codexDispatcherState: (TycoonPanel.prototype as any)._codexDispatcherState,
+    _codexDispatcherWarningField: (TycoonPanel.prototype as any)._codexDispatcherWarningField,
+    _codexSandboxWarningField: (TycoonPanel.prototype as any)._codexSandboxWarningField,
+    _ensureCodexInstallsCurrent: (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent,
     ...extra,
   };
 }
@@ -311,6 +315,8 @@ test("_buildHarnessSettings + INSTALL/UNINSTALL_CODEX_DISPATCHER: install sets t
   const savedCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
   try {
+    // The dispatcher stale check treats a missing script as out of date.
+    fs.writeFileSync(codexDispatcherScriptPath, "// fake dispatcher\n");
     const fake = makeFakePanel(root, {
       _extensionUri: { fsPath: os.tmpdir() },
       _codexDispatcherScriptPath: () => codexDispatcherScriptPath,
@@ -329,4 +335,149 @@ test("_buildHarnessSettings + INSTALL/UNINSTALL_CODEX_DISPATCHER: install sets t
   } finally {
     process.env.CODEX_HOME = savedCodexHome;
   }
+});
+
+// ---------------------------------------------------------------------
+// Auto-repoint after an extension update (_ensureCodexInstallsCurrent) and the
+// dispatcher stale check / sandbox warning in the harness settings slice.
+// ---------------------------------------------------------------------
+
+function versionDir(base: string, version: string): { hook: string; dispatcher: string } {
+  const dir = path.join(base, "extensions", `tycoonagents.tycoonagents-${version}`, "hooks");
+  fs.mkdirSync(dir, { recursive: true });
+  const hook = path.join(dir, "tycoon-codex-hook.cjs");
+  const dispatcher = path.join(dir, "tycoon-dispatcher-mcp.cjs");
+  fs.writeFileSync(hook, "// hook\n");
+  fs.writeFileSync(dispatcher, "// dispatcher\n");
+  return { hook, dispatcher };
+}
+
+function withCodexHome<T>(fn: (codexHome: string) => T): T {
+  const codexHome = tmpCodexHome();
+  const saved = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = codexHome;
+  try {
+    return fn(codexHome);
+  } finally {
+    if (saved === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = saved;
+  }
+}
+
+test("_ensureCodexInstallsCurrent: stale hook and dispatcher paths from an old extension version are rewritten to the current version", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome((codexHome) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const oldV = versionDir(base, "0.0.709");
+    const newV = versionDir(base, "0.0.710");
+    const oldFake = makeFakePanel(root, {
+      _codexHookScriptPath: () => oldV.hook,
+      _codexDispatcherScriptPath: () => oldV.dispatcher,
+      _extensionUri: { fsPath: base },
+    });
+    (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(oldFake);
+    (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(oldFake);
+    fs.rmSync(path.join(base, "extensions", "tycoonagents.tycoonagents-0.0.709"), { recursive: true, force: true });
+
+    const fake = makeFakePanel(root, {
+      _codexHookScriptPath: () => newV.hook,
+      _codexDispatcherScriptPath: () => newV.dispatcher,
+    });
+    let result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexDispatcherInstalled, false, "stale dispatcher reads as out of date");
+    assert.match(result.codexDispatcherWarning, /old or missing/);
+    assert.equal(result.codexHooksInstalled, false, "stale hook reads as not current");
+
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    const toml = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+    assert.ok(toml.includes(JSON.stringify(newV.hook)), "hook path repointed");
+    assert.ok(toml.includes(JSON.stringify(newV.dispatcher)), "dispatcher path repointed");
+    assert.ok(!toml.includes("0.0.709"), "old version path is gone");
+    result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.equal(result.codexDispatcherInstalled, true);
+    assert.equal(result.codexHooksInstalled, true);
+    assert.equal(result.codexDispatcherWarning, undefined);
+  });
+});
+
+test("_ensureCodexInstallsCurrent: up-to-date installs are left untouched", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome((codexHome) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const cur = versionDir(base, "0.0.710");
+    const fake = makeFakePanel(root, {
+      _codexHookScriptPath: () => cur.hook,
+      _codexDispatcherScriptPath: () => cur.dispatcher,
+      _extensionUri: { fsPath: base },
+    });
+    (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(fake);
+    (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(fake);
+    const configPath = path.join(codexHome, "config.toml");
+    const before = fs.readFileSync(configPath, "utf8");
+    const mtimeBefore = fs.statSync(configPath).mtimeMs;
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.readFileSync(configPath, "utf8"), before);
+    assert.equal(fs.statSync(configPath).mtimeMs, mtimeBefore, "file not rewritten");
+  });
+});
+
+test("_ensureCodexInstallsCurrent: never installs when the user hasn't installed before, and ignores a foreign notify", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome((codexHome) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const cur = versionDir(base, "0.0.710");
+    const fake = makeFakePanel(root, {
+      _codexHookScriptPath: () => cur.hook,
+      _codexDispatcherScriptPath: () => cur.dispatcher,
+    });
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.existsSync(path.join(codexHome, "config.toml")), false, "no config.toml created");
+
+    const foreign = 'notify = ["some-other-tool", "--flag"]\n\n[projects.x]\ntrust = "trusted"\n';
+    fs.writeFileSync(path.join(codexHome, "config.toml"), foreign);
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), foreign);
+    assert.equal(fs.existsSync(path.join(root, ".codex", "hooks.json")), false);
+  });
+});
+
+test("_ensureCodexInstallsCurrent: does nothing when Codex is not the harness", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexHome((codexHome) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const oldV = versionDir(base, "0.0.709");
+    const newV = versionDir(base, "0.0.710");
+    withCodexProvider(root);
+    const oldFake = makeFakePanel(root, { _codexHookScriptPath: () => oldV.hook, _codexDispatcherScriptPath: () => oldV.dispatcher, _extensionUri: { fsPath: base } });
+    (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(oldFake);
+    fs.rmSync(path.join(base, "extensions", "tycoonagents.tycoonagents-0.0.709"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "claude-code" }));
+    const before = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+    const fake = makeFakePanel(root, { _codexHookScriptPath: () => newV.hook, _codexDispatcherScriptPath: () => newV.dispatcher });
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), before);
+  });
+});
+
+test("_buildHarnessSettings: codexSandboxWarning appears only while a sandbox record is newer than the last good Codex run", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome(() => {
+    const build = (state: unknown) =>
+      (TycoonPanel.prototype as any)._buildHarnessSettings.call(makeFakePanel(root, { _runtime: { getState: () => state } }), root);
+    assert.equal(build({}).codexSandboxWarning, undefined);
+    const w = build({ codexSandboxUnavailableAt: 200 }).codexSandboxWarning;
+    assert.match(w, /Windows sandbox couldn't start/);
+    assert.match(w, /windows\.sandbox = "unelevated"/);
+    assert.equal(build({ codexSandboxUnavailableAt: 200, lastCodexWorkerOkAt: 100 }).codexSandboxWarning, w);
+    assert.equal(build({ codexSandboxUnavailableAt: 200, lastCodexWorkerOkAt: 300 }).codexSandboxWarning, undefined);
+  });
 });

@@ -217,6 +217,8 @@ function resolveActivityFile() {
 const ORCHESTRATOR_TAIL_BYTES = 64 * 1024;
 /** Threads this process opened (activityFile|threadId); covers an open start that has scrolled out of the tail window. */
 const openOrchestratorMemo = new Set();
+/** Once per dispatcher process: the CodexSandboxUnavailable activity record. */
+let sandboxRecordWritten = false;
 
 /**
  * True when the codex thread has an OPEN orchestrator start: within the last
@@ -693,7 +695,7 @@ async function handleDelegateTool(args) {
         result.usage && (typeof result.usage.input_tokens === "number" || typeof result.usage.output_tokens === "number")
           ? (result.usage.input_tokens || 0) + (result.usage.output_tokens || 0)
           : undefined;
-      const stopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, at: Date.now() };
+      const stopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, ok: true, at: Date.now() };
       if (fallbackDepth > 0) {
         stopRecord.fallbackOf = workerId;
         stopRecord.fallbackDepth = fallbackDepth;
@@ -751,7 +753,7 @@ async function handleDelegateTool(args) {
     // a successful attempt does -- otherwise this attempt's PreToolUse
     // leaves a phantom entry in liveSpawns forever (no matching stop ever
     // arrives), whether this failure is terminal or about to retry.
-    const failedStopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, at: Date.now() };
+    const failedStopRecord = { event: "SubagentStop", provider: "codex", workerId, sessionId: threadId, spawnId, ok: false, at: Date.now() };
     if (fallbackDepth > 0) {
       failedStopRecord.fallbackOf = workerId;
       failedStopRecord.fallbackDepth = fallbackDepth;
@@ -760,7 +762,21 @@ async function handleDelegateTool(args) {
     failedStopRecord.usageReported = false;
     appendRecord(activityFile, failedStopRecord);
 
-    if (!isDispatchFailure(fallbackChainModule, result.error) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
+    // A broken Codex sandbox fails the same way on every Codex slot, so only a non-Codex
+    // next entry is worth advancing to; otherwise surface the structured sandbox error.
+    const sandboxDown = result.kind === "sandbox_unavailable";
+    if (sandboxDown) {
+      if (!sandboxRecordWritten) {
+        sandboxRecordWritten = true;
+        appendRecord(activityFile, { event: "CodexSandboxUnavailable", provider: "codex", workerId, message: result.error, sessionId: threadId, at: Date.now() });
+      }
+      const peek = fallbackChainModule && fallbackDepth < MAX_FALLBACK_DEPTH
+        ? fallbackChainModule.resolveNextFallback({ slotId: workerId, chain: fallbackChainEntries, attemptsSoFar: fallbackDepth, defaultFallback, useDefaultFallback, failingSlot: { vendor: currentVendor, model: currentModel } })
+        : null;
+      if (!peek || peek.exhausted || !peek.slot || String(peek.slot.vendor || currentVendor).toLowerCase() === "openai") {
+        return bridgeResult.providerErrorResult({ provider: "codex", model: currentModel, text: result.error, kind: "sandbox_unavailable" });
+      }
+    } else if (!isDispatchFailure(fallbackChainModule, result.error) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
       return isErrorResult(`delegate: ${workerId} failed: ${result.error}`);
     }
 

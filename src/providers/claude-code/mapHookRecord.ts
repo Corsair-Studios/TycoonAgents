@@ -141,6 +141,8 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           : [];
       return [...stopped, { type: "ProviderError", at: record.at, message, workerId }, ...limit];
     }
+    case "CodexSandboxUnavailable":
+      return [{ type: "CodexSandboxUnavailable", at: record.at }];
     case "SubagentStop":
       // ORDER MATTERS: TaskCompleted first so task count increments before the
       // worker goes idle; WorkerStopped last so the idle timer is finalized.
@@ -155,6 +157,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           ...(record.report !== undefined ? { report: record.report } : {}),
           ...(record.reportChars !== undefined ? { reportChars: record.reportChars } : {}),
           ...(record.usageReported !== undefined ? { usageReported: record.usageReported } : {}),
+          ...(record.ok !== undefined ? { ok: record.ok } : {}),
           ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
         },
       ];

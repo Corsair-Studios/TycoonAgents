@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError" | "StopFailure";
+export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError" | "StopFailure" | "CodexSandboxUnavailable";
 
 /** One JSON line the hook script appends to the activity IPC file. Our contract, not Claude's raw schema. */
 export interface HookRecord {
@@ -17,6 +17,7 @@ export interface HookRecord {
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
+  ok?: boolean;              // SubagentStop (codex dispatcher): true on success, false on failure.
   usageReported?: boolean;   // SubagentStop only: true when `tokens` came from real vendor-reported
                               // usage counts (e.g. claude -p json's usage block, an OpenAI-compatible
                               // chat-completions response's usage field), false when the dispatch

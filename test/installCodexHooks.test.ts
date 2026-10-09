@@ -493,3 +493,23 @@ test("(w13) Windows path spelling differences are not stale", () => {
     "wrapped",
   );
 });
+
+test("detectCodexNotifyState: a managed hook at an existing NEWER extension version is not stale; an older or missing one is", () => {
+  const base = mkdtempSync(join(tmpdir(), "extver-"));
+  const mk = (v: string) => {
+    const d = join(base, `tycoonagents.tycoonagents-${v}`, "hooks");
+    mkdirSync(d, { recursive: true });
+    const f = join(d, "tycoon-codex-hook.cjs");
+    writeFileSync(f, "//\n");
+    return f;
+  };
+  const newer = mk("0.0.711");
+  const cur = mk("0.0.710");
+  const toml = (hook: string) =>
+    `# tycoon-codex-hook: managed notify entry (do not edit by hand)\nnotify = ["node", ${JSON.stringify(hook)}]\n# tycoon-codex-hook: end managed notify entry\n`;
+  const nodePath = "node";
+  assert.equal(detectCodexNotifyState(toml(newer), cur, nodePath), "installed");
+  assert.equal(detectCodexNotifyState(toml(cur), newer, nodePath), "stale-installed", "older than the running version");
+  rmSync(join(base, "tycoonagents.tycoonagents-0.0.711"), { recursive: true, force: true });
+  assert.equal(detectCodexNotifyState(toml(newer), cur, nodePath), "stale-installed", "newer but missing");
+});

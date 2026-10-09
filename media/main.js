@@ -19265,10 +19265,16 @@ function themeAnimPreviewDraw(player) {
     // trusted roster-stamped value and there is no `rosterModel` field.
     const displayRosterModel = isOrchestratorRow ? agent.rosterModel : agent.model;
     let nameTitle = displayName;
-    if (agent.model && role) {
-      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}\n${role}`;
-    } else if (agent.model) {
-      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}`;
+    // Codex harness: an agent with no explicit choice runs on the harness
+    // default, so show that instead of the agent file's Claude tier.
+    const nameHd = isOrchestratorRow ? null : harnessDefaultFor(agent);
+    const nameModelText = nameHd
+      ? nameHd.label
+      : (agent.model ? prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow) : "");
+    if (nameModelText && role) {
+      nameTitle = `${displayName} — ${nameModelText}\n${role}`;
+    } else if (nameModelText) {
+      nameTitle = `${displayName} — ${nameModelText}`;
     } else if (role) {
       nameTitle = `${displayName}\n${role}`;
     }
@@ -23641,6 +23647,14 @@ function themeAnimPreviewDraw(player) {
       // block refreshes automatically (hook install, provider switch to
       // codex, routing save) — no install button needed, just surface a
       // failure the same way codexHooksWarning/codexDispatcherWarning do.
+      // Codex's Windows sandbox could not start: display-only warning, no
+      // action button (we never weaken the sandbox ourselves).
+      if (typeof harness.codexSandboxWarning === "string" && harness.codexSandboxWarning.length > 0) {
+        const sandboxRow = document.createElement("div");
+        sandboxRow.className = "theme-review-retry-warning harness-select-warning harness-codex-sandbox-warning";
+        sandboxRow.textContent = harness.codexSandboxWarning;
+        harnessRow.appendChild(sandboxRow);
+      }
       if (typeof harness.codexAgentsMdWarning === "string" && harness.codexAgentsMdWarning.length > 0) {
         const warnRow = document.createElement("div");
         warnRow.className = "theme-review-retry-warning harness-select-warning";

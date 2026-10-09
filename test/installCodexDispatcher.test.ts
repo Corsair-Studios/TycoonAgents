@@ -293,3 +293,26 @@ test("tomlScan: headers, continuation lines and EOL", () => {
   assert.equal(detectEol("a\nb\n"), "\n");
   assert.equal(parseTableHeader("[1, 2]"), undefined);
 });
+
+import { detectCodexDispatcherState } from "../src/providers/codex/installCodexDispatcher";
+
+test("detectCodexDispatcherState: none without a managed block; stale for a missing or other-version script; installed otherwise", () => {
+  const ext = (v: string) => `C:/ext/tycoonagents.tycoonagents-${v}/hooks/tycoon-dispatcher-mcp.cjs`;
+  const block = (script: string) => buildDispatcherBlock({ nodePath: "C:/node.exe", serverScriptPath: script }) + "\n";
+  const all = () => true;
+  assert.equal(detectCodexDispatcherState('model = "x"\n', ext("0.0.710"), all), "none");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.710")), ext("0.0.710"), all), "installed");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.710")), ext("0.0.710"), () => false), "stale");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.709")), ext("0.0.710"), all), "stale", "other version folder");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.709")), ext("0.0.710"), () => false), "stale", "missing file");
+  assert.equal(detectCodexDispatcherState(block("D:/repo/hooks/tycoon-dispatcher-mcp.cjs"), ext("0.0.710"), all), "installed", "existing non-versioned path is left alone");
+});
+
+test("detectCodexDispatcherState: an existing NEWER extension version path is left alone; an older one is stale", () => {
+  const ext = (v: string) => `C:/ext/tycoonagents.tycoonagents-${v}/hooks/tycoon-dispatcher-mcp.cjs`;
+  const block = (script: string) => buildDispatcherBlock({ nodePath: "C:/node.exe", serverScriptPath: script }) + "\n";
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.711")), ext("0.0.710"), () => true), "installed");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.711")), ext("0.0.710"), () => false), "stale", "newer but missing");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.9")), ext("0.0.10"), () => true), "stale", "numeric compare, older");
+  assert.equal(detectCodexDispatcherState(block(ext("0.0.100")), ext("0.0.99"), () => true), "installed", "numeric compare, newer");
+});

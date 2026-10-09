@@ -177,6 +177,12 @@ export function computeStateFromRecords(records, filterSessionId, seedEvents) {
   return fn(records, filterSessionId, seedEvents);
 }
 
+/** @type {(state: object|undefined|null) => string|undefined} */
+export function codexSandboxWarning(state) {
+  const fn = assertFn(stateModule().codexSandboxWarning, 'codexSandboxWarning', 'out/src/core/state.js');
+  return fn(state || undefined);
+}
+
 /** @type {() => import('../../src/core/state').MetricsWorldState} */
 export function initialWorldState(limits) {
   const fn = assertFn(stateModule().initialWorldState, 'initialWorldState', 'out/src/core/state.js');

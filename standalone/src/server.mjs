@@ -95,7 +95,7 @@ import {
 } from './themeGenerationMessages.mjs';
 import { handleRestorePlanBackup, handleApprovePhase, postPlanState, computePlanState } from './projectPlanMessages.mjs';
 import { handleExportTeamSetupStandalone, handleApplyTeamSetupStandalone, handleCheckTeamReadinessStandalone, handleGetTeamSetupDriftStandalone } from './teamSetupMessages.mjs';
-import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback } from './sharedLogic.mjs';
+import { resolveProviderId, getFeedbackEndpoint, buildFeedbackPayload, buildFeedbackContext, postFeedback, codexSandboxWarning } from './sharedLogic.mjs';
 import { createThemeServiceHost } from './themeServiceHost.mjs';
 
 // p40-t3: OPEN_THEME_BUILDER (webview->host, no payload) / THEME_BUILDER_OPENED
@@ -2902,6 +2902,17 @@ function resolveEffectiveHarness(cwd) {
  * so only TYCOON_PROVIDER (set directly, or by cli.mjs's --provider flag —
  * see parseWatchArgs) and the execution.json `provider` key are in play.
  */
+/** Primary project's state feed, set once main() wires it; read for the Codex sandbox warning. */
+let _primaryStateFeed = null;
+function codexSandboxWarningField() {
+  try {
+    const text = codexSandboxWarning(_primaryStateFeed ? _primaryStateFeed.getState() : null);
+    return text ? { codexSandboxWarning: text } : {};
+  } catch {
+    return {};
+  }
+}
+
 function buildStandaloneHarnessSettings() {
   const { describeProviderSelection } = providerSelectionModule();
   const cwd = primaryProjectRoot || process.cwd();
@@ -2934,6 +2945,7 @@ function buildStandaloneHarnessSettings() {
           ? { codexDispatcherWarning: _lastCodexDispatcherWarnings.join(' ') }
           : {}),
         ...(_lastCodexAgentsMdWarning !== undefined ? { codexAgentsMdWarning: _lastCodexAgentsMdWarning } : {}),
+        ...codexSandboxWarningField(),
       }
     : {};
   return {
@@ -4706,6 +4718,7 @@ export async function startServer({
   // this is the simplest choice that cannot silently corrupt what the board
   // shows.
   const stateFeed = createStateFeed({ projectRoot: primary.root, broadcast });
+  _primaryStateFeed = stateFeed;
   const unregisterInitialMessage = registerInitialMessageProvider(() => {
     const msg = stateFeed.getStateMessage();
     return [{ eventName: 'message', data: msg }];

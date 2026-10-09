@@ -1354,10 +1354,16 @@
     // trusted roster-stamped value and there is no `rosterModel` field.
     const displayRosterModel = isOrchestratorRow ? agent.rosterModel : agent.model;
     let nameTitle = displayName;
-    if (agent.model && role) {
-      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}\n${role}`;
-    } else if (agent.model) {
-      nameTitle = `${displayName} — ${prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow)}`;
+    // Codex harness: an agent with no explicit choice runs on the harness
+    // default, so show that instead of the agent file's Claude tier.
+    const nameHd = isOrchestratorRow ? null : harnessDefaultFor(agent);
+    const nameModelText = nameHd
+      ? nameHd.label
+      : (agent.model ? prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow) : "");
+    if (nameModelText && role) {
+      nameTitle = `${displayName} — ${nameModelText}\n${role}`;
+    } else if (nameModelText) {
+      nameTitle = `${displayName} — ${nameModelText}`;
     } else if (role) {
       nameTitle = `${displayName}\n${role}`;
     }

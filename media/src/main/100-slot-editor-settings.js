@@ -1742,6 +1742,14 @@
       // block refreshes automatically (hook install, provider switch to
       // codex, routing save) — no install button needed, just surface a
       // failure the same way codexHooksWarning/codexDispatcherWarning do.
+      // Codex's Windows sandbox could not start: display-only warning, no
+      // action button (we never weaken the sandbox ourselves).
+      if (typeof harness.codexSandboxWarning === "string" && harness.codexSandboxWarning.length > 0) {
+        const sandboxRow = document.createElement("div");
+        sandboxRow.className = "theme-review-retry-warning harness-select-warning harness-codex-sandbox-warning";
+        sandboxRow.textContent = harness.codexSandboxWarning;
+        harnessRow.appendChild(sandboxRow);
+      }
       if (typeof harness.codexAgentsMdWarning === "string" && harness.codexAgentsMdWarning.length > 0) {
         const warnRow = document.createElement("div");
         warnRow.className = "theme-review-retry-warning harness-select-warning";

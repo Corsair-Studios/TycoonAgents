@@ -12,7 +12,7 @@ import type { Runtime } from "./runtime";
 import { waitForBundledThemes } from "./themeReady";
 import { log } from "./log";
 import { openExternalUrl } from "./openExternalUrl";
-import { computeDelegationModeStats, applyEvent, initialWorldState } from "../../core/state";
+import { computeDelegationModeStats, applyEvent, initialWorldState, codexSandboxWarning } from "../../core/state";
 import type { MetricsWorldState, AgentMetric } from "../../core/state";
 import type { HookRecord } from "../../providers/claude-code/hookRecord";
 import { mapHookRecord } from "../../providers/claude-code";
@@ -41,7 +41,7 @@ import {
   type CodexNotifyState,
 } from "../../providers/codex/installCodexHooks";
 import { resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
-import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml } from "../../providers/codex/installCodexDispatcher";
+import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
@@ -1152,6 +1152,12 @@ export class TycoonPanel {
     // auto-heals above so it sees their results (e.g. a freshly-created
     // worker roster) in the same load cycle.
     this._ensureInstalledPacksFresh();
+
+    // Repoint our own Codex notify hook / dispatcher entries after an
+    // extension update moved the versioned install folder (see
+    // _ensureCodexInstallsCurrent). No-op unless Codex is the harness and
+    // we installed those entries before.
+    this._ensureCodexInstallsCurrent();
 
     this._update();
 
@@ -8260,6 +8266,7 @@ export class TycoonPanel {
     codexHooksWarning?: string;
     codexDispatcherWarning?: string;
     codexAgentsMdWarning?: string;
+    codexSandboxWarning?: string;
   } {
     const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
     let description: ProviderSelectionDescription;
@@ -8301,9 +8308,8 @@ export class TycoonPanel {
             codexHooksInstalled: this._detectCodexHooksInstalled(root),
             codexDispatcherInstalled: this._detectCodexDispatcherInstalled(),
             ...this._codexHooksWarningField(),
-            ...(this._codexDispatcherWarnings && this._codexDispatcherWarnings.length > 0
-              ? { codexDispatcherWarning: this._codexDispatcherWarnings.join(" ") }
-              : {}),
+            ...this._codexDispatcherWarningField(),
+            ...this._codexSandboxWarningField(),
             ...(this._codexAgentsMdWarning !== undefined ? { codexAgentsMdWarning: this._codexAgentsMdWarning } : {}),
           }
         : {};
@@ -8362,6 +8368,7 @@ export class TycoonPanel {
         console.error("TycoonAgents: runCodexConfigGenerator (setHarness) failed:", err instanceof Error ? err.message : err);
       }
     }
+    if (providerId === "codex") this._ensureCodexInstallsCurrent();
     this._handleGetSettings();
     // The Agents screen shows harness-default models (Codex), so refresh the
     // routing/uiMode payload too. Display only — no defaults are written.
@@ -8454,9 +8461,88 @@ export class TycoonPanel {
    * duplicated here. */
   private _detectCodexDispatcherInstalled(): boolean {
     try {
-      return isDispatcherMarkerInConfigToml(process.env, process.platform);
+      if (!isDispatcherMarkerInConfigToml(process.env, process.platform)) return false;
+      // An out-of-date entry reads as not installed, like the hooks row.
+      return this._codexDispatcherState() !== "stale";
     } catch {
       return false;
+    }
+  }
+
+  /** Managed dispatcher entry vs the script path this extension would install now. */
+  private _codexDispatcherState(): "none" | "installed" | "stale" {
+    try {
+      return readCodexDispatcherState(process.env, process.platform, this._codexDispatcherScriptPath());
+    } catch {
+      return "none";
+    }
+  }
+
+  private _codexDispatcherWarningField(): { codexDispatcherWarning?: string } {
+    if (this._codexDispatcherState() === "stale") return { codexDispatcherWarning: CODEX_DISPATCHER_STALE_MESSAGE };
+    return this._codexDispatcherWarnings && this._codexDispatcherWarnings.length > 0
+      ? { codexDispatcherWarning: this._codexDispatcherWarnings.join(" ") }
+      : {};
+  }
+
+  /** Warning while Codex's Windows sandbox is down (see core/state.ts codexSandboxWarning). Display only. */
+  private _codexSandboxWarningField(): { codexSandboxWarning?: string } {
+    try {
+      const text = codexSandboxWarning(this._runtime?.getState());
+      return text !== undefined ? { codexSandboxWarning: text } : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * An extension update moves the versioned install folder
+   * (...\extensions\tycoonagents.tycoonagents-<version>\hooks\...), so the
+   * paths we wrote into CODEX_HOME/config.toml point at a folder that is gone
+   * and Codex silently stops reporting. When Codex is the harness, re-run the
+   * hook install if the notify entry is stale and the dispatcher install if
+   * its entry points at another version folder or a missing file. Only
+   * entries we installed before are touched (stale-* states and the managed
+   * dispatcher marker); a user who never installed gets nothing. Failures
+   * surface through the existing warning fields.
+   */
+  private _ensureCodexInstallsCurrent(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
+      if (describeProviderSelection({ settingValue, cwd: root }).effective !== "codex") return;
+
+      const hookState = this._detectCodexNotifyState();
+      if (hookState === "stale-installed" || hookState === "stale-wrapped") {
+        try {
+          const result = installCodexHooks({
+            projectDir: root,
+            env: process.env,
+            platform: process.platform,
+            hookScriptPath: this._codexHookScriptPath(),
+          });
+          this._codexHookWarnings = result.warnings;
+        } catch (err) {
+          this._codexHookWarnings = [err instanceof Error ? err.message : String(err)];
+        }
+      }
+
+      if (this._codexDispatcherState() === "stale") {
+        try {
+          const result = installCodexDispatcher({
+            projectDir: root,
+            env: process.env,
+            platform: process.platform,
+            serverScriptPath: this._codexDispatcherScriptPath(),
+          });
+          this._codexDispatcherWarnings = result.warnings;
+        } catch (err) {
+          this._codexDispatcherWarnings = [err instanceof Error ? err.message : String(err)];
+        }
+      }
+    } catch {
+      /* never block panel open or a harness switch on a repoint failure */
     }
   }
 
