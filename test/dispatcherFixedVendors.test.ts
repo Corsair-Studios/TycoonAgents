@@ -118,7 +118,7 @@ test("google adapter without GEMINI_API_KEY gives the plain-words message and su
     await withEnv({ TYCOON_STANDALONE_DATA_DIR: dataDir, GEMINI_API_KEY: undefined }, async () => {
       const { fn } = adapters.resolveAdapter("google");
       const res = await fn("t", { vendor: "google" });
-      assert.equal(res.error, "Gemini on the Codex harness needs GEMINI_API_KEY (set it on the Agents screen). Antigravity sign-in isn't supported on the Codex harness yet. No other model was used.");
+      assert.equal(res.error, "Gemini on the Codex harness needs GEMINI_API_KEY (set it on the Agents screen). Antigravity sign-in isn't supported on the Codex harness yet.");
     });
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -408,11 +408,81 @@ test("codex chain: every entry failing returns an honest error listing each atte
       assert.equal(res.isError, true);
       const text = res.content[0].text;
       assert.match(text, /failed after 2 attempts/);
-      assert.match(text, /1\) mistral\/mistral\/does-not-exist: .*Invalid model/);
-      assert.match(text, /2\) xai\/xai\/grok-build-0\.1: .*xai down/);
+      assert.match(text, /1\) mistral\/does-not-exist: .*Invalid model/);
+      assert.match(text, /2\) xai\/grok-build-0\.1: .*xai down/);
       assert.doesNotMatch(text, /grok reviewed/);
     });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- config/auth/binary failures advance the chain ---
+
+function makeGeminiChainProject(chain: unknown[]): string {
+  const dir = makeChainProject(chain);
+  fs.writeFileSync(path.join(dir, ".claude", "agents", "mistral-reviewer.md"), "---\nmodel: haiku\n---\nbody");
+  fs.writeFileSync(path.join(dir, ".claude", "tycoon", "routing.json"), JSON.stringify({ agents: { "mistral-reviewer": { vendor: "google", model: "google/gemini-2.5-pro", useDefaultFallback: false, fallback: chain } } }));
+  return dir;
+}
+
+test("codex chain: missing GEMINI_API_KEY advances to the xai fallback", async () => {
+  const dir = makeGeminiChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(400, 200, async (_mUrl, xUrl) => {
+      const { res } = await runChain(dir, { GEMINI_API_KEY: undefined, XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.equal(res.isError, undefined);
+      assert.equal(res.content[0].text, "grok reviewed");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: HTTP 401 on the primary advances to the fallback", async () => {
+  const dir = makeChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(401, 200, async (mUrl, xUrl) => {
+      const { res } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.equal(res.content[0].text, "grok reviewed");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: a missing claude binary advances to the fallback", async () => {
+  const dir = makeChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  fs.writeFileSync(path.join(dir, ".claude", "tycoon", "routing.json"), JSON.stringify({ agents: { "mistral-reviewer": { vendor: "anthropic", model: "anthropic/sonnet", useDefaultFallback: false, fallback: [{ vendor: "xai", model: "xai/grok-build-0.1" }] } } }));
+  try {
+    await twoServers(400, 200, async (_mUrl, xUrl) => {
+      const { res } = await runChain(dir, { CLAUDE_CLI_BIN: path.join(dir, "no-such-claude-binary"), XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.equal(res.isError, undefined, res.content[0].text);
+      assert.equal(res.content[0].text, "grok reviewed");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: a genuine task error (context length) stays terminal", async () => {
+  const dir = makeChainProject([{ vendor: "xai", model: "xai/grok-build-0.1" }]);
+  const m = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.statusCode = 400; res.end("maximum context length exceeded"); }); });
+  await new Promise<void>((r) => m.listen(0, "127.0.0.1", r));
+  try {
+    const { res, records } = await runChain(dir, { MISTRAL_BASE_URL: `http://127.0.0.1:${(m.address() as { port: number }).port}/v1`, MISTRAL_API_KEY: "mk", XAI_API_KEY: "xk" });
+    assert.equal(res.isError, true);
+    assert.equal(records.some((r) => r.fallbackOf), false);
+  } finally {
+    await new Promise<void>((r) => m.close(() => r()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("classifyProviderError: 'log in' needs a word boundary", () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { classifyProviderError } = require("../../hooks/bridge-result.cjs") as { classifyProviderError: (m: string) => string };
+  assert.notEqual(classifyProviderError("catalog index failed"), "auth");
+  assert.equal(classifyProviderError("please log in"), "auth");
+  assert.equal(classifyProviderError("login required"), "auth");
 });

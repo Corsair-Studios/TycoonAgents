@@ -401,7 +401,7 @@ async function anthropicAdapter(task, agentInfo) {
 
   const { bin, triedPaths } = discoverClaudeBin();
   if (!bin) {
-    return { error: `Could not find the claude CLI. Tried: ${triedPaths.join(", ")}. Set CLAUDE_CLI_BIN to override.` };
+    return { error: `Could not find the claude CLI. Tried: ${triedPaths.join(", ")}. Set CLAUDE_CLI_BIN to override.`, kind: "cli_missing" };
   }
   const spawnTarget = resolveSpawnTarget(bin);
   if (spawnTarget.error) return { error: spawnTarget.error };
@@ -631,7 +631,7 @@ async function customEndpointAdapter(task, agentInfo) {
   if (nameProblem) return { error: nameProblem };
   const urlRes = resolveUrlVar(endpointEnv, agentInfo.projectDir);
   const baseUrlRaw = urlRes.trusted || urlRes.untrusted;
-  if (!baseUrlRaw) return { error: missingVendorEnvMessage(endpointEnv) };
+  if (!baseUrlRaw) return { error: missingVendorEnvMessage(endpointEnv), kind: "not_configured" };
   const baseUrl = baseUrlRaw.trim();
   const urlProblem = customEndpointUrlProblem(baseUrl);
   if (urlProblem) return { error: `${endpointEnv}: ${urlProblem}` };
@@ -641,7 +641,7 @@ async function customEndpointAdapter(task, agentInfo) {
     const keyProblem = customKeyNameProblem(keyEnv, baseUrl, endpointEnv);
     if (keyProblem) return { error: keyProblem };
     apiKey = resolveVendorEnv(keyEnv) || undefined;
-    if (!apiKey && !isLocalHostUrl(baseUrl)) return { error: missingVendorEnvMessage(keyEnv) };
+    if (!apiKey && !isLocalHostUrl(baseUrl)) return { error: missingVendorEnvMessage(keyEnv), kind: "not_configured" };
     if (apiKey && !urlRes.trusted) return { error: untrustedUrlMessage(endpointEnv) };
   }
   const rawTimeout = resolveVendorEnv("OPENAI_COMPAT_TIMEOUT_MS");
@@ -822,7 +822,7 @@ async function fixedVendorAdapter(task, agentInfo, spec) {
   const urlRes = resolveUrlVar(spec.baseUrlEnv, agentInfo.projectDir);
   const baseUrl = (urlRes.trusted || urlRes.untrusted || spec.defaultBaseUrl).trim();
   const apiKey = resolveVendorEnv(spec.apiKeyEnv) || undefined;
-  if (!apiKey) return { error: `${missingVendorEnvMessage(spec.apiKeyEnv)} Set it on the Agents screen (model "${prefixed}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).` };
+  if (!apiKey) return { error: `${missingVendorEnvMessage(spec.apiKeyEnv)} Set it on the Agents screen (model "${prefixed}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).`, kind: "not_configured" };
   if (!urlRes.trusted && urlRes.untrusted) return { error: untrustedUrlMessage(spec.baseUrlEnv) };
   const urlProblem = customEndpointUrlProblem(baseUrl);
   if (urlProblem) return { error: `${spec.baseUrlEnv}: ${urlProblem}` };
@@ -861,7 +861,7 @@ async function openaiCompatibleAdapter(task, agentInfo) {
   if (fixedSpec) return fixedVendorAdapter(task, agentInfo, fixedSpec);
   const genericUrl = resolveUrlVar("OPENAI_COMPAT_BASE_URL", agentInfo && agentInfo.projectDir);
   const baseUrl = genericUrl.trusted || genericUrl.untrusted;
-  if (!baseUrl) return { error: missingVendorEnvMessage("OPENAI_COMPAT_BASE_URL") };
+  if (!baseUrl) return { error: missingVendorEnvMessage("OPENAI_COMPAT_BASE_URL"), kind: "not_configured" };
   const model = (agentInfo && agentInfo.model) || "default";
   const apiKey = resolveVendorEnv("OPENAI_COMPAT_API_KEY") || undefined;
   if (apiKey && !genericUrl.trusted) return { error: untrustedUrlMessage("OPENAI_COMPAT_BASE_URL") };
@@ -895,9 +895,9 @@ async function openaiCompatibleAdapter(task, agentInfo) {
 /** google adapter: only when GEMINI_API_KEY is configured (env var name only, never value). No shim yet -> explicit error otherwise. */
 async function googleAdapter(_task, _agentInfo) {
   if (!resolveVendorEnv("GEMINI_API_KEY")) {
-    return { error: "Gemini on the Codex harness needs GEMINI_API_KEY (set it on the Agents screen). Antigravity sign-in isn't supported on the Codex harness yet. No other model was used." };
+    return { error: "Gemini on the Codex harness needs GEMINI_API_KEY (set it on the Agents screen). Antigravity sign-in isn't supported on the Codex harness yet.", kind: "not_configured" };
   }
-  return { error: "google vendor: gemini shim not implemented — set up gemini-mcp-tool per media/mcp/catalog.json's gemini entry instead of dispatching through this bridge." };
+  return { error: "google vendor: gemini shim not implemented — set up gemini-mcp-tool per media/mcp/catalog.json's gemini entry instead of dispatching through this bridge.", kind: "not_configured" };
 }
 
 const CODEX_EFFORTS = ["low", "medium", "high", "xhigh"];
@@ -922,11 +922,11 @@ async function openaiAdapter(task, agentInfo) {
   try {
     bin = launcher.discoverCodexBinary(["exec"], { skipCapability: true });
   } catch {
-    return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path." };
+    return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path.", kind: "cli_missing" };
   } finally {
     process.exit = realExit;
   }
-  if (typeof bin !== "string") return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path." };
+  if (typeof bin !== "string") return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path.", kind: "cli_missing" };
 
   const bare = String((agentInfo && agentInfo.model) || "").trim().replace(/^openai\//i, "");
   const model = bare && MODEL_RE.test(bare) && !/^(gpt-5|gpt-6)$/i.test(bare) ? bare : undefined;

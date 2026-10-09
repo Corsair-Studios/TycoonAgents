@@ -290,7 +290,7 @@ function classifyProviderError(message, opts) {
   if (status === 404) return "not_found";
   if (/ENOENT|could not find the claude cli|failed to spawn|spawn [^\n]*EACCES|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found|(?<!\bmodel:?\s*["'`]?)\b(?:agy|gemini)(?: cli| command| binary)?\s+(?:is\s+)?not (?:installed|found)\b|\b(?:agy|gemini|codex|claude|cli|command|binary|npx)\b[^\n]{0,30}\bnot installed\b/i.test(t)) return "cli_missing";
   if (/\b403\b/.test(t) && SPEND_CAP_RE.test(t)) return "billing";
-  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|log ?in|oauth|(?:api|key|token|credential|auth|403)[^\n]{0,60}permission[ _]denied|permission[ _]denied[^\n]{0,60}(?:api|key|token|credential|auth|403)/i.test(t)) return "auth";
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|\blog ?in\b|\boauth|(?:api|key|token|credential|auth|403)[^\n]{0,60}permission[ _]denied|permission[ _]denied[^\n]{0,60}(?:api|key|token|credential|auth|403)/i.test(t)) return "auth";
   if (OVERLOADED_RE.test(t)) return "overloaded";
   if (BILLING_RE.test(t)) return "billing";
   if (QUOTA_SPECIFIC_RE.test(t)) return "quota";

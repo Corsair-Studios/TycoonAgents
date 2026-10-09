@@ -428,7 +428,8 @@ function codexToolTimeoutMs() {
 /** Provider-limit kinds that always advance to the next fallback slot. */
 const LIMIT_KINDS = ["quota", "billing", "rate_limit", "overloaded"];
 /** Kinds that advance the chain: provider limits, plus a wrong/unavailable model (HTTP 400 invalid_model, 404) -- exactly what a chain covers. Other 4xx request errors stay terminal. */
-const FALLBACK_KINDS = LIMIT_KINDS.concat(["not_found"]);
+// Also: a provider that cannot be used at all (bad/missing key, missing binary or config) -- the next entry may work.
+const FALLBACK_KINDS = LIMIT_KINDS.concat(["not_found", "auth", "cli_missing", "not_configured"]);
 
 function isDispatchFailure(fallbackChain, errorText) {
   if (fallbackChain && fallbackChain.isProviderFailure(errorText)) return true;
@@ -655,7 +656,7 @@ async function handleDelegateTool(args) {
   // Every failed attempt, so a final failure lists each one honestly.
   const attempts = [];
   const failureText = (lastError) => attempts.length > 1
-    ? `delegate: ${workerId} failed after ${attempts.length} attempts: ` + attempts.map((a, i) => `${i + 1}) ${a.vendor}${a.model ? "/" + a.model : ""}: ${a.error}`).join(" | ")
+    ? `delegate: ${workerId} failed after ${attempts.length} attempts: ` + attempts.map((a, i) => `${i + 1}) ${!a.model ? a.vendor : String(a.model).toLowerCase().indexOf(String(a.vendor).toLowerCase() + "/") === 0 ? a.model : a.vendor + "/" + a.model}: ${a.error}`).join(" | ") + " No other model was available."
     : `delegate: ${workerId} failed: ${lastError}`;
 
   for (;;) {
@@ -784,7 +785,7 @@ async function handleDelegateTool(args) {
       if (!peek || peek.exhausted || !peek.slot || String(peek.slot.vendor || currentVendor).toLowerCase() === "openai") {
         return bridgeResult.providerErrorResult({ provider: "codex", model: currentModel, text: result.error, kind: "sandbox_unavailable" });
       }
-    } else if (!isDispatchFailure(fallbackChainModule, result.error) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
+    } else if (!(FALLBACK_KINDS.indexOf(result.kind) !== -1 || isDispatchFailure(fallbackChainModule, result.error)) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
       return isErrorResult(failureText(result.error));
     }
 
