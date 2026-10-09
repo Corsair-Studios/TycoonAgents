@@ -510,7 +510,7 @@ test('Saving routing: fixed-endpoint vendor fallbacks (xai/mistral) are written 
 
 test('Gemini Reviewer slot: Codex shows dispatcher route + GEMINI_API_KEY, no .mcp.json/bridge/Antigravity notices; Claude Code unchanged', async () => {
   for (const harness of ['codex', 'claude-code'] as const) {
-    const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+    const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootMain();
     try {
       (doc.getElementById('menu-routing') as any).click();
       await flush();
@@ -520,6 +520,7 @@ test('Gemini Reviewer slot: Codex shows dispatcher route + GEMINI_API_KEY, no .m
       routing.bridge = { mcpServers: [], gemini: { serverPresent: false, value: 'agy' } };
       routing.presets.vendors = ['anthropic', 'openai', 'google'];
       routing.presets.models = [{ id: 'gemini-3.5-flash', vendor: 'google', costModelClass: 'metered', label: 'Gemini 3.5 Flash' }];
+      routing.envProbe = { ANTHROPIC_API_KEY: true, GEMINI_API_KEY: false };
       routing.presets.vendorKeys = [{ id: 'google', label: 'Google', vendors: ['google'], auth: 'key', rows: [{ env: 'GEMINI_API_KEY', label: 'Gemini API key', kind: 'credential', required: true }], test: true }];
       routing.agents = [{
         id: 'gemini-reviewer', name: 'gemini-reviewer', source: 'frontmatter', provenance: 'frontmatter', handWrittenBackend: true,
@@ -536,11 +537,31 @@ test('Gemini Reviewer slot: Codex shows dispatcher route + GEMINI_API_KEY, no .m
         assert.equal((card.querySelector('.routing-subscription-notice') as any).hidden, true, 'bridge notice (and Copy request) hidden on Codex');
         assert.match(text, /Connection: TycoonAgents dispatcher/);
         assert.match(text, /Backend: Google via TycoonAgents dispatcher/);
+        assert.doesNotMatch(text, /no key needed|Gemini CLI backend only|default used/);
+        assert.match(text, /GEMINI API KEY/);
+        assert.equal(card.querySelector('[data-field-key$=".mcpServer"]'), null, 'MCP server field hidden on Codex');
         assert.doesNotMatch(text, /via MCP/);
         assert.match(text, /GEMINI_API_KEY/);
         assert.match(text, /Gemini uses GEMINI_API_KEY; Antigravity sign-in isn't supported here yet/);
       } else {
         assert.match(text, /not in \.mcp\.json|Bridge via|Gemini 3\.5 Flash/);
+      }
+      // Key row: unset key -> Test says "not set" with no network call; a stale "works" never shows.
+      const keyTest = card.querySelector('.routing-keytest') as any;
+      if (harness === 'claude-code') {
+        // Antigravity sign-in needs no key: no key row, so no "not set" short-circuit can apply.
+        assert.equal(keyTest, null, 'no key row under the Antigravity backend');
+        assert.doesNotMatch(text, /GEMINI_API_KEY is not set/);
+      } else {
+        assert.ok(keyTest, 'Codex shows the GEMINI_API_KEY row with Test connection');
+        dispatch({ type: 'vendorKeyTestResult', payload: { vendor: 'google', state: 'ok', message: 'Connection works.' } });
+        await flush();
+        assert.doesNotMatch((card.querySelector('.routing-keytest') as any).textContent, /Connection works/);
+        const before = posted.filter((m) => m && m.type === 'testVendorKey').length;
+        (card.querySelector('.routing-keytest-btn') as any).click();
+        await flush();
+        assert.equal(posted.filter((m) => m && m.type === 'testVendorKey').length, before, 'no test call for an unset key');
+        assert.match((card.querySelector('.routing-keytest') as any).textContent, /GEMINI_API_KEY is not set/);
       }
     } finally {
       win.close();

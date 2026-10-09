@@ -977,7 +977,7 @@
       frag.appendChild(envNote);
     }
 
-    if (!isNativeVendorSlot && (slot.transport === "mcp" || (transportDerived && !isCustom))) {
+    if (!isNativeVendorSlot && !routingOnCodexHost() && (slot.transport === "mcp" || (transportDerived && !isCustom))) {
       var mcpRow = document.createElement("div");
       mcpRow.className = "routing-field-row";
       var mcpLabel = document.createElement("label");

@@ -1336,9 +1336,42 @@
     return { env: !!v, stored: false };
   }
 
+  /** Is a key needed on the active route? Google needs none with Antigravity sign-in (Claude harness); Codex always uses the key. */
+  function vendorKeyRequired(spec) {
+    if (spec && spec.id === "google") return routingOnCodexHost() || geminiBackendState().value === "gemini";
+    return true;
+  }
+
+  /** True when a key is required on this route, the spec has credential rows, and every one is known to be unset (env and stored). */
+  function vendorKeyUnset(spec) {
+    if (!vendorKeyRequired(spec)) return false;
+    var cred = ((spec && spec.rows) || []).filter(function (r) { return r.kind === "credential"; });
+    if (!cred.length) return false;
+    return cred.every(function (r) {
+      if (!Object.prototype.hasOwnProperty.call(routingEnvProbe, r.env)) return false;
+      var st = routingEnvProbe[r.env];
+      return !st.env && !st.stored;
+    });
+  }
+
+  /** Drop cached key-test results that no longer match the key's set/unset state, then repaint. */
+  function invalidateStaleKeyTests() {
+    var specs = (lastRoutingPayload && lastRoutingPayload.presets && lastRoutingPayload.presets.vendorKeys) || [];
+    specs.forEach(function (spec) {
+      var e = vendorKeyTestResults[spec.id];
+      if (!e || e.pending) return;
+      var unset = vendorKeyUnset(spec);
+      if ((unset && e.state !== "not_set") || (!unset && e.state === "not_set")) {
+        delete vendorKeyTestResults[spec.id];
+        applyVendorKeyTestResult(spec.id);
+      }
+    });
+  }
+
   /** Re-render the status area (dot + Set value/Clear buttons) of every
    * .routing-env-field currently in the DOM for this env var name. */
   function updateRoutingEnvDots(name) {
+    invalidateStaleKeyTests();
     document.querySelectorAll('.routing-env-field[data-env-name="' + name.replace(/"/g, '\\"') + '"]').forEach(function (wrap) {
       var area = wrap.querySelector(".routing-env-status");
       if (area) refreshEnvStatusArea(area, name, wrap.getAttribute("data-env-kind") || "credential", wrap.getAttribute("data-env-optional") === "1");
@@ -1392,7 +1425,7 @@
       stateText.textContent = !known ? "checking\u2026"
         : state.env ? "set in environment"
         : state.stored ? "stored by TycoonAgents"
-        : optional ? "not set (default used)" : "not set";
+        : optional && kind === "endpoint" ? "not set (default used)" : "not set";
       area.appendChild(stateText);
     }
 
@@ -1575,9 +1608,17 @@
     var out = document.createElement("span");
     out.setAttribute("role", "status");
     var cur = vendorKeyTestResults[spec.id];
+    if (cur && !cur.pending && vendorKeyUnset(spec) && cur.state !== "not_set") { delete vendorKeyTestResults[spec.id]; cur = undefined; }
     btn.disabled = !!(cur && cur.pending);
     renderVendorKeyTestResult(out, cur);
     btn.addEventListener("click", function () {
+      if (vendorKeyUnset(spec)) {
+        // No key to test with: say so without a network call.
+        var unsetRow = spec.rows.filter(function (r) { return r.kind === "credential"; })[0];
+        vendorKeyTestResults[spec.id] = { state: "not_set", message: (unsetRow ? unsetRow.env : "The API key") + " is not set. Use Set value first." };
+        applyVendorKeyTestResult(spec.id);
+        return;
+      }
       vendorKeyTestResults[spec.id] = { pending: true };
       applyVendorKeyTestResult(spec.id);
       vscode.postMessage({ type: ROUTING_MSG.TEST_VENDOR_KEY, vendor: spec.id, model: slot && slot.model ? String(slot.model) : undefined });
@@ -1654,6 +1695,7 @@
     if (typeof p.vendor !== "string") return;
     vendorKeyTestResults[p.vendor] = { state: String(p.state || "error"), message: String(p.message || "") };
     applyVendorKeyTestResult(p.vendor);
+    invalidateStaleKeyTests();
   }
 
   /**
@@ -1665,13 +1707,17 @@
     var block = document.createElement("div");
     block.className = "routing-vendor-keys";
     block.setAttribute("data-vendor-key-spec", spec.id);
-    if (spec.auth === "signin") {
+    var onCodexGoogle = spec.id === "google" && routingOnCodexHost();
+    if (spec.auth === "signin" && !onCodexGoogle) {
       var note = document.createElement("div");
       note.className = "routing-env-note routing-signin-note";
       note.textContent = "Uses your " + (spec.signIn || spec.label) + " sign-in \u2014 no key needed";
       block.appendChild(note);
     }
-    (spec.rows || []).forEach(function (row) { block.appendChild(buildFixedKeyRow(row)); });
+    (spec.rows || []).forEach(function (row) {
+      // Codex runs Gemini straight from GEMINI_API_KEY (no Antigravity, no CLI backend).
+      block.appendChild(buildFixedKeyRow(onCodexGoogle ? Object.assign({}, row, { label: "GEMINI API KEY", note: "", required: true }) : row));
+    });
     if (spec.test) block.appendChild(buildVendorKeyTestControl(spec, slot));
     return block;
   }
