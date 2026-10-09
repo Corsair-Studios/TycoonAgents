@@ -274,21 +274,46 @@ test("handleDelegateTool: openai vendor specialist under the real (non-stub) ada
 });
 
 test("handleDelegateTool: missing TYCOON_PROJECT_DIR and unusable cwd surfaces an explicit error, not a silent drop", async () => {
-  // resolveActivityFile falls back to process.cwd() when TYCOON_PROJECT_DIR is unset,
-  // so this asserts the module DOES fall back rather than silently no-op — the explicit
-  // "neither resolves" failure mode is exercised via resolveActivityFile's own contract
-  // (mkdir failure is fail-open by design; the override-first path is what's load-bearing
-  // here and is covered by every other test in this file passing TYCOON_PROJECT_DIR).
+  // Contract: TYCOON_PROJECT_DIR -> cwd walk-up to `.claude/tycoon/` -> copied-hook location
+  // -> explicit throw. Environment-independent: cwd is always a fresh temp dir.
   const modPath = require.resolve("../../hooks/tycoon-dispatcher-mcp.cjs");
-  delete require.cache[modPath];
-  const prev = process.env.TYCOON_PROJECT_DIR;
+  const prevEnv = process.env.TYCOON_PROJECT_DIR;
+  const prevCwd = process.cwd();
+  const hasMarkedAncestor = (start: string): boolean => {
+    for (let d = path.resolve(start); ; d = path.dirname(d)) {
+      if (fs.existsSync(path.join(d, ".claude", "tycoon"))) return true;
+      if (path.dirname(d) === d) return false;
+    }
+  };
+  const unmarked = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-nomarker-"));
+  const marked = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-marker-"));
   delete process.env.TYCOON_PROJECT_DIR;
   try {
-    const mod = require(modPath) as { resolveActivityFile: () => string };
-    const file = mod.resolveActivityFile();
-    assert.ok(file.includes(".claude"));
+    fs.mkdirSync(path.join(marked, ".claude", "tycoon"), { recursive: true });
+
+    // (b) marker present -> resolves to that project's activity file.
+    process.chdir(marked);
+    delete require.cache[modPath];
+    const modB = require(modPath) as { resolveActivityFile: () => string };
+    const fileB = modB.resolveActivityFile();
+    assert.equal(path.basename(fileB), "activity.jsonl");
+    assert.equal(fs.realpathSync(path.dirname(fileB)), fs.realpathSync(path.join(marked, ".claude", "tycoon")));
+
+    // (a) no marker anywhere up the tree -> explicit error, not a silent fallback.
+    if (hasMarkedAncestor(unmarked)) {
+      console.log("skipping no-marker assertion: os.tmpdir() has a .claude/tycoon ancestor");
+    } else {
+      process.chdir(unmarked);
+      delete require.cache[modPath];
+      const modA = require(modPath) as { resolveActivityFile: () => string };
+      assert.throws(() => modA.resolveActivityFile(), /couldn't tell which project this Codex session is in/);
+    }
   } finally {
-    if (prev !== undefined) process.env.TYCOON_PROJECT_DIR = prev;
+    process.chdir(prevCwd);
+    delete require.cache[modPath];
+    if (prevEnv === undefined) delete process.env.TYCOON_PROJECT_DIR; else process.env.TYCOON_PROJECT_DIR = prevEnv;
+    fs.rmSync(unmarked, { recursive: true, force: true });
+    fs.rmSync(marked, { recursive: true, force: true });
   }
 });
 
