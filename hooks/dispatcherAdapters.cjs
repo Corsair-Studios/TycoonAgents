@@ -111,7 +111,7 @@ function adapterKeyForVendor(vendor, opts) {
   const v = String(vendor || "").toLowerCase();
   if (isCustomEndpointSlot(v, opts)) return "openai-compatible";
   if (v === "anthropic") return "anthropic";
-  if (v === "openai-compatible" || v === "local" || v === "moonshot") return "openai-compatible";
+  if (v === "openai-compatible" || v === "local" || v === "moonshot" || v === "mistral" || v === "xai") return "openai-compatible";
   if (v === "google") return "google";
   if (v === "openai") return "openai";
   return "unsupported";
@@ -650,7 +650,189 @@ async function customEndpointAdapter(task, agentInfo) {
   const scrub = (t) => (apiKey ? String(t).split(apiKey).join("[redacted]") : String(t));
   let res;
   try {
-    res = await postJson(url, { model: customUpstreamModel(agentInfo.vendor, agentInfo.model || "default"), messages: [{ role: "user", content: task }] }, apiKey, timeoutMs);
+    res = await postJson(url, { model: customUpstreamModel(agentInfo.vendor, agentInfo.model || "default"), messages: [{ role: "user", content: attachReferencedFiles(task, agentInfo && agentInfo.projectDir) }] }, apiKey, timeoutMs);
+  } catch (err) {
+    return { error: scrub(`Request to ${url} failed: ${err && err.message ? err.message : String(err)}`) };
+  }
+  if (res.statusCode < 200 || res.statusCode >= 300) {
+    return { error: scrub(`Endpoint ${url} returned HTTP ${res.statusCode}: ${res.body.slice(0, 500)}`) };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(res.body);
+  } catch {
+    return { error: `Endpoint ${url} returned non-JSON response.` };
+  }
+  const choice = parsed && Array.isArray(parsed.choices) ? parsed.choices[0] : undefined;
+  const text = choice && choice.message && typeof choice.message.content === "string" ? choice.message.content : undefined;
+  if (text === undefined) return { error: `Endpoint ${url} returned an unexpected shape (no choices[0].message.content).` };
+  const usage = {};
+  if (parsed.usage && typeof parsed.usage.prompt_tokens === "number") usage.input_tokens = parsed.usage.prompt_tokens;
+  if (parsed.usage && typeof parsed.usage.completion_tokens === "number") usage.output_tokens = parsed.usage.completion_tokens;
+  return { text, usage: Object.keys(usage).length ? usage : undefined };
+}
+
+// --- text-only adapters: attach project files the task refers to ---------------------------------
+
+const ATTACH_MAX_FILE_BYTES = 64 * 1024;
+const ATTACH_MAX_TOTAL_BYTES = 256 * 1024;
+const ATTACH_MAX_FILES = 10;
+const SECRET_BASENAME_RE = /secret|token|credential|passw|\.env|\.pem|\.key|\.tfvars|\.tfstate|\.p12|\.pfx|\.keystore|\.sqlite|\.db$|^id_(rsa|dsa|ecdsa|ed25519)|^service-account.*\.json$/i;
+const SECRET_EXACT_BASENAMES = [".npmrc", ".pypirc", ".netrc", ".pgpass", ".htpasswd", ".mcp.json", "settings.local.json"];
+const SECRET_SEGMENTS = [".git", "node_modules", ".ssh", ".aws", ".docker"];
+
+function isSecretLookingPath(p) {
+  const parts = String(p).split(/[\\/]+/).filter(Boolean);
+  if (parts.some((seg) => SECRET_SEGMENTS.indexOf(seg.toLowerCase()) !== -1)) return true;
+  const base = (parts[parts.length - 1] || "").toLowerCase();
+  return SECRET_EXACT_BASENAMES.indexOf(base) !== -1 || SECRET_BASENAME_RE.test(base);
+}
+
+function isInside(root, target) {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/** Path-like tokens in a task: relative or absolute, with a file extension. Bare words count only with an extension. */
+function pathTokensIn(task) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(task || "").split(/[\s"'`()<>[\],;]+/)) {
+    const tok = raw.replace(/[.:!?]+$/, "").replace(/:\d+(?::\d+)?$/, "");
+    if (!tok || tok.length > 260 || tok.indexOf("://") !== -1) continue;
+    if (!/\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(tok)) continue;
+    if (seen.has(tok)) continue;
+    seen.add(tok);
+    out.push(tok);
+  }
+  return out;
+}
+
+/** Simple .gitignore support (no negation, no dependency): returns a predicate on a project-relative path. */
+function gitignoreMatcher(root) {
+  let raw = "";
+  try { raw = fs.readFileSync(path.join(root, ".gitignore"), "utf8"); } catch { return () => false; }
+  const rules = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t[0] === "#" || t[0] === "!") continue;
+    const anchored = t.indexOf("/") !== -1 && t.indexOf("/") !== t.length - 1;
+    const pat = t.replace(/^\//, "").replace(/\/$/, "");
+    const body = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\u0000/g, ".*");
+    rules.push({ anchored, re: new RegExp("^" + body + "$") });
+  }
+  return (rel) => {
+    const parts = rel.split("/");
+    return rules.some((r) => {
+      if (r.anchored) return parts.some((_, k) => r.re.test(parts.slice(0, k + 1).join("/")));
+      return parts.some((seg) => r.re.test(seg));
+    });
+  };
+}
+
+/**
+ * For adapters with no tool access: append the project files the task names as fenced blocks.
+ * Only regular text files inside the project (realpath-checked), within size caps, and never
+ * secret-looking ones. Returns the task unchanged when nothing resolves and nothing needs a note.
+ */
+function attachReferencedFiles(task, projectDir) {
+  const text = String(task || "");
+  if (typeof projectDir !== "string" || !projectDir) return text;
+  let root;
+  try {
+    root = fs.realpathSync(projectDir);
+  } catch {
+    return text;
+  }
+  let storeDir;
+  try {
+    const store = localEnvStore();
+    if (store && typeof store.resolveStoreDir === "function") storeDir = fs.realpathSync(store.resolveStoreDir({ env: process.env }));
+  } catch { /* store dir may not exist: nothing to protect */ }
+
+  const ignored = gitignoreMatcher(root);
+  const blocks = [];
+  const skipped = [];
+  let total = 0;
+  for (const tok of pathTokensIn(text)) {
+    const hasSlash = /[\\/]/.test(tok);
+    const lexical = path.resolve(root, tok);
+    if (isSecretLookingPath(tok)) { skipped.push(`${tok} (secret)`); continue; }
+    let real;
+    try {
+      real = fs.realpathSync(lexical);
+    } catch {
+      if (hasSlash) skipped.push(`${tok} (${isInside(root, lexical) ? "not found" : "outside project"})`);
+      continue;
+    }
+    if (!isInside(root, real)) { skipped.push(`${tok} (outside project)`); continue; }
+    if (isSecretLookingPath(path.relative(root, real)) || (storeDir && isInside(storeDir, real)) || ignored(path.relative(root, real).split(path.sep).join("/"))) { skipped.push(`${tok} (secret)`); continue; }
+    let fd;
+    let buf;
+    try {
+      fd = fs.openSync(real, "r");
+      const st = fs.fstatSync(fd);
+      if (!st.isFile()) continue;
+      if (st.size > ATTACH_MAX_FILE_BYTES) { skipped.push(`${tok} (too large)`); continue; }
+      if (blocks.length >= ATTACH_MAX_FILES || total + st.size > ATTACH_MAX_TOTAL_BYTES) { skipped.push(`${tok} (attachment limit)`); continue; }
+      buf = Buffer.alloc(Math.min(st.size, ATTACH_MAX_FILE_BYTES));
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      buf = buf.subarray(0, n);
+    } catch {
+      continue;
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+    }
+    if (buf.indexOf(0) !== -1) { skipped.push(`${tok} (not text)`); continue; }
+    total += buf.length;
+    const rel = path.relative(root, real).split(path.sep).join("/");
+    blocks.push(`File: ${rel}\n\`\`\`\n${buf.toString("utf8")}\n\`\`\``);
+  }
+  if (!blocks.length && !skipped.length) return text;
+  let out = text;
+  if (blocks.length) out += "\n\nAttached project files:\n\n" + blocks.join("\n\n");
+  if (skipped.length) out += `\n\nNot attached: ${skipped.join("; ")}.`;
+  return out;
+}
+
+/**
+ * Fixed-vendor endpoints on the openai-compatible transport. Mirrors VENDOR_DEFAULTS in
+ * hooks/openai-compatible-mcp.cjs (same env names, same default base URLs): a prefixed model
+ * uses ONLY its own endpoint/key pair, never the generic OPENAI_COMPAT_* one.
+ */
+const FIXED_VENDOR_ENDPOINTS = {
+  xai: { prefix: "xai/", baseUrlEnv: "XAI_BASE_URL", defaultBaseUrl: "https://api.x.ai/v1", apiKeyEnv: "XAI_API_KEY" },
+  mistral: { prefix: "mistral/", baseUrlEnv: "MISTRAL_BASE_URL", defaultBaseUrl: "https://api.mistral.ai/v1", apiKeyEnv: "MISTRAL_API_KEY" },
+  moonshot: { prefix: "moonshot/", baseUrlEnv: "MOONSHOT_BASE_URL", defaultBaseUrl: "https://api.moonshot.ai/v1", apiKeyEnv: "MOONSHOT_API_KEY" },
+};
+
+/** The vendor-prefixed form of a model id ("mistral-large-latest" -> "mistral/mistral-large-latest"); already-prefixed ids are left alone. */
+function withVendorPrefix(vendor, model) {
+  const spec = FIXED_VENDOR_ENDPOINTS[String(vendor || "").toLowerCase()];
+  const m = String(model || "");
+  if (!spec || !m) return m;
+  return m.toLowerCase().indexOf(spec.prefix) === 0 ? m : spec.prefix + m;
+}
+
+/** Chat call for a fixed vendor (xai, mistral, moonshot); names only in errors, key values never logged. */
+async function fixedVendorAdapter(task, agentInfo, spec) {
+  const prefixed = withVendorPrefix(agentInfo.vendor, agentInfo.model);
+  const upstreamModel = prefixed ? prefixed.slice(spec.prefix.length) : "";
+  if (!upstreamModel) return { error: `${agentInfo.vendor} slot has no model configured.` };
+  const urlRes = resolveUrlVar(spec.baseUrlEnv, agentInfo.projectDir);
+  const baseUrl = (urlRes.trusted || urlRes.untrusted || spec.defaultBaseUrl).trim();
+  const apiKey = resolveVendorEnv(spec.apiKeyEnv) || undefined;
+  if (!apiKey) return { error: `${missingVendorEnvMessage(spec.apiKeyEnv)} Set it on the Agents screen (model "${prefixed}" requires it; the generic OPENAI_COMPAT_API_KEY is never used for this vendor).` };
+  if (!urlRes.trusted && urlRes.untrusted) return { error: untrustedUrlMessage(spec.baseUrlEnv) };
+  const urlProblem = customEndpointUrlProblem(baseUrl);
+  if (urlProblem) return { error: `${spec.baseUrlEnv}: ${urlProblem}` };
+  const scrub = (t) => String(t).split(apiKey).join("[redacted]");
+  const rawTimeout = resolveVendorEnv("OPENAI_COMPAT_TIMEOUT_MS");
+  const timeoutMs = Number(rawTimeout) > 0 ? Number(rawTimeout) : 120000;
+  const url = buildChatUrl(baseUrl);
+  let res;
+  try {
+    res = await postJson(url, { model: upstreamModel, messages: [{ role: "user", content: attachReferencedFiles(task, agentInfo && agentInfo.projectDir) }] }, apiKey, timeoutMs);
   } catch (err) {
     return { error: scrub(`Request to ${url} failed: ${err && err.message ? err.message : String(err)}`) };
   }
@@ -675,6 +857,8 @@ async function customEndpointAdapter(task, agentInfo) {
 /** openai-compatible adapter: reads OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY (names only, never logs values). */
 async function openaiCompatibleAdapter(task, agentInfo) {
   if (agentInfo && agentInfo.endpointEnv && isCustomEndpointSlot(agentInfo.vendor, agentInfo)) return customEndpointAdapter(task, agentInfo);
+  const fixedSpec = agentInfo && FIXED_VENDOR_ENDPOINTS[String(agentInfo.vendor || "").toLowerCase()];
+  if (fixedSpec) return fixedVendorAdapter(task, agentInfo, fixedSpec);
   const genericUrl = resolveUrlVar("OPENAI_COMPAT_BASE_URL", agentInfo && agentInfo.projectDir);
   const baseUrl = genericUrl.trusted || genericUrl.untrusted;
   if (!baseUrl) return { error: missingVendorEnvMessage("OPENAI_COMPAT_BASE_URL") };
@@ -686,7 +870,7 @@ async function openaiCompatibleAdapter(task, agentInfo) {
   const url = buildChatUrl(baseUrl);
   let res;
   try {
-    res = await postJson(url, { model, messages: [{ role: "user", content: task }] }, apiKey, timeoutMs);
+    res = await postJson(url, { model, messages: [{ role: "user", content: attachReferencedFiles(task, agentInfo && agentInfo.projectDir) }] }, apiKey, timeoutMs);
   } catch (err) {
     return { error: `Request to ${url} failed: ${err && err.message ? err.message : String(err)}` };
   }
@@ -711,7 +895,7 @@ async function openaiCompatibleAdapter(task, agentInfo) {
 /** google adapter: only when GEMINI_API_KEY is configured (env var name only, never value). No shim yet -> explicit error otherwise. */
 async function googleAdapter(_task, _agentInfo) {
   if (!resolveVendorEnv("GEMINI_API_KEY")) {
-    return { error: `google vendor requires GEMINI_API_KEY — ${missingVendorEnvMessage("GEMINI_API_KEY")} No gemini shim wired yet, refusing to substitute another model.` };
+    return { error: "Gemini on the Codex harness needs GEMINI_API_KEY (set it on the Agents screen). Antigravity sign-in isn't supported on the Codex harness yet. No other model was used." };
   }
   return { error: "google vendor: gemini shim not implemented — set up gemini-mcp-tool per media/mcp/catalog.json's gemini entry instead of dispatching through this bridge." };
 }
@@ -840,6 +1024,9 @@ module.exports = {
   openaiCompatibleAdapter,
   googleAdapter,
   openaiAdapter,
+  withVendorPrefix,
+  attachReferencedFiles,
+  FIXED_VENDOR_ENDPOINTS,
   unsupportedAdapter,
   stubAdapter,
 };

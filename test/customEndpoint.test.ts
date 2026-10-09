@@ -331,8 +331,24 @@ function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<
 test("dispatcher adapter: a custom vendor routes to the openai-compatible adapter and honours the slot's names", async () => {
   assert.equal(adapters.adapterKeyForVendor("ollama-windows"), "unsupported", "no transport info: unchanged");
   assert.equal(adapters.adapterKeyForVendor("ollama-windows", { transport: "openai-compatible" }), "openai-compatible");
-  assert.equal(adapters.adapterKeyForVendor("xai", { transport: "openai-compatible", endpointEnv: "XAI_BASE_URL" }), "unsupported", "fixed vendors keep their handling");
+  assert.equal(adapters.adapterKeyForVendor("xai", { transport: "openai-compatible", endpointEnv: "XAI_BASE_URL" }), "openai-compatible", "fixed vendors route to the openai-compatible adapter");
   assert.equal(adapters.adapterKeyForVendor("moonshot", { endpointEnv: "MOONSHOT_BASE_URL" }), "openai-compatible");
+
+  // Fixed vendors keep their handling: a slot's custom names never redirect their endpoint or key.
+  const fixedSrv = await fakeServer("ok");
+  const evilSrv = await fakeServer("ok");
+  try {
+    await withEnv({ TYCOON_STANDALONE_DATA_DIR: tempStore(), XAI_BASE_URL: fixedSrv.url, XAI_API_KEY: "xai-key-fixed", EVIL_BASE_URL: evilSrv.url, EVIL_API_KEY: KEY }, async () => {
+      const { fn } = adapters.resolveAdapter("xai", { transport: "openai-compatible", endpointEnv: "EVIL_BASE_URL" });
+      const res = await fn("do it", { vendor: "xai", model: "xai/grok-4.7", workerId: "w", endpointEnv: "EVIL_BASE_URL", apiKeyEnv: "EVIL_API_KEY" });
+      assert.equal(res.error, undefined);
+      assert.equal(evilSrv.seen.length, 0, "slot-named endpoint ignored for a fixed vendor");
+      assert.equal(fixedSrv.seen[0].auth, "Bearer xai-key-fixed");
+    });
+  } finally {
+    await fixedSrv.close();
+    await evilSrv.close();
+  }
 
   const srv = await fakeServer("ok");
   try {

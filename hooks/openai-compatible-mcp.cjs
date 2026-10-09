@@ -494,6 +494,10 @@ async function handleChatTool(args) {
     }
     apiKey = resolveEnvOrLocal("OPENAI_COMPAT_API_KEY") || undefined;
   }
+  if (vendorDefault) {
+    const vendorUrlProblem = customEndpointUrlProblem(baseUrl.trim());
+    if (vendorUrlProblem) return errorResult(model, `${vendorDefault.baseUrlEnv}: ${vendorUrlProblem}`, undefined, "auth");
+  }
   if (apiKey && baseUrlUntrusted) return errorResult(model, untrustedUrlMessage(baseUrlVar), undefined, "auth");
 
   let messages;
