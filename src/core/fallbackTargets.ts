@@ -49,7 +49,7 @@ export interface FallbackTargetCheck {
 export type EnvLike = Record<string, string | undefined>;
 
 const CODEX_ANTHROPIC_LIKE = new Set(["anthropic"]);
-const CODEX_OPENAI_COMPATIBLE_LIKE = new Set(["openai-compatible", "local", "moonshot"]);
+const CODEX_OPENAI_COMPATIBLE_LIKE = new Set(["openai-compatible", "local", "moonshot", "mistral", "xai"]);
 
 /**
  * Decide whether `slot` (a fallback-chain entry, or the top-level

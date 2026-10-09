@@ -54,3 +54,25 @@ test("isFallbackTargetDispatchable: vendor casing is normalized", () => {
   assert.match(isFallbackTargetDispatchable({ vendor: "Google" }, "codex").reason ?? "", /skipped/);
   assert.equal(isFallbackTargetDispatchable({ vendor: "ANTHROPIC" }, "codex").ok, true);
 });
+
+// Parity with hooks/dispatcherAdapters.cjs: every vendor the dispatcher can
+// run on a real adapter must be accepted on Codex, and vice versa.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const dispatcherAdaptersForParity = require("../../hooks/dispatcherAdapters.cjs");
+
+test("Codex dispatchable vendors match hooks/dispatcherAdapters.cjs adapterKeyForVendor (google excluded)", () => {
+  const candidates = [
+    "anthropic", "openai", "openai-compatible", "local", "moonshot", "mistral", "xai", "google", "deepseek", "nonsense",
+  ];
+  for (const vendor of candidates) {
+    if (vendor === "google") continue;
+    const key = dispatcherAdaptersForParity.adapterKeyForVendor(vendor);
+    const hasAdapter = key !== "unsupported";
+    const check = isFallbackTargetDispatchable({ vendor } as never, "codex", {});
+    assert.equal(check.ok, hasAdapter, `vendor "${vendor}": adapter key "${key}" vs TS ok=${check.ok}`);
+  }
+  // Google stays a non-blocking skip warning on Codex.
+  const google = isFallbackTargetDispatchable({ vendor: "google" } as never, "codex", {});
+  assert.equal(google.ok, true);
+  assert.match(google.reason ?? "", /skipped/);
+});

@@ -13,7 +13,7 @@
   // authoritative gate that actually refuses a save.
   // ---------------------------------------------------------------------------
   var FALLBACK_TARGET_ANTHROPIC_LIKE = { anthropic: true };
-  var FALLBACK_TARGET_OPENAI_COMPAT_LIKE = { "openai-compatible": true, local: true, moonshot: true };
+  var FALLBACK_TARGET_OPENAI_COMPAT_LIKE = { "openai-compatible": true, local: true, moonshot: true, mistral: true, xai: true };
 
   /**
    * @param {{vendor?: string}} slot
@@ -209,7 +209,7 @@
   /** Per-host note atop the fallback chain editor. */
   function fallbackHostNoteText(harness) {
     if (harness === "opencode") return "Best-effort: switches model string";
-    if (harness === "codex") return "Codex host: only vendors with a dispatcher adapter (anthropic, openai, openai-compatible, local, moonshot). Google is not supported on the Codex host.";
+    if (harness === "codex") return "Codex host: only vendors with a dispatcher adapter (anthropic, openai, openai-compatible, local, moonshot, mistral, xai). Google is not supported on the Codex host.";
     return "Full fallback (dispatcher + hook)";
   }
 
