@@ -2231,6 +2231,8 @@ function captureOrchestratorTokens(payload, tycoonDir) {
 // Main
 // ---------------------------------------------------------------------------
 function main(raw) {
+  // A dispatcher-launched claude -p child: the dispatcher already records this worker.
+  if (process.env.TYCOON_BRIDGE_CHILD === "1") process.exit(0);
   const projectRoot =
     process.env.CLAUDE_PROJECT_DIR || findProjectRootFallback();
 

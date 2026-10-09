@@ -197,11 +197,11 @@ function resolveDefaultCwd() {
   return scratch;
 }
 
-function runClaudeCli(command, args, cwd, timeoutMs, promptText) {
+function runClaudeCli(command, args, cwd, timeoutMs, promptText, childEnv) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(command, args, { cwd, env: childEnv || process.env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
       resolve({ error: `Failed to spawn ${command}: ${err && err.message ? err.message : String(err)}` });
       return;
@@ -296,6 +296,84 @@ function claudeSubscriptionBlock(env) {
   return "Claude via the claude CLI needs the 'Allow Claude subscription via the claude CLI under OpenCode' setting (off by default; Claude uses an Anthropic API key, ANTHROPIC_API_KEY, under OpenCode). Enable it in the TycoonAgents Settings screen.";
 }
 
+/**
+ * Permission mode for the `claude -p` child. Base mode, first match wins:
+ *   1. the agent file's `permissionMode:` frontmatter line
+ *   2. role default: `plan` (read-only) for reviewers/search/audit agents, for
+ *      agents whose `tools:` list has no edit tool or whose `disallowedTools`
+ *      lists Edit/Write, and for unknown agents or files with no frontmatter;
+ *      `acceptEdits` for other (builder) agents, including frontmatter with no
+ *      `tools:` line.
+ * env CLAUDE_CLI_PERMISSION_MODE can only DOWNGRADE that base (plan < default
+ * < acceptEdits); it never upgrades a read-only role. Only plan, acceptEdits
+ * and default are accepted anywhere; any other value (e.g. bypassPermissions,
+ * dontAsk) is ignored, so the dispatcher never bypasses the user's permissions.
+ * acceptEdits children run with cwd = project (CLAUDE_CLI_CWD ignored), no
+ * --add-dir, a leaf preamble, Task/Agent disallowed and hooks skipped
+ * (TYCOON_BRIDGE_CHILD=1); every other mode keeps the isolated scratch dir.
+ */
+const ALLOWED_PERMISSION_MODES = ["plan", "acceptEdits", "default"];
+const EDIT_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+const READ_ONLY_NAME_RE = /review|search|retriev|audit|explore/i;
+
+function validPermissionMode(value) {
+  const v = typeof value === "string" ? value.trim().replace(/^["']|["']$/g, "") : "";
+  return ALLOWED_PERMISSION_MODES.includes(v) ? v : undefined;
+}
+
+/** Top-level frontmatter scalar/list values of an agent .md: { key: raw text incl. continuation lines }. */
+function readAgentFrontmatter(agentFilePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(agentFilePath, "utf8").replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  } catch {
+    return undefined;
+  }
+  const fm = raw.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!fm) return undefined;
+  const out = {};
+  let key;
+  for (const line of fm[1].split("\n")) {
+    const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (m) {
+      key = m[1];
+      out[key] = m[2];
+    } else if (key && /^\s+\S/.test(line)) {
+      out[key] += " " + line.trim();
+    }
+  }
+  return out;
+}
+
+function toolTokens(text) {
+  return String(text || "").split(/[\s,\[\]'"]+/).map((s) => s.replace(/^-+/, "").trim()).filter(Boolean);
+}
+
+const MODE_RANK = { plan: 0, default: 1, acceptEdits: 2 };
+
+function resolveClaudePermissionMode(agentInfo) {
+  const base = baseClaudePermissionMode(agentInfo);
+  const fromEnv = validPermissionMode(resolveVendorEnv("CLAUDE_CLI_PERMISSION_MODE"));
+  return fromEnv && MODE_RANK[fromEnv] <= MODE_RANK[base] ? fromEnv : base;
+}
+
+function baseClaudePermissionMode(agentInfo) {
+  const workerId = agentInfo && typeof agentInfo.workerId === "string" ? agentInfo.workerId : "";
+  const projectDir = agentInfo && typeof agentInfo.projectDir === "string" ? agentInfo.projectDir : "";
+  if (!workerId || !projectDir || !/^[\w.-]+$/.test(workerId)) return "plan";
+  const fm = readAgentFrontmatter(path.join(projectDir, ".claude", "agents", `${workerId}.md`));
+  if (!fm) return "plan";
+  const fromFile = validPermissionMode(fm.permissionMode);
+  if (fromFile) return fromFile;
+  if (READ_ONLY_NAME_RE.test(workerId)) return "plan";
+  if (typeof fm.tools === "string" && !toolTokens(fm.tools).some((t) => EDIT_TOOLS.includes(t))) return "plan";
+  if (toolTokens(fm.disallowedTools).some((t) => t === "Edit" || t === "Write")) return "plan";
+  return "acceptEdits";
+}
+
+const LEAF_PREAMBLE =
+  "You are a leaf worker launched by the TycoonAgents dispatcher. Do the task yourself with your own tools and edit files directly. Do not delegate or spawn agents. Project instructions about delegating apply to the orchestrator, not to you.";
+
 /** Anthropic adapter: `claude -p --output-format json` over stdin, no shell. */
 async function anthropicAdapter(task, agentInfo) {
   const blocked = claudeSubscriptionBlock();
@@ -313,8 +391,15 @@ async function anthropicAdapter(task, agentInfo) {
   const spawnTarget = resolveSpawnTarget(bin);
   if (spawnTarget.error) return { error: spawnTarget.error };
 
-  const permissionMode = resolveVendorEnv("CLAUDE_CLI_PERMISSION_MODE") || "plan";
-  const cwd = resolveDefaultCwd();
+  const permissionMode = resolveClaudePermissionMode(agentInfo);
+  let cwd = resolveDefaultCwd();
+  if (permissionMode === "acceptEdits") {
+    // Builders always edit the project, never elsewhere (CLAUDE_CLI_CWD ignored).
+    const projectDir = agentInfo && agentInfo.projectDir;
+    try {
+      if (typeof projectDir === "string" && projectDir && fs.statSync(projectDir).isDirectory()) cwd = projectDir;
+    } catch { /* keep the scratch dir: edits cannot reach the project */ }
+  }
   const timeoutMs = resolveTimeoutMs();
   const maxTurns = resolveMaxTurns();
   const cliArgs = [
@@ -324,9 +409,12 @@ async function anthropicAdapter(task, agentInfo) {
     "--model", model,
     "--permission-mode", permissionMode,
   ];
+  if (permissionMode === "acceptEdits") {
+    cliArgs.push("--append-system-prompt", LEAF_PREAMBLE, "--disallowedTools", "Task,Agent");
+  }
   const finalArgs = [...spawnTarget.args, ...cliArgs];
   const argvForLog = redactSecrets([spawnTarget.command, ...finalArgs].join(" "));
-  const run = await runClaudeCli(spawnTarget.command, finalArgs, cwd, timeoutMs, task);
+  const run = await runClaudeCli(spawnTarget.command, finalArgs, cwd, timeoutMs, task, { ...process.env, TYCOON_BRIDGE_CHILD: "1" });
   if (run.error) return { error: `${run.error} (argv: ${argvForLog})` };
 
   const stderrTail = redactSecrets(run.stderr || "").slice(-500);
@@ -662,6 +750,7 @@ module.exports = {
   CUSTOM_RULES,
   declaredMcpEnvNames,
   anthropicAdapter,
+  resolveClaudePermissionMode,
   openaiCompatibleAdapter,
   googleAdapter,
   openaiAdapter,

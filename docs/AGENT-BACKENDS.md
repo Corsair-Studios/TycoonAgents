@@ -346,6 +346,15 @@ holding any credential themselves.
   prompt-cache-creation tokens and cost; both bridges default to an isolated
   scratch working directory instead, and only load project context when a
   caller sets `cwd` deliberately.
+- **Dispatcher `claude -p` children.** Read-only roles (reviewers, search,
+  audit, agents without edit tools) run `--permission-mode plan` in the
+  isolated scratch dir. Builder agents run `acceptEdits` with the project as
+  `cwd` (edits stay inside the project; shell commands follow the project's
+  own permission allow list), a leaf preamble, `Task`/`Agent` disallowed, and
+  TycoonAgents hooks skipped via `TYCOON_BRIDGE_CHILD=1` (the dispatcher
+  records the worker itself). An agent file can set `permissionMode:`;
+  `CLAUDE_CLI_PERMISSION_MODE` can only lower the mode, and only `plan`,
+  `acceptEdits` and `default` are accepted.
 
 ### Getting these agents on a fresh install
 

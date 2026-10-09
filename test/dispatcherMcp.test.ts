@@ -814,6 +814,150 @@ test("anthropicAdapter: strips a leading anthropic/ so the CLI gets --model sonn
   }
 });
 
+// --- anthropic adapter permission mode: builders acceptEdits, read-only roles plan ---
+
+async function runAnthropicWithFake(
+  agents: Record<string, string>,
+  workerId: string,
+  env: Record<string, string> = {},
+): Promise<{ mode: string; cwd: string; args: string[]; projectDir: string; bridge?: string }> {
+  const fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-fake-claude-perm-"));
+  const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-perm-project-")));
+  fs.mkdirSync(path.join(projectDir, ".claude", "agents"), { recursive: true });
+  for (const [name, body] of Object.entries(agents)) {
+    fs.writeFileSync(path.join(projectDir, ".claude", "agents", `${name}.md`), body);
+  }
+  const body = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write(JSON.stringify({ result: JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2), bridge: process.env.TYCOON_BRIDGE_CHILD }) }));",
+    "});",
+  ].join("\n");
+  let claudeBin: string;
+  if (process.platform === "win32") {
+    const jsEntryPath = path.join(fakeDir, "fake-claude.js").replace(/\\/g, "\\\\");
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.cmd"), `@echo off\r\nnode "${jsEntryPath}" %*\r\n`);
+    fs.writeFileSync(path.join(fakeDir, "fake-claude.js"), body);
+    claudeBin = path.join(fakeDir, "fake-claude.cmd");
+  } else {
+    claudeBin = path.join(fakeDir, "fake-claude");
+    fs.writeFileSync(claudeBin, `#!/usr/bin/env node\n${body}\n`, "utf8");
+    fs.chmodSync(claudeBin, 0o755);
+  }
+  const keys = ["CLAUDE_CLI_BIN", "CLAUDE_CLI_PERMISSION_MODE", "CLAUDE_CLI_CWD", "TYCOON_DISPATCH_HOST"];
+  const prev = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  delete process.env.CLAUDE_CLI_PERMISSION_MODE;
+  delete process.env.CLAUDE_CLI_CWD;
+  delete process.env.TYCOON_DISPATCH_HOST;
+  process.env.CLAUDE_CLI_BIN = claudeBin;
+  Object.assign(process.env, env);
+  try {
+    const res = await dispatcherAdapters.anthropicAdapter("task", { model: "sonnet", workerId, projectDir });
+    assert.ok(!res.error, `unexpected error: ${res.error}`);
+    const parsed = JSON.parse(res.text as string);
+    const args: string[] = parsed.args;
+    return { mode: args[args.indexOf("--permission-mode") + 1], cwd: fs.realpathSync(parsed.cwd), args, projectDir, bridge: parsed.bridge };
+  } finally {
+    for (const k of keys) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k]; }
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+}
+
+const BUILDER_MD = "---\nname: coding-specialist\ntools: Read, Edit, Write, Bash\n---\nbody\n";
+
+test("anthropicAdapter permission mode: builder gets acceptEdits, cwd is the project, no --add-dir", async () => {
+  const r = await runAnthropicWithFake({ "coding-specialist": BUILDER_MD }, "coding-specialist");
+  assert.equal(r.mode, "acceptEdits");
+  assert.equal(r.cwd, r.projectDir);
+  assert.ok(!r.args.includes("--add-dir"));
+});
+
+test("anthropicAdapter permission mode: builder without a tools line (inherits all) gets acceptEdits", async () => {
+  const r = await runAnthropicWithFake({ "coding-specialist": "---\nname: coding-specialist\n---\nbody\n" }, "coding-specialist");
+  assert.equal(r.mode, "acceptEdits");
+});
+
+test("anthropicAdapter permission mode: reviewer, search and codex-reviewer stay plan", async () => {
+  for (const name of ["testing-reviewer", "search-retrieval", "codex-reviewer"]) {
+    const r = await runAnthropicWithFake({ [name]: BUILDER_MD }, name);
+    assert.equal(r.mode, "plan", name);
+  }
+});
+
+test("anthropicAdapter permission mode: unknown agent (no file) is plan", async () => {
+  const r = await runAnthropicWithFake({}, "coding-specialist");
+  assert.equal(r.mode, "plan");
+});
+
+test("anthropicAdapter permission mode: tools without an edit tool, or disallowedTools Edit, is plan", async () => {
+  const noEdit = await runAnthropicWithFake({ "coding-specialist": "---\ntools: Read, Grep, Bash\n---\n" }, "coding-specialist");
+  assert.equal(noEdit.mode, "plan");
+  const disallowed = await runAnthropicWithFake({ "coding-specialist": "---\ndisallowedTools: Edit, Write\n---\n" }, "coding-specialist");
+  assert.equal(disallowed.mode, "plan");
+});
+
+test("anthropicAdapter permission mode: frontmatter permissionMode overrides role; bypassPermissions ignored", async () => {
+  const plan = await runAnthropicWithFake({ "coding-specialist": "---\npermissionMode: plan\ntools: Edit\n---\n" }, "coding-specialist");
+  assert.equal(plan.mode, "plan");
+  const bypass = await runAnthropicWithFake({ "coding-specialist": "---\npermissionMode: bypassPermissions\ntools: Edit\n---\n" }, "coding-specialist");
+  assert.equal(bypass.mode, "acceptEdits");
+  const bypassReviewer = await runAnthropicWithFake({ "code-reviewer": "---\npermissionMode: bypassPermissions\n---\n" }, "code-reviewer");
+  assert.equal(bypassReviewer.mode, "plan");
+});
+
+test("anthropicAdapter permission mode: env can only downgrade; bypass values ignored", async () => {
+  const stay = await runAnthropicWithFake({ "coding-specialist": BUILDER_MD }, "coding-specialist", { CLAUDE_CLI_PERMISSION_MODE: "acceptEdits" });
+  assert.equal(stay.mode, "acceptEdits");
+  const noUpgrade = await runAnthropicWithFake({ "search-retrieval": BUILDER_MD }, "search-retrieval", { CLAUDE_CLI_PERMISSION_MODE: "acceptEdits" });
+  assert.equal(noUpgrade.mode, "plan");
+  const noUpgradeDefault = await runAnthropicWithFake({ "code-reviewer": BUILDER_MD }, "code-reviewer", { CLAUDE_CLI_PERMISSION_MODE: "default" });
+  assert.equal(noUpgradeDefault.mode, "plan");
+  const toPlan = await runAnthropicWithFake({ "coding-specialist": BUILDER_MD }, "coding-specialist", { CLAUDE_CLI_PERMISSION_MODE: "plan" });
+  assert.equal(toPlan.mode, "plan");
+  for (const bad of ["bypassPermissions", "dontAsk", "nonsense"]) {
+    const r = await runAnthropicWithFake({ "coding-specialist": BUILDER_MD }, "coding-specialist", { CLAUDE_CLI_PERMISSION_MODE: bad });
+    assert.equal(r.mode, "acceptEdits", bad);
+  }
+});
+
+test("anthropicAdapter classifier: no frontmatter is plan; frontmatter with only disallowedTools: Agent stays a builder", async () => {
+  const none = await runAnthropicWithFake({ "coding-specialist": "just a body, no frontmatter" }, "coding-specialist");
+  assert.equal(none.mode, "plan");
+  const builder = await runAnthropicWithFake({ "coding-specialist": ["---", "name: coding-specialist", "disallowedTools: Agent", "---", "body", ""].join("\n") }, "coding-specialist");
+  assert.equal(builder.mode, "acceptEdits");
+});
+
+test("anthropicAdapter acceptEdits child: leaf preamble, Task/Agent disallowed, TYCOON_BRIDGE_CHILD=1, CLAUDE_CLI_CWD ignored", async () => {
+  const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-perm-elsewhere-")));
+  try {
+    const r = await runAnthropicWithFake({ "coding-specialist": BUILDER_MD }, "coding-specialist", { CLAUDE_CLI_CWD: elsewhere });
+    assert.equal(r.mode, "acceptEdits");
+    assert.equal(r.cwd, r.projectDir);
+    assert.equal(r.bridge, "1");
+    assert.match(r.args[r.args.indexOf("--append-system-prompt") + 1], /leaf worker.*Do not delegate/);
+    assert.equal(r.args[r.args.indexOf("--disallowedTools") + 1], "Task,Agent");
+  } finally {
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test("anthropicAdapter plan child: scratch dir (not the project), CLAUDE_CLI_CWD honoured, no leaf flags", async () => {
+  const plan = await runAnthropicWithFake({ "code-reviewer": BUILDER_MD }, "code-reviewer");
+  assert.equal(plan.mode, "plan");
+  assert.notEqual(plan.cwd, plan.projectDir);
+  assert.ok(!plan.args.includes("--append-system-prompt"));
+  assert.ok(!plan.args.includes("--disallowedTools"));
+  assert.equal(plan.bridge, "1");
+  const custom = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-perm-custom-cwd-")));
+  try {
+    const r = await runAnthropicWithFake({ "code-reviewer": BUILDER_MD }, "code-reviewer", { CLAUDE_CLI_CWD: custom });
+    assert.equal(r.cwd, custom);
+  } finally {
+    fs.rmSync(custom, { recursive: true, force: true });
+  }
+});
+
 // --- Plan p25-t5: dispatcher reads the MERGED routing.resolved.json (defaults
 // inheritance), not the raw source routing.json ---
 
