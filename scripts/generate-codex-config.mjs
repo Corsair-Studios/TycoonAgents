@@ -49,7 +49,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+
+const requireCjs = createRequire(import.meta.url);
+const { resolveHarnessDefault } = requireCjs("../hooks/harnessModelDefaults.cjs");
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -202,9 +206,24 @@ function loadRoster({ projectDir, rosterDir, routingPath }) {
       frontmatter.description && frontmatter.description !== "" ? frontmatter.description : deriveDescription({ agentName: id, body });
     const pattern = keywords[id] && typeof keywords[id].pattern === "string" ? keywords[id].pattern : undefined;
 
-    roster.push({ id, vendor, model, description, pattern });
+    const routingSlot = routingOverrides[id] && typeof routingOverrides[id] === "object" ? routingOverrides[id] : undefined;
+    const effective = resolveHarnessDefault("codex", {
+      frontmatterModel: (frontmatter.backend && frontmatter.backend.model) || frontmatter.model || undefined,
+      backendVendor: frontmatter.backend && frontmatter.backend.vendor,
+      backendMcpServer: frontmatter.backend && frontmatter.backend.mcpServer,
+      routingSlot: routingSlot ? { vendor: routingSlot.vendor, model: routingSlot.model } : undefined,
+    });
+    roster.push({ id, vendor, model, description, pattern, effective });
   }
   return roster;
+}
+
+/** Human label for the model a specialist runs on under the Codex harness, e.g. "gpt-5.6-sol (low effort)". */
+function effectiveModelLabel(spec) {
+  const e = spec.effective;
+  if (!e || !e.model) return "";
+  const bare = String(e.model).replace(/^openai\//i, "");
+  return e.effort ? `${bare} (${e.effort} effort)` : bare;
 }
 
 function tomlString(value) {
@@ -237,6 +256,8 @@ function buildAgentsToml(specialists) {
       lines.push(`model = ${tomlString(spec.model.replace(/^openai\//i, ""))}`);
     } else {
       lines.push("# dispatched via tycoon delegate");
+      const label = effectiveModelLabel(spec);
+      if (label) lines.push(`# effective Codex model: ${label}`);
     }
     lines.push("");
   }
@@ -250,7 +271,9 @@ function buildAgentsMdCodexBlock(specialists) {
     .map((s) => {
       const keywordPart = s.pattern ? s.pattern : "(fallback only)";
       const vendorPart = s.vendor === "openai" ? "openai (native)" : `${s.vendor} (delegate)`;
-      return `| ${s.id} | ${s.description} | ${keywordPart} | ${vendorPart} |`;
+      const label = effectiveModelLabel(s);
+      const modelPart = label ? ` -- runs on ${label}` : "";
+      return `| ${s.id} | ${s.description} | ${keywordPart} | ${vendorPart}${modelPart} |`;
     })
     .join("\n");
 

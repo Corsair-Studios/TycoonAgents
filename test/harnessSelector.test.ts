@@ -71,6 +71,7 @@ function makeFakePanel(root: string, extra: Record<string, unknown> = {}): any {
     _providerSwap: undefined,
     _getRunningProviderId: undefined,
     _handleGetSettings: () => {},
+    _handleGetRouting: () => {},
     // p23-t11: real detection/handler methods live on the prototype and are
     // not reimplemented here — bind them so `this` inside resolves to the
     // fake object like every other method on it.

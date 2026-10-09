@@ -661,6 +661,13 @@
    * @param {{id?:string, vendor?:string, model?:string, costModelClass?:string}} agent
    * @returns {{vendor:string, costModelClass:string|undefined}}
    */
+  /** True for the Codex orchestrator row when no token usage is reported (Codex does not report orchestrator tokens). */
+  function codexOrchTokensNa(orch) {
+    return !!orch && orch.id === "orchestrator"
+      && ((lastSettings && lastSettings.harness && lastSettings.harness.effective) || "") === "codex"
+      && !(orch.tokens > 0);
+  }
+
   function backendIdentity(agent) {
     const id = agent && agent.id;
     const sa = id && lastSettings && Array.isArray(lastSettings.agents)
@@ -676,6 +683,22 @@
   }
 
   /**
+   * Codex harness default for an agent (from the Settings payload, computed
+   * host-side by src/core/harnessModelDefaults.ts): { vendor, model, effort?,
+   * label } when the agent has no explicit choice and will run on a Codex
+   * model, else null. Display only; never written to routing.json.
+   * @param {{id?:string}} agent
+   * @returns {{vendor:string, model:string, effort?:string, label:string}|null}
+   */
+  function harnessDefaultFor(agent) {
+    const id = agent && agent.id;
+    if (!id || !lastSettings || !Array.isArray(lastSettings.agents)) return null;
+    const sa = lastSettings.agents.find((x) => x && x.id === id);
+    const hd = sa && sa.harnessDefault;
+    return hd && typeof hd === "object" && hd.model ? hd : null;
+  }
+
+  /**
    * The routed backend's model id for an agent (e.g. "grok-4.7",
    * "gpt-5.6-sol"), from the last routing payload. Null when routing has not
    * loaded or the agent has no routed backend model.
@@ -684,6 +707,8 @@
    */
   function backendModelFor(agent) {
     const id = agent && agent.id;
+    const hd = harnessDefaultFor(agent);
+    if (hd) return hd.model;
     const ra = id && lastRoutingPayload && Array.isArray(lastRoutingPayload.agents)
       ? lastRoutingPayload.agents.find((x) => x && x.id === id)
       : null;
@@ -729,6 +754,9 @@
    * @returns {boolean}
    */
   function isForeignToOrchestrator(agent, orchestrator) {
+    // Codex harness-default agents run on OpenAI models whatever the
+    // orchestrator's own vendor looks like.
+    if (harnessDefaultFor(agent)) return true;
     const av = backendIdentity(agent).vendor;
     if (!av) return false;
     const ov = resolveAgentVendor(orchestrator && orchestrator.vendor, orchestrator && orchestrator.model) || "anthropic";
@@ -1416,7 +1444,10 @@
 
     const tokensTd = document.createElement("td");
     tokensTd.className = "col-tokens";
-    if (typeof agent.tokens !== "number") {
+    const codexOrchestratorNoUsage = agent.id === "orchestrator"
+      && ((lastSettings && lastSettings.harness && lastSettings.harness.effective) || "") === "codex"
+      && !(agent.tokens > 0);
+    if (typeof agent.tokens !== "number" || codexOrchestratorNoUsage) {
       // Harness doesn't report token usage yet (e.g. Codex today) — no
       // record at all, not a real zero. Never counted into the Total line
       // (see buildMetricsRollup).
@@ -1866,7 +1897,7 @@
       const foreign = isForeignToOrchestrator(a, tierOrch);
       const target = foreign ? otherMap : tierMap;
       const family = foreign
-        ? shortModelLabel(backendModelFor(a) || a.model || "") || "Unknown"
+        ? ((harnessDefaultFor(a) || {}).label || shortModelLabel(backendModelFor(a) || a.model || "") || "Unknown")
         : (a.model ? prettyModel(a.model, a.observedModel).split(" ")[0] : "Unknown");
       const entry = target.get(family) || { tasks: 0, tokens: 0 };
       entry.tasks += tasks;
@@ -1937,7 +1968,7 @@
       // trusted roster/frontmatter value lives on orch.rosterModel — see
       // panel.ts's _stampRosterModels and buildMetricsRow's identical swap.
       const coordModel = prettyModel(orch.rosterModel, orch.observedModel, true);
-      coordLine.textContent = `${coordModel ? `Orchestrator (${coordModel})` : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
+      coordLine.textContent = `${coordModel ? `Orchestrator (${coordModel})` : "Orchestrator"} · ${orchTasks} task${orchTasks === 1 ? "" : "s"} · ${codexOrchTokensNa(orch) ? "n/a" : fmtTokens((orch.tokens ?? 0) + (orch.cacheReadTokens ?? 0))} tokens`;
       coordSection.appendChild(coordLine);
 
       const coordSub = document.createElement("div");
@@ -2029,10 +2060,11 @@
         // wrapper; show the routed backend's model and vendor/billing instead.
         const bi = backendIdentity(a);
         const bridged = isForeignRow(a);
+        const rowHd = harnessDefaultFor(a);
         const backendModel = bridged ? backendModelFor(a) : null;
         const shownModel = backendModel || a.model;
-        const fullModelLabel = backendModel ? backendModel : (a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—");
-        modelTd.textContent = shownModel ? shortModelLabel(shownModel) : "—";
+        const fullModelLabel = backendModel ? (rowHd ? `${rowHd.label} (${backendModel}, harness default)` : backendModel) : (a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—");
+        modelTd.textContent = rowHd ? rowHd.label : shownModel ? shortModelLabel(shownModel) : "—";
         const effVendor = bridged ? bi.vendor : a.vendor;
         const effClass = bridged ? bi.costModelClass : a.costModelClass;
         const modelVendor = effVendor && effVendor !== "anthropic" ? vendorLabelFor(effVendor) : null;

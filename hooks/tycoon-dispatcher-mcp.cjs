@@ -77,6 +77,13 @@ const crypto = require("crypto");
 
 const codexRouting = require("./codexRouting.cjs");
 const codexRollout = require("./codexRollout.cjs");
+// Fail-open: an install that predates harnessModelDefaults.cjs keeps the old routing.
+let harnessModelDefaults;
+try {
+  harnessModelDefaults = require("./harnessModelDefaults.cjs");
+} catch {
+  harnessModelDefaults = null;
+}
 const { LEAF_WORKER_DENY_MESSAGE } = require("./delegationEnforcement.js");
 const dispatcherAdapters = require("./dispatcherAdapters.cjs");
 const dispatcherClaudeChain = require("./dispatcherClaudeChain.cjs");
@@ -427,6 +434,41 @@ function isDispatchFailure(fallbackChain, errorText) {
   );
 }
 
+/** True when this dispatcher serves the Codex harness: execution.json provider "codex" (preferred), else the installer's env marker. */
+function isCodexHarness(projectDir) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(projectDir, ".claude", "tycoon", "execution.json"), "utf8"));
+    if (parsed && typeof parsed.provider === "string" && parsed.provider) return parsed.provider === "codex";
+  } catch { /* fall through to the env marker */ }
+  return process.env.TYCOON_CODEX_DISPATCHER_CONFIGURED === "1";
+}
+
+/** The user's explicit routing choice for a specialist (agents[id], else defaults) from routing.resolved.json / routing.json; undefined when none sets vendor or model. */
+function readRoutingSlot(projectDir, specialistId) {
+  for (const name of ["routing.resolved.json", "routing.json"]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(projectDir, ".claude", "tycoon", name), "utf8"));
+      const candidates = [parsed && parsed.agents && parsed.agents[specialistId], parsed && parsed.defaults];
+      for (const c of candidates) {
+        if (c && typeof c === "object" && (c.vendor || c.model)) {
+          return { vendor: typeof c.vendor === "string" ? c.vendor : undefined, model: typeof c.model === "string" ? c.model : undefined };
+        }
+      }
+    } catch { /* try the next file */ }
+  }
+  return undefined;
+}
+
+function topLevelModel(agentFile) {
+  try {
+    const fm = fs.readFileSync(agentFile, "utf8").match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
+    const m = fm && fm[1].match(/^model:\s*(.+)$/m);
+    return m ? m[1].trim().replace(/^['"]|['"]$/g, "") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleDelegateTool(args) {
   const callStartedAt = Date.now();
   const task = args && typeof args.task === "string" ? args.task : undefined;
@@ -471,9 +513,28 @@ async function handleDelegateTool(args) {
 
   const workerId = routing.workerId;
   const info = vendorMap.get(workerId) || {};
-  const vendor = info.vendor;
-  const model = info.model;
-  const costModelClass = costModelClassFromAgentFile(path.join(agentsDir, `${workerId}.md`), vendor);
+  let vendor = info.vendor;
+  let model = info.model;
+  let costModelClass = costModelClassFromAgentFile(path.join(agentsDir, `${workerId}.md`), vendor);
+  let effort;
+  const codexHarness = process.env.TYCOON_DISPATCH_HOST !== "claude" && harnessModelDefaults !== null && isCodexHarness(projectDir);
+  if (codexHarness) {
+    // Claude tier aliases in the agent files become the harness's own models (Sol/Astra); explicit routing and foreign vendors stay.
+    const agentFile = path.join(agentsDir, `${workerId}.md`);
+    const backend = dispatcherClaudeChain.parseBackendFromAgentFile(agentFile) || {};
+    const eff = harnessModelDefaults.resolveHarnessDefault("codex", {
+      frontmatterModel: info.model || topLevelModel(agentFile),
+      backendVendor: backend.vendor,
+      backendMcpServer: backend.mcpServer,
+      routingSlot: readRoutingSlot(projectDir, workerId),
+    });
+    if (eff.vendor !== vendor || eff.model !== model) {
+      vendor = eff.vendor;
+      model = eff.model;
+      if (eff.source === "harness-default") costModelClass = "subscription";
+    }
+    effort = eff.effort;
+  }
 
   // Plan p99-t2: on the Claude Code host (registered in .mcp.json with env
   // TYCOON_DISPATCH_HOST=claude) the whole provider chain runs in-process
@@ -577,10 +638,12 @@ async function handleDelegateTool(args) {
 
   let currentVendor = vendor;
   let currentModel = model;
+  let currentEffort = effort;
   // Custom endpoint slots: the slot's endpointEnv/apiKeyEnv NAMES (never values) reach the openai-compatible adapter.
   let currentSlotOpts = dispatcherClaudeChain.parseBackendFromAgentFile(path.join(agentsDir, workerId + ".md")) || {};
   const adapterInfo = () => Object.assign(
     { vendor: currentVendor, model: currentModel, workerId, projectDir },
+    codexHarness ? { harness: "codex", effort: currentEffort } : {},
     dispatcherClaudeChain.customEndpointNames({ vendor: currentVendor, transport: currentSlotOpts.transport, endpointEnv: currentSlotOpts.endpointEnv, apiKeyEnv: currentSlotOpts.apiKeyEnv, credentialEnv: currentSlotOpts.credentialEnv }) || {},
   );
   let fallbackDepth = 0;
@@ -721,6 +784,7 @@ async function handleDelegateTool(args) {
     fallbackIsDefault = next.isDefault === true;
     currentVendor = next.slot.vendor || currentVendor;
     currentModel = next.slot.model || currentModel;
+    currentEffort = undefined;
     currentSlotOpts = { transport: next.slot.transport, endpointEnv: next.slot.endpointEnv, apiKeyEnv: next.slot.apiKeyEnv, credentialEnv: next.slot.credentialEnv };
     // New spawn instance for the retry -- the failed attempt's spawnId was
     // just closed out above via failedStopRecord, so reusing it here would

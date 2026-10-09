@@ -22,6 +22,8 @@ import type { RoutingProfile, RoutingSlot } from "./routingProfile";
 import { readUseMultipleLlms } from "./providerSelection";
 import { shortFromModelId } from "../host/vscode/agentConfig";
 import { readAgentFrontmatter } from "./agentBackend";
+import { describeHarnessDefault } from "./harnessModelDefaults";
+import type { HarnessDefaultInfo } from "./harnessModelDefaults";
 
 export type ClaudeTier = "fable" | "opus" | "sonnet" | "haiku";
 
@@ -32,6 +34,9 @@ export interface AgentRouteInfo {
   claudeTier: ClaudeTier | null;
   routeSource: RoutingProvenance;
   handWrittenBackend: boolean;
+  /** Codex harness only: the model this agent runs on when it has no explicit
+   *  choice (display only, never written to routing.json). null otherwise. */
+  harnessDefault: HarnessDefaultInfo | null;
 }
 
 const CLAUDE_TIERS: readonly ClaudeTier[] = ["fable", "opus", "sonnet", "haiku"];
@@ -79,12 +84,23 @@ function hasOwnModelDeclaration(root: string, agentId: string): boolean {
   }
 }
 
+function readFrontmatterModel(root: string, agentId: string): string | null {
+  try {
+    const content = fs.readFileSync(path.join(root, ".claude", "agents", `${agentId}.md`), "utf8");
+    const m = readAgentFrontmatter(content)["model"];
+    return typeof m === "string" && m.trim() !== "" ? m.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Per-agent route fields for the Settings screen, keyed by agent id. Built
  * from buildRoutingView(root) so both hosts agree on precedence/provenance
  * with the Routing screen itself.
  */
-export function describeAgentRoutes(root: string): Record<string, AgentRouteInfo> {
+export function describeAgentRoutes(root: string, opts: { harness?: string } = {}): Record<string, AgentRouteInfo> {
+  const harness = opts.harness ?? "";
   const view = buildRoutingView({ root, env: process.env });
   const out: Record<string, AgentRouteInfo> = {};
   for (const agent of view.agents) {
@@ -95,13 +111,26 @@ export function describeAgentRoutes(root: string): Record<string, AgentRouteInfo
     // route, coincidentally matching what defaults would have picked.
     const routeSource: RoutingProvenance =
       agent.provenance === "default" && hasOwnModelDeclaration(root, agent.id) ? "frontmatter" : agent.provenance;
+    // Codex harness: an agent with no explicit choice runs on a Codex model
+    // (src/core/harnessModelDefaults.ts). Surface vendor/billing honestly;
+    // the underlying frontmatter/route fields stay as they are on disk.
+    const harnessDefault =
+      harness.toLowerCase() === "codex" && agent.id !== "orchestrator"
+        ? describeHarnessDefault(harness, {
+            frontmatterModel: readFrontmatterModel(root, agent.id),
+            backendVendor: agent.handWrittenBackend ? agent.backend.vendor : null,
+            backendMcpServer: agent.handWrittenBackend ? agent.backend.mcpServer ?? null : null,
+            routingSlot: agent.provenance === "frontmatter" ? null : { vendor: agent.backend.vendor, model: agent.backend.model },
+          })
+        : null;
     out[agent.id] = {
       resolvedModel,
-      vendor: agent.backend.vendor ?? null,
-      costModelClass: agent.backend.costModelClass ?? null,
+      vendor: harnessDefault ? harnessDefault.vendor : agent.backend.vendor ?? null,
+      costModelClass: harnessDefault ? "subscription" : agent.backend.costModelClass ?? null,
       claudeTier: claudeTierFromModel(resolvedModel),
       routeSource,
       handWrittenBackend: agent.handWrittenBackend,
+      harnessDefault,
     };
   }
   return out;

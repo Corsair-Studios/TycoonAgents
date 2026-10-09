@@ -269,6 +269,8 @@ function findNewestUserThreadForCwd(cwd, env = process.env) {
  * TYCOON_CODEX_BRIDGE=1 env marker the bridges set on the Codex child.
  */
 function isTycoonBridgeThread(sessionMeta, env = process.env) {
+  // A codex exec child the dispatcher started for a specialist (it sets TYCOON_BRIDGE_CHILD=1 on that child only).
+  if (env && env.TYCOON_BRIDGE_CHILD === "1") return true;
   // The rollout originator is authoritative when readable: a genuine host
   // thread stays tracked even if the env marker leaked into this process.
   const o = sessionMeta && typeof sessionMeta.originator === "string" ? sessionMeta.originator.trim() : "";

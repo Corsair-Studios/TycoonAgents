@@ -8096,7 +8096,7 @@ export class TycoonPanel {
     // p18-t1: route-derived fields (resolvedModel/vendor/costModelClass/
     // claudeTier/routeSource/handWrittenBackend), keyed by agent id, from the
     // SAME shared helper the standalone server uses so both hosts agree.
-    const agentRoutes = describeAgentRoutes(root);
+    const agentRoutes = describeAgentRoutes(root, { harness: this._resolveEffectiveHarness(root) });
 
     const agents = loadAgentRoster(agentsDir).map((agent) => {
       const entry = keywordAgents[agent.id];
@@ -8119,6 +8119,7 @@ export class TycoonPanel {
         claudeTier: route?.claudeTier ?? null,
         routeSource: route?.routeSource ?? "frontmatter",
         handWrittenBackend: route?.handWrittenBackend ?? false,
+        harnessDefault: route?.harnessDefault ?? null,
       };
     });
 
@@ -8362,6 +8363,9 @@ export class TycoonPanel {
       }
     }
     this._handleGetSettings();
+    // The Agents screen shows harness-default models (Codex), so refresh the
+    // routing/uiMode payload too. Display only — no defaults are written.
+    this._handleGetRouting();
   }
 
   // p23-t11: markers mirrored from installCodexHooks.ts's private

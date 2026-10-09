@@ -197,11 +197,12 @@ function resolveDefaultCwd() {
   return scratch;
 }
 
-function runClaudeCli(command, args, cwd, timeoutMs, promptText, childEnv) {
+function runClaudeCli(command, args, cwd, timeoutMs, promptText, childEnv, opts) {
+  const label = (opts && opts.label) || "claude CLI";
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { cwd, env: childEnv || process.env, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(command, args, { cwd, env: childEnv || process.env, stdio: ["pipe", "pipe", "pipe"], shell: !!(opts && opts.shell), windowsHide: true });
     } catch (err) {
       resolve({ error: `Failed to spawn ${command}: ${err && err.message ? err.message : String(err)}` });
       return;
@@ -213,7 +214,7 @@ function runClaudeCli(command, args, cwd, timeoutMs, promptText, childEnv) {
       if (settled) return;
       settled = true;
       try { child.kill(); } catch { /* best effort */ }
-      resolve({ error: `claude CLI timed out after ${timeoutMs}ms (set CLAUDE_CLI_TIMEOUT_MS to override)` });
+      resolve({ error: `${label} timed out after ${timeoutMs}ms (set CLAUDE_CLI_TIMEOUT_MS to override)` });
     }, timeoutMs);
     child.stdout.on("data", (c) => { stdout += c; });
     child.stderr.on("data", (c) => { stderr += c; });
@@ -369,6 +370,11 @@ function baseClaudePermissionMode(agentInfo) {
   if (typeof fm.tools === "string" && !toolTokens(fm.tools).some((t) => EDIT_TOOLS.includes(t))) return "plan";
   if (toolTokens(fm.disallowedTools).some((t) => t === "Edit" || t === "Write")) return "plan";
   return "acceptEdits";
+}
+
+/** True for review/search/audit roles and agents without edit tools: the shared read-only classifier (Claude `plan`, Codex `read-only` sandbox). */
+function isReadOnlyAgent(agentInfo) {
+  return baseClaudePermissionMode(agentInfo) === "plan";
 }
 
 const LEAF_PREAMBLE =
@@ -694,8 +700,58 @@ async function googleAdapter(_task, _agentInfo) {
   return { error: "google vendor: gemini shim not implemented — set up gemini-mcp-tool per media/mcp/catalog.json's gemini entry instead of dispatching through this bridge." };
 }
 
-async function openaiAdapter() {
-  return { error: "use Codex native agents" };
+const CODEX_EFFORTS = ["low", "medium", "high", "xhigh"];
+const CODEX_BRIDGE_ORIGINATOR = "tycoon-dispatcher-exec";
+
+/** Runs `codex exec` for an openai slot on the Codex harness; elsewhere an openai specialist is Codex-native. */
+async function openaiAdapter(task, agentInfo) {
+  if (!agentInfo || agentInfo.harness !== "codex") return { error: "use Codex native agents" };
+  const launcher = require("./codex-mcp-launcher.cjs");
+  let bin;
+  const realExit = process.exit;
+  process.exit = () => { throw new Error("codex-not-found"); };
+  try {
+    bin = launcher.discoverCodexBinary(["exec"], { skipCapability: true });
+  } catch {
+    return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path." };
+  } finally {
+    process.exit = realExit;
+  }
+  if (typeof bin !== "string") return { error: "Could not find the Codex CLI. Set CODEX_BINARY_PATH to the codex binary's full path." };
+
+  const bare = String((agentInfo && agentInfo.model) || "").trim().replace(/^openai\//i, "");
+  const model = bare && MODEL_RE.test(bare) && !/^(gpt-5|gpt-6)$/i.test(bare) ? bare : undefined;
+  const readOnly = isReadOnlyAgent(agentInfo);
+  let cwd = resolveDefaultCwd();
+  if (!readOnly) {
+    // Builders always edit the project, never elsewhere.
+    const projectDir = agentInfo && agentInfo.projectDir;
+    try {
+      if (typeof projectDir === "string" && projectDir && fs.statSync(projectDir).isDirectory()) cwd = projectDir;
+    } catch { /* keep the scratch dir: edits cannot reach the project */ }
+  }
+  const args = ["exec", "--skip-git-repo-check", "-s", readOnly ? "read-only" : "workspace-write", "-c", "approval_policy=never"];
+  if (model) args.push("-m", model);
+  const effort = agentInfo && typeof agentInfo.effort === "string" ? agentInfo.effort.trim().toLowerCase() : "";
+  if (CODEX_EFFORTS.includes(effort)) args.push("-c", `model_reasoning_effort=${effort}`);
+  args.push("-");
+
+  const prompt = readOnly ? task : `${LEAF_PREAMBLE}
+
+${task}`;
+  const childEnv = {
+    ...process.env,
+    TYCOON_BRIDGE_CHILD: "1",
+    TYCOON_CODEX_BRIDGE: "1",
+    CODEX_INTERNAL_ORIGINATOR_OVERRIDE: CODEX_BRIDGE_ORIGINATOR,
+  };
+  const run = await runClaudeCli(bin, args, cwd, resolveTimeoutMs(), prompt, childEnv, { shell: launcher.needsShell(bin), label: "codex exec" });
+  if (run.error) return { error: `${run.error} (argv: ${redactSecrets([bin, ...args].join(" "))})` };
+  if (run.code !== 0) {
+    const tail = redactSecrets(run.stderr || "").slice(-500);
+    return { error: `codex exec exited ${run.code} (argv: ${redactSecrets([bin, ...args].join(" "))}).${tail ? ` stderr: ${tail}` : ""}` };
+  }
+  return { text: String(run.stdout || "").trim() };
 }
 
 async function unsupportedAdapter(_task, agentInfo) {
@@ -751,6 +807,7 @@ module.exports = {
   declaredMcpEnvNames,
   anthropicAdapter,
   resolveClaudePermissionMode,
+  isReadOnlyAgent,
   openaiCompatibleAdapter,
   googleAdapter,
   openaiAdapter,

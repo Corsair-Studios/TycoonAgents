@@ -939,6 +939,7 @@ test("MCP_BRIDGE_HOOK_FILES is the four bridge scripts followed by the dispatche
     "gateEvents.cjs",
     "delegationEnforcement.js",
     "fallbackChain.js",
+    "harnessModelDefaults.cjs",
   ]);
 });
 

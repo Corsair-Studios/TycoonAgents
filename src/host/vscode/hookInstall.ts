@@ -515,6 +515,7 @@ export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "gateEvents.cjs",
   "delegationEnforcement.js",
   "fallbackChain.js",
+  "harnessModelDefaults.cjs",
 ];
 
 /**
@@ -947,6 +948,7 @@ const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
     "dispatcherClaudeChain.cjs",
     "fallbackChain.js",
     "gateEvents.cjs",
+    "harnessModelDefaults.cjs",
   ],
   "dispatcherBridgeClient.cjs": ["bridge-result.cjs"],
   "dispatcherClaudeChain.cjs": ["bridge-result.cjs", "dispatcherAdapters.cjs", "dispatcherBridgeClient.cjs"],

@@ -642,6 +642,8 @@ function discoverProjectRoot(payload, env = process.env) {
 }
 
 function main() {
+  // Sessions the dispatcher started for a specialist are already tracked on the delegating row.
+  if (process.env.TYCOON_BRIDGE_CHILD === "1") process.exit(0);
   const at = Date.now();
 
   // argv[2]: notify's documented single-JSON-arg shape, OR a bare event

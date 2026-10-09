@@ -2087,7 +2087,11 @@
       group.className = "model-radio-group";
       const groupName = `model-single-${a.id}`;
       const tiers = (payload.singleProvider && payload.singleProvider.tiers) || [];
-      const currentModel = a.model || a.resolvedModel || "";
+      // Codex harness default: no explicit choice, so the tier the harness
+      // will actually run is pre-selected (display only, nothing is saved
+      // until the user clicks a radio).
+      const hd = a.harnessDefault && a.harnessDefault.model ? a.harnessDefault : null;
+      const currentModel = hd ? (a.harnessDefault.vendor ? a.harnessDefault.vendor + "/" : "") + hd.model : (a.model || a.resolvedModel || "");
       const hasMatch = tiers.some((t) => t.model === currentModel);
       tiers.forEach((tier) => {
         const lbl = document.createElement("label");
@@ -2097,8 +2101,17 @@
         input.name = groupName;
         input.value = tier.id;
         if (currentModel && tier.model === currentModel) input.checked = true;
+        const isHarnessDefaultTier = !!(hd && input.checked);
         input.addEventListener("change", () => {
           if (input.checked) {
+            justSetAgentModelId = a.id;
+            vscode.postMessage({ type: "setAgentModel", id: a.id, model: tier.model });
+          }
+        });
+        // Clicking the already-selected harness-default radio fires no change
+        // event; save it as an explicit choice (only while still a default).
+        input.addEventListener("click", () => {
+          if (isHarnessDefaultTier && input.checked) {
             justSetAgentModelId = a.id;
             vscode.postMessage({ type: "setAgentModel", id: a.id, model: tier.model });
           }
@@ -2109,7 +2122,13 @@
         lbl.appendChild(span);
         group.appendChild(lbl);
       });
-      if (!hasMatch && currentModel) {
+      if (hd) {
+        const hdNote = document.createElement("span");
+        hdNote.className = "delegation-mode-footnote single-provider-default-note";
+        hdNote.textContent = `Harness default: ${hd.label}`;
+        hdNote.title = "No model chosen for this agent, so the Codex harness runs it on " + hd.label + ". Pick a model to override.";
+        group.appendChild(hdNote);
+      } else if (!hasMatch && currentModel) {
         const note = document.createElement("p");
         note.className = "delegation-mode-footnote single-provider-mismatch-note";
         note.textContent = `Uses ${currentModel}; turn on multi-provider in Settings to edit vendors and fallbacks.`;
@@ -2149,21 +2168,31 @@
       return group;
     };
 
+    const buildUseClaudeDisclosure = () => {
+      const details = document.createElement("details");
+      details.className = "use-claude-tier-disclosure";
+      const summary = document.createElement("summary");
+      summary.className = "link-button";
+      summary.textContent = "Use Claude model…";
+      details.appendChild(summary);
+      details.appendChild(buildModelRadioGroup());
+      return details;
+    };
+
     if (singleMode) {
       head.appendChild(buildSingleProviderRadioGroup());
+    } else if (a.harnessDefault && a.harnessDefault.model) {
+      // Codex harness, no explicit choice: show what actually runs instead of
+      // the Claude tier radios (which would read as a Claude model).
+      const hdChip = document.createElement("span");
+      hdChip.className = "stat-chip agent-routed-chip agent-harness-default-chip";
+      hdChip.textContent = `Harness default: ${a.harnessDefault.label}`;
+      hdChip.title = "No model chosen for this agent, so the Codex harness runs it on " + a.harnessDefault.label + ". Choose a provider below to override.";
+      head.appendChild(hdChip);
+      head.appendChild(buildUseClaudeDisclosure());
     } else if (a.claudeTier) {
       head.appendChild(buildModelRadioGroup());
     } else {
-      const buildUseClaudeDisclosure = () => {
-        const details = document.createElement("details");
-        details.className = "use-claude-tier-disclosure";
-        const summary = document.createElement("summary");
-        summary.className = "link-button";
-        summary.textContent = "Use Claude model…";
-        details.appendChild(summary);
-        details.appendChild(buildModelRadioGroup());
-        return details;
-      };
 
       if (a.handWrittenBackend) {
         const backendLine = document.createElement("span");

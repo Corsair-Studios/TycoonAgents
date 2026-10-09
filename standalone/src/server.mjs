@@ -2807,7 +2807,7 @@ function buildStandaloneSettingsPayload() {
       let agentRoutes = {};
       try {
         const { describeAgentRoutes } = agentSettingsRouteModule();
-        agentRoutes = describeAgentRoutes(primaryProjectRoot);
+        agentRoutes = describeAgentRoutes(primaryProjectRoot, { harness: resolveEffectiveHarness(primaryProjectRoot) });
       } catch (err) {
         console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: describeAgentRoutes failed:', err);
       }
@@ -2830,6 +2830,7 @@ function buildStandaloneSettingsPayload() {
           claudeTier: route?.claudeTier ?? null,
           routeSource: route?.routeSource ?? 'frontmatter',
           handWrittenBackend: route?.handWrittenBackend ?? false,
+          harnessDefault: route?.harnessDefault ?? null,
         };
       });
     } catch (err) {
