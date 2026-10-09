@@ -361,6 +361,37 @@ export function mergeDispatcherIntoConfigToml(
  * stay. Returns the SAME string reference when there was nothing to remove.
  */
 export function removeDispatcherFromConfigToml(existing: string): string {
+  const withoutBlock = removeManagedDispatcherBlock(existing);
+  const lines = scanTomlLines(withoutBlock);
+  const tycoonLi = lines.findIndex((l) => l.header !== undefined && isTycoonTableName(l.header.name));
+  if (tycoonLi === -1) return withoutBlock;
+  // The `mcp_servers.tycoon` namespace is ours: Codex may have moved the main
+  // table or its tools.* approvals outside the markers, so remove every such
+  // table. A main table the user wrote themselves (no marker block, no
+  // reference to our script) is left alone.
+  const mainLi = lines.findIndex((l) => l.header !== undefined && !l.header.array && l.header.name === TYCOON_TABLE_NAME);
+  const hadBlock = withoutBlock !== existing;
+  if (mainLi !== -1 && !hadBlock) {
+    let endLi = lines.length - 1;
+    for (let li = mainLi + 1; li < lines.length; li++) {
+      const h = lines[li].header;
+      if (h && !isTycoonTableName(h.name)) {
+        endLi = li - 1;
+        break;
+      }
+    }
+    if (!withoutBlock.slice(lines[mainLi].start, lines[endLi].next).includes(DISPATCHER_SCRIPT_BASENAME)) return withoutBlock;
+  }
+  const cleaned = dropTycoonTables(withoutBlock, lines, 0, lines.length - 1, false, new Set());
+  const lastHeader = [...lines].reverse().find((l) => l.header !== undefined);
+  // Our table ran to the end of the file: drop the blank lines that separated it.
+  if (lastHeader?.header && isTycoonTableName(lastHeader.header.name)) {
+    return cleaned.trim() === "" ? "" : cleaned.replace(/(?:\r?\n)*$/, detectEol(cleaned));
+  }
+  return cleaned;
+}
+
+function removeManagedDispatcherBlock(existing: string): string {
   const stripped = stripManagedRegion(existing, false);
   if (!stripped) return existing;
   if (!stripped.regionEmpty) return stripped.text;

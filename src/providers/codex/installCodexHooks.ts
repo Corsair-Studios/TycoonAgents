@@ -35,6 +35,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { isElectronHostBinary, resolveNodeBinary } from "./resolveNodeBinary";
+import { removeCodexManagedAgentsBlock, removeOrphanCodexHookCopies } from "./uninstallCodexExtras";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** The 12 hook event names codex-cli 0.153.0's own HookEventName/HookEventsToml enum accepts, per docs/codex-harness-findings.md. */
@@ -687,6 +688,8 @@ export interface UninstallCodexHooksOptions {
   projectDir: string;
   env: ResolveCodexHomeEnv;
   platform?: NodeJS.Platform;
+  /** Path of our shipped copy of a hook file; lets uninstall recognise identical copies in .claude/hooks. */
+  resolveHookSource?: (fileName: string) => string | undefined;
 }
 
 /**
@@ -735,6 +738,13 @@ export function uninstallCodexHooks(options: UninstallCodexHooksOptions): { warn
     } catch {
       // Unparseable/foreign file — never delete something we can't confirm is ours.
     }
+  }
+  // Project-side leftovers: AGENTS.md managed block and orphaned Codex-only hook copies.
+  try {
+    removeCodexManagedAgentsBlock(options.projectDir);
+    removeOrphanCodexHookCopies({ projectDir: options.projectDir, resolveSource: options.resolveHookSource });
+  } catch {
+    /* best-effort cleanup; config.toml removal already done */
   }
   return warnings.length ? { warnings } : {};
 }
