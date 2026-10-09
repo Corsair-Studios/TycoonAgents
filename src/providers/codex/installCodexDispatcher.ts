@@ -20,6 +20,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { resolveCodexHome, samePath, isNewerExtensionPath, type ResolveCodexHomeEnv } from "./installCodexHooks";
+import { allVendorKeyEnvNames, customEndpointNameProblem, customKeyNameProblem } from "../../core/vendorKeys";
+import { hasValue as localEnvHasValue } from "../../core/localEnvStore";
 import { resolveNodeBinary } from "./resolveNodeBinary";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
@@ -46,6 +48,151 @@ function tomlInlineEnvTable(env: Record<string, string>): string {
 export interface BuildDispatcherBlockOptions {
   nodePath: string;
   serverScriptPath: string;
+  /** Env var NAMES Codex should forward to the server; defaults to dispatcherEnvVarNames(). */
+  envVarNames?: string[];
+}
+
+/**
+ * Names the dispatcher and its adapters read besides vendor keys. Codex starts
+ * stdio MCP servers with a filtered environment, so each must be listed in
+ * `env_vars` to reach the server. Names only, never values.
+ */
+const DISPATCHER_STATIC_ENV_NAMES = [
+  "APPDATA",
+  "LOCALAPPDATA",
+  "USERPROFILE",
+  "HOME",
+  "XDG_DATA_HOME",
+  "CLAUDE_CLI_BIN",
+  "CLAUDE_CLI_CWD",
+  "CLAUDE_CLI_MODEL",
+  "CLAUDE_CLI_PERMISSION_MODE",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_BINARY_PATH",
+  "CODEX_CLI_PATH",
+  "CODEX_HOME",
+  "CODEX_REASONING_EFFORT",
+  "GEMINI_MCP_BACKEND",
+  "GEMINI_MODEL",
+  "OPENAI_COMPAT_API_KEY",
+  "OPENAI_COMPAT_BASE_URL",
+  "OPENAI_COMPAT_TIMEOUT_MS",
+  "TYCOON_NODE_PATH",
+  "TYCOON_AGY_PATH",
+  "TYCOON_GEMINI_MCP_CMD",
+  "TYCOON_GEMINI_MCP_ARGS",
+];
+
+export interface DispatcherEnvNameOptions {
+  env?: Record<string, string | undefined>;
+  /** Whether the per-user local env store holds a value for `name`. */
+  hasStored?: (name: string, env: Record<string, string | undefined>) => boolean;
+}
+
+interface CustomEnvPair {
+  endpointEnv?: string;
+  credentialEnv?: string;
+}
+
+function collectCustomEnvPairs(node: unknown, out: CustomEnvPair[], depth = 0): void {
+  if (depth > 12 || node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) {
+    for (const item of node) collectCustomEnvPairs(item, out, depth + 1);
+    return;
+  }
+  const obj = node as Record<string, unknown>;
+  const endpointEnv = typeof obj.endpointEnv === "string" ? obj.endpointEnv : undefined;
+  const credentialEnv = typeof obj.credentialEnv === "string" ? obj.credentialEnv : undefined;
+  if (endpointEnv !== undefined || credentialEnv !== undefined) out.push({ endpointEnv, credentialEnv });
+  for (const value of Object.values(obj)) collectCustomEnvPairs(value, out, depth + 1);
+}
+
+/** Variable names declared in any env block of the project's .mcp.json (repo-controlled). */
+function declaredMcpEnvNames(projectDir: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    const raw = fs.readFileSync(path.join(projectDir, ".mcp.json"), "utf8").replace(/^\uFEFF/, "");
+    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> } | null;
+    const servers = (parsed && parsed.mcpServers) || (parsed as Record<string, unknown> | null) || {};
+    for (const entry of Object.values(servers)) {
+      const e = entry as { env?: unknown } | null;
+      if (e && typeof e === "object" && e.env && typeof e.env === "object") {
+        for (const k of Object.keys(e.env as object)) names.add(k);
+      }
+    }
+  } catch {
+    /* no or invalid .mcp.json: nothing declared */
+  }
+  return names;
+}
+
+/**
+ * Sorted env var names to forward: the fixed vendor key/URL names and the
+ * static names above, plus custom-endpoint names from the project's
+ * routing.json. A committed routing.json must not be able to pull arbitrary
+ * credentials out of the machine environment, so a project-derived name is
+ * forwarded only when its endpointEnv is user-set (process env or the
+ * per-user store) and is not declared in the project's .mcp.json; a
+ * credentialEnv additionally needs that paired endpointEnv and must pass the
+ * custom-key name rules (denied names are never forwarded).
+ */
+export function dispatcherEnvVarNames(projectDir?: string, options: DispatcherEnvNameOptions = {}): string[] {
+  const names = new Set<string>([...allVendorKeyEnvNames(), ...DISPATCHER_STATIC_ENV_NAMES]);
+  if (projectDir) {
+    const env = options.env ?? process.env;
+    const hasStored = options.hasStored ?? ((n: string, e: Record<string, string | undefined>) => localEnvHasValue(n, { env: e }));
+    try {
+      const raw = fs.readFileSync(path.join(projectDir, ".claude", "tycoon", "routing.json"), "utf8");
+      const pairs: CustomEnvPair[] = [];
+      collectCustomEnvPairs(JSON.parse(raw), pairs);
+      const declared = declaredMcpEnvNames(projectDir);
+      const userSet = (n: string): boolean => (typeof env[n] === "string" && env[n] !== "") || hasStored(n, env);
+      for (const { endpointEnv, credentialEnv } of pairs) {
+        if (endpointEnv === undefined || customEndpointNameProblem(endpointEnv) !== undefined) continue;
+        if (declared.has(endpointEnv) || !userSet(endpointEnv)) continue;
+        names.add(endpointEnv);
+        if (credentialEnv !== undefined && customKeyNameProblem(credentialEnv, undefined, endpointEnv) === undefined) {
+          names.add(credentialEnv);
+        }
+      }
+    } catch {
+      /* no readable routing.json: base names only */
+    }
+  }
+  return Array.from(names).sort();
+}
+
+const MAX_FORWARDED_ENV_NAMES = 200;
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** The `env_vars` names in the managed block, if any. */
+export function readManagedEnvVars(text: string): string[] {
+  const stripped = stripManagedRegion(text, true);
+  if (!stripped) return [];
+  const m = /^[ \t]*env_vars[ \t]*=[ \t]*(\[[^\r\n]*\])/m.exec(text.slice(stripped.start, stripped.end));
+  if (!m) return [];
+  try {
+    const parsed: unknown = JSON.parse(m[1]);
+    return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string" && ENV_NAME_RE.test(n)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Union of the names already written and the ones expected now, so two
+ * windows with different projects don't keep rewriting each other's custom
+ * names. Capped: base names always stay; newly expected custom names win over
+ * older ones.
+ */
+export function unionEnvVarNames(existing: string[], expected: string[]): string[] {
+  const base = new Set<string>([...allVendorKeyEnvNames(), ...DISPATCHER_STATIC_ENV_NAMES]);
+  const expectedCustom = expected.filter((n) => !base.has(n));
+  const expectedSet = new Set(expected);
+  const olderCustom = existing.filter((n) => !base.has(n) && !expectedSet.has(n));
+  const room = Math.max(0, MAX_FORWARDED_ENV_NAMES - base.size);
+  const customs = Array.from(new Set([...expectedCustom, ...olderCustom])).slice(0, room);
+  return Array.from(new Set([...base, ...customs])).sort();
 }
 
 /** Build the managed `[mcp_servers.tycoon]` block text (without surrounding blank-line separators). */
@@ -62,6 +209,7 @@ export function buildDispatcherBlock(options: BuildDispatcherBlockOptions): stri
     `command = ${tomlString(options.nodePath)}`,
     `args = ${tomlStringArray([options.serverScriptPath])}`,
     `env = ${tomlInlineEnvTable(env)}`,
+    `env_vars = ${tomlStringArray(Array.from(new Set(options.envVarNames ?? dispatcherEnvVarNames())).sort())}`,
     DISPATCHER_MARKER_END,
   ].join("\n");
 }
@@ -262,6 +410,7 @@ export function installCodexDispatcher(options: InstallCodexDispatcherOptions): 
   const merged = mergeDispatcherIntoConfigToml(existing, {
     nodePath: options.nodePath ?? resolveNodeBinary(),
     serverScriptPath: options.serverScriptPath,
+    envVarNames: unionEnvVarNames(readManagedEnvVars(existing ?? ""), dispatcherEnvVarNames(options.projectDir, { env: options.env })),
   });
   fs.writeFileSync(configTomlPath, merged.text, "utf8");
   return { configTomlPath, ...(merged.warnings ? { warnings: merged.warnings } : {}) };
@@ -324,6 +473,7 @@ export function detectCodexDispatcherState(
   text: string,
   currentScriptPath: string,
   fileExists: (p: string) => boolean = fs.existsSync,
+  expectedEnvVars: string[] = dispatcherEnvVarNames(),
 ): "none" | "installed" | "stale" {
   const stripped = stripManagedRegion(text, true);
   if (!stripped) return "none";
@@ -338,6 +488,16 @@ export function detectCodexDispatcherState(
   }
   const script = Array.isArray(args) && typeof args[0] === "string" ? args[0] : undefined;
   if (script === undefined) return "stale";
+  // Codex filters the environment of stdio servers; a block that doesn't list
+  // every env_vars name we expect can't see the user's keys, so refresh it.
+  const ev = /^[ \t]*env_vars[ \t]*=[ \t]*(\[[^\r\n]*\])/m.exec(region);
+  let forwarded: unknown;
+  try {
+    forwarded = ev ? JSON.parse(ev[1]) : undefined;
+  } catch {
+    forwarded = undefined;
+  }
+  if (!Array.isArray(forwarded) || !expectedEnvVars.every((n) => forwarded.includes(n))) return "stale";
   if (samePath(script, currentScriptPath)) return fileExists(script) ? "installed" : "stale";
   if (!fileExists(script)) return "stale";
   const oldDir = extensionVersionDir(script);
@@ -352,12 +512,18 @@ export function readCodexDispatcherState(
   env: ResolveCodexHomeEnv,
   platform: NodeJS.Platform | undefined,
   currentScriptPath: string,
+  projectDir?: string,
 ): "none" | "installed" | "stale" {
   try {
     const { codexHome } = resolveCodexHome({ env, platform });
     const configTomlPath = path.join(codexHome, "config.toml");
     if (!fs.existsSync(configTomlPath)) return "none";
-    return detectCodexDispatcherState(fs.readFileSync(configTomlPath, "utf8"), currentScriptPath);
+    return detectCodexDispatcherState(
+      fs.readFileSync(configTomlPath, "utf8"),
+      currentScriptPath,
+      fs.existsSync,
+      dispatcherEnvVarNames(projectDir),
+    );
   } catch {
     return "none";
   }

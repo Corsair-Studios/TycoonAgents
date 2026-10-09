@@ -12,12 +12,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   buildDispatcherBlock,
   mergeDispatcherIntoConfigToml,
   removeDispatcherFromConfigToml,
   isDispatcherMarkerInConfigToml,
+  dispatcherEnvVarNames,
+  unionEnvVarNames,
+  readManagedEnvVars,
+  installCodexDispatcher,
 } from "../src/providers/codex/installCodexDispatcher";
 import { scanTomlLines, detectEol, parseTableHeader } from "../src/providers/codex/tomlScan";
 
@@ -77,7 +84,7 @@ test("merge: block content is Codex-parsable TOML (command/args/env)", () => {
 
 test("merge: does not embed secret env names in the written block", () => {
   const merged = mergeDispatcherIntoConfigToml(undefined, OPTS);
-  assert.doesNotMatch(merged.text, /CLAUDE_CLI_|OPENAI_COMPAT_/);
+  assert.doesNotMatch(merged.text, /(CLAUDE_CLI_|OPENAI_COMPAT_|_API_KEY)[A-Z_]*\s*=/);
 });
 
 test("merge: idempotent re-install replaces the managed block in place, no duplication", () => {
@@ -315,4 +322,145 @@ test("detectCodexDispatcherState: an existing NEWER extension version path is le
   assert.equal(detectCodexDispatcherState(block(ext("0.0.711")), ext("0.0.710"), () => false), "stale", "newer but missing");
   assert.equal(detectCodexDispatcherState(block(ext("0.0.9")), ext("0.0.10"), () => true), "stale", "numeric compare, older");
   assert.equal(detectCodexDispatcherState(block(ext("0.0.100")), ext("0.0.99"), () => true), "installed", "numeric compare, newer");
+});
+
+function forwardedNames(text: string): string[] {
+  const m = /^env_vars = (\[.*\])$/m.exec(text);
+  assert.ok(m, "env_vars line missing");
+  return JSON.parse(m[1]);
+}
+
+function projectWithRouting(routing: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "tycoon-envvars-"));
+  mkdirSync(join(dir, ".claude", "tycoon"), { recursive: true });
+  writeFileSync(join(dir, ".claude", "tycoon", "routing.json"), JSON.stringify(routing), "utf8");
+  return dir;
+}
+
+test("block: env_vars lists vendor key and URL names, names only", () => {
+  const block = buildDispatcherBlock(OPTS);
+  const names = forwardedNames(block);
+  for (const n of ["MISTRAL_API_KEY", "XAI_API_KEY", "MOONSHOT_API_KEY", "GEMINI_API_KEY", "OPENAI_COMPAT_BASE_URL", "GEMINI_MCP_BACKEND", "CLAUDE_CLI_BIN", "TYCOON_NODE_PATH", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME"]) {
+    assert.ok(names.includes(n), n);
+  }
+  assert.deepEqual(names, [...names].sort());
+  assert.ok(block.includes('env = { TYCOON_CODEX_DISPATCHER_CONFIGURED = "1" }'));
+  assert.ok(!/MISTRAL_API_KEY\s*=/.test(block));
+});
+
+test("dispatcherEnvVarNames: custom endpoint names from routing.json are included, denied names are not", () => {
+  const dir = projectWithRouting({
+    version: 1,
+    agents: {
+      a: { vendor: "custom", endpointEnv: "OLLAMA_BASE_URL", credentialEnv: "OLLAMA_API_KEY" },
+      b: {
+        vendor: "custom",
+        endpointEnv: "bad-name",
+        credentialEnv: "GITHUB_TOKEN",
+        fallback: [{ vendor: "custom", endpointEnv: "GROQ_BASE_URL", credentialEnv: "AWS_SECRET_KEY" }],
+      },
+    },
+  });
+  try {
+    const names = dispatcherEnvVarNames(dir, { env: { OLLAMA_BASE_URL: "http://localhost:11434/v1", GROQ_BASE_URL: "https://api.groq.com/openai/v1" }, hasStored: () => false });
+    assert.ok(names.includes("OLLAMA_BASE_URL") && names.includes("OLLAMA_API_KEY"));
+    assert.ok(names.includes("GROQ_BASE_URL"));
+    assert.ok(!names.includes("GITHUB_TOKEN") && !names.includes("AWS_SECRET_KEY") && !names.includes("bad-name"));
+    assert.ok(!dispatcherEnvVarNames().includes("OLLAMA_API_KEY"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectCodexDispatcherState: a block without env_vars, or missing a custom name, is stale", () => {
+  const script = "/proj/hooks/tycoon-dispatcher-mcp.cjs";
+  const exists = (): boolean => true;
+  const current = buildDispatcherBlock(OPTS);
+  assert.equal(detectCodexDispatcherState(current, script, exists), "installed");
+  const old = current.split("\n").filter((l) => !l.startsWith("env_vars")).join("\n");
+  assert.equal(detectCodexDispatcherState(old, script, exists), "stale");
+  assert.equal(detectCodexDispatcherState(current, script, exists, [...dispatcherEnvVarNames(), "OLLAMA_BASE_URL"]), "stale");
+});
+
+test("merge: an old block without env_vars is rewritten with env_vars, once", () => {
+  const old =
+    'a = 1\n\n# tycoon-dispatcher: managed mcp server (do not edit by hand)\n[mcp_servers.tycoon]\ncommand = "/usr/bin/node"\nargs = ["/proj/hooks/tycoon-dispatcher-mcp.cjs"]\nenv = { TYCOON_CODEX_DISPATCHER_CONFIGURED = "1" }\n# tycoon-dispatcher: end managed mcp server\n';
+  const merged = mergeDispatcherIntoConfigToml(old, OPTS);
+  assert.ok(forwardedNames(merged.text).includes("MISTRAL_API_KEY"));
+  assert.equal(merged.text.split("env_vars").length - 1, 1);
+  assert.equal(mergeDispatcherIntoConfigToml(merged.text, OPTS).text, merged.text);
+});
+
+test("dispatcherEnvVarNames: OPENAI_API_KEY is never forwarded", () => {
+  assert.ok(!dispatcherEnvVarNames().includes("OPENAI_API_KEY"));
+});
+
+test("dispatcherEnvVarNames: a repo-only or unpaired credential name is not forwarded", () => {
+  const dir = projectWithRouting({
+    version: 1,
+    agents: {
+      a: { vendor: "custom", endpointEnv: "OLLAMA_BASE_URL", credentialEnv: "TAVILY_API_KEY" },
+      b: { vendor: "custom", credentialEnv: "SOLO_API_KEY" },
+    },
+  });
+  try {
+    // Endpoint not user-set: nothing from the project is forwarded.
+    const none = dispatcherEnvVarNames(dir, { env: {}, hasStored: () => false });
+    assert.ok(!none.includes("TAVILY_API_KEY") && !none.includes("OLLAMA_BASE_URL") && !none.includes("SOLO_API_KEY"));
+    // Endpoint user-set: the paired credential follows, the unpaired one still does not.
+    const paired = dispatcherEnvVarNames(dir, { env: { OLLAMA_BASE_URL: "http://localhost:1/v1" }, hasStored: () => false });
+    assert.ok(paired.includes("OLLAMA_BASE_URL") && paired.includes("TAVILY_API_KEY"));
+    assert.ok(!paired.includes("SOLO_API_KEY"));
+    // User-set through the per-user store counts too.
+    const stored = dispatcherEnvVarNames(dir, { env: {}, hasStored: (n) => n === "OLLAMA_BASE_URL" });
+    assert.ok(stored.includes("OLLAMA_BASE_URL"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dispatcherEnvVarNames: an endpoint name declared in the project's .mcp.json is not forwarded", () => {
+  const dir = projectWithRouting({
+    version: 1,
+    agents: { a: { vendor: "custom", endpointEnv: "OLLAMA_BASE_URL", credentialEnv: "OLLAMA_API_KEY" } },
+  });
+  writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { x: { command: "x", env: { OLLAMA_BASE_URL: "http://evil" } } } }), "utf8");
+  try {
+    const names = dispatcherEnvVarNames(dir, { env: { OLLAMA_BASE_URL: "http://localhost:1/v1" }, hasStored: () => true });
+    assert.ok(!names.includes("OLLAMA_BASE_URL") && !names.includes("OLLAMA_API_KEY"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("install: env_vars is the union across projects, so two windows do not rewrite each other", () => {
+  const home = mkdtempSync(join(tmpdir(), "tycoon-codexhome-"));
+  const mk = (endpoint: string, key: string): string =>
+    projectWithRouting({ version: 1, agents: { a: { vendor: "custom", endpointEnv: endpoint, credentialEnv: key } } });
+  const projA = mk("AAA_BASE_URL", "AAA_API_KEY");
+  const projB = mk("BBB_BASE_URL", "BBB_API_KEY");
+  const env = { CODEX_HOME: home, AAA_BASE_URL: "http://localhost:1/v1", BBB_BASE_URL: "http://localhost:2/v1" };
+  const script = "/proj/hooks/tycoon-dispatcher-mcp.cjs";
+  try {
+    const result = installCodexDispatcher({ projectDir: projA, env, serverScriptPath: script, nodePath: "node" });
+    installCodexDispatcher({ projectDir: projB, env, serverScriptPath: script, nodePath: "node" });
+    const text = readFileSync(result.configTomlPath, "utf8");
+    const written = readManagedEnvVars(text);
+    for (const n of ["AAA_BASE_URL", "AAA_API_KEY", "BBB_BASE_URL", "BBB_API_KEY"]) assert.ok(written.includes(n), n);
+    // Each project's expectation is a subset of what is written: neither sees it as stale.
+    for (const dir of [projA, projB]) {
+      assert.equal(detectCodexDispatcherState(text, script, () => true, dispatcherEnvVarNames(dir, { env, hasStored: () => false })), "installed");
+    }
+    installCodexDispatcher({ projectDir: projA, env, serverScriptPath: script, nodePath: "node" });
+    assert.equal(readFileSync(result.configTomlPath, "utf8"), text);
+  } finally {
+    for (const d of [home, projA, projB]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test("unionEnvVarNames: capped at 200, base names kept, newly expected custom names win", () => {
+  const old = Array.from({ length: 300 }, (_, i) => `OLD${i}_BASE_URL`);
+  const merged = unionEnvVarNames(old, ["NEW_BASE_URL"]);
+  assert.ok(merged.length <= 200);
+  assert.ok(merged.includes("NEW_BASE_URL") && merged.includes("MISTRAL_API_KEY"));
 });

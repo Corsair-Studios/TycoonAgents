@@ -8523,7 +8523,7 @@ export class TycoonPanel {
   /** Managed dispatcher entry vs the script path this extension would install now. */
   private _codexDispatcherState(): "none" | "installed" | "stale" {
     try {
-      return readCodexDispatcherState(process.env, process.platform, this._codexDispatcherScriptPath());
+      return readCodexDispatcherState(process.env, process.platform, this._codexDispatcherScriptPath(), this._projectRoot() || undefined);
     } catch {
       return "none";
     }
