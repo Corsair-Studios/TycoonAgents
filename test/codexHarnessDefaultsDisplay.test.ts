@@ -428,3 +428,42 @@ test('Codex harness (single view): clicking the selected harness-default radio s
     win.close();
   }
 });
+
+test('Bridge wrapper (Mistral Reviewer) tooltip shows the backend model: bare on Codex, with the relay noted on Claude Code', async () => {
+  for (const harness of ['codex', 'claude-code'] as const) {
+    const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+    try {
+      const settings: any = codexSettingsPayload();
+      settings.harness = { effective: harness };
+      settings.agents.push({
+        id: 'mistral-reviewer', name: 'Mistral Reviewer', model: 'haiku', keywords: 'review', claudeTier: 'haiku',
+        resolvedModel: 'mistral/mistral-large-latest', vendor: 'mistral', costModelClass: 'metered',
+        handWrittenBackend: true, harnessDefault: null,
+      });
+      dispatch({ type: 'settings', payload: settings });
+      dispatch({
+        type: 'state',
+        state: {
+          sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {},
+          agentMetrics: [
+            { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', rosterModel: 'opus', tokens: 0, activeMs: 0, taskCount: 0 },
+            { id: 'mistral-reviewer', name: 'Mistral Reviewer', status: 'idle', model: 'haiku', tokens: 100, activeMs: 10, taskCount: 1 },
+          ],
+        },
+      });
+      await flush();
+      assertNoErrors('bridge tooltip ' + harness);
+      const row = [...doc.querySelectorAll('#metrics-tbody tr')].find((r: any) => /Mistral Reviewer/.test(r.textContent)) as any;
+      assert.ok(row, 'expected the Mistral Reviewer row');
+      const title = row.querySelector('.col-name').title as string;
+      if (harness === 'codex') {
+        assert.match(title, /Mistral Reviewer — mistral-large-latest(\n|$)/);
+        assert.doesNotMatch(title, /Haiku/);
+      } else {
+        assert.match(title, /mistral-large-latest \(via Haiku relay\)/);
+      }
+    } finally {
+      win.close();
+    }
+  }
+});

@@ -18665,6 +18665,34 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
+   * Model text for an agent's tooltip/label, shared by every display spot.
+   * Codex harness default -> its label. A bridge wrapper (hand-written
+   * backend, e.g. Mistral/Grok Reviewer: frontmatter says haiku but the work
+   * runs on the backend model) -> the backend model; on Codex the wrapper does
+   * not run, so just the backend model, while on Claude Code the Claude relay
+   * is noted ("mistral-large-latest (via Haiku relay)"). Otherwise null, and
+   * callers fall back to the roster model.
+   * @param {{id?:string, model?:string}} agent
+   * @returns {string|null}
+   */
+  function bridgeAwareModelText(agent) {
+    const hd = harnessDefaultFor(agent);
+    if (hd) return hd.label;
+    const id = agent && agent.id;
+    const sa = id && lastSettings && Array.isArray(lastSettings.agents)
+      ? lastSettings.agents.find((x) => x && x.id === id)
+      : null;
+    if (!sa || !sa.handWrittenBackend || typeof sa.resolvedModel !== "string" || !sa.resolvedModel.trim()) return null;
+    const vendor = String(sa.vendor || "").toLowerCase();
+    if (!vendor || vendor === "anthropic") return null;
+    const bare = sa.resolvedModel.trim().replace(/^[^/]+\//, "");
+    const onCodex = !!(lastSettings && lastSettings.harness && lastSettings.harness.effective === "codex");
+    if (onCodex) return bare;
+    const relay = agent && agent.model ? prettyModel(agent.model, agent.observedModel).split(" ")[0] : "";
+    return relay ? `${bare} (via ${relay} relay)` : bare;
+  }
+
+  /**
    * Best-effort vendor id for an agent: explicit `vendor` field first, else
    * inferred from the model id. Returns "" when unknown.
    * @param {string|null|undefined} vendor
@@ -19296,9 +19324,9 @@ function themeAnimPreviewDraw(player) {
     let nameTitle = displayName;
     // Codex harness: an agent with no explicit choice runs on the harness
     // default, so show that instead of the agent file's Claude tier.
-    const nameHd = isOrchestratorRow ? null : harnessDefaultFor(agent);
-    const nameModelText = nameHd
-      ? nameHd.label
+    const bridgeText = isOrchestratorRow ? null : bridgeAwareModelText(agent);
+    const nameModelText = bridgeText
+      ? bridgeText
       : (agent.model ? prettyModel(displayRosterModel, agent.observedModel, isOrchestratorRow) : "");
     if (nameModelText && role) {
       nameTitle = `${displayName} — ${nameModelText}\n${role}`;
@@ -20009,7 +20037,7 @@ function themeAnimPreviewDraw(player) {
         const rowHd = harnessDefaultFor(a);
         const backendModel = bridged ? backendModelFor(a) : null;
         const shownModel = backendModel || a.model;
-        const fullModelLabel = backendModel ? (rowHd ? `${rowHd.label} (${backendModel}, harness default)` : backendModel) : (a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—");
+        const fullModelLabel = backendModel ? (rowHd ? `${rowHd.label} (${backendModel}, harness default)` : (bridgeAwareModelText(a) || backendModel)) : (a.model ? prettyModel(a.model, a.observedModel, a.id === "orchestrator") : "—");
         modelTd.textContent = rowHd ? rowHd.label : shownModel ? shortModelLabel(shownModel) : "—";
         const effVendor = bridged ? bi.vendor : a.vendor;
         const effClass = bridged ? bi.costModelClass : a.costModelClass;
