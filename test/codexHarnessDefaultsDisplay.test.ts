@@ -507,3 +507,43 @@ test('Saving routing: fixed-endpoint vendor fallbacks (xai/mistral) are written 
     win.close();
   }
 });
+
+test('Gemini Reviewer slot: Codex shows dispatcher route + GEMINI_API_KEY, no .mcp.json/bridge/Antigravity notices; Claude Code unchanged', async () => {
+  for (const harness of ['codex', 'claude-code'] as const) {
+    const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+    try {
+      (doc.getElementById('menu-routing') as any).click();
+      await flush();
+      dispatch({ type: 'settings', payload: { harness: { effective: harness } } });
+      await flush();
+      const routing: any = buildRoutingPayload({ uiMode: 'multi', singleProvider: undefined, harness });
+      routing.bridge = { mcpServers: [], gemini: { serverPresent: false, value: 'agy' } };
+      routing.presets.vendors = ['anthropic', 'openai', 'google'];
+      routing.presets.models = [{ id: 'gemini-3.5-flash', vendor: 'google', costModelClass: 'metered', label: 'Gemini 3.5 Flash' }];
+      routing.presets.vendorKeys = [{ id: 'google', label: 'Google', vendors: ['google'], auth: 'key', rows: [{ env: 'GEMINI_API_KEY', label: 'Gemini API key', kind: 'credential', required: true }], test: true }];
+      routing.agents = [{
+        id: 'gemini-reviewer', name: 'gemini-reviewer', source: 'frontmatter', provenance: 'frontmatter', handWrittenBackend: true,
+        backend: { vendor: 'google', transport: 'mcp', mcpServer: 'gemini', model: 'gemini-3.5-flash', costModelClass: 'metered' },
+      }];
+      dispatch({ type: 'routing', payload: routing });
+      await flush();
+      assertNoErrors('gemini slot ' + harness);
+      const card = doc.querySelector('[data-agent-id="gemini-reviewer"]') as any;
+      assert.ok(card, 'gemini reviewer card renders');
+      const text = (card.textContent || '') as string;
+      if (harness === 'codex') {
+        assert.doesNotMatch(text, /not in \.mcp\.json|No "gemini" server|set by Antigravity/);
+        assert.equal((card.querySelector('.routing-subscription-notice') as any).hidden, true, 'bridge notice (and Copy request) hidden on Codex');
+        assert.match(text, /Connection: TycoonAgents dispatcher/);
+        assert.match(text, /Backend: Google via TycoonAgents dispatcher/);
+        assert.doesNotMatch(text, /via MCP/);
+        assert.match(text, /GEMINI_API_KEY/);
+        assert.match(text, /Gemini uses GEMINI_API_KEY; Antigravity sign-in isn't supported here yet/);
+      } else {
+        assert.match(text, /not in \.mcp\.json|Bridge via|Gemini 3\.5 Flash/);
+      }
+    } finally {
+      win.close();
+    }
+  }
+});

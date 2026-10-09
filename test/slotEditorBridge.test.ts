@@ -311,7 +311,7 @@ for (const harness of ['claude-code', 'codex']) {
     try {
       const card = cardOf(doc, 'gem');
       assert.equal(card.querySelector('[data-field-key$=".transport"]'), null, 'no Transport select');
-      assert.equal(card.querySelector('.routing-connection-line').textContent, 'Connection: via gemini bridge');
+      assert.equal(card.querySelector('.routing-connection-line').textContent, harness === 'codex' ? 'Connection: TycoonAgents dispatcher' : 'Connection: via gemini bridge');
       const labels = Array.from(card.querySelectorAll('.routing-field-row label')).map((l: any) => l.textContent);
       assert.ok(labels.includes('Billing label'));
       assert.ok(!labels.includes('Cost class'));

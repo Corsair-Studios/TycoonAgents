@@ -22062,8 +22062,15 @@ function themeAnimPreviewDraw(player) {
     return (lastRoutingPayload && lastRoutingPayload.bridge) || null;
   }
 
+  /** True when the Codex harness is effective: bridges run through the TycoonAgents dispatcher, not .mcp.json servers. */
+  function routingOnCodexHost() {
+    return !!(lastSettings && lastSettings.harness && lastSettings.harness.effective === "codex");
+  }
+
   /** @returns {{known: boolean, serverPresent: boolean, value: string}} value is "agy" (wrapper default) or "gemini". */
   function geminiBackendState() {
+    // Codex dispatcher runs Gemini directly with GEMINI_API_KEY; Antigravity is not available there.
+    if (routingOnCodexHost()) return { known: true, serverPresent: false, value: "gemini" };
     var g = routingBridgeInfo() && routingBridgeInfo().gemini;
     return { known: !!g, serverPresent: !!(g && g.serverPresent), value: g && g.value === "gemini" ? "gemini" : "agy" };
   }
@@ -22071,6 +22078,7 @@ function themeAnimPreviewDraw(player) {
   /** Warning text when a slot bridges via an MCP server that is not in .mcp.json, else "". */
   function missingMcpServerWarning(slot) {
     var bridge = routingBridgeInfo();
+    if (routingOnCodexHost()) return "";
     if (!bridge || !slot || slot.transport !== "mcp" || !slot.mcpServer) return "";
     var names = bridge.mcpServers || [];
     if (names.indexOf(slot.mcpServer) !== -1) return "";
@@ -22088,6 +22096,9 @@ function themeAnimPreviewDraw(player) {
   /** Derived, read-only connection line for the Claude Code and Codex hosts (transport follows vendor + mcpServer). */
   function connectionLineText(slot) {
     var vendor = String(slot.vendor || "").toLowerCase();
+    if (routingOnCodexHost() && ((slot.transport === "mcp" && slot.mcpServer) || (vendor && vendor !== "openai" && vendor !== "anthropic"))) {
+      return "Connection: TycoonAgents dispatcher";
+    }
     if (slot.transport === "mcp" && slot.mcpServer) return "Connection: via " + slot.mcpServer + " bridge";
     if (slot.transport === "openai-compatible") return "Connection: OpenAI-compatible endpoint";
     return vendor && vendor !== "anthropic" ? "Connection: native " + vendor + " (no bridge)" : "Connection: Native Claude";
@@ -22300,7 +22311,7 @@ function themeAnimPreviewDraw(player) {
     var isNativeVendor = !!nativeVendor && vendor.toLowerCase() === nativeVendor;
     var route;
     if (s.transport === "mcp") {
-      route = "bridged via MCP " + (s.mcpServer ? s.mcpServer : "(not installed)");
+      route = routingOnCodexHost() ? "TycoonAgents dispatcher" : "bridged via MCP " + (s.mcpServer ? s.mcpServer : "(not installed)");
     } else if (s.transport === "openai-compatible") {
       route = "OpenAI-compatible endpoint";
     } else if (isNativeVendor) {
@@ -22543,6 +22554,13 @@ function themeAnimPreviewDraw(player) {
     //   bridged-missing   -> "Bridge via <CLI> MCP not installed." (status row + Copy request button)
     //   native            -> wrap stays hidden entirely
     function apply() {
+      // Codex runs bridges through the TycoonAgents dispatcher: no .mcp.json bridge to install.
+      if (routingOnCodexHost()) {
+        wrap.hidden = true;
+        copyBtn.hidden = true;
+        requestDetails.hidden = true;
+        return;
+      }
       var missing = shouldShow();
       var connected = needsBridge() && bridgeIsSetUp();
       wrap.hidden = !(missing || connected);
@@ -22572,7 +22590,12 @@ function themeAnimPreviewDraw(player) {
     // needsBridge/bridgeIsSetUp exposed (p27-t3) so buildSlotEditorFields
     // can decide the Connection <details> open state without duplicating
     // this logic.
-    return { el: wrap, refresh: refresh, needsBridge: needsBridge, bridgeIsSetUp: bridgeIsSetUp };
+    return {
+      el: wrap,
+      refresh: refresh,
+      needsBridge: function () { return !routingOnCodexHost() && needsBridge(); },
+      bridgeIsSetUp: function () { return routingOnCodexHost() || bridgeIsSetUp(); },
+    };
   }
 
   function buildSlotEditorFields(slot, presets, onStructural, fieldKeyPrefix, agentInfo) {
@@ -22691,7 +22714,7 @@ function themeAnimPreviewDraw(player) {
     }
 
     // Model: preset select-with-free-text, or a bare free-text input for Custom endpoint.
-    if (String(slot.vendor || "").toLowerCase() === "google") frag.appendChild(buildGeminiBackendControl());
+    if (String(slot.vendor || "").toLowerCase() === "google" && !routingOnCodexHost()) frag.appendChild(buildGeminiBackendControl());
     var modelRow = document.createElement("div");
     // Full row width, always — a model id (e.g. "anthropic/claude-sonnet-
     // 4-6") is the field most likely to overflow a shared 2-col grid cell;
@@ -22887,6 +22910,12 @@ function themeAnimPreviewDraw(player) {
       frag.appendChild(agyNote);
     } else if (fixedKeySpec) {
       frag.appendChild(buildVendorKeyBlock(fixedKeySpec, slot));
+      if (fixedKeySpec.id === "google" && routingOnCodexHost()) {
+        var codexGeminiNote = document.createElement("div");
+        codexGeminiNote.className = "routing-env-note routing-codex-gemini-note";
+        codexGeminiNote.textContent = "On the Codex harness Gemini uses GEMINI_API_KEY; Antigravity sign-in isn't supported here yet.";
+        frag.appendChild(codexGeminiNote);
+      }
       var fixedNote = document.createElement("div");
       fixedNote.className = "routing-env-note";
       fixedNote.textContent = "These names are fixed for this vendor. Values are stored per user in the TycoonAgents app-data folder, never in this project.";
@@ -24184,7 +24213,7 @@ function themeAnimPreviewDraw(player) {
       if (a.handWrittenBackend) {
         const backendLine = document.createElement("span");
         backendLine.className = "agent-backend-line";
-        backendLine.textContent = `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP`;
+        backendLine.textContent = `Backend: ${vendorLabelFor(a.vendor || "unknown")} ${routingOnCodexHost() ? "via TycoonAgents dispatcher" : "via MCP"}`;
         head.appendChild(backendLine);
 
         // Provenance line: where the hand-written backend: block actually
@@ -24428,7 +24457,7 @@ function themeAnimPreviewDraw(player) {
         providerHelpSpan.textContent = a.handWrittenBackend
           ? (providerIsNativeVendor
             ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} (native to this harness)`
-            : `Backend: ${vendorLabelFor(a.vendor || "unknown")} via MCP (hand-written)`)
+            : `Backend: ${vendorLabelFor(a.vendor || "unknown")} ${routingOnCodexHost() ? "via TycoonAgents dispatcher" : "via MCP (hand-written)"}`)
           : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
         providerBody.appendChild(providerLabelSpan);
         providerBody.appendChild(providerHelpSpan);
@@ -24798,7 +24827,7 @@ function themeAnimPreviewDraw(player) {
         var vendor = s.vendor || nativeVendor || "unknown";
         var model = s.model || "unknown model";
         var isNativeVendor = !!nativeVendor && vendor.toLowerCase() === nativeVendor;
-        var route = s.transport === "mcp" ? "bridged via MCP " + (s.mcpServer || "(not installed)")
+        var route = s.transport === "mcp" ? (routingOnCodexHost() ? "TycoonAgents dispatcher" : "bridged via MCP " + (s.mcpServer || "(not installed)"))
           : s.transport === "openai-compatible" ? "OpenAI-compatible endpoint"
           : isNativeVendor ? "native" : (s.transport || "claude-native");
         var billing = s.costModelClass || "metered";
