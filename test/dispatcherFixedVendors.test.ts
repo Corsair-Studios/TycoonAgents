@@ -330,3 +330,89 @@ test("fixed vendor: a key echoed in an HTTP error body is scrubbed from the erro
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+// --- Codex-path fallback chain over fixed vendors ---
+
+function makeChainProject(chain: unknown[]): string {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-chain-")));
+  fs.mkdirSync(path.join(dir, ".claude", "agents"), { recursive: true });
+  fs.mkdirSync(path.join(dir, ".claude", "tycoon"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".claude", "agents", "mistral-reviewer.md"), "---\nmodel: haiku\n---\nbody");
+  fs.writeFileSync(path.join(dir, ".claude", "tycoon", "agent-keywords.json"), JSON.stringify({ fallback_agent: "mistral-reviewer", agents: { "mistral-reviewer": { pattern: "review" } } }));
+  fs.writeFileSync(path.join(dir, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "codex" }));
+  fs.writeFileSync(path.join(dir, ".claude", "tycoon", "routing.json"), JSON.stringify({ agents: { "mistral-reviewer": { vendor: "mistral", transport: "openai-compatible", model: "mistral/does-not-exist", endpointEnv: "MISTRAL_BASE_URL", credentialEnv: "MISTRAL_API_KEY", useDefaultFallback: false, fallback: chain } } }));
+  return dir;
+}
+
+async function runChain(dir: string, env: Record<string, string | undefined>) {
+  const modPath = require.resolve("../../hooks/tycoon-dispatcher-mcp.cjs");
+  delete require.cache[modPath];
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-chain-data-"));
+  try {
+    return await withEnv({ TYCOON_PROJECT_DIR: dir, TYCOON_STANDALONE_DATA_DIR: dataDir, TYCOON_DISPATCH_ADAPTER: undefined, TYCOON_CODEX_DISPATCHER_CONFIGURED: undefined, ...env }, async () => {
+      const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>; resolveActivityFile: () => string };
+      const res = await mod.handleDelegateTool({ specialist: "mistral-reviewer", task: "review it" });
+      const records = fs.readFileSync(mod.resolveActivityFile(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      return { res, records };
+    });
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+async function twoServers<T>(mistralStatus: number, xaiStatus: number, fn: (mistralUrl: string, xaiUrl: string) => Promise<T>): Promise<T> {
+  const mk = (status: number, body: string) => http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      res.statusCode = status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(body);
+    });
+  });
+  const m = mk(mistralStatus, JSON.stringify({ object: "error", message: "Invalid model: does-not-exist", type: "invalid_model" }));
+  const x = mk(xaiStatus, xaiStatus === 200 ? JSON.stringify({ choices: [{ message: { content: "grok reviewed" } }] }) : JSON.stringify({ message: "xai down: server error" }));
+  await Promise.all([m, x].map((sv) => new Promise<void>((r) => sv.listen(0, "127.0.0.1", r))));
+  const url = (sv: http.Server) => `http://127.0.0.1:${(sv.address() as { port: number }).port}/v1`;
+  try {
+    return await fn(url(m), url(x));
+  } finally {
+    await Promise.all([m, x].map((sv) => new Promise<void>((r) => sv.close(() => r()))));
+  }
+}
+
+test("codex chain: HTTP 400 invalid_model advances to the xai fallback (even with transport claude-native) and succeeds", async () => {
+  const dir = makeChainProject([{ vendor: "xai", transport: "claude-native", model: "xai/grok-build-0.1", costModelClass: "metered" }]);
+  try {
+    await twoServers(400, 200, async (mUrl, xUrl) => {
+      const { res, records } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.equal(res.isError, undefined);
+      assert.equal(res.content[0].text, "grok reviewed");
+      const fbPre = records.find((r) => r.event === "PreToolUse" && r.fallbackOf === "mistral-reviewer");
+      assert.ok(fbPre, "fallback PreToolUse written");
+      assert.equal(fbPre.vendor, "xai");
+      assert.equal(fbPre.fallbackDepth, 1);
+      const stops = records.filter((r) => r.event === "SubagentStop");
+      assert.deepEqual(stops.map((r) => r.ok), [false, true]);
+      assert.equal(stops[1].fallbackOf, "mistral-reviewer");
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex chain: every entry failing returns an honest error listing each attempt", async () => {
+  const dir = makeChainProject([{ vendor: "xai", transport: "claude-native", model: "xai/grok-build-0.1" }]);
+  try {
+    await twoServers(400, 500, async (mUrl, xUrl) => {
+      const { res } = await runChain(dir, { MISTRAL_BASE_URL: mUrl, MISTRAL_API_KEY: "mk", XAI_BASE_URL: xUrl, XAI_API_KEY: "xk" });
+      assert.equal(res.isError, true);
+      const text = res.content[0].text;
+      assert.match(text, /failed after 2 attempts/);
+      assert.match(text, /1\) mistral\/mistral\/does-not-exist: .*Invalid model/);
+      assert.match(text, /2\) xai\/xai\/grok-build-0\.1: .*xai down/);
+      assert.doesNotMatch(text, /grok reviewed/);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

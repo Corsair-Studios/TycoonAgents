@@ -296,6 +296,8 @@ function classifyProviderError(message, opts) {
   if (QUOTA_SPECIFIC_RE.test(t)) return "quota";
   if (RATE_LIMIT_RE.test(t)) return "rate_limit";
   if (/\b402\b|quota|usage limit|limit reached|insufficient[^\n]{0,20}(?:quota|balance|credits?|funds)|out of credits?|credits?[^\n]{0,20}(?:exhausted|depleted|exceeded|limit|balance)|billing (?:details|limit|hard limit)|exceeded your|resource_exhausted/i.test(t)) return "quota";
+  // A wrong model id (HTTP 400 invalid_model and kin) is as unusable as a 404: a fallback chain should cover it.
+  if (/invalid[_ ]model|unknown model|no such model|model[_ -]?not[_ -]?found|model [^\n]{0,60}(?:is not available|not supported|does not exist)/i.test(t)) return "not_found";
   if (/\b404\b|not found|model_not_found|does not exist|unsupported model|issue with the selected model/i.test(t)) return "not_found";
   if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|network|fetch failed|socket hang up/i.test(t)) return "network";
   if (/could not extract a model reply|found a SQLite transcript/i.test(t)) return "backend_unreadable";

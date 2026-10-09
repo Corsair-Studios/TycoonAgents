@@ -486,7 +486,7 @@ test("handleDelegateTool: a non-failure adapter error does not trigger fallback,
   });
   const { mod, restore } = loadDispatcherModule(dir);
   try {
-    const result = await withStubFailure("Invalid model \"bogus\"", 1, () =>
+    const result = await withStubFailure("Malformed request: prompt must be a string", 1, () =>
       mod.handleDelegateTool({ specialist: "coding-specialist", task: "do a thing" }),
     );
     assert.equal(result.isError, true);

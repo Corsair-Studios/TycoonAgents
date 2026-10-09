@@ -427,10 +427,12 @@ function codexToolTimeoutMs() {
 
 /** Provider-limit kinds that always advance to the next fallback slot. */
 const LIMIT_KINDS = ["quota", "billing", "rate_limit", "overloaded"];
+/** Kinds that advance the chain: provider limits, plus a wrong/unavailable model (HTTP 400 invalid_model, 404) -- exactly what a chain covers. Other 4xx request errors stay terminal. */
+const FALLBACK_KINDS = LIMIT_KINDS.concat(["not_found"]);
 
 function isDispatchFailure(fallbackChain, errorText) {
   if (fallbackChain && fallbackChain.isProviderFailure(errorText)) return true;
-  if (LIMIT_KINDS.indexOf(bridgeResult.classifyProviderError(errorText)) !== -1) return true;
+  if (FALLBACK_KINDS.indexOf(bridgeResult.classifyProviderError(errorText)) !== -1) return true;
   return /not set in the Codex process environment or the TycoonAgents local env store\./.test(
     String(errorText || "")
   );
@@ -650,6 +652,11 @@ async function handleDelegateTool(args) {
   );
   let fallbackDepth = 0;
   let fallbackIsDefault = false;
+  // Every failed attempt, so a final failure lists each one honestly.
+  const attempts = [];
+  const failureText = (lastError) => attempts.length > 1
+    ? `delegate: ${workerId} failed after ${attempts.length} attempts: ` + attempts.map((a, i) => `${i + 1}) ${a.vendor}${a.model ? "/" + a.model : ""}: ${a.error}`).join(" | ")
+    : `delegate: ${workerId} failed: ${lastError}`;
 
   for (;;) {
     const { fn: adapterFn } = dispatcherAdapters.resolveAdapter(currentVendor, currentSlotOpts);
@@ -747,6 +754,7 @@ async function handleDelegateTool(args) {
       errorRecord.fallbackIsDefault = fallbackIsDefault;
     }
     appendRecord(activityFile, errorRecord);
+    attempts.push({ vendor: currentVendor, model: currentModel, error: result.error });
 
     // p-dispatcher-leak: a failed attempt must close out its own spawnId
     // with a SubagentStop (tokens absent, usageReported false) exactly like
@@ -777,11 +785,11 @@ async function handleDelegateTool(args) {
         return bridgeResult.providerErrorResult({ provider: "codex", model: currentModel, text: result.error, kind: "sandbox_unavailable" });
       }
     } else if (!isDispatchFailure(fallbackChainModule, result.error) || fallbackDepth >= MAX_FALLBACK_DEPTH) {
-      return isErrorResult(`delegate: ${workerId} failed: ${result.error}`);
+      return isErrorResult(failureText(result.error));
     }
 
     if (!fallbackChainModule) {
-      return isErrorResult(`delegate: ${workerId} failed: ${result.error}`);
+      return isErrorResult(failureText(result.error));
     }
 
     const next = fallbackChainModule.resolveNextFallback({
@@ -793,7 +801,7 @@ async function handleDelegateTool(args) {
       failingSlot: { vendor: currentVendor, model: currentModel },
     });
     if (next.exhausted || !next.slot) {
-      return isErrorResult(`delegate: ${workerId} failed: ${result.error}`);
+      return isErrorResult(failureText(result.error));
     }
 
     fallbackDepth += 1;
