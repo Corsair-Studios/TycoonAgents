@@ -21475,12 +21475,26 @@ function themeAnimPreviewDraw(player) {
    * (e.g. as a tooltip on the "will be written" marker) without re-deriving
    * the same check.
    */
+  // Vendors the dispatcher reaches over a fixed OpenAI-compatible endpoint
+  // (hooks/dispatcherAdapters.cjs FIXED_VENDOR_ENDPOINTS): their slots are
+  // transport "openai-compatible" with no endpoint env needed.
+  var FIXED_ENDPOINT_OPENAI_COMPAT_VENDORS = { mistral: true, xai: true, moonshot: true };
+
   function cleanRoutingSlot(slot, notes, presetVendors) {
     if (!slot) return undefined;
     var out = {};
     SLOT_SCALAR_FIELDS.forEach(function (k) {
       if (slot[k] !== undefined && slot[k] !== null && slot[k] !== "") out[k] = slot[k];
     });
+    // Self-heal on save: a fixed-endpoint vendor saved as claude-native (or
+    // with no transport) is really an OpenAI-compatible route.
+    if (
+      out.vendor &&
+      FIXED_ENDPOINT_OPENAI_COMPAT_VENDORS[String(out.vendor).toLowerCase()] &&
+      (out.transport === undefined || out.transport === "claude-native")
+    ) {
+      out.transport = "openai-compatible";
+    }
     // Guard against a stray/inherited transport "openai-compatible" on a
     // *known preset* vendor (e.g. "opencode") with no endpoint env
     // configured. That combination can't produce a real openai-compatible
@@ -21501,6 +21515,7 @@ function themeAnimPreviewDraw(player) {
       out.vendor &&
       Array.isArray(presetVendors) &&
       presetVendors.indexOf(out.vendor) !== -1 &&
+      !FIXED_ENDPOINT_OPENAI_COMPAT_VENDORS[String(out.vendor).toLowerCase()] &&
       !out.endpointEnv
     ) {
       out.transport = "claude-native";
@@ -22614,7 +22629,9 @@ function themeAnimPreviewDraw(player) {
         // it (see cleanRoutingSlot's matching save-time coercion). An
         // existing mcp slot that already names an mcpServer is preserved,
         // since that's a deliberate, valid combination for any vendor.
-        slot.transport = "claude-native";
+        slot.transport = FIXED_ENDPOINT_OPENAI_COMPAT_VENDORS[String(vendorSel.value).toLowerCase()]
+          ? "openai-compatible"
+          : "claude-native";
       }
       // p26-t1: picking the harness's own native vendor defaults "Use
       // another provider for this agent" back to unchecked (collapsed, no

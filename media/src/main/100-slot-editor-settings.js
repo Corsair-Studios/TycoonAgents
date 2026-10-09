@@ -652,7 +652,9 @@
         // it (see cleanRoutingSlot's matching save-time coercion). An
         // existing mcp slot that already names an mcpServer is preserved,
         // since that's a deliberate, valid combination for any vendor.
-        slot.transport = "claude-native";
+        slot.transport = FIXED_ENDPOINT_OPENAI_COMPAT_VENDORS[String(vendorSel.value).toLowerCase()]
+          ? "openai-compatible"
+          : "claude-native";
       }
       // p26-t1: picking the harness's own native vendor defaults "Use
       // another provider for this agent" back to unchecked (collapsed, no

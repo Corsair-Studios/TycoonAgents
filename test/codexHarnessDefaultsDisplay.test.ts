@@ -467,3 +467,43 @@ test('Bridge wrapper (Mistral Reviewer) tooltip shows the backend model: bare on
     }
   }
 });
+
+test('Saving routing: fixed-endpoint vendor fallbacks (xai/mistral) are written as openai-compatible, anthropic fallbacks unchanged', async () => {
+  const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    (doc.getElementById('menu-routing') as any).click();
+    await flush();
+    dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' } } });
+    await flush();
+    const routing: any = buildRoutingPayload({ uiMode: 'multi', singleProvider: undefined });
+    routing.profile = {
+      agents: {
+        'coding-specialist': {
+          vendor: 'anthropic', model: 'sonnet',
+          fallback: [
+            { vendor: 'xai', transport: 'claude-native', model: 'xai/grok-build-0.1', costModelClass: 'metered' },
+            { vendor: 'mistral', transport: 'claude-native', model: 'mistral/mistral-large-latest' },
+            { vendor: 'anthropic', transport: 'claude-native', model: 'haiku' },
+          ],
+        },
+      },
+    };
+    dispatch({ type: 'routing', payload: routing });
+    await flush();
+    const row = doc.querySelector('[data-agent-id="coding-specialist"]') as any;
+    assert.ok(row, 'agent row renders');
+    (doc.getElementById('routing-save-btn') as any).click();
+    await flush();
+    assertNoErrors('save fallbacks');
+    const msg = posted.filter((m) => m && m.type === 'saveRouting').pop();
+    assert.ok(msg, 'save posted');
+    const fb = msg.profile.agents['coding-specialist'].fallback;
+    assert.equal(fb[0].vendor, 'xai');
+    assert.equal(fb[0].transport, 'openai-compatible');
+    assert.equal(fb[0].model, 'xai/grok-build-0.1');
+    assert.equal(fb[1].transport, 'openai-compatible');
+    assert.equal(fb[2].transport, 'claude-native');
+  } finally {
+    win.close();
+  }
+});

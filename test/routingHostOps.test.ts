@@ -763,3 +763,48 @@ test("saveRoutingProfile: google defaultFallback under codex is accepted when GE
     assert.equal(result.ok, true, JSON.stringify(result));
   });
 });
+
+function opencodeProvidersAfterSave(slots: Record<string, Record<string, unknown>>): Record<string, any> {
+  const root = tmpRoot();
+  for (const id of Object.keys(slots)) {
+    writeAgent(root, `${id}.md`, [`name: ${id}`, "description: A worker agent.", "tier: worker"]);
+  }
+  const prevDataDir = process.env.TYCOON_STANDALONE_DATA_DIR;
+  const prevOpencodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+  const prevHost = process.env.TYCOON_ENDPOINT_TEST_URL;
+  const opencodeConfigDir = tmpRoot();
+  process.env.TYCOON_STANDALONE_DATA_DIR = tmpRoot();
+  process.env.OPENCODE_CONFIG_DIR = opencodeConfigDir;
+  try {
+    const profile = { version: 1, agents: slots };
+    writeRouting(root, profile);
+    const saved = saveRoutingProfileRetrying({ root, scriptsDir: REPO_ROOT, profile } as never);
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    const cfgPath = path.join(opencodeConfigDir, "opencode.json");
+    if (!fs.existsSync(cfgPath)) return {};
+    return JSON.parse(fs.readFileSync(cfgPath, "utf8")).provider ?? {};
+  } finally {
+    if (prevDataDir === undefined) delete process.env.TYCOON_STANDALONE_DATA_DIR;
+    else process.env.TYCOON_STANDALONE_DATA_DIR = prevDataDir;
+    if (prevOpencodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = prevOpencodeConfigDir;
+    if (prevHost === undefined) delete process.env.TYCOON_ENDPOINT_TEST_URL;
+  }
+}
+
+test("opencode generator: xai/mistral openai-compatible slots without endpointEnv get no managed provider; with endpointEnv they do; custom vendors unchanged", () => {
+  const providers = opencodeProvidersAfterSave({
+    a: { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },
+    b: { vendor: "mistral", transport: "openai-compatible", model: "mistral/mistral-large-latest", costModelClass: "metered" },
+    c: { vendor: "ollama-windows", transport: "openai-compatible", model: "ollama-windows/qwen3", endpointEnv: "OLLAMA_URL", costModelClass: "local" },
+  });
+  assert.equal(providers["xai"], undefined, "no managed provider shadowing built-in xai");
+  assert.equal(providers["mistral"], undefined, "no managed provider shadowing built-in mistral");
+  assert.ok(providers["ollama-windows"]?.tycoonManaged, "custom openai-compatible vendor still emitted");
+
+  const withEnv = opencodeProvidersAfterSave({
+    a: { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", endpointEnv: "MY_XAI_URL", costModelClass: "metered" },
+  });
+  assert.ok(withEnv["xai"]?.tycoonManaged, "user-set endpointEnv -> managed provider");
+  assert.match(String(withEnv["xai"].options?.baseURL ?? ""), /MY_XAI_URL/);
+});

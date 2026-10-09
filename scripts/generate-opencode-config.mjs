@@ -634,6 +634,8 @@ const OPENAI_COMPATIBLE_NPM_PACKAGE = "@ai-sdk/openai-compatible";
 // rule), not the raw profile.agents[id] object, so a per-agent entry that
 // only overrides `model` and omits transport/endpointEnv/credentialEnv
 // still contributes its inherited connection details here.
+const FIXED_ENDPOINT_VENDORS = new Set(["xai", "mistral", "moonshot"]);
+
 function collectOpenAICompatibleVendors(profile, resolveAgentSlot, resolveOrchestratorSlot, agentHandWritten) {
   const vendors = new Map();
 
@@ -675,6 +677,13 @@ function collectOpenAICompatibleVendors(profile, resolveAgentSlot, resolveOrches
     // eligible agent at all (e.g. every agent has a hand-written backend)
     // must still register its endpoint once.
     if (profile.defaults) consider(profile.defaults);
+  }
+
+  // Fixed-endpoint vendors (xai, mistral, moonshot) are OpenCode built-in
+  // providers: without a user-set endpointEnv, a managed entry with empty
+  // options would only shadow the built-in one, so leave them out.
+  for (const [vendor, entry] of Array.from(vendors)) {
+    if (FIXED_ENDPOINT_VENDORS.has(String(vendor).toLowerCase()) && !entry.endpointEnv) vendors.delete(vendor);
   }
 
   return vendors;
