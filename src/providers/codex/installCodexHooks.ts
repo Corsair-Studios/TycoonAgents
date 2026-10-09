@@ -228,6 +228,23 @@ export type CodexNotifyState =
   | "blocked"
   | "none";
 
+export type CodexHookStatus = "installed" | "out-of-date" | "blocked" | "not-installed";
+
+/** Collapse a notify state to the status shown in Settings / used for the "is TycoonAgents installed" gate. */
+export function codexHookStatus(state: CodexNotifyState): CodexHookStatus {
+  if (state === "installed" || state === "wrapped") return "installed";
+  if (state === "stale-installed" || state === "stale-wrapped") return "out-of-date";
+  if (state === "blocked") return "blocked";
+  return "not-installed";
+}
+
+export const CODEX_HOOK_STATUS_LABELS: Record<CodexHookStatus, string> = {
+  installed: "Codex hook installed",
+  "out-of-date": "Codex hook out of date",
+  blocked: "Codex hook blocked by another tool",
+  "not-installed": "Codex hook not installed",
+};
+
 export const CODEX_NOTIFY_BLOCKED_MESSAGE =
   "Another tool owns the Codex notify setting — TycoonAgents can't see Codex turns.";
 export const CODEX_NOTIFY_STALE_MESSAGE =

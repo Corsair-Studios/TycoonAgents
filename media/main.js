@@ -3256,6 +3256,10 @@ if (typeof module !== "undefined" && module.exports) {
   // install). When opened from Settings we stay on the screen even once the
   // hooks are installed, to show the (Phase 2) config + a Back button.
   let openedFromSettings = false;
+  /** User closed the first-run install screen this session: never show it again unprompted (Settings still can). */
+  let setupDismissed = false;
+  /** Harness named by the last installState push; a change re-arms the first-run screen. */
+  let lastInstallStateHarness = null;
 
   /** Tracks last uefnDetected state from checkInstall. */
   let lastUefnDetected = false;
@@ -3331,6 +3335,19 @@ if (typeof module !== "undefined" && module.exports) {
     // inside #setup-config instead.
     delegationModeGroupEl.setAttribute("hidden", "");
 
+    // The hook-removal note is Claude-hooks-only; on Codex the button installs
+    // the Codex notify hook and touches nothing else.
+    installHooksWarningEl.textContent =
+      info && info.harness === "codex"
+        ? "Adds the Codex notify hook to your Codex config. Nothing else is removed."
+        : "Clears leftover hook entries from other tools out of this project's .claude settings. Your Codex setup is not touched.";
+
+    if (info && info.harness) {
+      if (lastInstallStateHarness !== null && lastInstallStateHarness !== info.harness) setupDismissed = false;
+      lastInstallStateHarness = info.harness;
+    }
+    if (info && info.installed === true) setupDismissed = false;
+
     if (info && info.busy) {
       showSetup();
       setupStatusEl.textContent = "Installing…";
@@ -3344,9 +3361,17 @@ if (typeof module !== "undefined" && module.exports) {
     }
 
     if (info && info.installed === false) {
+      // Closing the first-run screen must stick for the session, or the
+      // periodic checkInstall would put it straight back (a lock-out).
+      if (setupDismissed && !openedFromSettings) {
+        showMain();
+        return;
+      }
       showSetup();
       setupStatusEl.textContent =
-        "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+        info.harness === "codex"
+          ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
+          : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
       installHooksBtn.removeAttribute("hidden");
       installHooksBtn.removeAttribute("disabled");
       installHooksBtn.textContent = "Install hooks";
@@ -3410,6 +3435,7 @@ if (typeof module !== "undefined" && module.exports) {
   }
 
   installHooksBtn.addEventListener("click", () => {
+    setupDismissed = false;
     justInstalled = true;
     const teamLeadsRadio = /** @type {HTMLInputElement|null} */ (
       document.getElementById("delegation-mode-team-leads")
@@ -8771,6 +8797,9 @@ if (typeof module !== "undefined" && module.exports) {
 
   /** Close/return from the settings (setup) screen — mirrors the Back button. */
   function closeSettingsScreen() {
+    // Only closing the first-run install screen itself counts as a dismissal;
+    // a normal Settings -> Back must not hide a broken install.
+    if (!openedFromSettings) setupDismissed = true;
     openedFromSettings = false;
     showMain();
   }
@@ -25421,7 +25450,10 @@ function themeAnimPreviewDraw(player) {
     hookStatus.className = "hook-status";
     const installedLine = document.createElement("div");
     installedLine.className = hook.installed ? "hook-ok" : "hook-bad";
-    installedLine.textContent = hook.installed ? "Hook installed ✓" : "Hook installed ✗";
+    const codexHook = hook.harness === "codex";
+    installedLine.textContent = codexHook
+      ? (hook.label || "Codex hook") + (hook.installed ? " ✓" : " ✗")
+      : hook.installed ? "Hook installed ✓" : "Hook installed ✗";
     const activityLine = document.createElement("div");
     activityLine.className = "hook-activity";
     activityLine.textContent = `Last activity: ${relativeTime(hook.lastActivityAt)}`;
@@ -25431,8 +25463,10 @@ function themeAnimPreviewDraw(player) {
     const healthLine = document.createElement("div");
     healthLine.className = hookHealth.healthy ? "hook-ok" : "hook-warn";
     healthLine.textContent = hookHealth.healthy
-      ? "✓ Hooks healthy — no issues detected"
-      : `⚠ ${hookHealth.issueCount} issue(s) detected`;
+      ? (codexHook ? "✓ Codex hook healthy — no issues detected" : "✓ Hooks healthy — no issues detected")
+      : codexHook
+        ? "⚠ " + (hookHealth.label || "Codex hook needs attention") + " — use Codex hooks below to install again"
+        : `⚠ ${hookHealth.issueCount} issue(s) detected`;
     hookStatus.appendChild(healthLine);
     const troubleshootBtn = document.createElement("button");
     troubleshootBtn.className = "skill-btn settings-btn";
@@ -25447,7 +25481,9 @@ function themeAnimPreviewDraw(player) {
       troubleshootBtn.classList.add("btn-disabled");
     }
     hookRow.appendChild(hookStatus);
-    hookRow.appendChild(troubleshootBtn);
+    // Troubleshoot & Fix repairs the Claude hooks; on Codex the install rows
+    // under the harness picker are the fix.
+    if (!codexHook) hookRow.appendChild(troubleshootBtn);
     hookSection.appendChild(hookRow);
     const doctorResultsEl = document.createElement("div");
     doctorResultsEl.id = "doctor-results";

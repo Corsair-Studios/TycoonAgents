@@ -28,6 +28,7 @@ let configuredProviderSetting: string | undefined;
 function makeVscodeStub(): unknown {
   return {
     __esModule: true,
+    extensions: { getExtension: () => undefined },
     workspace: {
       getConfiguration: () => ({
         // Real VS Code's `.get()` always returns the package.json default
@@ -479,5 +480,106 @@ test("_buildHarnessSettings: codexSandboxWarning appears only while a sandbox re
     assert.match(w, /windows\.sandbox = "unelevated"/);
     assert.equal(build({ codexSandboxUnavailableAt: 200, lastCodexWorkerOkAt: 100 }).codexSandboxWarning, w);
     assert.equal(build({ codexSandboxUnavailableAt: 200, lastCodexWorkerOkAt: 300 }).codexSandboxWarning, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Harness-aware "is TycoonAgents installed" gate (_handleCheckInstall) and
+// first-run Install routing (_handleInstallHooks) on the Codex harness.
+// ---------------------------------------------------------------------
+
+function makeCheckInstallFake(root: string, hookPath: string, posted: any[]): any {
+  const proto = TycoonPanel.prototype as any;
+  return makeFakePanel(root, {
+    _codexHookScriptPath: () => hookPath,
+    _effectiveHarness: proto._effectiveHarness,
+    _codexHookSettingsSlice: proto._codexHookSettingsSlice,
+    _hooksInstalledForRoot: proto._hooksInstalledForRoot,
+    _settingsReferencesHook: proto._settingsReferencesHook,
+    _readMcpConfig: proto._readMcpConfig,
+    _uefnBridgeEntry: proto._uefnBridgeEntry,
+    _handleInstallCodexHooks: proto._handleInstallCodexHooks,
+    _panel: { webview: { postMessage: (m: unknown) => { posted.push(m); return Promise.resolve(true); } } },
+  });
+}
+
+test("_handleCheckInstall: Codex harness with no settings.local.json is installed once the Codex notify hook is; not before", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome(() => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const cur = versionDir(base, "0.0.710");
+    const posted: any[] = [];
+    const fake = makeCheckInstallFake(root, cur.hook, posted);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "settings.local.json")), false);
+
+    (TycoonPanel.prototype as any)._handleCheckInstall.call(fake);
+    let msg = posted.find((m) => m.type === "installState");
+    assert.equal(msg.installed, false, "no Codex hook yet -> first-run screen");
+    assert.equal(msg.harness, "codex");
+
+    posted.length = 0;
+    (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(fake);
+    (TycoonPanel.prototype as any)._handleCheckInstall.call(fake);
+    msg = posted.find((m) => m.type === "installState");
+    assert.equal(msg.installed, true, "Codex hook installed -> not gated, without any .claude hooks");
+    assert.equal(fs.existsSync(path.join(root, ".claude", "settings.local.json")), false, "Claude hooks untouched");
+  });
+});
+
+test("_handleCheckInstall: Claude harness still keys off the Claude hooks file", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+  const posted: any[] = [];
+  const fake = makeCheckInstallFake(root, "unused", posted);
+  (TycoonPanel.prototype as any)._handleCheckInstall.call(fake);
+  let msg = posted.find((m) => m.type === "installState");
+  assert.equal(msg.installed, false);
+  assert.equal(msg.harness, "claude-code");
+  fs.writeFileSync(
+    path.join(root, ".claude", "settings.local.json"),
+    JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "node .claude/tycoon/tycoon-claude-hook.cjs" }] }] } }),
+  );
+  posted.length = 0;
+  (TycoonPanel.prototype as any)._handleCheckInstall.call(fake);
+  msg = posted.find((m) => m.type === "installState");
+  assert.equal(msg.installed, true);
+});
+
+test("_handleInstallHooks on the Codex harness installs the Codex hook, not the Claude hooks, and reports installed", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome((codexHome) => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const cur = versionDir(base, "0.0.710");
+    const posted: any[] = [];
+    const fake = makeCheckInstallFake(root, cur.hook, posted);
+    (TycoonPanel.prototype as any)._handleInstallHooks.call(fake, "flat");
+    const last = [...posted].reverse().find((m) => m.type === "installState" && m.busy !== true);
+    assert.equal(last.installed, true);
+    assert.equal(last.harness, "codex");
+    assert.match(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), /tycoon-codex-hook: managed notify entry/);
+    assert.equal(fs.existsSync(path.join(root, ".claude", "settings.local.json")), false, "no Claude hooks written");
+  });
+});
+
+test("_codexHookSettingsSlice: reports out-of-date for a stale managed hook", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome(() => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+    const oldV = versionDir(base, "0.0.709");
+    const newV = versionDir(base, "0.0.710");
+    const posted: any[] = [];
+    (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(makeCheckInstallFake(root, oldV.hook, posted));
+    fs.rmSync(path.join(base, "extensions", "tycoonagents.tycoonagents-0.0.709"), { recursive: true, force: true });
+    const slice = (TycoonPanel.prototype as any)._codexHookSettingsSlice.call(makeCheckInstallFake(root, newV.hook, posted));
+    assert.equal(slice.status, "out-of-date");
+    assert.equal(slice.healthy, false);
+    assert.equal(slice.label, "Codex hook out of date");
   });
 });

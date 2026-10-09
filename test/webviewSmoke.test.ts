@@ -691,6 +691,28 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
     // ── Step 6a: menu order ─────────────────────────────────────────────────────
     // User decision 2026-09-05: Settings, Agents, Themes, Skills/MCP/Packs,
     // UEFN/Verse (VS Code only), Edit Stage, Feedback, About.
+    await t.test('10f. Settings -> Back does not dismiss the install screen; installed or a harness change re-arms it', async () => {
+      const setupView = doc.getElementById('setup-view');
+      const closeBtn = doc.getElementById('settings-modal-close') as any;
+      dispatch({ type: 'installState', installed: true, harness: 'claude-code' });
+      (doc.getElementById('menu-settings') as any).click();
+      closeBtn.click(); // normal Settings -> close
+      dispatch({ type: 'installState', installed: false, harness: 'claude-code' });
+      assert.ok(!setupView.hasAttribute('hidden'), 'closing Settings must not hide a broken install');
+
+      closeBtn.click(); // first-run screen itself
+      dispatch({ type: 'installState', installed: false, harness: 'claude-code' });
+      assert.ok(setupView.hasAttribute('hidden'), 'dismissed');
+      dispatch({ type: 'installState', installed: false, harness: 'codex' });
+      assert.ok(!setupView.hasAttribute('hidden'), 'a harness change re-arms the screen');
+
+      closeBtn.click();
+      dispatch({ type: 'installState', installed: true, harness: 'codex' });
+      dispatch({ type: 'installState', installed: false, harness: 'codex' });
+      assert.ok(!setupView.hasAttribute('hidden'), 'becoming installed clears the dismissal');
+      assertNoErrors('10c');
+    });
+
     await t.test('6a. #menu-popover children are in the required order', () => {
       // This smoke harness builds a flat element skeleton (Step: "Build the
       // element skeleton from scanned getElementById ids" above), not the
@@ -1507,6 +1529,51 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.equal(sandboxConfig.querySelectorAll('.harness-codex-install-btn').length, 2, 'only the two install buttons');
 
       assertNoErrors('codex-install-rows');
+    });
+
+    // ── Step 10b: first-run install screen can always be dismissed; Codex health ─
+    await t.test('10b. closing the first-run install screen sticks; Codex Hook health shows the Codex hook', async () => {
+      const setupView = doc.getElementById('setup-view');
+      const closeBtn = doc.getElementById('settings-modal-close') as any;
+      assert.ok(setupView && closeBtn, 'setup view and its close button exist');
+
+      dispatch({ type: 'installState', installed: false, harness: 'codex' });
+      assert.ok(!setupView.hasAttribute('hidden'), 'not installed shows the first-run screen');
+      assert.match(doc.getElementById('setup-status').textContent || '', /Codex hook/);
+      assert.match(doc.getElementById('install-hooks-warning').textContent || '', /Nothing else is removed/);
+
+      closeBtn.click();
+      assert.ok(setupView.hasAttribute('hidden'), 'X dismisses the screen');
+      dispatch({ type: 'installState', installed: false, harness: 'codex' });
+      assert.ok(setupView.hasAttribute('hidden'), 'a later checkInstall must not bring it back');
+
+      // Clicking Install hooks re-arms the screen for the next not-installed push.
+      (doc.getElementById('install-hooks-btn') as any).click();
+      assert.equal(posted[posted.length - 1].type === 'installHooks' || posted.some((m: any) => m.type === 'installHooks'), true);
+
+      // Claude harness wording keeps naming what gets cleared.
+      dispatch({ type: 'installState', installed: false, harness: 'claude-code' });
+      assert.match(doc.getElementById('install-hooks-warning').textContent || '', /other tools/);
+
+      // Settings -> Hook health describes the Codex hook on the Codex harness.
+      dispatch({ type: 'installState', installed: true, harness: 'codex' });
+      dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: false, lastActivityAt: null, harness: 'codex', status: 'out-of-date', label: 'Codex hook out of date' },
+          agents: [],
+          delegation_mode: 'flat',
+          delegationHealth: {},
+          hookHealth: { healthy: false, issueCount: 1, harness: 'codex', status: 'out-of-date', label: 'Codex hook out of date' },
+          contextBudget: null,
+        },
+      });
+      await flush();
+      const cfgText = doc.getElementById('setup-config').textContent || '';
+      assert.ok(cfgText.includes('Codex hook out of date'), 'Codex hook status shown');
+      assert.ok(!cfgText.includes('Hook installed'), 'no Claude hook wording on Codex');
+      assert.ok(!cfgText.includes('Troubleshoot & Fix'), 'no Claude troubleshoot button on Codex');
+      assertNoErrors('10b');
     });
 
     // ── Step 11: Archived Plans section (0.0.340+) ───────────────────────────

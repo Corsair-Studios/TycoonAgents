@@ -2768,6 +2768,7 @@ function buildStandaloneContextBudget() {
 }
 
 function buildStandaloneSettingsPayload() {
+  const codexSlice = codexHookSlice();
   let lastActivityAt = null;
   if (primaryProjectRoot) {
     try {
@@ -2840,7 +2841,9 @@ function buildStandaloneSettingsPayload() {
   }
 
   return {
-    hook: { installed: true, lastActivityAt },
+    hook: codexSlice
+      ? { installed: codexSlice.status === 'installed', lastActivityAt, harness: 'codex', status: codexSlice.status, label: codexSlice.label }
+      : { installed: true, lastActivityAt },
     agents,
     delegation_mode,
     reviewEnabled,
@@ -2854,7 +2857,9 @@ function buildStandaloneSettingsPayload() {
       session: null,
       sessionId: null,
     },
-    hookHealth: { healthy: true, issueCount: 0 },
+    hookHealth: codexSlice
+      ? { healthy: codexSlice.healthy, issueCount: codexSlice.healthy ? 0 : 1, harness: 'codex', status: codexSlice.status, label: codexSlice.label }
+      : { healthy: true, issueCount: 0 },
     contextBudget: buildStandaloneContextBudget(),
     foreignManagedBlocks: [],
     harness: buildStandaloneHarnessSettings(),
@@ -2910,6 +2915,23 @@ function codexSandboxWarningField() {
     return text ? { codexSandboxWarning: text } : {};
   } catch {
     return {};
+  }
+}
+
+/** Codex harness only: notify-hook status for the Settings "Hook health" box (null on other harnesses). */
+function codexHookSlice() {
+  try {
+    if (resolveEffectiveHarness(primaryProjectRoot || process.cwd()) !== 'codex') return null;
+    const { resolveCodexHome, detectCodexNotifyState, codexHookStatus, CODEX_HOOK_STATUS_LABELS } = installCodexHooksModule();
+    const { codexHome } = resolveCodexHome({ env: process.env, platform: process.platform });
+    const configTomlPath = path.join(codexHome, 'config.toml');
+    const state = fs.existsSync(configTomlPath)
+      ? detectCodexNotifyState(fs.readFileSync(configTomlPath, 'utf8'), CODEX_HOOK_SCRIPT_PATH)
+      : 'none';
+    const status = codexHookStatus(state);
+    return { status, label: CODEX_HOOK_STATUS_LABELS[status], healthy: status === 'installed' };
+  } catch {
+    return null;
   }
 }
 

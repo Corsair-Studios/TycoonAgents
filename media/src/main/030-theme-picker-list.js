@@ -258,6 +258,9 @@
 
   /** Close/return from the settings (setup) screen — mirrors the Back button. */
   function closeSettingsScreen() {
+    // Only closing the first-run install screen itself counts as a dismissal;
+    // a normal Settings -> Back must not hide a broken install.
+    if (!openedFromSettings) setupDismissed = true;
     openedFromSettings = false;
     showMain();
   }

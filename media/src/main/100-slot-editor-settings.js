@@ -3516,7 +3516,10 @@
     hookStatus.className = "hook-status";
     const installedLine = document.createElement("div");
     installedLine.className = hook.installed ? "hook-ok" : "hook-bad";
-    installedLine.textContent = hook.installed ? "Hook installed ✓" : "Hook installed ✗";
+    const codexHook = hook.harness === "codex";
+    installedLine.textContent = codexHook
+      ? (hook.label || "Codex hook") + (hook.installed ? " ✓" : " ✗")
+      : hook.installed ? "Hook installed ✓" : "Hook installed ✗";
     const activityLine = document.createElement("div");
     activityLine.className = "hook-activity";
     activityLine.textContent = `Last activity: ${relativeTime(hook.lastActivityAt)}`;
@@ -3526,8 +3529,10 @@
     const healthLine = document.createElement("div");
     healthLine.className = hookHealth.healthy ? "hook-ok" : "hook-warn";
     healthLine.textContent = hookHealth.healthy
-      ? "✓ Hooks healthy — no issues detected"
-      : `⚠ ${hookHealth.issueCount} issue(s) detected`;
+      ? (codexHook ? "✓ Codex hook healthy — no issues detected" : "✓ Hooks healthy — no issues detected")
+      : codexHook
+        ? "⚠ " + (hookHealth.label || "Codex hook needs attention") + " — use Codex hooks below to install again"
+        : `⚠ ${hookHealth.issueCount} issue(s) detected`;
     hookStatus.appendChild(healthLine);
     const troubleshootBtn = document.createElement("button");
     troubleshootBtn.className = "skill-btn settings-btn";
@@ -3542,7 +3547,9 @@
       troubleshootBtn.classList.add("btn-disabled");
     }
     hookRow.appendChild(hookStatus);
-    hookRow.appendChild(troubleshootBtn);
+    // Troubleshoot & Fix repairs the Claude hooks; on Codex the install rows
+    // under the harness picker are the fix.
+    if (!codexHook) hookRow.appendChild(troubleshootBtn);
     hookSection.appendChild(hookRow);
     const doctorResultsEl = document.createElement("div");
     doctorResultsEl.id = "doctor-results";

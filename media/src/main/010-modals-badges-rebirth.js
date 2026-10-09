@@ -1397,6 +1397,10 @@
   // install). When opened from Settings we stay on the screen even once the
   // hooks are installed, to show the (Phase 2) config + a Back button.
   let openedFromSettings = false;
+  /** User closed the first-run install screen this session: never show it again unprompted (Settings still can). */
+  let setupDismissed = false;
+  /** Harness named by the last installState push; a change re-arms the first-run screen. */
+  let lastInstallStateHarness = null;
 
   /** Tracks last uefnDetected state from checkInstall. */
   let lastUefnDetected = false;
@@ -1472,6 +1476,19 @@
     // inside #setup-config instead.
     delegationModeGroupEl.setAttribute("hidden", "");
 
+    // The hook-removal note is Claude-hooks-only; on Codex the button installs
+    // the Codex notify hook and touches nothing else.
+    installHooksWarningEl.textContent =
+      info && info.harness === "codex"
+        ? "Adds the Codex notify hook to your Codex config. Nothing else is removed."
+        : "Clears leftover hook entries from other tools out of this project's .claude settings. Your Codex setup is not touched.";
+
+    if (info && info.harness) {
+      if (lastInstallStateHarness !== null && lastInstallStateHarness !== info.harness) setupDismissed = false;
+      lastInstallStateHarness = info.harness;
+    }
+    if (info && info.installed === true) setupDismissed = false;
+
     if (info && info.busy) {
       showSetup();
       setupStatusEl.textContent = "Installing…";
@@ -1485,9 +1502,17 @@
     }
 
     if (info && info.installed === false) {
+      // Closing the first-run screen must stick for the session, or the
+      // periodic checkInstall would put it straight back (a lock-out).
+      if (setupDismissed && !openedFromSettings) {
+        showMain();
+        return;
+      }
       showSetup();
       setupStatusEl.textContent =
-        "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+        info.harness === "codex"
+          ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
+          : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
       installHooksBtn.removeAttribute("hidden");
       installHooksBtn.removeAttribute("disabled");
       installHooksBtn.textContent = "Install hooks";
@@ -1551,6 +1576,7 @@
   }
 
   installHooksBtn.addEventListener("click", () => {
+    setupDismissed = false;
     justInstalled = true;
     const teamLeadsRadio = /** @type {HTMLInputElement|null} */ (
       document.getElementById("delegation-mode-team-leads")

@@ -36,6 +36,9 @@ import {
   uninstallCodexHooks,
   resolveCodexHome,
   detectCodexNotifyState,
+  codexHookStatus,
+  CODEX_HOOK_STATUS_LABELS,
+  type CodexHookStatus,
   CODEX_NOTIFY_BLOCKED_MESSAGE,
   CODEX_NOTIFY_STALE_MESSAGE,
   type CodexNotifyState,
@@ -5459,9 +5462,32 @@ export class TycoonPanel {
     );
   }
 
+  /** Effective harness for `root`; claude-code on any resolution failure. */
+  private _effectiveHarness(root: string): ProviderId {
+    try {
+      const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
+      return describeProviderSelection({ settingValue, cwd: root }).effective;
+    } catch {
+      return "claude-code";
+    }
+  }
+
+  /** Codex harness only: hook status, label and health for the Settings "Hook health" box. */
+  private _codexHookSettingsSlice(): { status: CodexHookStatus; label: string; healthy: boolean } {
+    const status = codexHookStatus(this._detectCodexNotifyState());
+    return { status, label: CODEX_HOOK_STATUS_LABELS[status], healthy: status === "installed" };
+  }
+
   private _handleCheckInstall(): void {
     const root = this._projectRoot();
-    const installed = root !== "" && this._hooksInstalledForRoot(root);
+    const harness = root !== "" ? this._effectiveHarness(root) : "claude-code";
+    // Codex doesn't use .claude/settings.local.json, so its "installed" signal
+    // is the Codex notify hook instead (dispatcher optional).
+    const installed =
+      root !== "" &&
+      (harness === "codex"
+        ? this._codexHookSettingsSlice().status === "installed"
+        : this._hooksInstalledForRoot(root));
     const uefn = root !== "" ? detectUefnProject(root) : { detected: false, signals: [], uefnInstalled: false };
     // Non-UEFN engine chips (godot/unity/unreal/roblox/blender) for the setup
     // wizard's Optionals step to pre-check matching skill chips against. No
@@ -5509,6 +5535,7 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({
       type: MSG.INSTALL_STATE,
       installed,
+      harness,
       uefnDetected: uefn.detected,
       uefnSignals: uefn.signals,
       ignoreTargets,
@@ -6667,6 +6694,24 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") {
         throw new Error("No workspace folder open");
+      }
+
+      // Codex harness: the first-run "Install hooks" button installs the Codex
+      // notify hook (CODEX_HOME/config.toml + .codex/hooks.json), never the
+      // Claude hooks, and leaves everything else in place.
+      if (this._effectiveHarness(root) === "codex") {
+        this._handleInstallCodexHooks();
+        const slice = this._codexHookSettingsSlice();
+        void this._panel.webview.postMessage({
+          type: MSG.INSTALL_STATE,
+          installed: slice.status === "installed",
+          harness: "codex",
+          delegation_mode: delegationMode,
+          ...(slice.status === "installed"
+            ? {}
+            : { error: this._codexHooksWarningField().codexHooksWarning ?? slice.label }),
+        });
+        return;
       }
 
       // 1. Ensure .claude/tycoon exists.
@@ -8158,7 +8203,11 @@ export class TycoonPanel {
     // Run hook diagnostic to compute hookHealth for the settings panel
     const { findings } = this._diagnoseHooks();
     const issueCount = findings.filter((f) => f.severity !== "ok").length;
-    const hookHealth = { healthy: issueCount === 0, issueCount };
+    // Codex harness: report the Codex notify hook, not the Claude hooks.
+    const codexSlice = this._effectiveHarness(root) === "codex" ? this._codexHookSettingsSlice() : undefined;
+    const hookHealth = codexSlice
+      ? { healthy: codexSlice.healthy, issueCount: codexSlice.healthy ? 0 : 1, harness: "codex", status: codexSlice.status, label: codexSlice.label }
+      : { healthy: issueCount === 0, issueCount };
 
     // Build context budget (CLAUDE.md + agent .md files)
     let contextBudget;
@@ -8212,7 +8261,9 @@ export class TycoonPanel {
     void this._panel.webview.postMessage({
       type: MSG.SETTINGS,
       payload: {
-        hook: { installed: this._hookInstalled(root), lastActivityAt },
+        hook: codexSlice
+          ? { installed: codexSlice.status === "installed", lastActivityAt, harness: "codex", status: codexSlice.status, label: codexSlice.label }
+          : { installed: this._hookInstalled(root), lastActivityAt },
         agents,
         delegation_mode,
         reviewEnabled,
