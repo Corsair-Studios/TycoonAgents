@@ -18,7 +18,7 @@ test("Settings Project Plan section has no Reinstall / Repair button (auto-heal 
   assert.ok(!src.includes("projectPlanAction"));
 });
 
-test("OpenCode and Codex harness labels stay Experimental", () => {
-  assert.ok(src.includes('label: "OpenCode (Experimental)"'));
+test("OpenCode harness is Coming Soon (disabled) and Codex stays Experimental", () => {
+  assert.ok(src.includes('label: "OpenCode (Coming Soon)", disabled: true'));
   assert.ok(src.includes('label: "Codex (Experimental)"'));
 });

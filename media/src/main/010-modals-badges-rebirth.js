@@ -1726,7 +1726,7 @@
       ? lastSettings.harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode (Experimental)" },
+          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
           { id: "codex", label: "Codex (Experimental)" },
         ];
     var match = harnessOptions.find(function (opt) { return opt.id === harnessEffective; });

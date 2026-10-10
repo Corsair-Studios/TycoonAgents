@@ -43,7 +43,7 @@ import {
 } from "./routingProfile";
 import { readAgentFrontmatter, parseAgentBackend, type Backend } from "./agentBackend";
 import { isFallbackTargetDispatchable } from "./fallbackTargets";
-import { describeProviderSelection } from "./providerSelection";
+import { describeProviderSelection, isOpencodeAvailable } from "./providerSelection";
 import { readClaudeSubscriptionOptIn, writeClaudeSubscriptionOptIn, usesClaudeSubscriptionRoute, claudeSubscriptionBlockedMessage, type ClaudeRouteSlotLike } from "./claudeSubscriptionBridge";
 import { resolveModelAlias, MODEL_ALIASES } from "./modelAliases";
 import { loadAgentRoster } from "../providers/claude-code/agentRoster";
@@ -171,7 +171,8 @@ const OPENCODE_SKIPPED_RESULT: ScriptRunResult = { code: 0, output: "skipped: Op
 
 /** The harness a save/clear runs under: the caller's value, else resolved from the project; claude-code on failure. */
 function resolveHarnessFor(root: string, given?: string): string {
-  if (given) return given;
+  // Launch gate: a requested "opencode" resolves to Claude Code while OpenCode is Coming Soon.
+  if (given) return given === "opencode" && !isOpencodeAvailable() ? "claude-code" : given;
   try {
     return describeProviderSelection({ cwd: root }).effective;
   } catch {

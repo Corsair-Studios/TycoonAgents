@@ -1681,13 +1681,14 @@
       ? harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode (Experimental)" },
+          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
           { id: "codex", label: "Codex (Experimental)" },
         ];
     harnessOptions.forEach((opt) => {
       const optEl = document.createElement("option");
       optEl.value = opt.id;
       optEl.textContent = opt.label;
+      if (opt.disabled) optEl.disabled = true;
       if (opt.id === harness.effective) optEl.selected = true;
       harnessSelect.appendChild(optEl);
     });
@@ -1724,6 +1725,13 @@
         " Codex hosting is experimental and not yet thoroughly tested.";
     }
     harnessRow.appendChild(harnessHint);
+    // Launch gate: host-supplied one-line notice when a stored OpenCode choice was resolved to Claude Code.
+    if (typeof harness.notice === "string" && harness.notice.length > 0) {
+      const harnessNotice = document.createElement("p");
+      harnessNotice.className = "delegation-mode-footnote harness-select-notice";
+      harnessNotice.textContent = harness.notice;
+      harnessRow.appendChild(harnessNotice);
+    }
 
     // p23-t11: Codex hook/dispatcher install rows, shown only when Codex is
     // the effective harness. Uses the same footnote/button classes as the
@@ -3729,7 +3737,7 @@
       // OpenCode only: Claude models default to an Anthropic API key
       // (ANTHROPIC_API_KEY); routing through the user's Claude subscription
       // via the `claude -p` CLI bridge is an explicit per-user opt-in.
-      if (multiProviderHarnessEff === "opencode") {
+      if (multiProviderHarnessEff === "opencode" && harness.opencodeAvailable !== false) {
         const claudeSubRow = document.createElement("label");
         claudeSubRow.className = "delegation-mode-option settings-claude-subscription-row";
         const claudeSubCheckbox = document.createElement("input");
@@ -3762,7 +3770,7 @@
       // place. See computeNeedsDefaultRoute in src/core/routingHostOps.ts
       // (shared by both host settings builders). Recomputed on every
       // settings payload, so this reflects the live state each render.
-      if (harness.needsDefaultRoute && harness.effective === "opencode") {
+      if (harness.needsDefaultRoute && harness.effective === "opencode" && harness.opencodeAvailable !== false) {
         const defaultRouteHint = document.createElement("p");
         defaultRouteHint.className = "delegation-mode-footnote settings-harness-default-route-hint";
         defaultRouteHint.textContent =

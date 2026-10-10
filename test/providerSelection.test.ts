@@ -15,7 +15,15 @@ import {
   PROVIDER_IDS,
   describeProviderSelection,
   writeProviderSelection,
+  buildHarnessOptions,
+  setOpencodeAvailableForTests,
+  OPENCODE_HARNESS_AVAILABLE,
+  OPENCODE_COMING_SOON_NOTICE,
 } from "../src/core/providerSelection";
+
+// Existing cases below exercise the OpenCode-available behaviour (gate flipped
+// on); the "launch gate" cases at the end restore the shipped gate explicitly.
+setOpencodeAvailableForTests(true);
 
 async function makeProjectDir(executionJson?: unknown): Promise<string> {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "tycoon-provider-selection-"));
@@ -207,4 +215,45 @@ test("writeProviderSelection: throws on an unknown provider id and writes nothin
   const dir = await makeProjectDir();
   assert.throws(() => writeProviderSelection(dir, "bogus"));
   await assert.rejects(fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8"));
+});
+
+// ── Launch gate: OpenCode is "Coming Soon" ─────────────────────────────────
+test("launch gate: OPENCODE_HARNESS_AVAILABLE ships false", () => {
+  assert.equal(OPENCODE_HARNESS_AVAILABLE, false);
+});
+
+test("launch gate: buildHarnessOptions disables OpenCode with the Coming Soon label; gate=true restores Experimental", () => {
+  const gated = buildHarnessOptions(false);
+  const oc = gated.find((o) => o.id === "opencode");
+  assert.deepEqual(oc, { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true });
+  assert.equal(gated.find((o) => o.id === "claude-code")?.disabled, undefined);
+  assert.equal(gated.find((o) => o.id === "codex")?.label, "Codex (Experimental)");
+  assert.deepEqual(buildHarnessOptions(true).find((o) => o.id === "opencode"), { id: "opencode", label: "OpenCode (Experimental)" });
+});
+
+test("launch gate: stored opencode resolves to claude-code with gatedFrom, from every source", async () => {
+  const dir = await makeProjectDir({ provider: "opencode" });
+  const fromFile = describeProviderSelection({ env: {}, cwd: dir, opencodeAvailable: false });
+  assert.deepEqual(fromFile, { effective: "claude-code", source: "execution", fileValue: "opencode", gatedFrom: "opencode" });
+  const fromSetting = describeProviderSelection({ settingValue: "opencode", env: {}, cwd: dir, opencodeAvailable: false });
+  assert.equal(fromSetting.effective, "claude-code");
+  assert.equal(fromSetting.gatedFrom, "opencode");
+  const fromEnv = describeProviderSelection({ env: { TYCOON_PROVIDER: "opencode" }, cwd: dir, opencodeAvailable: false });
+  assert.equal(fromEnv.effective, "claude-code");
+  assert.equal(resolveProviderId({ env: {}, projectDir: dir, opencodeAvailable: false }), "claude-code");
+  // The user's stored setting is not rewritten.
+  assert.deepEqual(JSON.parse(await fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8")), { provider: "opencode" });
+});
+
+test("launch gate: gate=true restores opencode resolution and no gatedFrom", async () => {
+  const dir = await makeProjectDir({ provider: "opencode" });
+  const d = describeProviderSelection({ env: {}, cwd: dir, opencodeAvailable: true });
+  assert.deepEqual(d, { effective: "opencode", source: "execution", fileValue: "opencode" });
+});
+
+test("launch gate: writeProviderSelection rejects opencode when gated and does not write", async () => {
+  const dir = await makeProjectDir();
+  assert.throws(() => writeProviderSelection(dir, "opencode", false), (e: Error) => e.message === OPENCODE_COMING_SOON_NOTICE);
+  await assert.rejects(fsp.readFile(path.join(dir, ".claude", "tycoon", "execution.json"), "utf8"));
+  writeProviderSelection(dir, "codex", false);
 });

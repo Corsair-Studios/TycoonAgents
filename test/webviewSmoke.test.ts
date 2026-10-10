@@ -1219,6 +1219,49 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
     // purely off the payload, not off any prior setHarness round-trip in
     // this window (audit fix: a stale/hand-edited execution.json must show
     // the hint on first render too).
+    await t.test('10c-gate. harness dropdown: OpenCode option is disabled "Coming Soon", notice shown, OpenCode-only UI hidden', async () => {
+      dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'flat',
+          delegationHealth: {},
+          hookHealth: { healthy: true, issueCount: 0 },
+          contextBudget: null,
+          harness: {
+            effective: 'claude-code',
+            source: 'execution',
+            fileValue: 'opencode',
+            gatedFrom: 'opencode',
+            notice: 'OpenCode support is coming soon \u2014 this project now runs on Claude Code.',
+            opencodeAvailable: false,
+            running: 'claude-code',
+            mismatch: false,
+            needsDefaultRoute: true,
+            options: [
+              { id: 'claude-code', label: 'Claude Code' },
+              { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
+              { id: 'codex', label: 'Codex (Experimental)' },
+            ],
+            requiresRestart: false,
+          },
+        },
+      });
+      await flush();
+      const setupConfig = doc.getElementById('setup-config');
+      const select = setupConfig.querySelector('#settings-harness-select') as any;
+      assert.equal(select.value, 'claude-code');
+      const opt = Array.from(select.options).find((o: any) => o.value === 'opencode') as any;
+      assert.equal(opt.textContent, 'OpenCode (Coming Soon)');
+      assert.equal(opt.disabled, true);
+      const text = setupConfig.textContent || '';
+      assert.ok(text.includes('OpenCode support is coming soon'), 'notice must render');
+      assert.ok(!text.includes('Allow Claude subscription via the claude CLI under OpenCode'));
+      assert.ok(!text.includes('OpenCode runs each agent on its routed model'));
+      assertNoErrors('settings-harness-gated');
+    });
+
     await t.test('10c. harness dropdown: renders, reflects effective, disables on override, shows restart hint on mismatch', async () => {
       const baseSettings = {
         hook: { installed: true, lastActivityAt: null },

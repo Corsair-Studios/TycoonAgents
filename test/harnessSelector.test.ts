@@ -53,6 +53,11 @@ NodeModule._load = function patchedLoad(request: string, parent: unknown, isMain
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { TycoonPanel } = require("../src/host/vscode/panel") as typeof import("../src/host/vscode/panel");
+const { setOpencodeAvailableForTests, OPENCODE_COMING_SOON_NOTICE } = require("../src/core/providerSelection") as typeof import("../src/core/providerSelection");
+
+// Cases below exercise OpenCode being selectable (gate flipped on); the
+// "launch gate" cases at the end restore the shipped gate in-test.
+setOpencodeAvailableForTests(true);
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "harnessSelector-"));
@@ -104,6 +109,7 @@ test("_buildHarnessSettings: defaults to claude-code, source default, no mismatc
     { id: "opencode", label: "OpenCode (Experimental)" },
     { id: "codex", label: "Codex (Experimental)" },
   ]);
+  assert.equal(result.opencodeAvailable, true);
   assert.equal(result.effective, "claude-code");
   assert.equal(result.source, "default");
   assert.equal(result.running, undefined, "no _getRunningProviderId wired -> running is undefined");
@@ -582,4 +588,42 @@ test("_codexHookSettingsSlice: reports out-of-date for a stale managed hook", ()
     assert.equal(slice.healthy, false);
     assert.equal(slice.label, "Codex hook out of date");
   });
+});
+
+test("launch gate: _buildHarnessSettings marks OpenCode disabled/Coming Soon and a stored opencode resolves to claude-code with the notice", () => {
+  setOpencodeAvailableForTests(false);
+  try {
+    configuredProviderSetting = undefined;
+    const root = tmpRoot();
+    fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "opencode" }), "utf8");
+    const fake = makeFakePanel(root);
+    const result = (TycoonPanel.prototype as any)._buildHarnessSettings.call(fake, root);
+    assert.deepEqual(result.options.find((o: any) => o.id === "opencode"), { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true });
+    assert.equal(result.effective, "claude-code");
+    assert.equal(result.opencodeAvailable, false);
+    assert.equal(result.notice, OPENCODE_COMING_SOON_NOTICE);
+    assert.equal((TycoonPanel.prototype as any)._resolveEffectiveHarness.call(fake, root), "claude-code");
+    assert.equal((TycoonPanel.prototype as any)._effectiveHarness.call(fake, root), "claude-code");
+    assert.deepEqual(readExecutionJson(root), { provider: "opencode" }, "stored setting is not rewritten");
+  } finally {
+    setOpencodeAvailableForTests(true);
+  }
+});
+
+test("launch gate: _handleSetHarness rejects opencode server-side without writing, and re-posts settings", () => {
+  setOpencodeAvailableForTests(false);
+  try {
+    configuredProviderSetting = undefined;
+    const root = tmpRoot();
+    let settingsCalls = 0;
+    let swapped = false;
+    const fake = makeFakePanel(root, { _handleGetSettings: () => { settingsCalls++; }, _providerSwap: () => { swapped = true; return true; } });
+    (TycoonPanel.prototype as any)._handleSetHarness.call(fake, "opencode");
+    assert.equal(fs.existsSync(path.join(root, ".claude", "tycoon", "execution.json")), false);
+    assert.equal(swapped, false);
+    assert.equal(settingsCalls, 1);
+  } finally {
+    setOpencodeAvailableForTests(true);
+  }
 });

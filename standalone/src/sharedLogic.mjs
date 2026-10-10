@@ -271,6 +271,21 @@ export function resolveProviderId(options) {
   return fn(options);
 }
 
+/** Whether the OpenCode harness is selectable (the src/core/providerSelection.ts
+ * gate; false while OpenCode is "coming soon").
+ * @returns {boolean} */
+export function isOpencodeAvailable() {
+  try {
+    return assertFn(
+      providerSelectionModule().isOpencodeAvailable,
+      'isOpencodeAvailable',
+      'out/src/core/providerSelection.js',
+    )();
+  } catch {
+    return false;
+  }
+}
+
 /** The Claude Code hook events + matchers TycoonAgents wires up, read lazily
  * from the compiled `hookInstall.js`'s `TYCOON_HOOK_SLOTS` — call this rather
  * than caching the array yourself so a stale/missing `out/` still surfaces

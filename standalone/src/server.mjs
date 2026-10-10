@@ -1089,6 +1089,12 @@ function handleBrowserMessage(msg) {
         console.error('[tycoonagents-standalone] setHarness: no project root resolved');
         break;
       }
+      // Launch gate: never trust the webview; reject OpenCode while it is Coming Soon.
+      if (String(msg.provider || '') === 'opencode' && !providerSelectionModule().isOpencodeAvailable()) {
+        console.error('[tycoonagents-standalone] setHarness rejected: OpenCode is coming soon and cannot be selected.');
+        broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+        break;
+      }
       try {
         const { writeProviderSelection } = providerSelectionModule();
         writeProviderSelection(root, String(msg.provider || ''));
@@ -2979,11 +2985,9 @@ function buildStandaloneHarnessSettings() {
     ...description,
     running,
     mismatch,
-    options: [
-      { id: 'claude-code', label: 'Claude Code' },
-      { id: 'opencode', label: 'OpenCode (Experimental)' },
-      { id: 'codex', label: 'Codex (Experimental)' },
-    ],
+    options: providerSelectionModule().buildHarnessOptions(),
+    opencodeAvailable: providerSelectionModule().isOpencodeAvailable(),
+    ...(description.gatedFrom === 'opencode' ? { notice: providerSelectionModule().OPENCODE_COMING_SOON_NOTICE } : {}),
     // The watcher/provider was resolved once at process startup (see
     // `startupProviderId` and cli.mjs) and never reconstructed mid-process,
     // so any change only takes effect on the next `tycoonagents-standalone`

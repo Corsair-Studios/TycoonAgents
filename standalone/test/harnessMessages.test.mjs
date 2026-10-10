@@ -9,7 +9,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { startServer } from '../src/server.mjs';
+
+// Same compiled module instance the server loads; lets a test flip the launch gate.
+const providerSelection = createRequire(import.meta.url)('../../out/src/core/providerSelection.js');
 
 async function collectSseEvent(reader, matchType, maxChunks = 50) {
   let buffer = '';
@@ -76,7 +80,7 @@ test('POST /message {type: "getSettings"} -> settings.harness reports claude-cod
     assert.equal(settings.payload.harness.source, 'default');
     assert.deepEqual(settings.payload.harness.options, [
       { id: 'claude-code', label: 'Claude Code' },
-      { id: 'opencode', label: 'OpenCode (Experimental)' },
+      { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
       { id: 'codex', label: 'Codex (Experimental)' },
     ]);
     // Nothing has changed since startup -> running (startupProviderId)
@@ -90,8 +94,16 @@ test('POST /message {type: "getSettings"} -> settings.harness reports claude-cod
   }
 });
 
-test('POST /message {type: "setHarness", provider: "opencode"} -> writes execution.json and re-broadcasts settings sourced "execution"', async () => {
-  const projectRoot = mkTempProject();
+test('launch gate off-switch: with the gate flipped on, setHarness opencode writes execution.json and re-broadcasts settings sourced "execution"', async () => {
+  providerSelection.setOpencodeAvailableForTests(true);
+  try {
+    await gateOnBody();
+  } finally {
+    providerSelection.setOpencodeAvailableForTests(undefined);
+  }
+});
+
+async function gateOnBody() {  const projectRoot = mkTempProject();
   const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
   const controller = new AbortController();
   try {
@@ -120,6 +132,36 @@ test('POST /message {type: "setHarness", provider: "opencode"} -> writes executi
       fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8'),
     );
     assert.equal(written.provider, 'opencode');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+}
+
+test('launch gate: setHarness opencode is rejected server-side (nothing written) and stored opencode resolves to claude-code with the notice', async () => {
+  const projectRoot = mkTempProject();
+  const runtime = await startServer({ argv: [projectRoot], env: { TYCOON_STANDALONE_PORT: '0' }, cwd: projectRoot });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
+    const collector = createSseCollector(eventsRes.body.getReader());
+    const post = (body) => fetch(`${runtime.url}/message`, { method: 'POST', headers: { 'X-Tycoon-Token': runtime.sessionToken }, body: JSON.stringify(body) });
+
+    assert.equal((await post({ type: 'setHarness', provider: 'opencode' })).status, 202);
+    const settings = await collector.next('settings');
+    assert.equal(settings.payload.harness.effective, 'claude-code');
+    assert.equal(settings.payload.harness.notice, undefined);
+    assert.equal(settings.payload.harness.opencodeAvailable, false);
+    assert.equal(fs.existsSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json')), false, 'rejected: nothing written');
+
+    // A project whose stored setting is already opencode: resolution falls back to Claude Code, file untouched.
+    fs.mkdirSync(path.join(projectRoot, '.claude', 'tycoon'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), JSON.stringify({ provider: 'opencode' }));
+    assert.equal((await post({ type: 'getSettings' })).status, 202);
+    const stored = await collector.next('settings', (d) => d.payload.harness && d.payload.harness.fileValue === 'opencode');
+    assert.equal(stored.payload.harness.effective, 'claude-code');
+    assert.equal(stored.payload.harness.notice, providerSelection.OPENCODE_COMING_SOON_NOTICE);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(projectRoot, '.claude', 'tycoon', 'execution.json'), 'utf8')), { provider: 'opencode' });
   } finally {
     controller.abort();
     await runtime.close();

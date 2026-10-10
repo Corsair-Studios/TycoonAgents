@@ -77,10 +77,10 @@ function runWatch(args, env) {
   });
 }
 
-test('watch --provider opencode: startup log names opencode', async () => {
+test('watch --provider opencode: launch gate resolves it to claude-code (OpenCode is Coming Soon)', async () => {
   const dir = mkTempDir();
   const { stdout } = await runWatch(['--no-open', '--provider', 'opencode', dir]);
-  assert.match(stdout, /using provider "opencode"/);
+  assert.match(stdout, /using provider "claude-code"/);
 });
 
 test('watch --provider bogus: exits non-zero, names valid ids, never starts a server', async () => {

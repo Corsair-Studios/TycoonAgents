@@ -69,6 +69,34 @@ test('runCli: watch with a nonexistent dir exits 1 cleanly (does not hang, does 
   assert.equal(code, 1);
 });
 
+test('runCli: install-hook --opencode prints coming-soon, exits 1, writes nothing', async () => {
+  const dir = mkTempDir();
+  const errs = [];
+  const orig = console.error;
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    assert.equal(await runCli(['install-hook', dir, '--opencode']), 1);
+  } finally {
+    console.error = orig;
+  }
+  assert.ok(errs.some((m) => /OpenCode support is coming soon\./.test(m)));
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('runCli: help lists claude-code|codex and no --opencode', async () => {
+  const errs = [];
+  const orig = console.error;
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    await runCli([]);
+  } finally {
+    console.error = orig;
+  }
+  const text = errs.join('\n');
+  assert.match(text, /claude-code\|codex/);
+  assert.doesNotMatch(text, /--opencode/);
+});
+
 // ── runWatchCommand: full happy path against a real ephemeral server ────
 
 test('runWatchCommand: starts a real server, then cleanly stops via AbortSignal (no real SIGINT/SIGTERM used)', async () => {

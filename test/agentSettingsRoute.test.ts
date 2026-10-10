@@ -23,6 +23,11 @@ import {
   overrideAgentToClaudeTier,
 } from "../src/core/agentSettingsRoute";
 import { saveRoutingProfile } from "../src/core/routingHostOps";
+import { setOpencodeAvailableForTests } from "../src/core/providerSelection";
+
+// Cases below exercise the OpenCode generator, so the launch gate is flipped on.
+setOpencodeAvailableForTests(true);
+
 
 // apply-routing-profile.mjs deliberately requires the shared, real
 // out/src/core/{routingProfile,agentBackend}.js from REPO_ROOT for every

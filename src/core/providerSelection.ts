@@ -23,6 +23,49 @@ import * as path from "path";
 export const PROVIDER_IDS = ["claude-code", "opencode", "codex"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
+/**
+ * Launch gate: OpenCode is "Coming Soon" and not selectable while false.
+ * Flip to true to restore the previous behaviour everywhere (pickers,
+ * resolution, SET_HARNESS). Every host reads this one constant.
+ */
+export const OPENCODE_HARNESS_AVAILABLE = false;
+
+/** One-line Settings notice shown when a stored/forced "opencode" is resolved to Claude Code by the gate. */
+export const OPENCODE_COMING_SOON_NOTICE =
+  "OpenCode support is coming soon — this project now runs on Claude Code.";
+
+let opencodeAvailableOverride: boolean | undefined;
+/** Test seam only: forces the gate on/off for the process; pass undefined to restore the constant. */
+export function setOpencodeAvailableForTests(value: boolean | undefined): void {
+  opencodeAvailableOverride = value;
+}
+/** Current gate value (the constant unless a test override is set). */
+export function isOpencodeAvailable(): boolean {
+  return opencodeAvailableOverride ?? OPENCODE_HARNESS_AVAILABLE;
+}
+
+export interface HarnessOption {
+  id: ProviderId;
+  label: string;
+  /** True when the option is shown but cannot be chosen. */
+  disabled?: boolean;
+}
+
+/** Options for the "Which tool runs your agents?" picker; OpenCode is disabled while gated. */
+export function buildHarnessOptions(opencodeAvailable: boolean = isOpencodeAvailable()): HarnessOption[] {
+  return [
+    { id: "claude-code", label: "Claude Code" },
+    opencodeAvailable
+      ? { id: "opencode", label: "OpenCode (Experimental)" }
+      : { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
+    { id: "codex", label: "Codex (Experimental)" },
+  ];
+}
+
+function gate(id: ProviderId, opencodeAvailable: boolean | undefined): ProviderId {
+  return id === "opencode" && !(opencodeAvailable ?? isOpencodeAvailable()) ? "claude-code" : id;
+}
+
 function isProviderId(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDER_IDS as readonly string[]).includes(value);
 }
@@ -67,6 +110,8 @@ export interface ResolveProviderIdOptions {
   env?: NodeJS.ProcessEnv;
   /** Project root used to locate .claude/tycoon/execution.json. */
   projectDir: string;
+  /** Test seam; defaults to OPENCODE_HARNESS_AVAILABLE. */
+  opencodeAvailable?: boolean;
 }
 
 /** Resolves which provider id a host should use, per the precedence above.
@@ -78,14 +123,14 @@ export function resolveProviderId(options: ResolveProviderIdOptions): ProviderId
   const envValue = env["TYCOON_PROVIDER"];
   if (envValue !== undefined && envValue !== "") {
     if (!isProviderId(envValue)) throw invalidProviderError(envValue, "the TYCOON_PROVIDER environment variable");
-    return envValue;
+    return gate(envValue, options.opencodeAvailable);
   }
 
   if (options.settingValue !== undefined && options.settingValue !== "") {
     if (!isProviderId(options.settingValue)) {
       throw invalidProviderError(options.settingValue, 'the "tycoonagents.provider" VS Code setting');
     }
-    return options.settingValue;
+    return gate(options.settingValue, options.opencodeAvailable);
   }
 
   const fromExecutionConfig = readExecutionConfigProvider(options.projectDir);
@@ -96,7 +141,7 @@ export function resolveProviderId(options: ResolveProviderIdOptions): ProviderId
         path.join(options.projectDir, ".claude", "tycoon", "execution.json"),
       );
     }
-    return fromExecutionConfig;
+    return gate(fromExecutionConfig, options.opencodeAvailable);
   }
 
   return "claude-code";
@@ -109,6 +154,8 @@ export interface ProviderSelectionDescription {
   source: ProviderSelectionSource;
   /** The raw `provider` value currently on disk in execution.json, if any (even if it lost precedence). */
   fileValue: ProviderId | undefined;
+  /** Set to "opencode" when the launch gate replaced a requested OpenCode with Claude Code. */
+  gatedFrom?: "opencode";
 }
 
 /** Like resolveProviderId, but also reports which layer won and what's
@@ -118,7 +165,13 @@ export function describeProviderSelection(options: {
   settingValue?: string | undefined;
   env?: NodeJS.ProcessEnv;
   cwd: string;
+  opencodeAvailable?: boolean;
 }): ProviderSelectionDescription {
+  const avail = options.opencodeAvailable ?? isOpencodeAvailable();
+  const out = (effective: ProviderId, source: ProviderSelectionSource, fileValue: ProviderId | undefined): ProviderSelectionDescription => {
+    const g = gate(effective, avail);
+    return g === effective ? { effective, source, fileValue } : { effective: g, source, fileValue, gatedFrom: "opencode" };
+  };
   const env = options.env ?? process.env;
   const fromExecutionConfigRaw = readExecutionConfigProvider(options.cwd);
   const fileValue = isProviderId(fromExecutionConfigRaw) ? fromExecutionConfigRaw : undefined;
@@ -126,21 +179,21 @@ export function describeProviderSelection(options: {
   const envValue = env["TYCOON_PROVIDER"];
   if (envValue !== undefined && envValue !== "") {
     if (!isProviderId(envValue)) throw invalidProviderError(envValue, "the TYCOON_PROVIDER environment variable");
-    return { effective: envValue, source: "env", fileValue };
+    return out(envValue, "env", fileValue);
   }
 
   if (options.settingValue !== undefined && options.settingValue !== "") {
     if (!isProviderId(options.settingValue)) {
       throw invalidProviderError(options.settingValue, 'the "tycoonagents.provider" VS Code setting');
     }
-    return { effective: options.settingValue, source: "setting", fileValue };
+    return out(options.settingValue, "setting", fileValue);
   }
 
   if (fromExecutionConfigRaw !== undefined) {
     if (!isProviderId(fromExecutionConfigRaw)) {
       throw invalidProviderError(fromExecutionConfigRaw, path.join(options.cwd, ".claude", "tycoon", "execution.json"));
     }
-    return { effective: fromExecutionConfigRaw, source: "execution", fileValue };
+    return out(fromExecutionConfigRaw, "execution", fileValue);
   }
 
   return { effective: "claude-code", source: "default", fileValue };
@@ -189,8 +242,9 @@ export function writeUseMultipleLlms(cwd: string, value: boolean): void {
 /** Writes only the `provider` key into <cwd>/.claude/tycoon/execution.json,
  * creating the file/directories if absent and preserving every other key
  * already there. Throws on an unrecognized provider id. */
-export function writeProviderSelection(cwd: string, providerId: string): void {
+export function writeProviderSelection(cwd: string, providerId: string, opencodeAvailable: boolean = isOpencodeAvailable()): void {
   if (!isProviderId(providerId)) throw invalidProviderError(providerId, "writeProviderSelection");
+  if (providerId === "opencode" && !opencodeAvailable) throw new Error(OPENCODE_COMING_SOON_NOTICE);
   const dir = path.join(cwd, ".claude", "tycoon");
   const execPath = path.join(dir, "execution.json");
   let parsed: Record<string, unknown> = {};

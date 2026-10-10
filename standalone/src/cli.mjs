@@ -23,7 +23,7 @@ import { installHook, installMcpBridgeHooks, installOpenCodePlugin, InstallHookE
 import { seedAgents, SeedAgentsError } from './seedAgents.mjs';
 import { startServer, ServerStartError } from './server.mjs';
 import { ProjectRootError } from './projectRoots.mjs';
-import { resolveProviderId } from './sharedLogic.mjs';
+import { resolveProviderId, isOpencodeAvailable } from './sharedLogic.mjs';
 
 function printUsage() {
   console.error(
@@ -33,13 +33,6 @@ function printUsage() {
       'Commands:',
       '  install-hook <dir>          Idempotently register the TycoonAgents Claude',
       '                               Code hook in <dir>/.claude/settings.local.json.',
-      '                               --opencode                Instead (separate opt-in),',
-      '                               idempotently copy the TycoonAgents OpenCode plugin',
-      '                               (tycoon-opencode-plugin.ts, agentBackend.js,',
-      '                               modelAliases.js) into <dir>/.opencode/plugin/.',
-      '                               Never touches settings.local.json. --force',
-      '                               overwrites a destination file that differs from',
-      '                               the repo copy (default: refuse and error).',
       '                               --no-agents               Skip seeding the',
       '                               core agent roster (.claude/agents/*.md +',
       '                               .claude/tycoon/agent-keywords.json) that',
@@ -65,7 +58,7 @@ function printUsage() {
       '                               Flags: --no-open (also: env',
       '                               TYCOON_STANDALONE_NO_OPEN=1) suppresses the',
       '                               automatic browser launch. --provider <id>',
-      '                               (claude-code|opencode, also: env',
+      '                               (claude-code|codex, also: env',
       '                               TYCOON_PROVIDER) selects which harness to',
       '                               read activity from; TYCOON_PROVIDER always',
       '                               overrides this flag.',
@@ -207,6 +200,9 @@ export async function runWatchCommand(rest, { env = process.env, cwd = process.c
     throw err;
   }
 
+  if (String(env.TYCOON_PROVIDER || '') === 'opencode' && resolvedProviderId !== 'opencode') {
+    console.log('TycoonAgents: OpenCode support is coming soon; using Claude Code.');
+  }
   console.log(`TycoonAgents: using provider "${resolvedProviderId}".`);
   console.log(`TycoonAgents: watching. Open ${runtime.url} in your browser.`);
   if (shouldOpenBrowser({ noOpenFlag: noOpen, env })) {
@@ -281,6 +277,10 @@ export async function runCli(argv) {
       }
 
       if (flags.includes('--opencode')) {
+        if (!isOpencodeAvailable()) {
+          console.error('OpenCode support is coming soon.');
+          return 1;
+        }
         const force = flags.includes('--force');
         try {
           const { pluginDir, changed, copied, skipped } = installOpenCodePlugin(dir, { force });

@@ -67,6 +67,9 @@ import { readAgentFrontmatter, parseAgentBackend } from "../../core/agentBackend
 import {
   describeProviderSelection,
   writeProviderSelection,
+  buildHarnessOptions,
+  isOpencodeAvailable,
+  OPENCODE_COMING_SOON_NOTICE,
   writeUseMultipleLlms,
   PROVIDER_IDS,
   type ProviderId,
@@ -8308,7 +8311,9 @@ export class TycoonPanel {
     fileValue: ProviderId | undefined;
     running: ProviderId | undefined;
     mismatch: boolean;
-    options: { id: ProviderId; label: string }[];
+    options: { id: ProviderId; label: string; disabled?: boolean }[];
+    opencodeAvailable: boolean;
+    notice?: string;
     requiresRestart: boolean;
     needsDefaultRoute: boolean;
     warning?: string;
@@ -8368,11 +8373,9 @@ export class TycoonPanel {
       ...description,
       running,
       mismatch,
-      options: [
-        { id: "claude-code", label: "Claude Code" },
-        { id: "opencode", label: "OpenCode (Experimental)" },
-        { id: "codex", label: "Codex (Experimental)" },
-      ],
+      options: buildHarnessOptions(),
+      opencodeAvailable: isOpencodeAvailable(),
+      ...(description.gatedFrom === "opencode" ? { notice: OPENCODE_COMING_SOON_NOTICE } : {}),
       requiresRestart: mismatch,
       needsDefaultRoute,
       ...(warning !== undefined ? { warning } : {}),
@@ -8389,6 +8392,11 @@ export class TycoonPanel {
   private _handleSetHarness(providerId: string): void {
     if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
       console.error(`TycoonAgents: setHarness rejected unknown provider id "${providerId}".`);
+      return;
+    }
+    if (providerId === "opencode" && !isOpencodeAvailable()) {
+      console.error("TycoonAgents: setHarness rejected: OpenCode is coming soon and cannot be selected.");
+      this._handleGetSettings();
       return;
     }
     const root = this._projectRoot();

@@ -18,6 +18,10 @@ import {
   clearLocalEnvValue,
   runCodexConfigGenerator,
 } from "../src/core/routingHostOps";
+import { setOpencodeAvailableForTests } from "../src/core/providerSelection";
+
+// Cases below exercise the OpenCode generator, so the launch gate is flipped on; gated cases restore it.
+setOpencodeAvailableForTests(true);
 
 function tmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "routing-host-ops-"));
@@ -836,5 +840,18 @@ test("saveRoutingProfile: the OpenCode generator runs only under the opencode ha
       if (prevCfg === undefined) delete process.env.OPENCODE_CONFIG_DIR;
       else process.env.OPENCODE_CONFIG_DIR = prevCfg;
     }
+  }
+});
+
+test("launch gate: saveRoutingProfile with effectiveHarness opencode never runs the OpenCode generator while gated", () => {
+  setOpencodeAvailableForTests(false);
+  try {
+    const root = tmpRoot();
+    const scriptsDir = makeFakeScriptsDir();
+    const profile = { version: 1, agents: {} };
+    const result = saveRoutingProfile({ root, profile, scriptsDir, effectiveHarness: "opencode" });
+    assert.match(result.write.opencode.output, /skipped/);
+  } finally {
+    setOpencodeAvailableForTests(true);
   }
 });
