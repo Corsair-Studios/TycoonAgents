@@ -80,8 +80,8 @@ test('POST /message {type: "getSettings"} -> settings.harness reports claude-cod
     assert.equal(settings.payload.harness.source, 'default');
     assert.deepEqual(settings.payload.harness.options, [
       { id: 'claude-code', label: 'Claude Code' },
-      { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
       { id: 'codex', label: 'Codex (Experimental)' },
+      { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
     ]);
     // Nothing has changed since startup -> running (startupProviderId)
     // matches effective, so no mismatch/restart hint.

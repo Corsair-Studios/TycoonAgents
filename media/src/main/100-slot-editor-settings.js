@@ -1681,8 +1681,8 @@
       ? harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
           { id: "codex", label: "Codex (Experimental)" },
+          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
         ];
     harnessOptions.forEach((opt) => {
       const optEl = document.createElement("option");

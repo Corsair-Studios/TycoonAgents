@@ -1241,8 +1241,8 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
             needsDefaultRoute: true,
             options: [
               { id: 'claude-code', label: 'Claude Code' },
-              { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
               { id: 'codex', label: 'Codex (Experimental)' },
+              { id: 'opencode', label: 'OpenCode (Coming Soon)', disabled: true },
             ],
             requiresRestart: false,
           },

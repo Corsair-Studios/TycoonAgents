@@ -3585,8 +3585,8 @@ if (typeof module !== "undefined" && module.exports) {
       ? lastSettings.harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
           { id: "codex", label: "Codex (Experimental)" },
+          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
         ];
     var match = harnessOptions.find(function (opt) { return opt.id === harnessEffective; });
     var harnessLabel = match ? match.label : (harnessEffective === "opencode" ? "OpenCode (Experimental)" : (harnessEffective === "codex" ? "Codex (Experimental)" : "Claude Code"));
@@ -23710,8 +23710,8 @@ function themeAnimPreviewDraw(player) {
       ? harness.options
       : [
           { id: "claude-code", label: "Claude Code" },
-          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
           { id: "codex", label: "Codex (Experimental)" },
+          { id: "opencode", label: "OpenCode (Coming Soon)", disabled: true },
         ];
     harnessOptions.forEach((opt) => {
       const optEl = document.createElement("option");
