@@ -669,3 +669,82 @@ test("repairSettings: migrates a relative hook command to the absolute currentHo
   assert.deepEqual(settings.env, { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1", SOME_USER_VAR: "keep-me" });
   assert.deepEqual(settings.someOtherTopLevelKey, { nested: "preserve-me" });
 });
+
+// ---------------------------------------------------------------------------
+// repairSettings: mixed-form Tycoon commands are normalised + deduplicated
+// ---------------------------------------------------------------------------
+
+const ABS_CMD = String.raw`node "d:\Vignetta\.claude\tycoon\tycoon-claude-hook.cjs"`;
+const REL_CMD = `node ".claude/tycoon/tycoon-claude-hook.cjs"`;
+
+function tycoonCmdsFor(settings: any, event: string, matcher: string): string[] {
+  const out: string[] = [];
+  for (const e of settings.hooks[event] ?? []) {
+    if (e.matcher !== matcher) continue;
+    for (const h of e.hooks) if (h.command.includes("tycoon-claude-hook.cjs")) out.push(h.command);
+  }
+  return out;
+}
+
+test("repairSettings: Vignetta shape (absolute + relative duplicate, separate UserPromptSubmit entries) -> one current entry; diagnose clean", () => {
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.UserPromptSubmit.push({ matcher: "", hooks: [{ type: "command", command: REL_CMD }] });
+  const { settings } = repairSettings(input, ABS_CMD, { removeForeign: false });
+  assert.deepEqual(tycoonCmdsFor(settings, "UserPromptSubmit", ""), [ABS_CMD]);
+  assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+  const findings = diagnose({ localSettings: settings, sharedSettings: null, currentHookCommand: ABS_CMD, hookScriptExists: true });
+  assert.deepEqual(findings.map((f) => f.id), ["hooks-healthy"]);
+});
+
+test("diagnose: duplicate across separate entries is flagged", () => {
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.UserPromptSubmit.push({ matcher: "", hooks: [{ type: "command", command: REL_CMD }] });
+  const findings = diagnose({ localSettings: input, sharedSettings: null, currentHookCommand: ABS_CMD, hookScriptExists: true });
+  assert.ok(findings.some((f) => f.id === "hooks-duplicate"));
+  assert.ok(findings.some((f) => f.id === "hooks-stale"));
+});
+
+test("repairSettings: mixed slashes, quoting and drive-letter case all collapse to the current command", () => {
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.Stop = [
+    { matcher: "", hooks: [{ type: "command", command: `node D:/Vignetta/.claude/tycoon/tycoon-claude-hook.cjs` }] },
+    { matcher: "", hooks: [{ type: "command", command: String.raw`node "d:\Vignetta\.claude\tycoon\tycoon-claude-hook.cjs"` }] },
+    { matcher: "", hooks: [{ type: "command", command: String.raw`node .claude\tycoon\tycoon-claude-hook.cjs` }] },
+  ];
+  const { settings } = repairSettings(input, ABS_CMD, { removeForeign: false });
+  assert.deepEqual(tycoonCmdsFor(settings, "Stop", ""), [ABS_CMD]);
+});
+
+test("repairSettings: non-Tycoon hooks in the same slot are untouched and keep their order", () => {
+  const other = { type: "command", command: `node "C:/other/their-hook.cjs"` };
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.UserPromptSubmit = [
+    { matcher: "", hooks: [other, { type: "command", command: REL_CMD }] },
+    { matcher: "", hooks: [{ type: "command", command: ABS_CMD }, { type: "command", command: `echo hi` }] },
+  ];
+  const { settings } = repairSettings(input, ABS_CMD, { removeForeign: false });
+  const entries = settings.hooks.UserPromptSubmit;
+  assert.deepEqual(entries[0].hooks, [other, { type: "command", command: ABS_CMD }]);
+  assert.deepEqual(entries[1].hooks, [{ type: "command", command: `echo hi` }]);
+});
+
+test("repairSettings: idempotent - second run reports no changes and yields identical settings", () => {
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.UserPromptSubmit.push({ matcher: "", hooks: [{ type: "command", command: REL_CMD }] });
+  const first = repairSettings(input, ABS_CMD, { removeForeign: false });
+  const second = repairSettings(first.settings, ABS_CMD, { removeForeign: false });
+  assert.deepEqual(second.changes, []);
+  assert.deepEqual(second.settings, first.settings);
+});
+
+test("repairSettings: a user wrapper that only mentions the hook name in a comment is not Tycoon and is left alone", () => {
+  const wrapper = { type: "command", command: `node my-wrap.cjs # tycoon-claude-hook.cjs` };
+  const input = buildFullSettings(ABS_CMD);
+  input.hooks.UserPromptSubmit.push({ matcher: "", hooks: [wrapper] });
+  const findings = diagnose({ localSettings: input, sharedSettings: null, currentHookCommand: ABS_CMD, hookScriptExists: true });
+  assert.ok(!findings.some((f) => f.id === "hooks-duplicate" || f.id === "hooks-stale"));
+  const { settings } = repairSettings(input, ABS_CMD, { removeForeign: false });
+  const cmds = settings.hooks.UserPromptSubmit.flatMap((e: any) => e.hooks.map((h: any) => h.command));
+  assert.ok(cmds.includes(wrapper.command));
+  assert.deepEqual(tycoonCmdsFor(settings, "UserPromptSubmit", "").filter((c) => c !== wrapper.command), [ABS_CMD]);
+});

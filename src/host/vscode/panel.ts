@@ -9582,6 +9582,9 @@ export class TycoonPanel {
         findings,
         foreign,
       });
+      // Refresh the settings panel so the header issue count reflects the
+      // post-fix on-disk state instead of the pre-fix snapshot.
+      this._handleGetSettings();
     } catch (err) {
       void this._panel.webview.postMessage({ type: MSG.DOCTOR_FIX_DONE, ok: false, error: String(err) });
     }

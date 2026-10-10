@@ -76,7 +76,7 @@ export function findForeignHooks(
     for (const event of TYCOON_EVENTS) {
       for (const entry of getEntriesForEvent(hooks, event)) {
         for (const cmd of getCommandsFromEntry(entry)) {
-          if (!cmd.includes(TYCOON_MARKER)) {
+          if (!isTycoonCommand(cmd)) {
             foreign.add(cmd);
           }
         }
@@ -112,8 +112,25 @@ function countRelativeInSettings(settings: any | null): number {
   return count;
 }
 
+function leadingTokens(cmd: string, max: number): string[] {
+  const tokens: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while (tokens.length < max && (m = re.exec(cmd.trim())) !== null) {
+    tokens.push(m[1] ?? m[2] ?? m[3]);
+  }
+  return tokens;
+}
+
+/** True only when the command's script argument (the token after the interpreter) is the Tycoon hook script. */
 function isTycoonCommand(cmd: string): boolean {
-  return cmd.includes(TYCOON_MARKER);
+  const tokens = leadingTokens(cmd, 2);
+  const script = tokens.length >= 2 ? tokens[1] : tokens[0];
+  if (!script) {
+    return false;
+  }
+  const last = script.split(/[\\/]/).pop();
+  return last === TYCOON_MARKER;
 }
 
 function slotIsWiredIn(settings: any | null, slot: { event: string; matcher: string }, currentHookCommand: string): boolean {
@@ -147,15 +164,13 @@ function countStaleInSettings(settings: any | null, currentHookCommand: string):
 
 function hasDuplicateTycoonInSlot(settings: any | null, slot: { event: string; matcher: string }): boolean {
   const hooks = getHooksSection(settings);
+  let total = 0;
   for (const entry of getEntriesForEvent(hooks, slot.event)) {
-    if (entry.matcher === slot.matcher) {
-      const cmds = getCommandsFromEntry(entry).filter(isTycoonCommand);
-      if (cmds.length > 1) {
-        return true;
-      }
+    if (entry && entry.matcher === slot.matcher) {
+      total += getCommandsFromEntry(entry).filter(isTycoonCommand).length;
     }
   }
-  return false;
+  return total > 1;
 }
 
 function hasTycoonCommandsInSettings(settings: any | null): boolean {
@@ -409,52 +424,76 @@ export function repairSettings(
     }
 
     const entries: any[] = settings.hooks[event];
-    let entry = entries.find((e: any) => e.matcher === matcher);
-
-    if (!entry) {
-      entry = { matcher, hooks: [] };
-      entries.push(entry);
-    }
-
-    if (!Array.isArray(entry.hooks)) {
-      entry.hooks = [];
-    }
-
-    const hasTycoon = entry.hooks.some(
-      (h: any) => h && typeof h.command === "string" && isTycoonCommand(h.command)
-    );
-
-    if (!hasTycoon) {
-      entry.hooks.push({ type: "command", command: currentHookCommand });
-      changes.push(`Wired ${event} (${matcher || "any"}) hook`);
-    } else {
-      let fixedStale = false;
+    // Normalise EVERY Tycoon command across ALL entries sharing this
+    // (event, matcher) to the current command and keep exactly one — a
+    // legacy relative entry sitting beside an absolute one lives in a
+    // separate entry object, so a per-entry pass would leave both firing.
+    let seenTycoon = false;
+    let fixedStale = false;
+    let removedDup = false;
+    let firstMatching: any = null;
+    for (const entry of entries.slice()) {
+      if (!entry || typeof entry !== "object" || entry.matcher !== matcher || !Array.isArray(entry.hooks)) {
+        continue;
+      }
+      if (!firstMatching) firstMatching = entry;
+      const kept: any[] = [];
+      let droppedHere = false;
       for (const h of entry.hooks) {
+        if (h && typeof h.command === "string" && isTycoonCommand(h.command)) {
+          if (seenTycoon) {
+            removedDup = true;
+            droppedHere = true;
+            continue;
+          }
+          seenTycoon = true;
+          if (h.command !== currentHookCommand) {
+            h.command = currentHookCommand;
+            fixedStale = true;
+          }
+        }
+        kept.push(h);
+      }
+      entry.hooks = kept;
+      if (droppedHere && kept.length === 0) {
+        entries.splice(entries.indexOf(entry), 1);
+        if (firstMatching === entry) firstMatching = null;
+      }
+    }
+
+    if (!seenTycoon) {
+      let target = firstMatching;
+      if (!target) {
+        target = entries.find((e: any) => e && typeof e === "object" && e.matcher === matcher);
+      }
+      if (!target) {
+        target = { matcher, hooks: [] };
+        entries.push(target);
+      }
+      if (!Array.isArray(target.hooks)) target.hooks = [];
+      target.hooks.push({ type: "command", command: currentHookCommand });
+      changes.push(`Wired ${event} (${matcher || "any"}) hook`);
+    }
+    if (fixedStale) changes.push(`Fixed stale hook path in ${event}`);
+    if (removedDup) changes.push(`Removed duplicate Tycoon hook in ${event}`);
+  }
+
+  // Tycoon commands under a matcher outside TYCOON_HOOK_SLOTS: detection
+  // counts them stale too, so rewrite them here (no dedupe: distinct matcher).
+  for (const event of TYCOON_EVENTS) {
+    const list = settings.hooks[event];
+    if (!Array.isArray(list)) continue;
+    let fixed = false;
+    for (const e of list) {
+      if (!e || !Array.isArray(e.hooks)) continue;
+      for (const h of e.hooks) {
         if (h && typeof h.command === "string" && isTycoonCommand(h.command) && h.command !== currentHookCommand) {
           h.command = currentHookCommand;
-          fixedStale = true;
+          fixed = true;
         }
-      }
-      if (fixedStale) {
-        changes.push(`Fixed stale hook path in ${event}`);
-      }
-
-      const before = entry.hooks.length;
-      let foundFirst = false;
-      entry.hooks = entry.hooks.filter((h: any) => {
-        if (h && typeof h.command === "string" && h.command === currentHookCommand) {
-          if (!foundFirst) {
-            foundFirst = true;
-            return true;
-          }
-          return false;
-        }
-        return true;
-      });
-      if (entry.hooks.length < before) {
-        changes.push(`Removed duplicate Tycoon hook in ${event}`);
       }
     }
+    if (fixed) changes.push(`Fixed stale hook path in ${event}`);
   }
 
   if (opts.removeForeign && Array.isArray(opts.foreignCommands) && opts.foreignCommands.length > 0) {

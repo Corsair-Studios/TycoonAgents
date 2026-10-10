@@ -16401,7 +16401,13 @@ if (typeof module !== "undefined" && module.exports) {
           icon.textContent = f.severity === "warn" ? "⚠" : "✗";
           const text = document.createElement("span");
           text.className = "doctor-finding-text";
-          text.textContent = f.title + " — this may mean a previously-installed agent hook is still active in this session; fully restart the IDE, then run Troubleshoot & Fix again.";
+          // Settings-file findings are re-read from disk after the fix, so a
+          // survivor means the file itself still has the problem; only the
+          // runtime-state findings can be a live session holding old hooks.
+          const settingsFileIds = ["hooks-missing", "hooks-stale", "hooks-relative-command", "hooks-duplicate", "hooks-split", "hooks-foreign"];
+          text.textContent = settingsFileIds.indexOf(f.id) >= 0
+            ? f.title + (f.detail ? ": " + f.detail : "") + " (not fixed automatically; check .claude/settings.json and .claude/settings.local.json)"
+            : f.title + " — this may mean a previously-installed agent hook is still active in this session; fully restart the IDE, then run Troubleshoot & Fix again.";
           row.appendChild(icon);
           row.appendChild(text);
           el.appendChild(row);
