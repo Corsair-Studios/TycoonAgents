@@ -16,7 +16,7 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
@@ -57,7 +57,7 @@
     <tr><td><code>tycoonagents.autoShow</code></td><td>true</td><td>Automatically opens the live agent panel when a workspace opens.</td></tr>
     <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Freezes an agent's live time after this many minutes with no activity.</td></tr>
     <tr><td><code>tycoonagents.sanityCapMinutes</code></td><td>15</td><td>Hard cap on any single active stretch, in minutes.</td></tr>
-    <tr><td><code>tycoonagents.provider</code></td><td>claude-code</td><td>Which coding agent harness TycoonAgents reads activity from — <code>claude-code</code>, <code>opencode</code>, or <code>codex</code>. The <code>TYCOON_PROVIDER</code> environment variable, if set, always overrides this.</td></tr>
+    <tr><td><code>tycoonagents.provider</code></td><td>claude-code</td><td>Which coding agent harness TycoonAgents reads activity from — <code>claude-code</code> or <code>codex</code>. The <code>TYCOON_PROVIDER</code> environment variable, if set, always overrides this.</td></tr>
     <tr><td><code>tycoonagents.agents.multiProvider</code></td><td>false</td><td>Shows vendor and fallback controls for every agent in the Agents view. Turn this on if you use more than one AI provider for delegation — see <a href="ch-15.html">Chapter 15 · Adding Other AIs</a>. Leave it off if you use a single AI provider.</td></tr>
     <tr><td><code>tycoonagents.themeService.endpoint</code></td><td>&nbsp;</td><td>Advanced: override the Theme Service base URL (https only). Leave empty for the production service — see &sect; 5.6.</td></tr>
   </tbody>
@@ -131,7 +131,7 @@
   <span class="s-title">§ 10.3 · Team setup</span>
   <span class="cap">share the shape of your setup, not your machine</span>
 </div>
-<p>Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex, OpenCode) are discovered per machine. Team setup exports the <em>shape</em> of your setup instead — path-free and secret-free by construction, so it's safe to commit.</p>
+<p>Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex) are discovered per machine. Team setup exports the <em>shape</em> of your setup instead — path-free and secret-free by construction, so it's safe to commit.</p>
 <div class="steps">
   <div class="step">
     <span class="stepno">10</span>

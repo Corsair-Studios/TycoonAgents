@@ -16,7 +16,7 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link side-rail-current" href="ch-01.html" aria-current="page">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
@@ -48,10 +48,7 @@
       standalone app you open in a browser with no VS Code at all (setup
       for both is in <a href="ch-03.html">Chapter 03</a>). Either way, it
       needs a harness &mdash; the tool that actually runs your agent team
-      &mdash; and it works with three: Claude Code (the default), Codex
-      (Experimental), or OpenCode (Experimental). Codex and OpenCode have not
-      been tested as thoroughly as Claude Code as a harness, so they are
-      still considered an experimental mode. Whichever combination you
+      &mdash; and it works with two: Claude Code (the default) or Codex (Experimental). Codex has not been tested as thoroughly as Claude Code as a harness, so it is still considered an experimental mode. OpenCode support is coming soon. Whichever combination you
       run, TycoonAgents watches your multi-agent delegation and turns it
       into a living tycoon scene &mdash; agents that walk, build, and earn
       badges as your orchestrator hands off real work to specialists. This
@@ -68,8 +65,7 @@
     TycoonAgents comes in two forms &mdash; a VS Code extension, and a
     standalone app that runs the same panel in a browser with no VS Code
     installed (see <a href="ch-03.html">Chapter 03</a> for setup). Either
-    form pairs with a harness: Claude Code by default, or Codex or OpenCode
-    (both Experimental). None of them run your project or decide how your
+    form pairs with a harness: Claude Code by default, or Codex (Experimental). None of them run your project or decide how your
     agents work. Instead, TycoonAgents sits alongside whichever harness
     you've chosen and <strong>observes</strong>: every time your
     orchestrator dispatches a task to a specialist agent, and every time
@@ -101,7 +97,7 @@
     <div class="s-caption">who does what</div>
   </div>
   <p>
-    Multi-agent work under any of the three harnesses follows a simple
+    Multi-agent work under either harness (Claude Code or Codex) follows a simple
     split:
   </p>
   <ul>
@@ -147,12 +143,8 @@
     this doctrine into <code>CLAUDE.md</code> for you during first-run
     setup (Chapter 02), and it's the reason the scene has anything to show
     at all &mdash; no doctrine, no delegation, no agents walking around.
-    Codex and OpenCode (both Experimental) don't read
-    <code>CLAUDE.md</code> &mdash; they read <code>AGENTS.md</code>
-    instead. On OpenCode, saving in the Routing view (<a href="ch-03.html">Chapter
-    03</a>) writes an adapted copy of the doctrine into its own managed
-    section of <code>AGENTS.md</code>; any hand-written content you keep
-    outside that section is left alone. Codex gets the same treatment: when
+    Codex (Experimental) doesn't read
+    <code>CLAUDE.md</code> &mdash; it reads <code>AGENTS.md</code> instead. When
     you switch the harness to Codex, install the Codex hooks from the
     panel, or save in the Routing view while Codex is active, TycoonAgents
     writes the doctrine into its own managed section of

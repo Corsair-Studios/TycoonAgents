@@ -27,7 +27,7 @@ only.
   npm run build
   ```
 
-  This also copies the hook runtime files the `--opencode` install needs.
+  This also copies the hook runtime files.
 
   Why: the standalone does not fork or reimplement the extension's pure
   state logic (`computeStateFromRecords`, `mapHookRecord`, the provider
@@ -75,8 +75,8 @@ e.g. for a headless/CI/SSH environment.
 point: it starts the server against the repo root itself without the CLI's
 argument parsing or browser auto-open. `npm start` runs a `prestart` hook
 (`npm --prefix .. run build`, i.e. `tsc -p .` from the repo root) first, so
-`out/` is always rebuilt before the server starts — you no longer have to
-remember the "Build `out/` first" step above when using `npm start`.
+`out/` is always rebuilt before the server starts — `npm start` needs no separate
+"Build `out/` first" step.
 `node src/cli.mjs watch` / `npx tycoonagents-standalone watch` are separate
 Node entry points that do NOT go through npm's `start` lifecycle, so they
 still require the manual `npx tsc -p .` step from Prerequisites; if you skip
@@ -92,7 +92,7 @@ net on the first theme-generation call.
 | `TYCOON_STANDALONE_PROJECT_ROOT` | Comma-separated project director(y/ies) to watch, used when no CLI directory argument is given. | current working directory |
 | `TYCOON_STANDALONE_DATA_DIR` | Overrides the OS-default app-data directory (`appData.mjs`). | per-OS (see below) |
 | `TYCOON_STANDALONE_NO_OPEN` | Set to `1` to suppress the `watch` command's automatic browser launch. | unset (browser opens) |
-| — | Theme image generation no longer takes provider API keys here — sign in from the Theme Builder panel (see "Sign-in and credits" in the main [`README.md`](../README.md#custom-themes)). | — |
+| — | Theme image generation takes no provider API keys here — sign in from the Theme Builder panel (see "Sign-in and credits" in the main [`README.md`](../README.md#custom-themes)). | — |
 
 `TYCOON_STANDALONE_DATA_DIR`'s per-OS default (when unset): `%APPDATA%\TycoonAgents`
 on Windows, `~/Library/Application Support/TycoonAgents` on macOS, and
@@ -106,10 +106,10 @@ Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STA
 
 ## Provider selection
 
-`watch` reads agent activity from Claude Code by default. Pass `--provider <id>` (`claude-code` or `opencode`) or set `TYCOON_PROVIDER` (always wins over the flag) to switch:
+`watch` reads agent activity from Claude Code by default. Pass `--provider <id>` (`claude-code` or `codex`) or set `TYCOON_PROVIDER` (always wins over the flag) to switch:
 
 ```sh
-node src/cli.mjs watch . --provider opencode
+node src/cli.mjs watch . --provider codex
 ```
 
 Passing `--provider` disables the panel's "Which tool runs your agents?" harness dropdown — the flag (or `TYCOON_PROVIDER`, which always wins over it) is the source of truth for a standalone run.
@@ -122,7 +122,7 @@ The standalone panel's Routing view is the same one described in the main [`READ
 
 `.claude/agents/*.md` is not committed to the repo (`.claude/` is
 gitignored), so a fresh clone has no roster. `install-hook` seeds it by
-default — with or without `--opencode` — writing `.claude/agents/*.md` and
+default, writing `.claude/agents/*.md` and
 `.claude/tycoon/agent-keywords.json` whenever they're missing; it never
 overwrites a file that already exists. Pass `--no-agents` to skip seeding
 (e.g. when you manage the roster yourself), or run the seeding step alone
@@ -132,7 +132,7 @@ without touching the hook or plugin:
 node src/cli.mjs seed-agents <path-to-project>
 ```
 
-`docs/ROUTING-PROFILE.md` and `docs/OPENCODE-PROVIDER.md` depend on this
+`docs/ROUTING-PROFILE.md` depends on this
 roster existing before their routing scripts can resolve agent backends.
 
 This seeds only the core worker roster (`search-retrieval`,
@@ -141,19 +141,13 @@ matching a fresh VS Code install. Foreign-LLM reviewers (`codex-reviewer`,
 `gemini-reviewer`, `kimi-reviewer`) come from the multi-llm pack, installed
 from the panel's Packs view.
 
-## OpenCode plugin registration
+## OpenCode
 
-`install-hook`'s `--opencode` flag is a **separate opt-in** from the default Claude Code hook install: it idempotently copies the TycoonAgents OpenCode plugin (`hooks/tycoon-opencode-plugin.ts`, `hooks/agentBackend.js`, `hooks/modelAliases.js`, `hooks/delegationEnforcement.js`, `hooks/fallbackChain.js`) into `<dir>/.opencode/plugin/` (the directory OpenCode 1.18.27 loads `.ts` plugins from) instead of touching `.claude/settings.local.json`.
-
-```sh
-node src/cli.mjs install-hook <path-to-project> --opencode
-```
-
-Safe to re-run — a file already present and byte-identical to the repo's copy is left alone. If a destination file exists with *different* content, it refuses and errors rather than overwriting; pass `--force` to overwrite it anyway. If the source files are missing from this repo's `hooks/` directory (the two `.js` files are built by `node scripts/copy-hook-runtime.mjs`, which needs `npx tsc -p .` first), the command fails with an explicit error naming what's missing.
+OpenCode support is coming soon. It is not selectable in the standalone app yet.
 
 ### Theme image generation — sign-in
 
-Theme image generation no longer takes a provider API key from the
+Theme image generation takes no provider API key from the
 environment or the OS keychain: sign in from the Theme Builder panel (email
 magic link or Google) and generate against the Corsair Theme Service using
 credits — see "Sign-in and credits" in the main
@@ -299,26 +293,25 @@ independent of, and not run by, the root repo's `npm test`.
 ## Feature parity
 
 Every feature is identical after setup except the rows marked "not yet";
-the OpenCode column differs from the Claude Code column only in
-provider/vendor/model labels and the token-accounting note (see
-[`docs/OPENCODE-PROVIDER.md`](../docs/OPENCODE-PROVIDER.md)).
+the standalone Codex (Experimental) host differs from the Claude Code
+host only in provider/vendor/model labels.
 
-| Feature | VS Code (Claude Code) | Standalone (Claude Code) | Standalone (OpenCode) |
-| --- | --- | --- | --- |
-| Board/agent metrics | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Theater/stage | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Themes list + select | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Theme Generator | verified 2026-09-03 | verified server-side; visual check pending | verified server-side; visual check pending |
-| Theme Review | verified 2026-09-03 | verified server-side; visual check pending | verified server-side; visual check pending |
-| Settings dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Skills dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| MCP dialog | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Packs | verified 2026-09-03 | not yet (install via VS Code) | not yet (install via VS Code) |
-| Project plan panel | verified 2026-09-03 | not yet | not yet |
-| Delegation panel | verified 2026-09-03 | not yet | not yet |
-| Feedback | verified 2026-09-03 | verified 2026-09-03 (diagnostics attachment not yet) | verified 2026-09-03 (diagnostics attachment not yet) |
-| Handbook | verified 2026-09-03 | verified 2026-09-03 | verified 2026-09-03 |
-| Diagnostics report | verified 2026-09-03 | not yet | not yet |
+| Feature | VS Code (Claude Code) | Standalone (Claude Code) |
+| --- | --- | --- |
+| Board/agent metrics | verified 2026-09-03 | verified 2026-09-03 |
+| Theater/stage | verified 2026-09-03 | verified 2026-09-03 |
+| Themes list + select | verified 2026-09-03 | verified 2026-09-03 |
+| Theme Generator | verified 2026-09-03 | verified server-side; visual check pending |
+| Theme Review | verified 2026-09-03 | verified server-side; visual check pending |
+| Settings dialog | verified 2026-09-03 | verified 2026-09-03 |
+| Skills dialog | verified 2026-09-03 | verified 2026-09-03 |
+| MCP dialog | verified 2026-09-03 | verified 2026-09-03 |
+| Packs | verified 2026-09-03 | not yet (install via VS Code) |
+| Project plan panel | verified 2026-09-03 | not yet |
+| Delegation panel | verified 2026-09-03 | not yet |
+| Feedback | verified 2026-09-03 | verified 2026-09-03 (diagnostics attachment not yet) |
+| Handbook | verified 2026-09-03 | verified 2026-09-03 |
+| Diagnostics report | verified 2026-09-03 | not yet |
 
 Theme Generator/Review note: `standalone/src/themeMessages.mjs` handles the
 messages server-side; rendering fixes landed 2026-09-03 (commit

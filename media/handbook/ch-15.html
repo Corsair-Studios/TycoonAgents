@@ -16,7 +16,7 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
@@ -62,7 +62,7 @@
   </p>
   <ul>
     <li>The <strong>harness</strong> is what runs the orchestrator &mdash;
-    Claude Code, OpenCode (Experimental), or Codex (Experimental) (Chapter
+    Claude Code or Codex (Experimental) (Chapter
     03). Changing it changes who coordinates the whole session.</li>
     <li>The <strong>agent model</strong> is what a specialist agent runs on
     underneath &mdash; it can differ per agent, and per agent from the
@@ -120,17 +120,6 @@
       activates when an agent's own configuration names that MCP server
       &mdash; nothing routes to a subscription CLI implicitly.
     </p>
-    <p>
-      <strong>OpenCode (Experimental):</strong> Claude models there default
-      to an Anthropic API key (<code>ANTHROPIC_API_KEY</code>, metered).
-      Using Claude Worker or any Claude slot through the <code>claude</code>
-      CLI is an explicit opt-in: turn on <em>Allow Claude subscription via
-      the claude CLI under OpenCode</em> in Settings (off by default).
-      Existing setups that already use it keep working and show this note:
-      &ldquo;Uses your own Claude Code CLI login. Anthropic's terms for
-      third-party harnesses have changed several times; check them before
-      relying on this.&rdquo; Claude Code and Codex are unaffected.
-    </p>
   </div>
   <p>
     See <code>docs/adding-a-non-anthropic-agent.md</code> and
@@ -159,7 +148,7 @@
   <p><strong>Option A &mdash; in the panel (easiest).</strong></p>
   <ol>
     <li>Open <strong>Routing</strong> and pick the agent.</li>
-    <li>On Claude Code and Codex, each provider shows fixed key rows: the variable name is already filled in (e.g. <code>MISTRAL_API_KEY</code>) and the row shows whether it is set or unset. On OpenCode, and for <strong>Custom endpoint&hellip;</strong>, you type the names yourself in the <strong>API key env</strong> / <strong>Endpoint URL env</strong> fields.</li>
+    <li>On Claude Code and Codex, each provider shows fixed key rows: the variable name is already filled in (e.g. <code>MISTRAL_API_KEY</code>) and the row shows whether it is set or unset. For <strong>Custom endpoint&hellip;</strong>, you type the names yourself in the <strong>API key env</strong> / <strong>Endpoint URL env</strong> fields.</li>
     <li>Click <strong>Set value&hellip;</strong>, paste the key, and press <strong>Save</strong>. <strong>Clear stored value</strong> removes it again.</li>
     <li>Click <strong>Test connection</strong> to make one tiny real call. The key is only ever sent over https to that provider's own host. If you set a custom base URL, the result says so and nothing is tested automatically.</li>
   </ol>
@@ -201,7 +190,7 @@
   <p>
     <strong>Fallback chains by host.</strong> A note above the chain says what
     your host supports: Claude Code gets full fallback (dispatcher plus hook),
-    OpenCode is best-effort (it only switches the model string), and Codex
+    and Codex
     only follows vendors with a dispatcher adapter. Google fallbacks are
     skipped on Codex, and the chain moves to the next entry.
   </p>
@@ -337,29 +326,12 @@ findings), never free-form prose. Reference env var names only &mdash; I'll
 set the actual value myself via setx/export or the panel's Routing view.
 Report back which MCP server entry I still need to add to .mcp.json.</pre>
 
-  <h3>OpenCode (Experimental) &mdash; new agent via MCP</h3>
-  <pre>Create a new subagent under .opencode/agents/&lt;name&gt;.md, backed by
-&lt;Gemini | Grok/xAI | an OpenAI-compatible endpoint&gt;.
-
-If OpenCode has a built-in provider for this vendor (e.g. xai/&lt;model&gt;
-is native under OpenCode &mdash; no bridge needed), configure the agent to
-use that provider directly instead of an MCP bridge.
-
-Otherwise, mirror the MCP-bridge shape TycoonAgents' Claude Code agents use
-(see .claude/agents/kimi-reviewer.md or gemini-reviewer.md in this repo as
-the reference for the tool-calling and verdict-contract pattern), pointing
-at the equivalent MCP server registered on the OpenCode side.
-
-Reference env var names only (e.g. XAI_API_KEY, OPENAI_COMPAT_BASE_URL,
-OPENAI_COMPAT_API_KEY) &mdash; I'll set the actual value myself. Report back
-what provider/server entry I still need to add to my OpenCode config.</pre>
-
   <h3>Codex (Experimental) &mdash; new agent, as far as it's supported</h3>
   <pre>Using AGENTS.md (or whatever agent mechanism this Codex CLI version
 actually supports), describe a specialist role for &lt;task&gt; that should
 run on &lt;vendor&gt; instead of the default model.
 
-Codex's agent story is narrower than Claude Code's or OpenCode's subagent
+Codex's agent story is narrower than Claude Code's subagent
 files today &mdash; check what this repo's AGENTS.md and Codex CLI version
 actually support before assuming per-agent backend routing exists here.
 If per-agent MCP backends aren't supported, describe the role and note

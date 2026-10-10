@@ -15,6 +15,8 @@ Sitting on top of that harness is a live, game-style visualization of your agent
 - Tycoon Theme Builder for custom stage art; Project Plan with approval gates (on by default).
 - VS Code extension or standalone app; an in-panel handbook covers everything in depth.
 
+Tested on Windows. macOS and Linux support is experimental.
+
 **How sign-in works:** TycoonAgents uses your installed Claude Code, Codex and Antigravity command-line tools under their own sign-in — it never reads, stores or forwards your credentials. The panel itself makes no AI calls; theme generation is a separate opt-in service. OpenAI-compatible endpoints use an endpoint URL/API key you set, stored per user outside your project (never in it).
 
 > **Status:** Working prerelease — not a design sketch. TycoonAgents ships as a real VS Code extension (.vsix) with a small early user base: mandatory delegation, the live visualization, custom themes, an in-panel handbook, and everything else described below runs today. It's still prerelease software — expect rough edges and breaking changes between versions. See [docs/DESIGN.md](docs/DESIGN.md) for the full product & architecture design.
@@ -22,7 +24,7 @@ Sitting on top of that harness is a live, game-style visualization of your agent
 **Ways to run it:**
 - **VS Code extension with Claude Code** — install the extension and open the panel (see Setup below).
 - **Standalone app** — `node standalone/src/cli.mjs watch .`, no VS Code required; see [`standalone/README.md`](standalone/README.md).
-- **Codex (Experimental) or OpenCode (Experimental) as the harness** — `--provider codex` / `--provider opencode`; see "Multi-LLM" below.
+- **Codex (Experimental) as the harness** — `--provider codex`; see "Multi-LLM" below.
 
 ## Mandatory delegation & orchestration
 
@@ -41,7 +43,7 @@ The roster the extension seeds (all model tiers are configurable):
 | **workspace-monitor** | Sonnet | Agent lifecycle / hook-record mapping |
 | **uefn-auditor** | Sonnet | Reviews UEFN Verse for correctness, deprecations, and API compliance against the locally installed Verse/Fortnite/Unreal digests — does not author features |
 | **verse-expert** | Sonnet | Writes and refactors UEFN Verse device scripts and island gameplay, using the UEFN Bridge for live-editor control |
-| **Fallback agent** | Haiku | Catch-all for work no specialist keyword matched — a signal to refine routing, not a design goal |
+| **Wildcard Agent** | Sonnet | Catch-all for work no specialist keyword matched — a signal to refine routing, not a design goal |
 
 The doctrine also builds in **verification discipline**: a "completed" notification is not proof, so the orchestrator reads changed files on disk before trusting a result, keeps concurrent workers on disjoint files, and treats workers as leaves that do the work themselves rather than re-delegating.
 
@@ -69,7 +71,7 @@ All the reasoning happens in Claude Code; the extension only reads and displays 
 
 ## Self-contained & hook-driven
 
-The shipped extension makes **zero runtime AI calls of its own.** Everything you see is built from **hooks** that record when agents are dispatched, work, and finish, captured by whichever harness is installed (Claude Code, OpenCode (Experimental), or Codex (Experimental)). The visualization and metrics are a normalized view of those records, nothing more. (Image generation for themes is an *authoring-time* convenience only; see below.)
+The shipped extension makes **zero runtime AI calls of its own.** Everything you see is built from **hooks** that record when agents are dispatched, work, and finish, captured by whichever harness is installed (Claude Code or Codex (Experimental)). The visualization and metrics are a normalized view of those records, nothing more. (Image generation for themes is an *authoring-time* convenience only; see below.)
 
 ## Setup
 
@@ -77,7 +79,7 @@ Install the extension and open the TycoonAgents panel. First run (or the **Repai
 
 - writes the delegation doctrine into `CLAUDE.md` (in a managed, auto-healing block),
 - seeds the specialist agent roster into `.claude/agents/`,
-- merges the tracking hooks into `.claude/settings.json`,
+- merges the tracking hooks into `.claude/settings.local.json`,
 - enables the Project Plan by default.
 
 Everything it writes is marker-scoped and reversible, and it never stamps your own generated code.
@@ -89,7 +91,7 @@ Everything it writes is marker-scoped and reversible, and it never stamps your o
 - **Import .zip.** The free, offline path, and always available: additional themes are published as `.zip` archives. The themes repo is private while the project is in prerelease, so get the `.zip` directly from the maintainer, then import it from the Theme Picker's **Import .zip**. The extension never fetches themes over the network.
 - **In-panel handbook.** A 15-chapter user handbook ships in the VSIX, opened from the book icon in the panel. It is the place to go for depth on setup, themes, routing, and fallback.
 - **Submit Feedback.** An in-panel two-step form shows the exact JSON payload before anything is sent; local paths and API keys are stripped from it first. If the panel won't open, there's a fallback web form at [feedback.corsairstudios.com](https://feedback.corsairstudios.com).
-- **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" below).
+- **Delegation & Metrics tabs.** Live panel views of what got delegated to which agent and the resulting token-cost breakdown (see "Token savings you can see" above).
 - **UEFN pack.** See "UEFN pack" below.
 - **Verse analyzer.** Audits UEFN Verse source against the locally installed Verse/Fortnite/Unreal API digests, flagging calls to deprecated or nonexistent APIs.
 - **UEFN moderation pre-flight scan.** Collects the asset names, paths, and metadata Fortnite's island moderation actually inspects, then has your connected AI assistant judge them against Epic's IP and authenticity rules before you submit.
@@ -103,7 +105,7 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 - **Build & defend** — agents build objects across your site and defend the base from incoming attacks.
 - **Achievements, badges & rebirths** — earn badges for milestones; rebirth for compounding bonuses (and the whole fleet dances for three seconds when you do).
 
-The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; OpenCode and the standalone host always show the full view.
+The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; the standalone host always shows the full view.
 
 The Agents screen's **Keyword health** card flags routing problems in `agent-keywords.json` (dangling refs, multi-word segments that can never match, an agent listed after the Wildcard Agent) and offers a **Fix all** to normalize them. See [`docs/keyword-routing.md`](docs/keyword-routing.md) for how Task routing scores keywords.
 
@@ -148,7 +150,7 @@ You can optionally enter a referral code the first time you sign in on a device,
 
 Generation prompts are assembled by the Corsair Theme Service from your theme description, creative direction, and per-character fields — you don't hand-write the prompt sent to the model. The extension shows a preview of the assembled prompt before you generate, and notes if the service used a newer template than the one the preview was built from.
 
-None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. The extension makes network calls only for Theme service sign-in, generation, and credit checkout (all Corsair-hosted), feedback submission, and the opt-in team readiness reachability probe; the agent harnesses (Claude Code, OpenCode, Codex) make their own separate calls.
+None of this touches the free path: uploading or hand-making a theme (**Import .zip**) stays free and fully offline, with no account and no network call. The extension makes network calls only for Theme service sign-in, generation, and credit checkout (all Corsair-hosted), feedback submission, and the opt-in team readiness reachability probe; the agent harnesses (Claude Code, Codex) make their own separate calls.
 
 The advanced setting `tycoonagents.themeService.endpoint` (VS Code) or the `THEME_SERVICE_ENDPOINT` environment variable (standalone) points the client at a different `https` Theme Service URL for testing, and is normally left empty.
 
@@ -161,9 +163,9 @@ The advanced setting `tycoonagents.themeService.endpoint` (VS Code) or the `THEM
 
 ## Team setup (share your configuration with teammates)
 
-Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex, OpenCode) are discovered per machine — none of that travels. Instead, the Settings panel's **Team setup** section exports the *shape* of your setup, not the machine it runs on.
+Copying an install to a teammate's machine doesn't work: your agent roster lives at absolute paths, your API keys and CLI sessions are yours alone, and vendor CLIs (Claude, Codex) are discovered per machine — none of that travels. Instead, the Settings panel's **Team setup** section exports the *shape* of your setup, not the machine it runs on.
 
-**Export team setup** writes `.claude/tycoon-team.json` at the project's `.claude` folder — the roster, per-agent routing (vendor/model plus fallback chains), the *names* of the env vars each slot needs (never values), which skills and MCP servers are enabled, the delegation mode and parallel limit, an optional plan pointer, and which harness (Claude Code, Codex, or OpenCode) the orchestrator was recorded running on. It's path-free and secret-free by construction — validation rejects anything that looks like an absolute path or a secret — so it's safe to commit. Your API keys, CLI sessions, themes, and the rest of the local `tycoon` runtime folder never leave the machine.
+**Export team setup** writes `.claude/tycoon-team.json` at the project's `.claude` folder — the roster, per-agent routing (vendor/model plus fallback chains), the *names* of the env vars each slot needs (never values), which skills and MCP servers are enabled, the delegation mode and parallel limit, an optional plan pointer, and which harness (Claude Code or Codex) the orchestrator was recorded running on. It's path-free and secret-free by construction — validation rejects anything that looks like an absolute path or a secret — so it's safe to commit. Your API keys, CLI sessions, themes, and the rest of the local `tycoon` runtime folder never leave the machine.
 
 A teammate who clones the project and opens TycoonAgents sees a **"Team setup changed. Apply?"** drift notice the next time Settings opens. The roster is authoritative and routing is only a reference: **Apply** installs the agents, keywords, skills, delegation mode, and hooks every time, with project-relative commands (never absolute paths) so they work regardless of where the project lives on disk; the originator's vendor and model choices are used only to seed routing on a fresh clone, or when the local `routing.json` is unreadable — after that, each teammate's own routing is kept as-is, so remapping an agent to a vendor you actually have sticks across future Applies. MCP installation is skipped during Apply — it always needs your own confirmation — and any roster id Apply doesn't recognize is reported rather than guessed at. When only routing changed (the roster didn't), the drift notice instead reads **"Team routing changed (reference only)"** and prompts nothing to apply.
 
@@ -173,7 +175,7 @@ A teammate who clones the project and opens TycoonAgents sees a **"Team setup ch
 
 A provider abstraction so agent activity can come from Claude Code, other agent harnesses, or other models.
 
-Supported harnesses: Claude Code, OpenCode (Experimental), Codex (Experimental). Gemini / Antigravity agent as harness: planned (not yet available); the Antigravity editor itself is supported.
+Supported harnesses: Claude Code and Codex (Experimental). OpenCode: coming soon. Gemini / Antigravity agent as harness: planned (not yet available); the Antigravity editor itself is supported.
 
 ### Multi-model delegation
 
@@ -182,19 +184,17 @@ Specialist agents can run on a different vendor than the orchestrator. Delegatio
 - **Claude** (Claude Code subscription).
 - **Codex** (ChatGPT sign-in).
 - **Gemini**, through the Antigravity CLI (`agy`) — no API key needed by default.
-- **OpenAI-compatible endpoints** — Kimi, Qwen, Mistral, and local or VM-hosted servers.
+- **OpenAI-compatible endpoints** — Kimi, Qwen, Mistral, Grok (xAI), and local or VM-hosted servers.
 
 Each agent has its own routing (vendor and model) plus an ordered fallback chain. When a provider hits a usage limit or quota error (401/429), or is unreachable, the work falls back automatically along the chain; fallback rows show an amber **(fb)** marker, and the default fallback shows **(dfb)**. Set it up in the **Routing** view (see the walkthrough below) and see the handbook chapter "Adding Other AIs: Agents, Routing & Fallback".
 
-### Using OpenCode as the provider
+### OpenCode (Coming Soon)
 
-TycoonAgents can read activity from [OpenCode](https://opencode.ai) instead of Claude Code, via the same provider abstraction. This depends on the `.claude/agents/*.md` agent roster existing first — it is not committed (`.claude/` is gitignored); seed it via the VS Code panel's Install/Repair hooks, or `node standalone/src/cli.mjs install-hook <dir>` / `seed-agents <dir>` on OpenCode-only setups — see "Prerequisite: the agent roster" in [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md).
-
-Building from source and registering the OpenCode plugin are covered in [`docs/BUILDING.md`](docs/BUILDING.md). Select the provider via the VS Code setting `tycoonagents.provider: "opencode"`, the `TYCOON_PROVIDER=opencode` environment variable, or `--provider opencode` in the standalone host; the panel then shows the same live visualization and metrics, sourced from OpenCode's events instead of Claude Code's.
+OpenCode support is coming soon. It appears in the harness picker as "OpenCode (Coming Soon)" and can't be selected in the VS Code panel or the standalone app. Projects set to OpenCode run on Claude Code, with a notice, until OpenCode support is available.
 
 ### Codex host (Experimental)
 
-TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/codex) via the same provider abstraction, alongside Claude Code and OpenCode. Codex support is Experimental — select it via `TYCOON_PROVIDER=codex`, the VS Code setting `tycoonagents.provider: "codex"`, or `--provider codex` in the standalone host. See [`docs/codex-host.md`](docs/codex-host.md) for provider-selection precedence, per-agent attribution reconstruction, the known "stopped/reopened" display tradeoff, and binary-discovery paths.
+TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/codex) via the same provider abstraction, alongside Claude Code. Codex support is Experimental — select it via `TYCOON_PROVIDER=codex`, the VS Code setting `tycoonagents.provider: "codex"`, or `--provider codex` in the standalone host. See [`docs/codex-host.md`](docs/codex-host.md) for provider-selection precedence, per-agent attribution reconstruction, the known "stopped/reopened" display tradeoff, and binary-discovery paths.
 
 Any recent Codex CLI works: a runtime launcher discovers the Codex binary and picks the connection method automatically (`mcp-server` or an `app-server`-based adapter); set `TYCOON_CODEX_BACKEND` to `mcp-server` or `app-server` to override. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
@@ -204,13 +204,13 @@ The **Multi-LLM agents** pack installs the launcher-based Codex MCP entry (`code
 
 ### Routing walkthrough
 
-1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code, Codex, or OpenCode).
+1. In **Settings**, use **"Which tool runs your agents?"** to pick the harness (Claude Code or Codex (Experimental); OpenCode is shown as "OpenCode (Coming Soon)" and can't be selected).
 2. Open the **Routing** view from the panel menu.
 3. Fill in the **orchestrator** slot at the top the same way as any agent row below.
 4. For a per-agent model, pick **Vendor** then choose a preset from the **Model** dropdown.
 5. For a local or VM-hosted OpenAI-compatible server, pick **Custom endpoint…** as the vendor: give it a **Provider name** (e.g. `ollama-windows`), the **Model** id exactly as your endpoint serves it, and **Cost class** `local`. Set the **Endpoint URL env** and **API key env** fields to environment variable *names* only, then click **Set value…** next to each to store the actual URL/key — both are saved under the TycoonAgents per-user app-data folder, never in the project, and each shows a dot reading "stored locally" once set. **Clear stored value** removes one.
-6. Expand **"Fallback chain (N)"** and **"+ Add fallback"** to add ordered fallback slots (e.g. `opencode/big-pickle`, then a subscription-backed slot).
-7. **Save** writes the resolved slots to `routing.json`, applies managed `backend:` blocks to agent files, and adds a secret-free provider entry to `opencode.json` plus your user-level OpenCode config (file references only) — any slot about to change shows a "will be written to routing.json" marker first.
+6. Expand **"Fallback chain (N)"** and **"+ Add fallback"** to add ordered fallback slots (e.g. a second model on another vendor, then a subscription-backed slot).
+7. **Save** writes the resolved slots to `routing.json` and applies managed `backend:` blocks to agent files. Any slot about to change shows a "will be written to routing.json" marker first.
 8. **Clear profile** removes the routing profile and its generated blocks but keeps everything you stored via Set value….
 9. Each agent row shows its **"model from …"** source line, a **"ran on fallback"** chip when it last ran on a fallback entry, and the view's **Totals** block rolls up per-vendor and per-cost-class counts.
 
@@ -240,8 +240,6 @@ banner; nothing is written until **Save**. Useful for repeating a
 VM-hosted or local-model setup across agents.
 
 See [`docs/ROUTING-PROFILE.md`](docs/ROUTING-PROFILE.md) for the full `routing.json` schema.
-
-See [`docs/OPENCODE-PROVIDER.md`](docs/OPENCODE-PROVIDER.md) for the full IPC contract and mapping details. Note: Anthropic/OpenAI models used through OpenCode are billed per API token, not through a Claude/Codex subscription — subscription access reaches OpenCode only via the vendor CLIs (see `docs/OPENCODE-PROVIDER.md`).
 
 ## UEFN pack
 

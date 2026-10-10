@@ -1,3 +1,5 @@
+Status: not yet available to users — OpenCode is shown as Coming Soon in the harness picker.
+
 # OpenCode Provider
 
 The OpenCode provider bridges OpenCode plugin hook events into the same

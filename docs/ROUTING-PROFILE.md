@@ -1,9 +1,8 @@
 # Routing Profile
 
 `.claude/tycoon/routing.json` lets a project declare, per agent, which
-vendor/model/transport serves it — one file that both the Claude Code
-frontmatter generator and the OpenCode config generator read as their
-highest-priority source. It is entirely optional: a project with no
+vendor/model/transport serves it — one file that the Claude Code
+frontmatter generator reads as its highest-priority source. It is entirely optional: a project with no
 `routing.json` behaves exactly as it does today.
 
 See `src/core/routingProfile.ts` for the loader/validator implementation and
@@ -18,13 +17,12 @@ to create it:
 
 - **VS Code**: open the TycoonAgents panel and run **Install/Repair hooks**;
   it seeds the roster along with the Claude Code hook.
-- **Standalone / OpenCode-only** (no VS Code): from the repo root,
+- **Standalone** (no VS Code): from the repo root,
   `node standalone/src/cli.mjs install-hook <dir>` seeds
   `.claude/agents/*.md` and `.claude/tycoon/agent-keywords.json` when
-  missing (never overwriting a file that already exists), whether or not
-  you also pass `--opencode`. Pass `--no-agents` to skip roster seeding, or
+  missing (never overwriting a file that already exists). Pass `--no-agents` to skip roster seeding, or
   run `node standalone/src/cli.mjs seed-agents <dir>` to seed the roster
-  only, without touching the hook or plugin registration.
+  only, without touching the hook.
 
 Either path seeds only the core worker roster (`search-retrieval`,
 `primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
@@ -260,9 +258,11 @@ endpoint is unavailable. Any agent not listed here (e.g. `search-retrieval`)
 falls back to its own frontmatter `backend:` block, since the profile says
 nothing about it.
 
-## Migration from `opencode-models.json`
+## (Coming Soon) Migration from `opencode-models.json`
 
-`.claude/tycoon/opencode-models.json` previously let a project override an
+> The OpenCode sections of this document (marked "Coming Soon") describe the internal integration; OpenCode is not yet available to users.
+
+`.claude/tycoon/opencode-models.json` lets a project override an
 agent's OpenCode model without touching frontmatter. Once a project adopts
 `routing.json`:
 
@@ -491,7 +491,7 @@ A `transport: "openai-compatible"` slot names a vendor and a fully-qualified
 `vendor/model` string (same convention as every other slot), plus
 `endpointEnv` (and optionally `credentialEnv`) naming the environment
 variables that hold the endpoint URL and API key — never the values
-themselves (see "The no-secrets rule" above). For the OpenCode side,
+themselves (see "The no-secrets rule" above). **OpenCode only (Coming Soon):**
 `scripts/generate-opencode-config.mjs` turns every distinct
 openai-compatible vendor across the resolved profile (agent slots, the
 orchestrator slot, and every entry in each slot's `fallback` chain) into a
@@ -528,7 +528,7 @@ export OLLAMA_BASE_URL="http://<host>:11434/v1"
 export OLLAMA_API_KEY="unused"   # only if you also set credentialEnv
 ```
 
-Generated `opencode.json` (via `npm run opencode:config`):
+**OpenCode only (Coming Soon):** generated `opencode.json` (via `npm run opencode:config`):
 
 ```jsonc
 {
@@ -549,7 +549,7 @@ Generated `opencode.json` (via `npm run opencode:config`):
 }
 ```
 
-Only entries carrying `"tycoonManaged": true` are ever replaced or removed
+**OpenCode only (Coming Soon):** only entries carrying `"tycoonManaged": true` are ever replaced or removed
 by the generator; a hand-authored `provider.ollama-windows` entry without
 that marker is left alone (a warning is printed instead of overwriting it).
 
@@ -558,8 +558,8 @@ that marker is left alone (a warning is printed instead of overwriting it).
 An endpoint URL or API key entered in the Agents screen (full density) is stored per-user,
 outside any project, via `src/core/localEnvStore.ts` (`<per-user app data
 dir>/secrets/<NAME>`, mode 0600) — never in `routing.json`, never in
-`opencode.json`, never in git. To keep that guarantee, `scripts/
-generate-opencode-config.mjs` now writes the managed provider entry into
+`opencode.json`, never in git. **OpenCode only (Coming Soon):** to keep that guarantee, `scripts/
+generate-opencode-config.mjs` writes the managed provider entry into
 **two** files:
 
 - **PROJECT** `<root>/opencode.json` (git-tracked): the entry carries only
@@ -569,15 +569,15 @@ generate-opencode-config.mjs` now writes the managed provider entry into
   `OPENCODE_CONFIG_DIR`. Confirmed empirically against a live OpenCode
   1.18.27 install on Windows (2026-09-04): `opencode debug paths` reports
   `config  C:\Users\<user>\.config\opencode`, and `%APPDATA%\opencode` is
-  never read — the generator's earlier win32 special-case (writing to
-  `%APPDATA%/opencode/opencode.json`) was wrong and has been removed; a
-  stale entry left there by that older behavior is migrated (its
+  never read, so the generator never writes to
+  `%APPDATA%/opencode/opencode.json`; a
+  stale entry left there is migrated (its
   `tycoonManaged` provider entries removed, everything else left intact)
   the next time the generator runs. The SAME managed entry, but with
   `options.baseURL`/`options.apiKey` set to `{file:<store path>}` when a
   value is stored, else the existing `{env:<NAME>}` placeholder.
 
-This relies on OpenCode's documented config-merge behavior (verified
+**OpenCode only (Coming Soon):** this relies on OpenCode's documented config-merge behavior (verified
 against the OpenCode 1.18.27 docs, https://opencode.ai/docs/config/,
 2026-09-04): config files are "merged together, not replaced", and project
 config "overrides both global and remote configs" only for keys it actually
@@ -677,7 +677,7 @@ Clicking a tier radio on a routed agent (`routeSource` "explicit" or
 "default", per `overrideAgentToClaudeTier`) writes an explicit
 `{ vendor: "anthropic", model: <tier> }` entry for that agent into
 `.claude/tycoon/routing.json` via `saveRoutingProfile`, so the click wins
-outright over `defaults` or whatever non-Claude route was previously in
+outright over `defaults` or whatever non-Claude route is in
 force. Clicking a tier radio on an unrouted agent (`routeSource`
 "frontmatter") instead writes the agent's `.claude/agents/<id>.md`
 `model:` frontmatter directly, as it always has — `routing.json` is left
@@ -685,13 +685,13 @@ untouched.
 
 ### Agents screen visibility
 
-The harness dropdown (Claude Code default, OpenCode) lives only in
-**Settings**; the Agents screen (menu entry "Agents", always visible) no
-longer has it and instead shows a read-only line — "Runs on Claude Code ·
-Change in Settings" (or "Runs on OpenCode · Change in Settings"). The
+The harness dropdown (Claude Code default, Codex (Experimental); OpenCode is listed as "OpenCode (Coming Soon)" and cannot be selected) lives only in
+**Settings**; the Agents screen (menu entry "Agents", always visible) does not
+have it and instead shows a read-only line — "Runs on Claude Code ·
+Change in Settings". The
 Settings dropdown's value alone decides Agents' density
-(`describeRoutingVisibility`: visible when the effective harness is
-`opencode`, or when `routedAgentCount > 0` under Claude Code) — there is no
+(`describeRoutingVisibility`: visible when `routedAgentCount > 0` under
+Claude Code) — there is no
 separate profile-visibility toggle.
 
 Under the **Claude Code** harness, Agents shows classic cards: name, Claude
@@ -713,15 +713,11 @@ checked and locked, labeled "Backend: <vendor> via MCP (hand-written)".
 
 The orchestrator card is read-only under Claude Code in every case: "Session
 model: <model> — set with /model in Claude Code. Routing the orchestrator
-applies only when OpenCode runs your agents." Saving a changed orchestrator
+does not apply under Claude Code." Saving a changed orchestrator
 route while the effective harness is `claude` is rejected with an error
-message rather than silently dropped; under OpenCode it saves as before.
+message rather than silently dropped.
 
-Under the **OpenCode** harness, Agents renders full density as before: the
-"Default for all agents" card, an editable orchestrator card, and the
-routing/fallback editor on every agent card.
-
-Switching the harness back to Claude Code, or unchecking an agent's
+Unchecking an agent's
 checkbox, never deletes `routing.json` beyond the specific agent cleared —
 it only changes what's shown or which entries remain.
 
@@ -732,5 +728,4 @@ harness writes a real route, but it only takes effect immediately for
 MCP-bridged agents (the hand-written reviewers above, which already call
 out to their vendor over MCP) — under Claude Code, Task subagents always
 run Claude models regardless of `routing.json`, so a route saved on any
-other agent there is prep, not live effect, until the harness is switched
-to OpenCode, at which point every routed agent's route applies.
+other agent there is prep, not live effect.

@@ -314,11 +314,15 @@ test("ch-10.html mentions uefn-paths.json", () => {
   assert.match(content, /uefn-paths\.json/, "ch-10.html: missing \"uefn-paths.json\"");
 });
 
-test("index.html and ch-01.html frame standalone + OpenCode support within their first 60 lines", () => {
+test("index.html and ch-01.html frame standalone + Claude Code/Codex support within their first 60 lines", () => {
   for (const file of ["index.html", "ch-01.html"]) {
     const lines = readHandbookFile(file).split("\n").slice(0, 60).join("\n");
     assert.match(lines, /standalone/i, `${file}: first 60 lines don't mention "standalone"`);
-    assert.match(lines, /OpenCode/i, `${file}: first 60 lines don't mention "OpenCode"`);
+    assert.match(lines, /Claude Code/i, `${file}: first 60 lines don't mention "Claude Code"`);
+    assert.match(lines, /Codex/i, `${file}: first 60 lines don't mention "Codex"`);
+    for (const m of lines.matchAll(/[^.\n]*OpenCode[^.\n]*/gi)) {
+      assert.match(m[0], /coming soon/i, `${file}: OpenCode mentioned without "coming soon": ${m[0].trim()}`);
+    }
   }
 });
 

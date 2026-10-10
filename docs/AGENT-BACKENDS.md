@@ -9,12 +9,10 @@ later task wires that in.
 
 This document covers the per-agent `backend:` frontmatter schema and its
 defaults/validation only. A project-wide `.claude/tycoon/routing.json`
-profile (schema, precedence, migration from `opencode-models.json`) that
+profile (schema and precedence) that
 overrides these `backend:` blocks — plus how a `RoutingSlot.fallback` chain
 is detected, recorded, and re-dispatched at runtime, and every activity
-record field it produces — is documented in `docs/ROUTING-PROFILE.md`. See
-`docs/OPENCODE-PROVIDER.md` for the OpenCode-side generation and enforcement
-counterpart.
+record field it produces — is documented in `docs/ROUTING-PROFILE.md`.
 
 ## Purpose
 
@@ -143,38 +141,9 @@ backend:
 ...
 ```
 
-### claude-native, foreign vendor — Grok (xAI) via OpenCode (native, no bridge)
+### claude-native, foreign vendor — Grok (xAI) (Coming Soon)
 
-OpenCode ships a built-in `xai` provider (https://opencode.ai/docs/providers/,
-model ids in `xai/<model>` form), so under the OpenCode host this vendor runs
-natively — no MCP bridge, no relaying agent, and no per-call Claude-token
-overhead (`transport: claude-native` — this project's generic "handled
-natively by the host, no bridge required" value, same as the `opencode`
-vendor's own presets in `src/core/routingHostOps.ts`). Auth is `XAI_API_KEY`
-(names only — the value is never stored in this repo; see
-`src/core/localEnvStore.ts`). OpenCode's docs also describe a SuperGrok/
-X Premium `/connect` OAuth login as an alternative to an API key; that path
-is unverified here (sourced from a third-party guide, not confirmed against
-a live OpenCode install).
-
-```yaml
----
-model: sonnet
-backend:
-  vendor: xai
-  transport: claude-native
-  model: xai/grok-4.7
-  costModelClass: metered
-  apiKeyEnv: XAI_API_KEY
----
-
-# some-agent
-...
-```
-
-Reasoning-effort control for Grok under OpenCode is not documented anywhere
-this project has checked — `backend.reasoningEffort` (see above) is left
-unset for this vendor rather than guessed at.
+OpenCode support is coming soon, so this native path is not available yet. Use the bridged Grok preset below.
 
 ### openai-compatible, foreign vendor — Grok (xAI) via Claude Code (bridged)
 
@@ -236,12 +205,12 @@ backend:
 ...
 ```
 
-`xai/grok-build-0.1` (fast/cheap, $1 in / $2 out per MTok) is the default
-model for routine review calls; `xai/grok-4.7` (flagship reasoning, $2 in /
-$6 out per MTok) is available on the same bridge for reviews that need it.
-Both model ids are shared with the OpenCode-native preset above, so pricing
+`xai/grok-build-0.1` (fast, API-billed) is the default
+model for routine review calls; `xai/grok-4.7` (flagship reasoning, API-billed)
+is available on the same bridge for reviews that need it.
+Both model ids are shared across paths, so pricing
 lookups (`media/src/main/080-packs-events.js`'s `PRICE_TABLE`) resolve
-identically regardless of which path (native or bridged) produced the usage.
+identically regardless of which path produced the usage.
 
 At runtime, a caller resolves `endpointEnv`/`apiKeyEnv` by reading
 `process.env.OPENAI_COMPAT_BASE_URL` / `process.env.OPENAI_COMPAT_API_KEY` for
@@ -318,8 +287,7 @@ Two local, zero-dependency MCP servers implement this pattern:
   `.claude/agents/claude-worker.md`.
 - Codex's existing `codex mcp-server` integration (catalog id `codex`,
   agent `.claude/agents/codex-reviewer.md`) is the same pattern for OpenAI —
-  `codex mcp-server` works identically whether launched from Claude Code or
-  from OpenCode.
+  `codex mcp-server` is launched from Claude Code.
 
 Both declare `backend.costModelClass: subscription` per the schema above,
 and both spawn the vendor CLI as a child process per call rather than

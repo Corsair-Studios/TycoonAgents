@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ch. 03 &middot; Standalone &amp; OpenCode Setup</title>
+<title>Ch. 03 &middot; Standalone Setup</title>
 <link rel="stylesheet" href="handbook.css">
 </head>
 <body class="page">
@@ -16,7 +16,7 @@
 <div class="side-rail-part">Part I &middot; Getting Started</div>
 <a class="side-rail-link" href="ch-01.html">01 &middot; Welcome &amp; Concepts</a>
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
-<a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Standalone &amp; OpenCode</a>
+<a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
 <div class="side-rail-part">Part II &middot; Theme Maker</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
@@ -39,12 +39,12 @@
   <div class="crumb">TycoonAgents Handbook / Chapter 03 / Part I &middot; Getting Started</div>
 
   <div class="chapter-num">03</div>
-  <h1>Standalone and OpenCode Setup</h1>
+  <h1>Standalone Setup</h1>
 
   <div class="lede">
-    <div class="lede-label">Same product, three fronts</div>
+    <div class="lede-label">Same product, two fronts</div>
     <div class="lede-intro">
-      TycoonAgents is one scene renderer that can watch three different
+      TycoonAgents is one scene renderer that can watch different
       combinations of editor and coding-agent harness. Only how you set it
       up differs &mdash; once the panel is open, every feature in the rest
       of this handbook (Theme Maker, Metrics, Delegation, Project Plan)
@@ -63,12 +63,8 @@
     <thead><tr><th>Setup</th><th>Requires</th></tr></thead>
     <tbody>
       <tr>
-        <td>All three</td>
-        <td>Node.js 18+ on PATH (the standalone host and the OpenCode config generator both run on it; CI runs Node 20).</td>
-      </tr>
-      <tr>
-        <td>Any OpenCode front</td>
-        <td>OpenCode 1.18.x with at least one provider configured &mdash; OpenCode Zen's free models work for a first look, no card required.</td>
+        <td>Standalone</td>
+        <td>Node.js 18+ on PATH (the standalone host runs on it; CI runs Node 20).</td>
       </tr>
       <tr>
         <td>Subscription-backed agents (Claude Code, Codex)</td>
@@ -108,32 +104,9 @@ node standalone/src/cli.mjs watch .</pre>
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.4 &middot; Setup C &middot; Standalone + OpenCode</div>
-    <div class="s-caption">a different harness entirely</div>
+    <div class="s-title">&sect; 3.4 &middot; Optional &middot; Multi-LLM agents</div>
+    <div class="s-caption">other vendors alongside your harness</div>
   </div>
-  <p>
-    Swap the coding-agent harness itself: OpenCode's plugin hooks feed the
-    same normalized event stream the Claude Code hook produces, so the
-    panel can't tell the difference. OpenCode (Experimental) has not been
-    tested as thoroughly as Claude Code as a harness, so it is still
-    considered an experimental mode. From the repo root:
-  </p>
-<pre>npm run build
-npm run opencode:config
-node standalone/src/cli.mjs install-hook . --opencode
-node standalone/src/cli.mjs watch . --provider opencode</pre>
-  <p>
-    <code>npm run build</code> compiles the shared state logic the
-    standalone requires at runtime (see the note in
-    <code>standalone/README.md</code> on why it isn't reimplemented);
-    <code>opencode:config</code> generates the OpenCode-side plugin
-    registration. If you'd rather run OpenCode inside VS Code, set
-    <code>tycoonagents.provider</code> to <code>"opencode"</code> in
-    Settings (Chapter 10) instead &mdash; or the <code>TYCOON_PROVIDER</code>
-    environment variable, which always overrides the setting. The full
-    hook contract and event mapping are in
-    <code>docs/OPENCODE-PROVIDER.md</code>.
-  </p>
   <div class="callout note">
     <span class="callout-label">Note</span>
     <p>
@@ -148,20 +121,6 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
       hook's dispatch path doesn't read it directly yet, so routing
       changes go through the Routing view, not a hand-edited frontmatter
       block.
-    </p>
-  </div>
-  <div class="callout note">
-    <span class="callout-label">Grok (xAI) via OpenCode</span>
-    <p>
-      OpenCode ships a built-in <code>xai</code> provider, so an agent can be
-      routed to a Grok model (<code>xai/&lt;model&gt;</code>) under the
-      OpenCode host directly, no bridge involved. Authenticate with an API
-      key stored under <code>XAI_API_KEY</code> in the Routing screen (names
-      only; the value never leaves your machine). OpenCode's docs also
-      mention a SuperGrok/X&nbsp;Premium subscription login via
-      <code>/connect</code> as an alternative &mdash; that path is
-      unverified here, sourced from a third-party guide rather than a live
-      OpenCode install.
     </p>
   </div>
   <div class="callout note">
@@ -182,13 +141,13 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   </div>
 
   <div class="section-head">
-    <div class="s-title">&sect; 3.5 &middot; Setup D &middot; VS Code + Codex (Experimental)</div>
-    <div class="s-caption">a third harness</div>
+    <div class="s-title">&sect; 3.5 &middot; Setup C &middot; VS Code + Codex (Experimental)</div>
+    <div class="s-caption">an alternative harness</div>
   </div>
   <p>
     Codex support reads activity through the same provider abstraction as
-    Claude Code and OpenCode, but Codex has no per-agent hook payload the
-    way the other two do &mdash; attribution is reconstructed from a
+    Claude Code, but Codex has no per-agent hook payload the
+    way Claude Code does &mdash; attribution is reconstructed from a
     <code>notify</code> entry point TycoonAgents registers in
     <code>CODEX_HOME/config.toml</code> plus Codex's own session metadata,
     cross-referenced to map a spawn back to the agent that made it. Set
@@ -236,7 +195,7 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
       turn, a sub-agent mid a multi-turn exchange shows as
       <em>stopped</em> and then <em>reopened</em> between turns in the
       panel, instead of staying continuously "running" the way a Claude
-      Code or OpenCode sub-agent does. This reflects what Codex currently
+      Code sub-agent does. This reflects what Codex currently
       exposes, not a bug in the mapping.
     </p>
   </div>
@@ -272,19 +231,6 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     paying for), or local &mdash; since the three aren't comparable in raw
     dollar terms.</li>
   </ul>
-  <div class="callout note">
-    <span class="callout-label">Token-accounting note</span>
-    <p>
-      OpenCode's own terminal UI shows the parent session's current
-      <em>context size</em>. That is not the same number the panel reports
-      as usage: the panel's token counts come from each
-      <code>SubagentStop</code> event (fresh tokens plus cache-read tokens),
-      matching the accounting the Claude Code provider already uses. Expect
-      the two numbers to disagree &mdash; they're measuring different
-      things.
-    </p>
-  </div>
-
   <div class="section-head">
     <div class="s-title">&sect; 3.7 &middot; Not yet at parity</div>
     <div class="s-caption">be aware before you rely on it</div>
@@ -301,16 +247,7 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     <code>standalone/README.md</code> directly for anything that touches
     feedback submission or the theme-view flow, since those are the areas
     most likely to differ.</li>
-    <li>The OpenCode desktop app and the OpenCode VS Code extension are
-    both unverified fronts for this integration &mdash; only the OpenCode
-    terminal TUI has been smoke-tested end to end (see
-    <code>docs/OPENCODE-PROVIDER.md</code>). They may work; they simply
-    haven't been checked.</li>
   </ul>
-  <p>
-    None of this affects Setup A or Setup B &mdash; it's specific to
-    running OpenCode as the harness.
-  </p>
 
   <div class="section-head">
     <div class="s-title">&sect; 3.8 &middot; Routing: choosing models per agent</div>
@@ -323,7 +260,7 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
   </p>
   <ol>
     <li>In <strong>Settings</strong>, use <strong>&ldquo;Which tool runs your
-    agents?&rdquo;</strong> to pick the harness (Claude Code or OpenCode).</li>
+    agents?&rdquo;</strong> to pick the harness (Claude Code or Codex (Experimental)).</li>
     <li>Open the <strong>Routing</strong> view from the panel menu.</li>
     <li>Fill in the <strong>orchestrator</strong> slot at the top the same
     way as any agent row below.</li>
@@ -343,13 +280,11 @@ node standalone/src/cli.mjs watch . --provider opencode</pre>
     one.</li>
     <li>Expand <strong>&ldquo;Fallback chain (N)&rdquo;</strong> and
     <strong>&ldquo;+ Add fallback&rdquo;</strong> to add ordered fallback
-    slots (e.g. <code>opencode/big-pickle</code>, then a
+    slots (e.g. a second model on another vendor, then a
     subscription-backed slot).</li>
     <li><strong>Save</strong> writes the resolved slots to
     <code>routing.json</code>, applies managed <code>backend:</code> blocks
-    to agent files, and adds a secret-free provider entry to
-    <code>opencode.json</code> plus your user-level OpenCode config (file
-    references only) &mdash; any slot about to change shows a &ldquo;will be
+    to agent files &mdash; any slot about to change shows a &ldquo;will be
     written to routing.json&rdquo; marker first.</li>
     <li><strong>Clear profile</strong> removes the routing profile and its
     generated blocks but keeps everything you stored via Set
