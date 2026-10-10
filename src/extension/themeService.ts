@@ -275,7 +275,7 @@ function sizeForOptions(options: ThemeImageGenerationOptions | undefined): strin
 }
 
 let themeImageAttemptCounter = 0;
-/** Backend's IDEMPOTENCY_KEY_RE (corsair-theme-service/src/validate.mjs) only allows `[A-Za-z0-9_-]{8,128}` — no colons, so themeId/itemId (which may contain arbitrary chars) are sanitized before joining (p85-t5). */
+/** Backend's IDEMPOTENCY_KEY_RE (the theme service backend, src/validate.mjs) only allows `[A-Za-z0-9_-]{8,128}` — no colons, so themeId/itemId (which may contain arbitrary chars) are sanitized before joining (p85-t5). */
 function sanitizeIdempotencyPart(part: string): string {
   return part.replace(/[^A-Za-z0-9_-]/g, '-');
 }
@@ -5016,7 +5016,7 @@ function agentSlotIdFromFrameKey(frameKey: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-// Mirrors corsair-theme-service src/validate.mjs's roster_agent slot.description
+// Mirrors the theme service backend src/validate.mjs's roster_agent slot.description
 // checkString({ maxLen: 600 }) limit exactly — see resolveCharacterDescription.
 const ROSTER_AGENT_DESCRIPTION_MAX_LEN = 600;
 

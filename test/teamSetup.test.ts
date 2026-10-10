@@ -92,7 +92,7 @@ test("validateTeamManifest accepts a clean manifest", () => {
 
 test("validateTeamManifest rejects absolute Windows path without echoing value", () => {
   const input = sampleInput();
-  input.planPointer = "C:\\Users\\majes\\secret\\plan.json";
+  input.planPointer = "C:\\Users\\someone\\secret\\plan.json";
   const m = buildTeamManifest(input, { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
   const result = validateTeamManifest(m);
   assert.equal(result.ok, false);
@@ -104,12 +104,12 @@ test("validateTeamManifest rejects absolute Windows path without echoing value",
 
 test("validateTeamManifest rejects /Users/ absolute path", () => {
   const input = sampleInput();
-  input.routing["coding-specialist"].model = "/Users/majes/models/sonnet";
+  input.routing["coding-specialist"].model = "/Users/someone/models/sonnet";
   const m = buildTeamManifest(input, { now: "2026-09-15T00:00:00.000Z", version: "0.0.618" });
   const result = validateTeamManifest(m);
   assert.equal(result.ok, false);
   if (!result.ok) {
-    assert.doesNotMatch(result.reason, /\/Users\/majes/);
+    assert.doesNotMatch(result.reason, /\/Users\/someone/);
   }
 });
 

@@ -256,9 +256,9 @@ The main repository and the themes repository are both currently private, and th
 Attribution is intentionally light (see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md)): a short, removable header on *significant* files only, a one-line footprint in the managed block of `CLAUDE.md` / agent files, and a clickable credit in the panel UI — TycoonAgents never stamps the user's own generated code.
 
 ## License
-Free to use and share, including the bundled theme artwork — but not to be sold, repackaged into a paid product, or redistributed commercially, without the maintainer's express written approval. See [LICENSE](LICENSE) for the full terms.
+TycoonAgents is source-available under the [Functional Source License 1.1, ALv2 future license (FSL-1.1-ALv2)](LICENSE). Each release converts to Apache 2.0 two years after it is published. Until then, you may use, copy, modify, and redistribute it for any purpose other than a competing commercial product or service. See [LICENSE](LICENSE) for the full text.
 
-TycoonAgents™ is a trademark of Corsair Studios LLC. Licensed under the Functional Source License 1.1 (ALv2 future license); see LICENSE.
+TycoonAgents™ is a trademark of Corsair Studios LLC.
 
 ## Thanks
 Thanks to **IndieDevDan** for his tutorials.

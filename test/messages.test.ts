@@ -490,14 +490,14 @@ test('THEME_SERVICE_GET_STATUS / THEME_SERVICE_GOOGLE_START / THEME_SERVICE_SIGN
 });
 
 test('THEME_SERVICE_REQUEST_MAGIC_LINK schema: requires non-empty email', () => {
-  assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({ email: 'a@b.com' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({ email: 'a@example.com' }).success, true);
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({ email: '' }).success, false);
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_REQUEST_MAGIC_LINK.safeParse({}).success, false);
 });
 
 test('THEME_SERVICE_VERIFY schema: requires email and code', () => {
-  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@b.com', code: '123456' }).success, true);
-  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@b.com' }).success, false);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@example.com', code: '123456' }).success, true);
+  assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ email: 'a@example.com' }).success, false);
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_VERIFY.safeParse({ code: '123456' }).success, false);
 });
 
@@ -516,7 +516,7 @@ test('THEME_SERVICE_STATUS schema: minimal signed-out and full signed-in payload
   assert.equal(MSG_SCHEMAS.THEME_SERVICE_STATUS.safeParse({ signedIn: false }).success, true);
   const full = {
     signedIn: true,
-    email: 'a@b.com',
+    email: 'a@example.com',
     provider: 'email',
     credits: 12,
     pricing: { typicalTheme: { min: 8, max: 20 }, packs: [] },

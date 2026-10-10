@@ -49,7 +49,7 @@ export interface ThemePlanRequester {
 }
 
 let planAttemptCounter = 0;
-/** `plan-${kind}-${timestamp}${counter}${randomSuffix}` — generated once per attempt; mirrors themeService.ts's nextThemeImageIdempotencyKey. Must match the backend's IDEMPOTENCY_KEY_RE (`/^[A-Za-z0-9_-]{8,128}$/`, corsair-theme-service/src/validate.mjs) — no colons, which the previous `plan:${kind}:${suffix}` format violated (p85-t5). */
+/** `plan-${kind}-${timestamp}${counter}${randomSuffix}` — generated once per attempt; mirrors themeService.ts's nextThemeImageIdempotencyKey. Must match the backend's IDEMPOTENCY_KEY_RE (`/^[A-Za-z0-9_-]{8,128}$/`, the theme service backend src/validate.mjs) — no colons, which the previous `plan:${kind}:${suffix}` format violated (p85-t5). */
 function nextPlanIdempotencyKey(kind: 'plan' | 'descriptions'): string {
   planAttemptCounter += 1;
   const suffix = `${Date.now().toString(36)}${planAttemptCounter.toString(36)}${Math.random().toString(36).slice(2, 8)}`;

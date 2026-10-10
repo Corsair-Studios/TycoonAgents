@@ -9,7 +9,7 @@ project directory (`.../scratchpad/codex-spike/project`), `<SCRATCH_CODEX_HOME>`
 A second pass added `codex-home-config.toml.tried` (isolated `CODEX_HOME/config.toml`) with a
 top-level `notify = ["node", ".../notify.js"]` and a `[projects.'<scratch project path>']
 trust_level = "trusted"` entry (format copied verbatim from the real `~/.codex/config.toml`,
-which contains only `[windows] sandbox = "elevated"` and one `[projects.'d:\acode\tycoonagents']
+which contains only `[windows] sandbox = "elevated"` and one `[projects.'d:\<projects>\tycoonagents']
 trust_level = "trusted"` block — no hooks/trust-related keys at all). `state_5.sqlite` was
 `strings`-scanned read-only; it contains no hook-trust table content (only the literal words
 `hook`/`hooks` from an unrelated captured text, no `trusted_hash`/schema).

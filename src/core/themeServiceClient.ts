@@ -132,7 +132,7 @@ export interface ThemeServiceError {
   code?: string;
   /** content_blocked only: the moderation categories the backend flagged (e.g. "illicit", "self-harm/intent"), OR a single-element array holding the likeness/IP precheck's singular `category: "likeness" | "ip"` field (p94). Absent on an older backend that only sends `error: "content_blocked"`. */
   categories?: string[];
-  /** content_blocked only: the request field paths the backend flagged (corsair-theme-service's userTextFields, e.g. "slot[2].visual_description", "theme.creativeDirection"). Absent on an older backend, and absent on the likeness/IP precheck block (that shape has no `fields`). */
+  /** content_blocked only: the request field paths the backend flagged (the backend's userTextFields, e.g. "slot[2].visual_description", "theme.creativeDirection"). Absent on an older backend, and absent on the likeness/IP precheck block (that shape has no `fields`). */
   fields?: string[];
   /**
    * rate_limited only: which limit was hit — "minute"/"day" (this account's
@@ -1076,7 +1076,7 @@ export function createThemeServiceClient(opts: ThemeServiceClientOptions): Theme
           };
         case 422: {
           // p94: the likeness/IP precheck block (src/attempt.mjs, screen.mjs
-          // in corsair-theme-service) sends a singular `category: "likeness"
+          // in the theme service backend) sends a singular `category: "likeness"
           // | "ip"` string, not the plural `categories` array the moderation
           // pre-screen block sends — an older client here read only
           // `categories`, so a likeness/IP block silently fell back to the

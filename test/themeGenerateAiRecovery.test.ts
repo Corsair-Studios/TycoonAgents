@@ -306,7 +306,7 @@ test('Generate with AI stays clickable after a THEME_PLAN_ERROR (not permanently
 
     // Signed in with credits, so the click below runs the plan request
     // directly instead of opening the sign-in modal.
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 50 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 50 } });
     await new Promise((r) => setTimeout(r, 0));
 
     const promptInput = doc.getElementById('theme-prompt-input');
@@ -366,7 +366,7 @@ test('a stale "Sign in" prompt in #theme-build-status is cleared once THEME_SERV
     assert.ok(staleSignInBtn, 'expected THEME_PLAN_ERROR not_signed_in to append a Sign in button');
 
     // User signs in.
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 50 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 50 } });
     await new Promise((r) => setTimeout(r, 0));
 
     const remainingSignInBtn = Array.from(buildStatus.querySelectorAll('button')).find(

@@ -953,7 +953,7 @@ test("generateAttempt: 422 content_blocked carries categories/fields when the ba
   }
 });
 
-// p94: the likeness/IP precheck (corsair-theme-service's src/attempt.mjs,
+// p94: the likeness/IP precheck (the theme service backend's src/attempt.mjs,
 // src/precheck.mjs) sends a singular `category: "likeness" | "ip"` string,
 // not the plural `categories` array — an older client here read only
 // `categories`, so this shape's category was silently dropped. Regression

@@ -2,6 +2,12 @@
   "name": "tycoonagents-standalone",
   "version": "0.0.1",
   "private": true,
+  "license": "FSL-1.1-ALv2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Corsair-Studios/TycoonAgents",
+    "directory": "standalone"
+  },
   "description": "Standalone (non-VS Code) host for the TycoonAgents live agent visualization. Reuses media/main.js and the Claude Code hook data so the tycoon view can run outside VS Code. Independent build target — does not affect the VS Code extension build.",
   "type": "module",
   "main": "src/server.mjs",

@@ -1843,7 +1843,7 @@
   }
 
   /**
-   * Maps one backend field path (corsair-theme-service's src/validate.mjs
+   * Maps one backend field path (the theme service backend's src/validate.mjs
    * userTextFields) to a human label, using the review item's own row data
    * to name the specific character/object/expression an indexed path
    * points at — never inventing a name the server didn't imply. Known

@@ -21,7 +21,7 @@ all pointing under the UEFN data root
 (`%LOCALAPPDATA%\UnrealEditorFortnite\Saved\VerseProject\StarWars\`). None
 of the three is `role: "Source"`, and none points at the user's actual
 project directory
-(`C:\Users\majes\OneDrive\Documents\Fortnite Projects\StarWars\Content`).
+(`C:\Users\<you>\OneDrive\Documents\Fortnite Projects\StarWars\Content`).
 Six of the seven other `.vproject` files on this machine have a
 `role: "Source"` package pointing at a real project directory; StarWars is
 the outlier. `verse_lsp_check.py` does not check for a Source package at
@@ -32,7 +32,7 @@ that was, in the relevant sense, never analyzed.
 ## Established facts, checked against the actual files
 
 **Fact 1 (prompt's claim) — confirmed.** `StarWars.vproject`
-(`C:\Users\majes\AppData\Local\UnrealEditorFortnite\Saved\VerseProject\StarWars\vproject\StarWars.vproject`,
+(`C:\Users\<you>\AppData\Local\UnrealEditorFortnite\Saved\VerseProject\StarWars\vproject\StarWars.vproject`,
 1,904 bytes) contains exactly three packages:
 
 ```json
@@ -49,15 +49,15 @@ that was, in the relevant sense, never analyzed.
 ```
 
 Every `dirPath` is under
-`C:/Users/majes/AppData/Local/UnrealEditorFortnite/Saved/VerseProject/StarWars/`.
+`C:/Users/<you>/AppData/Local/UnrealEditorFortnite/Saved/VerseProject/StarWars/`.
 No package's `dirPath` is
-`C:/Users/majes/OneDrive/Documents/Fortnite Projects/StarWars/Content`, and
+`C:/Users/<you>/OneDrive/Documents/Fortnite Projects/StarWars/Content`, and
 no package has `"role": "Source"`. Confirmed, exactly as stated.
 
 **Fact 2 (prompt's claim) — confirmed as a direct consequence of Fact 1.**
 Because no package covers the user's Content directory, nothing in this
 vproject can ever resolve a file under
-`C:\Users\majes\OneDrive\Documents\Fortnite Projects\StarWars\Content` to a
+`C:\Users\<you>\OneDrive\Documents\Fortnite Projects\StarWars\Content` to a
 package the analyzer knows about — that directory currently holds 107
 `.verse` files, none of them reachable through this vproject.
 
@@ -67,7 +67,7 @@ that directory exists on disk and contains a generated
 `Assets.digest.verse` (34,667 lines, see finding (d) below):
 
 ```
-C:\Users\majes\AppData\Local\UnrealEditorFortnite\Saved\VerseProject\StarWars\
+C:\Users\<you>\AppData\Local\UnrealEditorFortnite\Saved\VerseProject\StarWars\
     Fortnite\           (in vproject, External)
     StarWars-Assets\    (NOT in vproject — on disk, not referenced)
     UnrealEngine\       (in vproject, External)
@@ -138,7 +138,7 @@ prompt's premise needs correcting: `StarWars.vproject` does NOT silently
 pass as a match. Walking the actual code path for this project:
 
 1. `resolve_content_dir()` resolves the user's target to
-   `C:\Users\majes\OneDrive\Documents\Fortnite Projects\StarWars\Content`.
+   `C:\Users\<you>\OneDrive\Documents\Fortnite Projects\StarWars\Content`.
 2. `locate_verseproject_root()` finds the `VerseProject` root under
    `LOCALAPPDATA` (it exists, and at least one `*/vproject/*.vproject`
    exists somewhere under it — `StarWars.vproject` itself satisfies that
@@ -198,18 +198,18 @@ if reason == "no_match":
 ```
 
 Given the actual state of this machine, running
-`verse_lsp_check.py "C:\Users\majes\OneDrive\Documents\Fortnite Projects\StarWars\Content"`
+`verse_lsp_check.py "C:\Users\<you>\OneDrive\Documents\Fortnite Projects\StarWars\Content"`
 today should print something like:
 
 ```
 verse_lsp_check: PRECONDITION NOT MET -- analysis did NOT run.
 Found 7 .vproject file(s), but none of their Source package directories match the Content directory given to this tool:
-  target: C:\Users\majes\OneDrive\Documents\Fortnite Projects\StarWars\Content
+  target: C:\Users\<you>\OneDrive\Documents\Fortnite Projects\StarWars\Content
 Source directories that WERE found:
-  C:\Users\majes\OneDrive\Documents\Fortnite Projects\AnimatedUILesson\Plugins\AnimatedUILesson\Content  (workspace 'AnimatedUILesson')
-  C:\Users\majes\OneDrive\Documents\Fortnite Projects\ChaosValley_\Plugins\ChaosValley\Content  (workspace 'ChaosValley')
-  C:\Users\majes\OneDrive\Documents\Fortnite Projects\Rogue_Map_Work_01\Content  (workspace 'Rogue_Map_Work_01')
-  C:\Users\majes\OneDrive\Documents\Fortnite Projects\SRoyale\Plugins\SRoyale\Content  (workspace 'SRoyale')
+  C:\Users\<you>\OneDrive\Documents\Fortnite Projects\AnimatedUILesson\Plugins\AnimatedUILesson\Content  (workspace 'AnimatedUILesson')
+  C:\Users\<you>\OneDrive\Documents\Fortnite Projects\ChaosValley_\Plugins\ChaosValley\Content  (workspace 'ChaosValley')
+  C:\Users\<you>\OneDrive\Documents\Fortnite Projects\Rogue_Map_Work_01\Content  (workspace 'Rogue_Map_Work_01')
+  C:\Users\<you>\OneDrive\Documents\Fortnite Projects\SRoyale\Plugins\SRoyale\Content  (workspace 'SRoyale')
   UNPARSEABLE .../StarWars/vproject/StarWars.vproject: no Source-role package with a dirPath was found
   UNPARSEABLE .../FortniteGame/vproject/FortniteGame.vproject: no Source-role package with a dirPath was found
 verse_lsp_check: exiting with code 3 -- this is NOT a clean result, even though no diagnostics are listed above.
@@ -383,9 +383,9 @@ project on this same machine, not a synthetic example:
 {
     "desc": {
         "name": "Gorillas_Buck_Roguelike_Template",
-        "dirPath": "C:/Users/majes/OneDrive/Documents/Fortnite Projects/Gorillas_Buck_Roguelike_Template/Content",
+        "dirPath": "C:/Users/<you>/OneDrive/Documents/Fortnite Projects/Gorillas_Buck_Roguelike_Template/Content",
         "settings": {
-            "versePath": "/buckmaster@fortnite.com/Gorillas_Buck_Roguelike_Template",
+            "versePath": "/<epic-handle>@fortnite.com/Gorillas_Buck_Roguelike_Template",
             "verseScope": "PublicUser",
             "role": "Source",
             "verseVersion": 1,

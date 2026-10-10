@@ -286,7 +286,7 @@ test('a stale THEME_PLAN_READY (superseded PLAN_THEME request) does not overwrit
 
     h.click('tab-theme-builder');
     await new Promise((r) => setTimeout(r, 0));
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 50 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 50 } });
     await new Promise((r) => setTimeout(r, 0));
 
     const promptInput: any = doc.getElementById('theme-prompt-input');
@@ -358,7 +358,7 @@ test('a stale THEME_PLAN_ERROR (superseded PLAN_THEME request) does not clobber 
 
     h.click('tab-theme-builder');
     await new Promise((r) => setTimeout(r, 0));
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 50 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 50 } });
     await new Promise((r) => setTimeout(r, 0));
 
     const promptInput: any = doc.getElementById('theme-prompt-input');
@@ -435,7 +435,7 @@ test('opening Tycoon Themes requests fresh status and the credits chip stays vis
       'BUG: opening the Tycoon Themes modal did not request fresh Theme Service status',
     );
 
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 48 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 48 } });
     await new Promise((r) => setTimeout(r, 0));
 
     assert.equal(chip.hasAttribute('hidden'), false, 'chip must be visible for a signed-in user with credits');
@@ -453,7 +453,7 @@ test('credits chip falls back to cached balance (never hides) when a later statu
 
     h.click('tab-theme-builder');
     await new Promise((r) => setTimeout(r, 0));
-    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@b.com', credits: 48 } });
+    h.dispatch({ type: 'THEME_SERVICE_STATUS', payload: { signedIn: true, email: 'a@example.com', credits: 48 } });
     await new Promise((r) => setTimeout(r, 0));
     assert.equal(chip.textContent, '48 credits');
 

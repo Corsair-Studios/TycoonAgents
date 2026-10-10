@@ -16,7 +16,7 @@ function assertNoLoneSurrogate(text: string): void {
 
 // Backend contract cap: contract/theme-service-api.md v3.5, "POST /api/generate"
 // and "Backend input handling" — theme.creativeDirection max 1000 chars.
-// corsair-theme-service/src/validate.mjs enforces this and rejects the whole
+// the theme service backend's src/validate.mjs enforces this and rejects the whole
 // request with a bare 400 bad_request (no code, nothing logged) when it's
 // exceeded — surfaced to the user as "The Theme Service rejected this
 // request." with no further detail.
