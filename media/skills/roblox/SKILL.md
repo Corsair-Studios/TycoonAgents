@@ -83,3 +83,17 @@ TycoonAgents shows a live **Roblox connection chip** in the panel when an MCP-ba
 Studio bridge is connected. Delegate Roblox implementation work (Luau scripts, DataModel
 changes, Studio plugin actions) to coding-specialist rather than hand-editing Luau
 files yourself.
+
+With the **Roblox Studio MCP** (`roblox-studio`) connected, besides the data-model and Luau
+tools it exposes `list_plugin_guis` and `capture_plugin_gui` for Studio plugin UI. Read each
+tool's description from the MCP server for its parameters and return shape; don't guess them.
+
+### Verifying plugin UI
+
+After rebuilding a plugin or toolkit:
+1. Call `list_plugin_guis` to find the plugin's panel.
+2. Call `capture_plugin_gui` on it and inspect the captured image.
+3. Compare against the intended layout and fix any differences.
+
+Ask the user for a screenshot only if these tools are unavailable (older Studio/MCP
+versions) or the calls fail.
