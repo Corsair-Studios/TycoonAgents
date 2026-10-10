@@ -569,26 +569,26 @@ test('generateAttempt debits the exact per-board-type cost against the fake ledg
 
 // p85: "Retry image" was sending `userReferenceImages` in the /api/generate
 // body (src/extension/themeService.ts generateBoardImage, before this fix),
-// which the deployed backend's validator (D:\ACode\corsair-theme-service
+// which the deployed backend's validator (the theme service backend checkout
 // src/validate.mjs validateGenerateBody) rejects outright — any request
 // carrying that key at all is 400 bad_request, regardless of its value —
 // causing every "Retry image" on a character atlas to fail. This captures
 // the actual outgoing body from retryThemeImage (with referenceImages
 // supplied, the exact path that triggered the bug) and validates it against
 // the real backend validator, imported by relative path from the sibling
-// corsair-theme-service checkout. No runtime dependency is added: the
+// theme service backend checkout. No runtime dependency is added: the
 // import is wrapped in try/catch and the test is skipped (not failed) if
 // that sibling checkout isn't present, e.g. in an environment that only has
 // this repo checked out.
-test('generateBoardImage body contract: retryThemeImage with reference images never sends userReferenceImages, and passes the real backend validator', async () => {
+test('generateBoardImage body contract: retryThemeImage with reference images never sends userReferenceImages, and passes the real backend validator', async (t) => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   let validateGenerateBody: ((body: unknown) => { ok: boolean; code?: string }) | undefined;
   try {
     // Path is relative to the COMPILED test file (out/test/*.js), which sits
     // one directory deeper than the TycoonAgents repo root, which itself
-    // sits one directory below the sibling checkouts (D:\ACode\*) — three
+    // sits one directory below the sibling checkouts — three
     // '..' segments, not two. The previous two-segment path silently
-    // resolved to a nonexistent TycoonAgents/corsair-theme-service, so the
+    // resolved to a nonexistent TycoonAgents/<backend>, so the
     // catch below always fired and this test never actually ran the real
     // backend validator (p85-t5 finding).
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -648,6 +648,8 @@ test('generateBoardImage body contract: retryThemeImage with reference images ne
   if (validateGenerateBody) {
     const result = validateGenerateBody(body);
     assert.equal(result.ok, true, `real backend validator rejected the body: ${JSON.stringify(result)}`);
+  } else {
+    t.skip('sibling theme service backend checkout not found; real backend validator check skipped (body-shape assertions still ran)');
   }
 });
 
@@ -657,16 +659,16 @@ test('generateBoardImage body contract: retryThemeImage with reference images ne
 // character_atlas (which overrides with a shorter string, see
 // structuredRequestForItem in src/extension/themeService.ts) sends that
 // combined string as-is as theme.creativeDirection. The backend
-// (D:\ACode\corsair-theme-service src/validate.mjs) caps theme.creativeDirection
+// (the theme service backend checkout src/validate.mjs) caps theme.creativeDirection
 // at 1000 chars (contract/theme-service-api.md v3.5) and rejects the whole
 // request with a bare 400 bad_request — no code, nothing logged server-side
 // — when a detailed plan's joined direction exceeds it. This reproduces that
 // exact environment-board request (long creative_direction + environment
 // text) through the real generateTheme path and validates the captured
 // /api/generate body against the real backend validator, imported by
-// relative path from the sibling corsair-theme-service checkout — skipped
+// relative path from the sibling theme service backend checkout — skipped
 // (not failed) when that sibling checkout isn't present.
-test('environment board body contract: a long plan creative_direction + environment stays under the backend theme.creativeDirection cap and passes the real backend validator', async () => {
+test('environment board body contract: a long plan creative_direction + environment stays under the backend theme.creativeDirection cap and passes the real backend validator', async (t) => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   let validateGenerateBody: ((body: unknown) => { ok: boolean; code?: string; reason?: string }) | undefined;
   try {
@@ -728,24 +730,26 @@ test('environment board body contract: a long plan creative_direction + environm
   if (validateGenerateBody) {
     const result = validateGenerateBody(environmentBody);
     assert.equal(result.ok, true, `real backend validator rejected the environment body: ${JSON.stringify(result)}`);
+  } else {
+    t.skip('sibling theme service backend checkout not found; real backend validator check skipped (body-shape assertions still ran)');
   }
 });
 
 // p85-t5: planTheme's idempotencyKey (src/extension/translator.ts,
 // nextPlanIdempotencyKey) used to be `plan:${kind}:${suffix}`, which
 // contains colons the deployed backend's IDEMPOTENCY_KEY_RE
-// (`/^[A-Za-z0-9_-]{8,128}$/`, D:\ACode\corsair-theme-service
+// (`/^[A-Za-z0-9_-]{8,128}$/`, the theme service backend checkout
 // src/validate.mjs) rejects outright, so every "Generate with AI" POST
 // /api/plan came back 400 bad_request. This captures the REAL outgoing
 // body from planTheme's actual code path (not a hand-written copy) and
 // validates it against the real backend validator, imported by relative
-// path from the sibling corsair-theme-service checkout — skipped (not
+// path from the sibling theme service backend checkout — skipped (not
 // failed) when that sibling checkout isn't present.
-test('planTheme body contract: the real POST /api/plan body passes the real backend validator', async () => {
+test('planTheme body contract: the real POST /api/plan body passes the real backend validator', async (t) => {
   let validatePlanBody: ((body: unknown) => { ok: boolean; code?: string }) | undefined;
   try {
     // See the three-'..' path note on the generateBoardImage body-contract
-    // test above — out/test/*.js is two directories below D:\ACode.
+    // test above — out/test/*.js is two directories below the sibling checkouts parent.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     ({ validatePlanBody } = require('../../../corsair-theme-service/src/validate.mjs'));
   } catch {
@@ -792,5 +796,7 @@ test('planTheme body contract: the real POST /api/plan body passes the real back
   if (validatePlanBody) {
     const result = validatePlanBody(body);
     assert.equal(result.ok, true, `real backend validator rejected the body: ${JSON.stringify(result)}`);
+  } else {
+    t.skip('sibling theme service backend checkout not found; real backend validator check skipped (body-shape assertions still ran)');
   }
 });

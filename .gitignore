@@ -104,3 +104,6 @@ design-doc/grant.txt
 # Written when Codex runs the codex-hooks fixtures (notify.js, record.js)
 test/fixtures/codex-hooks/raw-notify.jsonl
 test/fixtures/codex-hooks/raw-hooks.jsonl
+
+# Local scrub tokens for scripts/export-public.mjs (one per line)
+.public-export.tokens

@@ -1,0 +1,71 @@
+# Scrub allowlist for scripts/export-public.mjs.
+# One entry per line: <path-glob>:<substring of the matched text, or *>
+# Example: test/foo.test.ts:D:\ACode
+
+# Public commit-trailer address (role address, not personal)
+docs/DISTRIBUTION.md:noreply@anthropic.com
+scripts/release-local.mjs:noreply@anthropic.com
+scripts/release.mjs:noreply@anthropic.com
+test/releaseScript.test.ts:noreply@anthropic.com
+
+# Documentation placeholders / synthetic paths in docs and shipped skill code
+docs/FEEDBACK-PIPELINE-SPEC.md:C:\Users\test
+media/skills/uefn/verse_lsp_check.py:C:/Users/...
+media/skills/uefn/verse_lsp_check.py:/Users/...
+
+# Synthetic home directories used by tests (fake users, no real accounts)
+standalone/test/appData.test.mjs:/Users/fake
+standalone/test/installHook.test.mjs:C:/Users/u
+standalone/test/installHook.test.mjs:/Users/u
+test/hookInstall.test.ts:C:/Users/u
+test/hookInstall.test.ts:/Users/u
+test/localEnvStore.test.ts:/Users/x
+test/macosRobustness.test.ts:/Users/me
+test/macosRobustness.test.ts:/Users/Me
+test/python/test_verse_lsp_check.py:/Users/Test
+test/python/test_verse_lsp_check.py:/Users/Someone
+test/python/test_verse_lsp_check.py:C:/Users/Test
+test/python/test_verse_lsp_check.py:C:\Users\Test
+test/python/test_verse_lsp_check.py:C:/Users/Someone
+test/revealUri.test.ts:/Users/example
+test/revealUri.test.ts:c:/Users/example
+test/teamReadinessHost.test.ts:/Users/fakeuser
+test/teamSetup.test.ts:/Users/someone
+test/themeFileStoreBackend.test.ts:c:\Users\...
+
+# Synthetic project roots (D:/ACode/ProjectA style) in path-handling tests
+test/progressScope.test.ts:D:/ACode
+test/progressScope.test.ts:d:/acode
+test/diagnosticReport.test.ts:D:/ACode
+
+# Fake token shapes that exercise redaction/validation (not real credentials)
+test/customEndpoint.test.ts:ghp_secretvalue
+test/diagnosticReport.test.ts:ghp_1234567890abcdefghij
+test/teamSetup.test.ts:ghp_abcdefghijklmnopqrstuvwxyz0123456789
+
+# Escaped-separator forms of the same synthetic fixtures (separators are normalised before matching)
+media/skills/uefn/verse_lsp_check.py:C:\Users\...
+src/host/vscode/teamSetupHost.ts:/Users//home
+standalone/test/appData.test.mjs:C:\Users\fake
+standalone/test/installHook.test.mjs:C:\Users\u
+test/checkNoAbsolutePaths.test.ts:C:\Users\someone
+test/packagingProviderStrings.test.ts:C:\Users\someone
+test/teamSetup.test.ts:C:\Users\someone
+test/teamSetup.test.ts:C:\Users/)
+test/codexDiscoveryPlatforms.test.ts:C:\Users\someone
+test/codexDiscoveryPlatforms.test.ts:C:\Users\bob
+test/codexDiscoveryPlatforms.test.ts:C:\Users\ignored
+test/codexMcpLauncher.test.ts:C:\Users\me
+test/diagnosticReport.test.ts:C:\Users\alice
+test/diagnosticReport.test.ts:D:\ACode
+test/hookInstall.test.ts:C:\Users\u
+test/hookInstall.test.ts:D:\ACode
+test/installCodexHooks.test.ts:C:\Users\x
+test/installCodexHooks.test.ts:D:\ACode
+test/installCodexHooks.test.ts:d:\acode
+test/localEnvStore.test.ts:C:\Users\x
+test/macosRobustness.test.ts:C:\Users\me
+test/opencodePlugin.test.ts:D:\ACode
+test/progressScope.test.ts:D:\ACode
+test/revealUri.test.ts:c:\Users\example
+test/teamReadinessHost.test.ts:C:\Users\fakeuser

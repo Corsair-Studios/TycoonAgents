@@ -1,0 +1,48 @@
+# Paths withheld from the public snapshot (gitignore-style, relative to repo root).
+# Consumed by scripts/export-public.mjs. Files stay tracked in the private repo.
+
+# Status and handoff notes
+/HANDOFF.md
+/RESET-FIX-STATUS.md
+/AGENTS-CONFIG-REPORT.md
+/docs/OBJECT-ANIMATION-HANDOFF.md
+/docs/KNOWN-BUG-*.md
+/docs/PLAN-JSON-CORRUPTION-BUG.md
+/docs/DELEGATION-ISSUES.md
+/docs/BACKLOG.md
+/docs/hooks_bug*.png
+/docs/newinstall*.png
+/docs/plan/
+/docs/testing/MAC-LIVE-TEST.md
+
+# Local session state and plans
+/.claude/session-journal.json
+/.claude/tycoon/
+/spikes/
+
+# Theme service business material
+/design-docs/theme-credits-prd.*
+
+# Design-doc .docx twins are unscannable; the .md files are the public source
+/design-docs/*.docx
+
+# Targets the private backend repo; stays in the private repo
+/test/themeServiceEndToEnd.test.ts
+/docs/theme-credits-terms-draft.md
+/docs/affiliate-program.md
+/docs/theme-service-setup-guide.md
+/docs/theme-service-api.md
+
+# Probe findings and friction notes
+/docs/*probe-findings*.md
+/docs/codex-reviewer-onboarding-friction-*.md
+
+# Spikes and proposals
+/standalone/spike/
+/standalone/PHASE5-SHARED-CORE-PROPOSAL.md
+
+# Publishing tooling (references the private repo name by design)
+/scripts/export-public.mjs
+/public-export.exclude
+/public-export.allow
+/test/exportPublic.test.ts

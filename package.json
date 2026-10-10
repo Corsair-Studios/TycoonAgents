@@ -116,6 +116,7 @@
     "opencode:config": "node scripts/generate-opencode-config.mjs",
     "generate:codex-config": "node scripts/generate-codex-config.mjs",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
+    "export:public": "node scripts/export-public.mjs",
     "build:webview": "node scripts/build-webview.mjs",
     "check:webview-sync": "node scripts/check-webview-sync.mjs",
     "check:webview": "node scripts/check-webview-sync.mjs && node scripts/check-webview.mjs",
