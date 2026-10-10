@@ -940,6 +940,25 @@
     document.body.appendChild(notice);
   }
 
+  /** One-line dismissible note after the host silently repaired outdated hooks. */
+  function showHooksAutoUpdatedNotice() {
+    if (document.getElementById("hooks-auto-updated-notice")) return;
+    const notice = document.createElement("div");
+    notice.id = "hooks-auto-updated-notice";
+    notice.className = "catalog-notice legacy-artifacts-notice";
+    const text = document.createElement("span");
+    text.className = "legacy-artifacts-notice-text";
+    text.textContent = "Hooks updated to this version.";
+    notice.appendChild(text);
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "legacy-artifacts-notice-dismiss";
+    dismissBtn.setAttribute("aria-label", "Dismiss");
+    dismissBtn.textContent = "×";
+    dismissBtn.addEventListener("click", () => notice.remove());
+    notice.appendChild(dismissBtn);
+    document.body.appendChild(notice);
+  }
+
   /**
    * Session-scoped dismissal: written into the same vscode.getState()/
    * setState() blob used elsewhere in this file (e.g. activeMetricsTab,

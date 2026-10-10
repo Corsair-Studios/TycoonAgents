@@ -280,6 +280,7 @@ import {
   migrateRelativeHookCommand,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
+import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
 import {
   projectScopeKey,
@@ -782,6 +783,8 @@ export class TycoonPanel {
    * attaches is silently lost). `null` when nothing was found, no workspace
    * root was open, or the scan threw.
    */
+  private _pendingHooksAutoUpdated = false;
+  private _webviewReadySeen = false;
   private _pendingLegacyArtifactsNotice: { artifactCount: number; foreignHookCount: number } | null = null;
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
@@ -1124,6 +1127,9 @@ export class TycoonPanel {
     // again.
     this._ensureHookMatchersFresh();
     this._ensureHookCommandAbsolute();
+    // Silent, async, once-per-construction upgrade repair of stale Tycoon
+    // hooks (see _ensureHooksSilentlyCurrent).
+    this._ensureHooksSilentlyCurrent();
 
     // Detect (never auto-fix) leftover foreign/legacy agent-hook artifacts
     // once per panel open — cheap read-only scan (see
@@ -1212,6 +1218,11 @@ export class TycoonPanel {
           // no-op for a webview build that doesn't listen for this message
           // yet. Not resent on subsequent READY pings within the same panel
           // life (cleared after the first delivery).
+          this._webviewReadySeen = true;
+          if (this._pendingHooksAutoUpdated) {
+            this._pendingHooksAutoUpdated = false;
+            void this._panel.webview.postMessage({ type: MSG.HOOKS_AUTO_UPDATED });
+          }
           if (this._pendingLegacyArtifactsNotice) {
             void this._panel.webview.postMessage({
               type: MSG.LEGACY_ARTIFACTS_DETECTED,
@@ -6189,9 +6200,9 @@ export class TycoonPanel {
    * - Only settings.local.json (never settings.json — shared/team file,
    *   never auto-rewritten).
    * - Never creates the file — nothing installed means nothing to heal.
-   * - Backs up to `settings.local.json.bak` before writing, but never
-   *   overwrites an existing backup (matches `_handleApplyDoctorFix`'s
-   *   backup-before-repair convention).
+   * - Safety copy goes to `.claude/tycoon/settings.local.json.bak` (never
+   *   beside the settings file), without overwriting an existing copy.
+   * - Written atomically (temp file + rename).
    * - Only writes back / logs when something actually changed.
    * - Logs one line via `log()` with no paths (matches this file's other
    *   auto-heal logging).
@@ -6215,20 +6226,39 @@ export class TycoonPanel {
       const { settings, changed } = migrateRelativeHookCommand(parsed as Record<string, unknown>, absoluteHookCommand);
       if (!changed) return; // already absolute (or nothing to migrate) -> no write, no mtime churn
 
-      const backupPath = `${settingsPath}.bak`;
-      try {
-        if (!fs.existsSync(backupPath)) {
-          fs.writeFileSync(backupPath, fs.readFileSync(settingsPath));
-        }
-      } catch {
-        /* best-effort backup; never block the migration itself */
-      }
-
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+      backupSettingsCopy(root, fs.readFileSync(settingsPath));
+      atomicWrite(settingsPath, JSON.stringify(settings, null, 2));
       log("panel: migrated relative Tycoon hook command(s) to absolute form");
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
+  }
+
+  /**
+   * Quietly repair outdated Tycoon hooks in settings.local.json on panel
+   * construction (stale/relative paths, missing slots, duplicates) so an
+   * upgrading user never sees the stale-hooks warning. Opt-in preserved:
+   * only acts when the file already holds a Tycoon hook command. See
+   * silentRepairLocalHooks for the safety rules. Async so it never blocks
+   * startup; runs once per construction, never from settings refresh.
+   */
+  private _ensureHooksSilentlyCurrent(): void {
+    void Promise.resolve().then(() => {
+      try {
+        const root = this._projectRoot();
+        if (root === "") return;
+        const result = silentRepairLocalHooks(root, this._buildHookCommand(root));
+        if (result.status !== "repaired") return;
+        log("panel: silently repaired outdated Tycoon hooks");
+        if (this._webviewReadySeen) {
+          void this._panel.webview.postMessage({ type: MSG.HOOKS_AUTO_UPDATED });
+        } else {
+          this._pendingHooksAutoUpdated = true;
+        }
+      } catch (err) {
+        console.error("TycoonAgents: silent hook repair failed:", err);
+      }
+    });
   }
 
   /**
@@ -6849,6 +6879,7 @@ export class TycoonPanel {
 
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+      recordAllHookSlots(root);
 
       // 6b. (Backfill routing keywords for any already-present hand-authored
       // agent moved to after step 7's agent-file installs below — see the
@@ -9558,19 +9589,15 @@ export class TycoonPanel {
       const foreignCommands = findForeignHooks(localSettings, sharedSettings);
       const { settings, changes } = repairSettings(localSettings, currentHookCommand, { removeForeign, foreignCommands: removeForeign ? foreignCommands : undefined });
       const settingsLocalPath = path.join(claudeDir, "settings.local.json");
-      // Back up before any repair write (including the relative->absolute
-      // hook-command migration folded into repairSettings' stale-path fix),
-      // same pattern as _installAgentFiles's <id>.md.bak / keywordsPath.bak —
-      // never overwrites a prior backup from earlier in this same run, so
-      // the FIRST fix attempt's pre-state is always recoverable.
-      try {
-        if (fs.existsSync(settingsLocalPath) && !fs.existsSync(`${settingsLocalPath}.bak`)) {
-          fs.writeFileSync(`${settingsLocalPath}.bak`, fs.readFileSync(settingsLocalPath));
-        }
-      } catch {
-        /* best-effort backup; never block the repair itself */
+      // Safety copy goes under .claude/tycoon (never beside the user's settings
+      // file) and never overwrites a prior backup, so the FIRST fix attempt's
+      // pre-state stays recoverable.
+      if (fs.existsSync(settingsLocalPath)) {
+        backupSettingsCopy(root, fs.readFileSync(settingsLocalPath));
       }
-      fs.writeFileSync(settingsLocalPath, JSON.stringify(settings, null, 2));
+      atomicWrite(settingsLocalPath, JSON.stringify(settings, null, 2));
+      // Explicit Fix re-adds every slot; record them so silent repair knows what was offered.
+      recordAllHookSlots(root);
 
       const input = this._gatherDoctorInput(root);
       const findings = diagnose(input);

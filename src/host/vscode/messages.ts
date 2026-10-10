@@ -160,6 +160,9 @@ export const MSG = {
   // `{ artifactCount, foreignHookCount }`. Not in MSG_SCHEMAS since that
   // table only covers inbound MUTATING webview->host messages.
   LEGACY_ARTIFACTS_DETECTED: "legacyArtifactsDetected",
+  // Host -> webview, no payload: panel-open silent hook repair rewrote stale
+  // Tycoon hooks in settings.local.json; shows a dismissible one-line note.
+  HOOKS_AUTO_UPDATED: "hooksAutoUpdated",
   // "Generate diagnostic report" (bug-report): host gathers already-computed
   // health signals, builds a SANITIZED Markdown report (diagnosticReport.ts),
   // writes it to .claude/tycoon/, opens it for review, and copies it to the

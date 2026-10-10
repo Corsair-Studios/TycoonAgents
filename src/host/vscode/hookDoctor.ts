@@ -173,7 +173,7 @@ function hasDuplicateTycoonInSlot(settings: any | null, slot: { event: string; m
   return total > 1;
 }
 
-function hasTycoonCommandsInSettings(settings: any | null): boolean {
+export function hasTycoonCommandsInSettings(settings: any | null): boolean {
   const hooks = getHooksSection(settings);
   for (const event of TYCOON_EVENTS) {
     for (const entry of getEntriesForEvent(hooks, event)) {
