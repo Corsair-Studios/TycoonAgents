@@ -34,7 +34,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { isElectronHostBinary, resolveNodeBinary } from "./resolveNodeBinary";
+import { NODE_NOT_FOUND_WARNING, isBareNodeCommand, isElectronHostBinary, resolveNodeBinary } from "./resolveNodeBinary";
 import { removeCodexManagedAgentsBlock, removeOrphanCodexHookCopies } from "./uninstallCodexExtras";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
@@ -255,12 +255,33 @@ export const CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE =
 
 /**
  * Path equality that ignores Windows spelling differences (slash direction,
- * case, redundant segments); other paths compare exactly.
+ * case, redundant segments). On macOS it also ignores case and trailing
+ * separators and compares symlink-resolved paths; other paths compare exactly.
+ * `options` are test seams.
  */
-export function samePath(a: string, b: string): boolean {
+export function samePath(
+  a: string,
+  b: string,
+  options: { platform?: NodeJS.Platform; realpath?: (p: string) => string } = {},
+): boolean {
+  const platform = options.platform ?? process.platform;
   const winLike = (p: string): boolean => /^[a-zA-Z]:[\\/]/.test(p);
-  if (process.platform === "win32" || winLike(a) || winLike(b)) {
+  if (platform === "win32" || winLike(a) || winLike(b)) {
     const norm = (p: string): string => path.win32.normalize(p.replace(/\//g, "\\")).toLowerCase();
+    return norm(a) === norm(b);
+  }
+  if (platform === "darwin") {
+    // macOS volumes are case-insensitive by default and /var, /tmp are symlinks into /private.
+    const realpath = options.realpath ?? ((p: string): string => fs.realpathSync(p));
+    const norm = (p: string): string => {
+      let resolved = p;
+      try {
+        resolved = realpath(p);
+      } catch {
+        // path does not exist: compare the spelling as given
+      }
+      return path.posix.normalize(resolved.replace(/\/+$/, "") || "/").toLowerCase();
+    };
     return norm(a) === norm(b);
   }
   return a === b;
@@ -663,7 +684,8 @@ export function installCodexHooks(options: InstallCodexHooksOptions): InstallCod
   fs.mkdirSync(codexHome, { recursive: true });
   const configTomlPath = path.join(codexHome, "config.toml");
   const existing = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : undefined;
-  const merged = mergeNotifyIntoConfigToml(existing, options.hookScriptPath, options.nodePath);
+  const nodePath = options.nodePath ?? resolveNodeBinary();
+  const merged = mergeNotifyIntoConfigToml(existing, options.hookScriptPath, nodePath);
   fs.writeFileSync(configTomlPath, merged.text, "utf8");
 
   const dotCodexDir = path.join(options.projectDir, ".codex");
@@ -677,10 +699,14 @@ export function installCodexHooks(options: InstallCodexHooksOptions): InstallCod
       existingHooksJsonParsed = undefined;
     }
   }
-  const hooksJsonMerge = mergeHooksJson(existingHooksJsonParsed, options.hookScriptPath, options.nodePath);
+  const hooksJsonMerge = mergeHooksJson(existingHooksJsonParsed, options.hookScriptPath, nodePath);
   fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksJsonMerge.json, null, 2) + "\n", "utf8");
 
-  const warnings = [...(merged.warnings ?? []), ...(hooksJsonMerge.warnings ?? [])];
+  const warnings = [
+    ...(merged.warnings ?? []),
+    ...(hooksJsonMerge.warnings ?? []),
+    ...(isBareNodeCommand(nodePath) ? [NODE_NOT_FOUND_WARNING] : []),
+  ];
   return { configTomlPath, hooksJsonPath, ...(warnings.length ? { warnings } : {}) };
 }
 

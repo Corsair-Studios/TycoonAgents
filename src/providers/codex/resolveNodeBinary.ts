@@ -9,11 +9,15 @@
 // host process.execPath is the editor itself (Code.exe), and writing that into
 // config.toml makes Codex open VS Code on every turn. Discovery follows
 // docs/PATH-DISCOVERY.md: TYCOON_NODE_PATH override first, then the running
-// binary when it really is node, then a PATH scan, then the bare name "node"
-// (resolved by Codex's own environment at launch).
+// binary when it really is node, then a PATH scan, then the POSIX install dirs
+// (Homebrew, npm-global, volta, nvm) and one login-shell lookup (a Dock-launched
+// VS Code on macOS has a minimal PATH), then the bare name "node" (resolved by
+// Codex's own environment at launch). Callers show NODE_NOT_FOUND_WARNING when
+// only the bare name is left.
 
 import * as fs from "fs";
 import * as path from "path";
+import { findOnPosixLadder, type LoginShellOptions, type PosixDirsOptions } from "./posixBinDiscovery";
 
 export interface ResolveNodeBinaryOptions {
   env?: Record<string, string | undefined>;
@@ -23,6 +27,18 @@ export interface ResolveNodeBinaryOptions {
   platform?: NodeJS.Platform;
   /** File-exists probe; defaults to a real stat. */
   isFile?: (p: string) => boolean;
+  /** Test seams for the POSIX install-dir and login-shell rungs. */
+  posixDirs?: PosixDirsOptions;
+  loginShell?: LoginShellOptions;
+}
+
+/** Shown by the installers when no node executable could be located and the bare name "node" is written. */
+export const NODE_NOT_FOUND_WARNING =
+  "TycoonAgents could not find a node executable (looked on PATH, in the Homebrew, npm-global, volta and nvm folders, and via your login shell), so Codex will be told to run plain \"node\". Set TYCOON_NODE_PATH to the full path of node and install again.";
+
+/** True when the command is the unresolved bare name, i.e. discovery found nothing. */
+export function isBareNodeCommand(command: string): boolean {
+  return command === "node";
 }
 
 function defaultIsFile(p: string): boolean {
@@ -67,7 +83,18 @@ export function resolveNodeBinary(options: ResolveNodeBinaryOptions = {}): strin
   const isElectron = options.isElectron ?? Boolean(process.versions.electron);
   const execPath = options.execPath ?? process.execPath;
   if (!isElectron) return execPath;
-  return findNodeOnPath(env, options.platform ?? process.platform, options.isFile ?? defaultIsFile) ?? "node";
+  const platform = options.platform ?? process.platform;
+  const isFile = options.isFile ?? defaultIsFile;
+  const onPath = findNodeOnPath(env, platform, isFile);
+  if (onPath) return onPath;
+  const ladder = findOnPosixLadder("node", {
+    platform,
+    env,
+    isFile,
+    dirs: options.posixDirs,
+    login: options.loginShell,
+  });
+  return ladder.bin ?? "node";
 }
 
 const ELECTRON_HOST_NAMES = new Set(["code", "code - insiders", "code-insiders", "electron", "cursor", "windsurf", "vscodium", "codium"]);

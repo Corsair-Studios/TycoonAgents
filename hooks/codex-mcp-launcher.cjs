@@ -113,6 +113,7 @@ const os = require("os");
 const readline = require("readline");
 const { spawnSync, spawn } = require("child_process");
 const { formatBridgeResult, classifyProviderError } = require("./bridge-result.cjs");
+const binDiscovery = require("./binDiscovery.cjs");
 
 const CODEX_VERSION_PREFIX = "codex-cli ";
 
@@ -391,6 +392,14 @@ function collectHomeRelativeSignal(list, seen) {
   }
 }
 
+/** Signal: the POSIX install dirs a Dock-launched VS Code's minimal PATH misses (npm-global, volta, newest nvm node, plus Homebrew/local dirs). Mirrors collectPosixDirsSignal in codexDiscovery.ts. */
+function collectPosixDirsSignal(list, seen) {
+  if (process.platform === "win32") return;
+  for (const dir of binDiscovery.posixSearchDirs()) {
+    addCandidate(list, seen, `install dir (${dir})`, path.posix.join(dir, "codex"));
+  }
+}
+
 /** Same platform-arch folder names codexDiscovery.ts uses under the VS Code extension's bin/ dir. */
 function vsCodeExtensionBinPlatformFolder() {
   if (process.platform === "win32") return "windows-x86_64";
@@ -570,6 +579,7 @@ function discoverCodexBinary(requestedArgs, opts) {
   collectNpmGlobalSignal(candidates, seen);
   collectHomebrewSignal(candidates, seen);
   collectHomeRelativeSignal(candidates, seen);
+  collectPosixDirsSignal(candidates, seen);
   collectVsCodeExtensionSignal(candidates, seen);
 
   for (const candidate of candidates) {
@@ -577,6 +587,19 @@ function discoverCodexBinary(requestedArgs, opts) {
     const probed = probeCandidate(candidate.command, spawnSyncFn);
     if (probed.ok && hasCapability(candidate.command, probed.version)) {
       return candidate.command;
+    }
+  }
+
+  // Last rung (POSIX only): the user's login shell sees the PATH their terminal does.
+  if (process.platform !== "win32") {
+    tried.push("login shell ($SHELL -ilc 'command -v codex')");
+    const viaShell = ((opts && opts.loginShellLookup) || binDiscovery.loginShellLookup)("codex");
+    if (viaShell) {
+      tried.push(`login shell: ${viaShell}`);
+      const probed = probeCandidate(viaShell, spawnSyncFn);
+      if (probed.ok && hasCapability(viaShell, probed.version)) {
+        return viaShell;
+      }
     }
   }
 

@@ -36,6 +36,7 @@ const https = require("https");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const binDiscovery = require("./binDiscovery.cjs");
 
 // ---------------------------------------------------------------------------
 // p23-t10: resolve vendor endpoint env vars from either the Codex process
@@ -126,31 +127,18 @@ function discoverClaudeBin() {
   const tried = [];
   const envBin = resolveVendorEnv("CLAUDE_CLI_BIN");
   if (envBin) return { bin: envBin, triedPaths: [`CLAUDE_CLI_BIN=${envBin}`] };
-  const pathVar = process.env.PATH || process.env.Path || "";
-  const pathDirs = pathVar.split(path.delimiter).filter(Boolean);
   const isWin = process.platform === "win32";
-  const pathCandidates = isWin ? ["claude.cmd", "claude.exe", "claude"] : ["claude"];
-  for (const dir of pathDirs) {
-    for (const cand of pathCandidates) {
-      const full = path.join(dir, cand);
-      tried.push(full);
-      try {
-        if (fs.existsSync(full) && fs.statSync(full).isFile()) return { bin: full, triedPaths: tried };
-      } catch { /* keep probing */ }
-    }
-  }
-  const fallbacks = [];
-  if (isWin && process.env.APPDATA) fallbacks.push(path.join(process.env.APPDATA, "npm", "claude.cmd"));
   const home = os.homedir();
-  if (home) fallbacks.push(path.join(home, ".local", "bin", "claude"));
-  fallbacks.push("/usr/local/bin/claude");
-  for (const full of fallbacks) {
-    tried.push(full);
-    try {
-      if (fs.existsSync(full) && fs.statSync(full).isFile()) return { bin: full, triedPaths: tried };
-    } catch { /* keep probing */ }
+  const extraDirs = [];
+  if (isWin) {
+    if (process.env.APPDATA) extraDirs.push(path.join(process.env.APPDATA, "npm"));
+    if (home) extraDirs.push(path.join(home, ".local", "bin"));
   }
-  return { bin: null, triedPaths: tried };
+  const found = binDiscovery.findBinary("claude", {
+    names: isWin ? ["claude.cmd", "claude.exe", "claude"] : ["claude"],
+    extraDirs,
+  });
+  return { bin: found.bin, triedPaths: tried.concat(found.tried) };
 }
 
 function resolveCmdShimJsEntry(cmdPath) {
@@ -910,6 +898,23 @@ const CODEX_LOG_LINE_RE = /^\s*(?:\S+\s+)?(?:ERROR|WARN)\b|exec_command failed:/
 function isCodexSandboxUnavailable(stderr) {
   return String(stderr || "").split(/\r?\n/).some((l) => CODEX_LOG_LINE_RE.test(l) && CODEX_SANDBOX_SIGNATURE_RE.test(l));
 }
+/**
+ * Codex's macOS Seatbelt sandbox refused to start the worker's shell. Deliberately narrow: only a
+ * Codex log line naming sandbox-exec / sandbox_apply / seatbelt counts, never a bare "Operation not
+ * permitted", which the user's own code can raise for unrelated reasons.
+ */
+const CODEX_MACOS_SANDBOX_SIGNATURE_RE = /sandbox-exec[^\n]{0,160}(?:sandbox_apply|not permitted|denied)|sandbox_apply[^\n]{0,80}(?:not permitted|denied)|seatbelt[^\n]{0,120}(?:denied|fail|error|unavailable)/i;
+function isCodexMacosSandboxUnavailable(stderr, platform) {
+  if ((platform || process.platform) !== "darwin") return false;
+  return String(stderr || "").split(/\r?\n/).some((l) => CODEX_LOG_LINE_RE.test(l) && CODEX_MACOS_SANDBOX_SIGNATURE_RE.test(l));
+}
+const CODEX_MACOS_SANDBOX_UNAVAILABLE_MESSAGE = "Codex's macOS sandbox blocked the worker from running commands. Sandbox settings are your decision: review sandbox_mode in ~/.codex/config.toml. TycoonAgents does not change them.";
+/** The structured sandbox error for this stderr on this platform, or null when it is not a sandbox failure. */
+function codexSandboxFailure(stderr, platform) {
+  if (isCodexSandboxUnavailable(stderr)) return { error: CODEX_SANDBOX_UNAVAILABLE_MESSAGE, kind: "sandbox_unavailable" };
+  if (isCodexMacosSandboxUnavailable(stderr, platform)) return { error: CODEX_MACOS_SANDBOX_UNAVAILABLE_MESSAGE, kind: "sandbox_unavailable" };
+  return null;
+}
 const CODEX_SANDBOX_UNAVAILABLE_MESSAGE = "Codex's Windows sandbox couldn't start on this machine, so the worker couldn't run commands. Repair it in Codex, or set windows.sandbox = \"unelevated\" in your Codex config (config.toml).";
 
 /** Runs `codex exec` for an openai slot on the Codex harness; elsewhere an openai specialist is Codex-native. */
@@ -957,9 +962,8 @@ ${task}`;
   };
   const run = await runClaudeCli(bin, args, cwd, resolveTimeoutMs(), prompt, childEnv, { shell: launcher.needsShell(bin), label: "codex exec" });
   if (run.error) return { error: `${run.error} (argv: ${redactSecrets([bin, ...args].join(" "))})` };
-  if (isCodexSandboxUnavailable(run.stderr)) {
-    return { error: CODEX_SANDBOX_UNAVAILABLE_MESSAGE, kind: "sandbox_unavailable" };
-  }
+  const sandboxFailure = codexSandboxFailure(run.stderr);
+  if (sandboxFailure) return sandboxFailure;
   if (run.code !== 0) {
     const tail = redactSecrets(run.stderr || "").slice(-500);
     return { error: `codex exec exited ${run.code} (argv: ${redactSecrets([bin, ...args].join(" "))}).${tail ? ` stderr: ${tail}` : ""}` };
@@ -1006,6 +1010,7 @@ function resolveAdapter(vendor, opts) {
 }
 
 module.exports = {
+  codexSandboxFailure,
   claudeSubscriptionBlock,
   adapterKeyForVendor,
   resolveAdapter,

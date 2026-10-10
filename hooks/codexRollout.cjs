@@ -174,16 +174,36 @@ function resolveWorkerId(sessionMeta, knownAgentIds, matchNicknameFn) {
   return "codex-agent";
 }
 
+// Per-process realpath memo (darwin only); cleared when it grows past 500 entries.
+const REALPATH_CACHE = new Map();
+
 /**
  * Normalizes a filesystem path for cross-platform comparison: backslashes
  * to forward slashes, lowercased on win32 (case-insensitive filesystem),
  * trailing slash stripped. Used to match a rollout's recorded `cwd` against
  * TYCOON_PROJECT_DIR without false negatives from slash/case differences.
  */
-function normalizePathForCompare(p) {
+function normalizePathForCompare(p, opts) {
   if (!p || typeof p !== "string") return "";
-  let s = p.replace(/\\/g, "/");
-  if (process.platform === "win32") s = s.toLowerCase();
+  const platform = (opts && opts.platform) || process.platform;
+  let s = p;
+  if (platform === "darwin") {
+    // macOS: /var -> /private/var and /tmp -> /private/tmp are symlinks, and volumes are case-insensitive by default.
+    const cache = (opts && opts.cache) || (opts && opts.realpath ? null : REALPATH_CACHE);
+    if (cache && cache.has(p)) {
+      s = cache.get(p);
+    } else {
+      try {
+        s = ((opts && opts.realpath) || fs.realpathSync)(s);
+      } catch { /* path no longer exists: compare the spelling as recorded */ }
+      if (cache) {
+        if (cache.size > 500) cache.clear();
+        cache.set(p, s);
+      }
+    }
+  }
+  s = s.replace(/\\/g, "/");
+  if (platform === "win32" || platform === "darwin") s = s.toLowerCase();
   return s.replace(/\/+$/, "");
 }
 
@@ -527,6 +547,7 @@ function findRecentDelegateThread(env = process.env, now = Date.now(), candidate
 }
 
 module.exports = {
+  normalizePathForCompare,
   listCandidateRollouts,
   findThreadForDelegateCall,
   findRecentDelegateThread,

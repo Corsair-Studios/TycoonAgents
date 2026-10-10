@@ -86,8 +86,12 @@
  *   2. `claude` resolved off PATH (claude.cmd / claude.exe on win32, plain
  *      `claude` elsewhere).
  *   3. %APPDATA%/npm/claude.cmd (npm global installs on Windows).
- *   4. ~/.local/bin/claude (a common Linux/macOS user-local install).
- *   5. /usr/local/bin/claude (a common systemwide Unix install).
+ *   4. POSIX install dirs, in order (hooks/binDiscovery.cjs): ~/.claude/local,
+ *      ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.npm-global/bin,
+ *      ~/.volta/bin, the newest ~/.nvm/versions/node/<newest>/bin. A Dock-launched
+ *      VS Code on macOS has a minimal PATH, so these matter there.
+ *   5. One cached login-shell lookup (`$SHELL -ilc 'command -v claude'`, 3s
+ *      timeout, POSIX only).
  * On total failure: isError listing every path tried and naming
  * CLAUDE_CLI_BIN as the override.
  *
@@ -148,6 +152,7 @@ const os = require("os");
 const path = require("path");
 const readline = require("readline");
 const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
+const binDiscovery = require("./binDiscovery.cjs");
 
 const SERVER_NAME = "claude-cli-mcp";
 const SERVER_VERSION = "1.0.0";
@@ -222,44 +227,18 @@ function discoverClaudeBin() {
     return { bin: envBin, triedPaths: [`CLAUDE_CLI_BIN=${envBin}`] };
   }
 
-  // PATH lookup.
-  const pathVar = process.env.PATH || process.env.Path || "";
-  const pathDirs = pathVar.split(path.delimiter).filter(Boolean);
   const isWin = process.platform === "win32";
-  const pathCandidates = isWin ? ["claude.cmd", "claude.exe", "claude"] : ["claude"];
-  for (const dir of pathDirs) {
-    for (const cand of pathCandidates) {
-      const full = path.join(dir, cand);
-      tried.push(full);
-      try {
-        if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-          return { bin: full, triedPaths: tried };
-        }
-      } catch { /* keep probing */ }
-    }
-  }
-
-  // Well-known install locations.
-  const fallbacks = [];
-  if (isWin && process.env.APPDATA) {
-    fallbacks.push(path.join(process.env.APPDATA, "npm", "claude.cmd"));
-  }
   const home = os.homedir();
-  if (home) {
-    fallbacks.push(path.join(home, ".local", "bin", "claude"));
+  const extraDirs = [];
+  if (isWin) {
+    if (process.env.APPDATA) extraDirs.push(path.join(process.env.APPDATA, "npm"));
+    if (home) extraDirs.push(path.join(home, ".local", "bin"));
   }
-  fallbacks.push("/usr/local/bin/claude");
-
-  for (const full of fallbacks) {
-    tried.push(full);
-    try {
-      if (fs.existsSync(full) && fs.statSync(full).isFile()) {
-        return { bin: full, triedPaths: tried };
-      }
-    } catch { /* keep probing */ }
-  }
-
-  return { bin: null, triedPaths: tried };
+  const found = binDiscovery.findBinary("claude", {
+    names: isWin ? ["claude.cmd", "claude.exe", "claude"] : ["claude"],
+    extraDirs,
+  });
+  return { bin: found.bin, triedPaths: tried.concat(found.tried) };
 }
 
 /** Reads an npm-generated .cmd/.bat shim's text and extracts the absolute

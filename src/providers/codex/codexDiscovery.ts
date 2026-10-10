@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { execFileSync } from "child_process";
+import { loginShellLookup, posixSearchDirs } from "./posixBinDiscovery";
 
 /**
  * Why this module exists, and why it looks the way it does: see
@@ -82,6 +83,12 @@ const defaultExec: CodexExecFn = (command) =>
 export interface CodexDiscoveryOptions {
   /** Override for the `<command> --version` probe. Defaults to a real execFileSync call. */
   exec?: CodexExecFn;
+  /** Override for the login-shell lookup (`$SHELL -ilc 'command -v codex'`); defaults to the real, cached, 3s-bounded lookup. */
+  loginShell?: (name: string) => string | undefined;
+  /** Override for the POSIX install dirs searched after PATH (tests). */
+  posixDirs?: () => string[];
+  /** Override for process.platform (tests). */
+  platform?: NodeJS.Platform;
 }
 
 /** Shell "command not found" shapes observed/expected across platforms (Windows cmd.exe confirmed in Phase 1; POSIX "command not found" carried forward by analogy per docs/provider-contract.md's binary-absent entry). */
@@ -252,6 +259,13 @@ function collectHomebrewSignal(list: CodexCandidate[], seen: Set<string>): void 
   }
 }
 
+/** Signal: the POSIX install dirs a Dock-launched VS Code's minimal PATH misses (npm-global, volta, newest nvm node, plus Homebrew/local dirs). Added after PATH, de-duplicated against the other signals. */
+function collectPosixDirsSignal(list: CodexCandidate[], seen: Set<string>, dirs: string[]): void {
+  for (const dir of dirs) {
+    addCandidate(list, seen, `install dir (${dir})`, path.posix.join(dir, "codex"));
+  }
+}
+
 /** Signal: the user's home-relative common install dirs some CLI installers use (e.g. `~/.codex/bin`, `~/.local/bin`). Fail-open if os.homedir() throws (rare sandboxed/CI environments). */
 function collectHomeRelativeSignal(list: CodexCandidate[], seen: Set<string>): void {
   try {
@@ -411,6 +425,8 @@ export function discoverCodexBinary(opts?: CodexDiscoveryOptions): string {
   collectNpmGlobalSignal(candidates, seen);
   collectHomebrewSignal(candidates, seen);
   collectHomeRelativeSignal(candidates, seen);
+  const platform = opts?.platform ?? process.platform;
+  if (platform !== "win32") collectPosixDirsSignal(candidates, seen, opts?.posixDirs ? opts.posixDirs() : posixSearchDirs());
   collectVsCodeExtensionSignal(candidates, seen);
 
   let sawWrongContent = false;
@@ -422,6 +438,18 @@ export function discoverCodexBinary(opts?: CodexDiscoveryOptions): string {
     }
     if (!sawWrongContent && probeRanButWrongContent(candidate.command, exec)) {
       sawWrongContent = true;
+    }
+  }
+
+  // Last rung (POSIX only): ask the user's login shell, which sees the PATH their terminal does.
+  if (platform !== "win32") {
+    tried.push("login shell ($SHELL -ilc 'command -v codex')");
+    const viaShell = (opts?.loginShell ?? ((n: string) => loginShellLookup(n, { platform })))("codex");
+    if (viaShell) {
+      tried.push(`login shell: ${viaShell}`);
+      const resolved = probeCandidate(viaShell, exec);
+      if (resolved) return resolved;
+      if (!sawWrongContent && probeRanButWrongContent(viaShell, exec)) sawWrongContent = true;
     }
   }
 

@@ -516,6 +516,7 @@ export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "delegationEnforcement.js",
   "fallbackChain.js",
   "harnessModelDefaults.cjs",
+  "binDiscovery.cjs",
 ];
 
 /**
@@ -936,9 +937,10 @@ export function cleanupForeignHookArtifacts(
 /** Direct `require("./x")` companions of each bridge file (transitively closed by {@link bridgeFilesForConfig}). */
 const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
   "gemini-mcp-wrapper.cjs": ["bridge-result.cjs"],
-  "claude-cli-mcp.cjs": ["bridge-result.cjs"],
+  "claude-cli-mcp.cjs": ["bridge-result.cjs", "binDiscovery.cjs"],
   "openai-compatible-mcp.cjs": ["bridge-result.cjs", "localEnvStore.js"],
-  "codex-mcp-launcher.cjs": ["bridge-result.cjs"],
+  "dispatcherAdapters.cjs": ["binDiscovery.cjs"],
+  "codex-mcp-launcher.cjs": ["bridge-result.cjs", "binDiscovery.cjs"],
   "codex-app-server-mcp.cjs": ["bridge-result.cjs", "codex-mcp-launcher.cjs"],
   "tycoon-dispatcher-mcp.cjs": [
     "codexRollout.cjs",
@@ -949,6 +951,7 @@ const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
     "fallbackChain.js",
     "gateEvents.cjs",
     "harnessModelDefaults.cjs",
+    "binDiscovery.cjs",
   ],
   "dispatcherBridgeClient.cjs": ["bridge-result.cjs"],
   "dispatcherClaudeChain.cjs": ["bridge-result.cjs", "dispatcherAdapters.cjs", "dispatcherBridgeClient.cjs"],

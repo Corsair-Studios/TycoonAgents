@@ -22,7 +22,7 @@ import * as path from "path";
 import { resolveCodexHome, samePath, isNewerExtensionPath, type ResolveCodexHomeEnv } from "./installCodexHooks";
 import { allVendorKeyEnvNames, customEndpointNameProblem, customKeyNameProblem } from "../../core/vendorKeys";
 import { hasValue as localEnvHasValue } from "../../core/localEnvStore";
-import { resolveNodeBinary } from "./resolveNodeBinary";
+import { NODE_NOT_FOUND_WARNING, isBareNodeCommand, resolveNodeBinary } from "./resolveNodeBinary";
 import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** Marker delimiting the block this installer owns inside config.toml, so uninstall removes only its own lines. */
@@ -438,13 +438,15 @@ export function installCodexDispatcher(options: InstallCodexDispatcherOptions): 
   fs.mkdirSync(codexHome, { recursive: true });
   const configTomlPath = path.join(codexHome, "config.toml");
   const existing = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : undefined;
+  const nodePath = options.nodePath ?? resolveNodeBinary();
   const merged = mergeDispatcherIntoConfigToml(existing, {
-    nodePath: options.nodePath ?? resolveNodeBinary(),
+    nodePath,
     serverScriptPath: options.serverScriptPath,
     envVarNames: unionEnvVarNames(readManagedEnvVars(existing ?? ""), dispatcherEnvVarNames(options.projectDir, { env: options.env })),
   });
   fs.writeFileSync(configTomlPath, merged.text, "utf8");
-  return { configTomlPath, ...(merged.warnings ? { warnings: merged.warnings } : {}) };
+  const warnings = [...(merged.warnings ?? []), ...(isBareNodeCommand(nodePath) ? [NODE_NOT_FOUND_WARNING] : [])];
+  return { configTomlPath, ...(warnings.length ? { warnings } : {}) };
 }
 
 export interface UninstallCodexDispatcherOptions {
