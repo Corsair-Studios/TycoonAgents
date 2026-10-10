@@ -20,11 +20,8 @@
 /.claude/tycoon/
 /spikes/
 
-# Theme service business material
-/design-docs/theme-credits-prd.*
-
-# Design-doc .docx twins are unscannable; the .md files are the public source
-/design-docs/*.docx
+# Design docs (PRDs, business material) stay private
+/design-docs/
 
 # Targets the private backend repo; stays in the private repo
 /test/themeServiceEndToEnd.test.ts

@@ -5,8 +5,7 @@ vendor/model/transport serves it — one file that the Claude Code
 frontmatter generator reads as its highest-priority source. It is entirely optional: a project with no
 `routing.json` behaves exactly as it does today.
 
-See `src/core/routingProfile.ts` for the loader/validator implementation and
-`design-docs/routing-profile-prd.md` for the full PRD and milestone plan.
+See `src/core/routingProfile.ts` for the loader/validator implementation.
 
 ## Prerequisite: the agent roster
 
@@ -179,9 +178,7 @@ An agent's hand-edited frontmatter `backend:` block remains authoritative
 **only** for agents absent from the profile (no `routing.json` at all, or an
 `agents` map that doesn't mention that agent id). This matches the existing
 precedent set by the OpenCode-config generator, where a generated artifact is
-never hand-preserved once a higher-priority source exists — see
-`design-docs/routing-profile-prd.md`'s Risks section ("Profile vs. frontmatter
-precedence").
+never hand-preserved once a higher-priority source exists.
 
 `.claude/tycoon/opencode-models.json` is **deprecated**: with a `routing.json`
 present, it is consulted only as a manual escape hatch for agents the profile

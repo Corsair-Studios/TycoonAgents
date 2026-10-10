@@ -32,7 +32,7 @@ Existing building blocks to reuse:
   an `openai-compatible` vendor slot (`@ai-sdk/openai-compatible`) from
   per-agent model config plus env/file secrets; the same slot shape can drive
   a Tycoon dispatcher's routing table.
-- `design-docs/codex-provider-prd.md` (Core Features) already calls for a
+- The Codex provider design already calls for a
   Tycoon MCP dispatcher owning routing/enforcement rather than leaning on
   Codex-native primitives.
 - `docs/codex-harness-findings.md:23-45,64-94` — Codex hooks never fired
