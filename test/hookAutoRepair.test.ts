@@ -166,3 +166,35 @@ test("backupSettingsCopy writes under .claude/tycoon, never beside settings, and
   assert.equal(fs.readFileSync(bak, "utf8"), "first");
   assert.equal(fs.existsSync(path.join(root, ".claude", "settings.local.json.bak")), false);
 });
+
+test("darwin: silent repair rewrites a bare-node Tycoon command to the absolute node path", () => {
+  const ABS = `"/opt/homebrew/bin/node" "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+  const bare: any = { hooks: {} };
+  for (const s of TYCOON_HOOK_SLOTS) {
+    bare.hooks[s.event] = bare.hooks[s.event] ?? [];
+    bare.hooks[s.event].push({ matcher: s.matcher, hooks: [{ type: "command", command: `node "/p/.claude/tycoon/tycoon-claude-hook.cjs"` }] });
+  }
+  const { root, lp } = mk(JSON.stringify(bare));
+  const res = silentRepairLocalHooks(root, ABS, fs, { platform: "darwin", fileExists: () => true });
+  assert.equal(res.status, "repaired");
+  const after = JSON.parse(fs.readFileSync(lp, "utf8"));
+  assert.equal(after.hooks.Stop[0].hooks[0].command, ABS);
+  assert.equal(silentRepairLocalHooks(root, ABS, fs, { platform: "darwin", fileExists: () => true }).status, "skipped");
+});
+
+test("a kept absolute-node command still marks its slot (marker by event+matcher, not command string)", () => {
+  const KEPT = `"/opt/homebrew/bin/node" "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+  const OTHER = `"/Users/u/.nvm/versions/node/v20/bin/node" "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+  const s: any = { hooks: {} };
+  for (const sl of TYCOON_HOOK_SLOTS) {
+    s.hooks[sl.event] = s.hooks[sl.event] ?? [];
+    s.hooks[sl.event].push({ matcher: sl.matcher, hooks: [{ type: "command", command: KEPT }] });
+  }
+  const { root } = mk(JSON.stringify(s));
+  const env = { platform: "darwin" as const, fileExists: () => true };
+  // Discovery now returns a different valid node: nothing to repair, but the marker must list every slot.
+  const res = silentRepairLocalHooks(root, OTHER, fs, env);
+  assert.equal(res.status, "skipped");
+  const marker = JSON.parse(fs.readFileSync(path.join(root, ".claude", "tycoon", "hook-slots.json"), "utf8"));
+  assert.equal(marker.slots.length, new Set(TYCOON_HOOK_SLOTS.map((x) => `${x.event}|${x.matcher}`)).size);
+});

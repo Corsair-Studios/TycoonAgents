@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isElectronHostBinary, resolveNodeBinary } from "../src/providers/codex/resolveNodeBinary";
+import { isElectronHostBinary, rejectedNodeOverride, resolveNodeBinary } from "../src/providers/codex/resolveNodeBinary";
 
 const CODE = "C:\\Program Files\\Microsoft VS Code\\Code.exe";
 
@@ -57,4 +57,23 @@ test("isElectronHostBinary recognises editor binaries only", () => {
   assert.equal(isElectronHostBinary("/usr/share/code/code"), true);
   assert.equal(isElectronHostBinary("C:\\Program Files\\nodejs\\node.exe"), false);
   assert.equal(isElectronHostBinary("node"), false);
+});
+
+test("isElectronHostBinary: macOS helpers, Electron and app bundles rejected; real node accepted", () => {
+  assert.equal(isElectronHostBinary("/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"), true);
+  assert.equal(isElectronHostBinary("/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper"), true);
+  assert.equal(isElectronHostBinary("/opt/x/Electron"), true);
+  assert.equal(isElectronHostBinary("/Applications/X.app/Contents/MacOS/x"), true);
+  assert.equal(isElectronHostBinary("/opt/homebrew/bin/node"), false);
+  assert.equal(isElectronHostBinary("C:\\Users\\a\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"), true);
+});
+
+test("TYCOON_NODE_PATH pointing at an editor helper is ignored and discovery continues", () => {
+  const helper = "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)";
+  const env = { TYCOON_NODE_PATH: helper, PATH: "/opt/homebrew/bin" };
+  const resolved = resolveNodeBinary({ env, execPath: "/Applications/VS Code.app/Contents/MacOS/Electron", isElectron: true, platform: "darwin", isFile: (p) => p === "/opt/homebrew/bin/node" });
+  assert.equal(resolved, "/opt/homebrew/bin/node");
+  assert.equal(rejectedNodeOverride(env), helper);
+  assert.equal(rejectedNodeOverride({ TYCOON_NODE_PATH: "/opt/homebrew/bin/node" }), undefined);
+  assert.equal(rejectedNodeOverride({}), undefined);
 });

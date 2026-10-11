@@ -27,6 +27,7 @@ import {
   copyMcpBridgeHooks,
   healInstalledHookCopies,
   buildAbsoluteHookCommand,
+  resolveHookInterpreter,
   migrateRelativeHookCommand,
 } from "../src/host/vscode/hookInstall";
 import { mergeEnabledMcpJsonServer } from "../src/host/vscode/mcpCatalog";
@@ -980,7 +981,7 @@ test('mergeEnabledMcpJsonServer: non-array enabledMcpjsonServers field becomes [
 // ---------------------------------------------------------------------------
 
 test("buildAbsoluteHookCommand: posix-style root produces a quoted absolute node command", () => {
-  const cmd2 = buildAbsoluteHookCommand("/home/user/my-project");
+  const cmd2 = buildAbsoluteHookCommand("/home/user/my-project", { platform: "win32" });
   assert.equal(cmd2, `node "${path.join("/home/user/my-project", ".claude", "tycoon", "tycoon-claude-hook.cjs")}"`);
   assert.ok(cmd2.startsWith('node "'), "must be quoted");
   assert.ok(cmd2.includes("tycoon-claude-hook.cjs"));
@@ -995,13 +996,35 @@ test("buildAbsoluteHookCommand: Windows-style root produces a quoted absolute no
 
 test("buildAbsoluteHookCommand: a project path containing spaces stays inside one quoted argument", () => {
   const root = path.join(os.tmpdir(), "My Test Project " + Date.now());
-  const cmd2 = buildAbsoluteHookCommand(root);
+  const cmd2 = buildAbsoluteHookCommand(root, { platform: "win32" });
   // The whole path (spaces and all) must sit between exactly one pair of
   // double quotes — otherwise a shell would split it into multiple argv
   // entries and `node` would fail to find the script.
   const match = cmd2.match(/^node "(.+)"$/);
   assert.ok(match, `command must be exactly node "<path>", got: ${cmd2}`);
   assert.equal(match![1], path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs"));
+});
+
+test("buildAbsoluteHookCommand: darwin/linux writes the discovered absolute node path, quoted", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    const cmd2 = buildAbsoluteHookCommand("/p", { platform, resolveNode: () => "/opt/homebrew/bin/node" });
+    assert.equal(cmd2, `"/opt/homebrew/bin/node" "${path.posix.join("/p", ".claude", "tycoon", "tycoon-claude-hook.cjs")}"`);
+  }
+});
+
+test("buildAbsoluteHookCommand: darwin with no discoverable node falls back to bare node", () => {
+  assert.ok(buildAbsoluteHookCommand("/p", { platform: "darwin", resolveNode: () => "node" }).startsWith('node "'));
+  assert.ok(buildAbsoluteHookCommand("/p", { platform: "darwin", resolveNode: () => { throw new Error("x"); } }).startsWith('node "'));
+  assert.equal(resolveHookInterpreter({ platform: "darwin", resolveNode: () => "node" }).resolved, false);
+});
+
+test("buildAbsoluteHookCommand: win32 never uses the discovered path", () => {
+  const cmd2 = buildAbsoluteHookCommand("D:/proj",{ platform: "win32", resolveNode: () => "/opt/homebrew/bin/node" });
+  assert.ok(cmd2.startsWith('node "'));
+});
+
+test("buildAbsoluteHookCommand: an Electron host binary is never written as the interpreter", () => {
+  assert.ok(buildAbsoluteHookCommand("/p", { platform: "linux", resolveNode: () => "/usr/share/code/code" }).startsWith('node "'));
 });
 
 test("buildAbsoluteHookCommand: never produces the old bare project-relative form", () => {

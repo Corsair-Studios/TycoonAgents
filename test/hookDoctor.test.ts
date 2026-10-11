@@ -748,3 +748,132 @@ test("repairSettings: a user wrapper that only mentions the hook name in a comme
   assert.ok(cmds.includes(wrapper.command));
   assert.deepEqual(tycoonCmdsFor(settings, "UserPromptSubmit", "").filter((c) => c !== wrapper.command), [ABS_CMD]);
 });
+
+// ---------------------------------------------------------------------------
+// Interpreter handling (macOS minimal-PATH incident: bare `node` not found)
+// ---------------------------------------------------------------------------
+
+const ABS_NODE = `"/opt/homebrew/bin/node" "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+const BARE_NODE = `node "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+const darwin = (existing: string[] = []) => ({ platform: "darwin" as const, fileExists: (p: string) => existing.includes(p) });
+
+test("doctor recognises the absolute-interpreter form as a Tycoon command (no foreign, wired)", () => {
+  const settings = buildFullSettings(ABS_NODE);
+  assert.deepEqual(findForeignHooks(settings, null), []);
+  const findings = diagnose({ localSettings: settings, sharedSettings: null, currentHookCommand: ABS_NODE, hookScriptExists: true, env: darwin(["/opt/homebrew/bin/node"]) });
+  assert.deepEqual(findings.map((f) => f.id), ["hooks-healthy"]);
+});
+
+test("darwin: bare node is stale when the current command uses an absolute node", () => {
+  const findings = diagnose({ localSettings: buildFullSettings(BARE_NODE), sharedSettings: null, currentHookCommand: ABS_NODE, hookScriptExists: true, env: darwin() });
+  assert.ok(findings.some((f) => f.id === "hooks-stale" && f.fixable));
+  const { settings } = repairSettings(buildFullSettings(BARE_NODE), ABS_NODE, { removeForeign: false, env: darwin() });
+  assert.equal(settings.hooks.Stop[0].hooks[0].command, ABS_NODE);
+});
+
+test("darwin: an absolute node path that no longer exists is stale and rewritten", () => {
+  const gone = `"/Users/u/.nvm/versions/node/v18.0.0/bin/node" "/p/.claude/tycoon/tycoon-claude-hook.cjs"`;
+  const findings = diagnose({ localSettings: buildFullSettings(gone), sharedSettings: null, currentHookCommand: ABS_NODE, hookScriptExists: true, env: darwin() });
+  assert.ok(findings.some((f) => f.id === "hooks-stale"));
+});
+
+test("darwin: discovery failed (current is bare) keeps an existing absolute node, not stale", () => {
+  const findings = diagnose({ localSettings: buildFullSettings(ABS_NODE), sharedSettings: null, currentHookCommand: BARE_NODE, hookScriptExists: true, env: darwin(["/opt/homebrew/bin/node"]) });
+  assert.ok(!findings.some((f) => f.id === "hooks-stale"));
+  const { changes } = repairSettings(buildFullSettings(ABS_NODE), BARE_NODE, { removeForeign: false, env: darwin(["/opt/homebrew/bin/node"]) });
+  assert.deepEqual(changes, []);
+});
+
+test("win32: differing command is stale exactly as before", () => {
+  const findings = diagnose({ localSettings: buildFullSettings(ABS_NODE), sharedSettings: null, currentHookCommand: BARE_NODE, hookScriptExists: true, env: { platform: "win32" } });
+  assert.ok(findings.some((f) => f.id === "hooks-stale"));
+});
+
+test("interpreterCheck failure yields a hooks-node-missing finding, never healthy", () => {
+  const findings = diagnose({ localSettings: buildFullSettings(BARE_NODE), sharedSettings: null, currentHookCommand: BARE_NODE, hookScriptExists: true, env: darwin(), interpreterCheck: { ok: false, interpreter: "node" } });
+  const f = findings.find((x) => x.id === "hooks-node-missing");
+  assert.ok(f);
+  assert.match(f!.detail, /TYCOON_NODE_PATH/);
+  assert.ok(!findings.some((x) => x.id === "hooks-healthy"));
+  const ok = diagnose({ localSettings: buildFullSettings(BARE_NODE), sharedSettings: null, currentHookCommand: BARE_NODE, hookScriptExists: true, env: darwin(), interpreterCheck: { ok: true, interpreter: "node" } });
+  assert.deepEqual(ok.map((x) => x.id), ["hooks-healthy"]);
+});
+
+// ---------------------------------------------------------------------------
+// Review fixes: ping-pong, quoting, Electron guard
+// ---------------------------------------------------------------------------
+import { isStaleCommand, firstTycoonInterpreter, isTycoonCommand, rewriteStaleTycoonInterpreters } from "../src/host/vscode/hookDoctor";
+import { buildHookCommandForScript, quoteHookToken } from "../src/host/vscode/hookInstall";
+
+const SCRIPT = "/p/.claude/tycoon/tycoon-claude-hook.cjs";
+const NODE_A = `"/opt/homebrew/bin/node" "${SCRIPT}"`;
+const NODE_B = `"/Users/u/.nvm/versions/node/v20/bin/node" "${SCRIPT}"`;
+
+test("ping-pong: a valid stored absolute node is not stale when discovery returns a different valid node", () => {
+  const env = darwin(["/opt/homebrew/bin/node", "/Users/u/.nvm/versions/node/v20/bin/node"]);
+  assert.equal(isStaleCommand(NODE_A, NODE_B, env), false);
+  assert.equal(isStaleCommand(NODE_B, NODE_A, env), false);
+});
+
+test("ping-pong: two consecutive repairs with alternating discovery results write nothing", () => {
+  const env = darwin(["/opt/homebrew/bin/node", "/Users/u/.nvm/versions/node/v20/bin/node"]);
+  const start = buildFullSettings(NODE_A);
+  const r1 = repairSettings(start, NODE_B, { removeForeign: false, env });
+  const r2 = repairSettings(r1.settings, NODE_A, { removeForeign: false, env });
+  assert.deepEqual(r1.changes, []);
+  assert.deepEqual(r2.changes, []);
+  assert.deepEqual(r2.settings, start);
+});
+
+test("stale: non-executable or Electron stored interpreter is rewritten; different script is stale", () => {
+  assert.equal(isStaleCommand(NODE_A, NODE_B, { platform: "darwin", fileExists: () => true, isExecutable: () => false }), true);
+  const electron = `"/Applications/Visual Studio Code.app/Contents/MacOS/Electron" "${SCRIPT}"`;
+  assert.equal(isStaleCommand(electron, NODE_A, { platform: "darwin", fileExists: () => true }), true);
+  const otherScript = `"/opt/homebrew/bin/node" "/q/.claude/tycoon/tycoon-claude-hook.cjs"`;
+  assert.equal(isStaleCommand(otherScript, NODE_A, darwin(["/opt/homebrew/bin/node"])), true);
+});
+
+test("quoting: paths with space, accent, dollar, backtick, double and single quote round-trip on POSIX", () => {
+  const nodes = ["/opt/my node/bin/node", "/Users/rené/bin/node", "/u/$HOME/node", "/u/`id`/node", '/u/"q"/node', "/u/it's/node"];
+  for (const node of nodes) {
+    for (const script of ["/p/a b/tycoon-claude-hook.cjs", "/p/$x`y`\"z\"'w/tycoon-claude-hook.cjs", "/p/é/tycoon-claude-hook.cjs"]) {
+      const cmd = buildHookCommandForScript(script, { platform: "darwin", resolveNode: () => node });
+      assert.ok(isTycoonCommand(cmd), cmd);
+      assert.equal(firstTycoonInterpreter(buildFullSettings(cmd)), node, cmd);
+      assert.deepEqual(findForeignHooks(buildFullSettings(cmd), null), []);
+    }
+  }
+  assert.equal(quoteHookToken("/a/b c", "darwin"), '"/a/b c"');
+  assert.equal(quoteHookToken("/a/$b", "darwin"), "'/a/$b'");
+  assert.equal(quoteHookToken("/a/it's$", "darwin"), "'/a/it'\\''s$'");
+  assert.equal(quoteHookToken("C:\\a\\b", "win32"), '"C:\\a\\b"');
+});
+
+test("Electron guard: helper paths from discovery fall back to bare node", () => {
+  const helpers = [
+    "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+    "/Applications/Cursor.app/Contents/MacOS/Cursor Helper",
+    "/opt/electron/dist/node",
+    "/x/Foo.app/Contents/MacOS/node",
+  ];
+  for (const h of helpers) {
+    assert.equal(buildHookCommandForScript(SCRIPT, { platform: "darwin", resolveNode: () => h }), `node "${SCRIPT}"`, h);
+  }
+});
+
+test("rejected TYCOON_NODE_PATH override surfaces hooks-node-missing with an editor-helper hint", () => {
+  const findings = diagnose({ localSettings: buildFullSettings(BARE_NODE), sharedSettings: null, currentHookCommand: BARE_NODE, hookScriptExists: true, env: darwin(), nodeOverrideRejected: "/Applications/Cursor.app/Contents/MacOS/Cursor Helper" });
+  const f = findings.find((x) => x.id === "hooks-node-missing");
+  assert.ok(f);
+  assert.match(f!.detail, /editor helper/);
+});
+
+test("rewriteStaleTycoonInterpreters: bare node for the same script is rewritten; valid absolute node and win32 untouched", () => {
+  const env = darwin(["/opt/homebrew/bin/node"]);
+  const r = rewriteStaleTycoonInterpreters(buildFullSettings(`node "${SCRIPT}"`), NODE_A, env);
+  assert.equal(r.changed, true);
+  assert.equal((r.settings as any).hooks.Stop[0].hooks[0].command, NODE_A);
+  assert.equal(rewriteStaleTycoonInterpreters(buildFullSettings(NODE_B), NODE_A, darwin(["/Users/u/.nvm/versions/node/v20/bin/node"])).changed, false);
+  assert.equal(rewriteStaleTycoonInterpreters(buildFullSettings(`node "${SCRIPT}"`), NODE_A, { platform: "win32" }).changed, false);
+  assert.equal(rewriteStaleTycoonInterpreters(buildFullSettings(`node "/q/tycoon-claude-hook.cjs"`), NODE_A, env).changed, false);
+});

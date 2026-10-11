@@ -60,6 +60,7 @@ const MAPPING_REGISTRY_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'mappingR
 const CLAUDE_CODE_PROVIDER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'index.js');
 const REGISTER_ALL_MAPPERS_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'registerAllMappers.js');
 const HOOK_INSTALL_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'hookInstall.js');
+const HOOK_DOCTOR_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'hookDoctor.js');
 const PROVIDER_SELECTION_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'providerSelection.js');
 const AGENT_ROSTER_JS = path.join(REPO_ROOT, 'out', 'src', 'providers', 'claude-code', 'agentRoster.js');
 const FEEDBACK_SUBMIT_JS = path.join(REPO_ROOT, 'out', 'src', 'host', 'vscode', 'feedbackSubmit.js');
@@ -128,6 +129,14 @@ function hookInstallModule() {
     _hookInstallModule = requireCompiled(HOOK_INSTALL_JS, 'out/src/host/vscode/hookInstall.js');
   }
   return _hookInstallModule;
+}
+
+let _hookDoctorModule;
+function hookDoctorModule() {
+  if (!_hookDoctorModule) {
+    _hookDoctorModule = requireCompiled(HOOK_DOCTOR_JS, 'out/src/host/vscode/hookDoctor.js');
+  }
+  return _hookDoctorModule;
 }
 
 let _providerSelectionModule;
@@ -241,6 +250,31 @@ export function mergeTycoonHooks(existing, hookCommand) {
     'out/src/host/vscode/hookInstall.js',
   );
   return fn(existing, hookCommand);
+}
+
+/** Hook command for a script path: `node "<script>"` on Windows or when no
+ * node is found, else `"<abs node>" "<script>"` (hookInstall.ts, reused).
+ * @type {(scriptPath: string, opts?: { platform?: string, resolveNode?: () => string }) => string} */
+export function buildHookCommandForScript(scriptPath, opts) {
+  const fn = assertFn(
+    hookInstallModule().buildHookCommandForScript,
+    'buildHookCommandForScript',
+    'out/src/host/vscode/hookInstall.js',
+  );
+  return fn(scriptPath, opts);
+}
+
+/** Rewrites existing Tycoon commands with a stale interpreter (bare `node`, or a
+ * missing/non-executable/Electron one) to the current command, same script only,
+ * POSIX only (hookDoctor.ts, reused).
+ * @type {(settings: Record<string, unknown>, currentHookCommand: string, env?: { platform?: string, fileExists?: (p: string) => boolean, isExecutable?: (p: string) => boolean }) => { settings: Record<string, unknown>, changed: boolean }} */
+export function rewriteStaleTycoonInterpreters(settings, currentHookCommand, env) {
+  const fn = assertFn(
+    hookDoctorModule().rewriteStaleTycoonInterpreters,
+    'rewriteStaleTycoonInterpreters',
+    'out/src/host/vscode/hookDoctor.js',
+  );
+  return fn(settings, currentHookCommand, env);
 }
 
 /** Silent heal: adds hook slots introduced after install (e.g. StopFailure) to

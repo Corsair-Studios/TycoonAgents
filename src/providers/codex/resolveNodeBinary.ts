@@ -79,7 +79,9 @@ function findNodeOnPath(
 export function resolveNodeBinary(options: ResolveNodeBinaryOptions = {}): string {
   const env = options.env ?? process.env;
   const override = env.TYCOON_NODE_PATH;
-  if (override !== undefined && override.trim() !== "") return override;
+  // An override pointing at an editor/Electron helper is ignored (discovery continues);
+  // callers surface it with rejectedNodeOverride().
+  if (override !== undefined && override.trim() !== "" && !isElectronHostBinary(override)) return override;
   const isElectron = options.isElectron ?? Boolean(process.versions.electron);
   const execPath = options.execPath ?? process.execPath;
   if (!isElectron) return execPath;
@@ -99,8 +101,22 @@ export function resolveNodeBinary(options: ResolveNodeBinaryOptions = {}): strin
 
 const ELECTRON_HOST_NAMES = new Set(["code", "code - insiders", "code-insiders", "electron", "cursor", "windsurf", "vscodium", "codium"]);
 
-/** True for an editor/Electron host binary that must never be written as the node command. */
+const ELECTRON_PATH_RE = /(?:Code|Cursor|Windsurf|VSCodium|Codium)(?:\s*-\s*Insiders)?\s+Helper|Electron|\.app\/Contents\/(?:MacOS|Frameworks)/i;
+
+/**
+ * True for an editor/Electron host binary that must never be written as the node
+ * command: the editor executable itself, or anything whose basename or any parent
+ * segment looks like an Electron/editor helper (Code Helper, Electron Framework,
+ * `.app/Contents/MacOS|Frameworks`).
+ */
 export function isElectronHostBinary(command: string): boolean {
   const base = (command.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
-  return ELECTRON_HOST_NAMES.has(base);
+  if (ELECTRON_HOST_NAMES.has(base)) return true;
+  return ELECTRON_PATH_RE.test(command.replace(/\\/g, "/"));
+}
+
+/** The TYCOON_NODE_PATH override when it points at an editor/Electron binary (so it is ignored), else undefined. */
+export function rejectedNodeOverride(env: Record<string, string | undefined> = process.env): string | undefined {
+  const v = env.TYCOON_NODE_PATH;
+  return v !== undefined && v.trim() !== "" && isElectronHostBinary(v) ? v : undefined;
 }

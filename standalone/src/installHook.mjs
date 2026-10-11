@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeTycoonHooks, addMissingAutoHealSlots, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile, rewriteMcpJsonBridgePaths, copyMcpBridgeHooks } from './sharedLogic.mjs';
+import { mergeTycoonHooks, buildHookCommandForScript, rewriteStaleTycoonInterpreters, addMissingAutoHealSlots, getTycoonHookSlots, getRuntimeHookFiles, getMcpBridgeHookFiles, syncRuntimeFile, rewriteMcpJsonBridgePaths, copyMcpBridgeHooks } from './sharedLogic.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -96,11 +96,16 @@ export const TYCOON_HOOK_SLOTS = lazyArray(getTycoonHookSlots);
  * @param {Record<string, unknown>} existing parsed settings object (or {}).
  * @param {string} hookCommand the command string to install, e.g.
  *   `node "/abs/path/to/tycoon-claude-hook.cjs"`.
+ * @param {{ platform?: string, fileExists?: (p: string) => boolean, isExecutable?: (p: string) => boolean }} [env]
+ *   test seams for the stale-interpreter rewrite (POSIX only): an existing Tycoon
+ *   command with bare `node` (or a missing/Electron interpreter) for the same
+ *   script is rewritten to `hookCommand`; a valid absolute node is kept.
  * @returns {{ settings: Record<string, unknown>, changed: boolean }}
  */
-export function mergeHookIntoSettings(existing, hookCommand) {
-  const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
-  const beforeHooksJson = JSON.stringify(base.hooks ?? {});
+export function mergeHookIntoSettings(existing, hookCommand, env) {
+  const base0 = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {};
+  const beforeHooksJson = JSON.stringify(base0.hooks ?? {});
+  const base = rewriteStaleTycoonInterpreters(base0, hookCommand, env).settings;
   const settings = mergeTycoonHooks(base, hookCommand);
   const afterHooksJson = JSON.stringify(settings.hooks ?? {});
   return { settings, changed: beforeHooksJson !== afterHooksJson };
@@ -475,6 +480,9 @@ export function healInstalledHookSlots(targetDir) {
  * @param {string} [opts.hookScriptPath] override for the hook script's
  *   absolute path (tests only — production callers use the default, which
  *   points at this repo's real hooks/tycoon-claude-hook.cjs).
+ * @param {string} [opts.platform] test seam: platform used to pick the node interpreter form.
+ * @param {() => string} [opts.resolveNode] test seam: node discovery override.
+ * @param {(p: string) => boolean} [opts.fileExists] test seam: existence probe for stored absolute node paths.
  * @returns {{ settingsPath: string, changed: boolean, hookCommand: string, refreshed: string[] }}
  *   `refreshed`: runtime hook file(s) under `.claude/tycoon/` that were
  *   overwritten because they existed and differed by content from this
@@ -509,7 +517,8 @@ export function installHook(targetDir, opts = {}) {
       `TycoonAgents: hook script not found at "${hookScriptPath}" — is the repo checkout intact?`,
     );
   }
-  const hookCommand = `node "${hookScriptPath}"`;
+  // Absolute node on macOS/Linux (a GUI-launched Claude Code has a minimal PATH); bare `node` on Windows.
+  const hookCommand = buildHookCommandForScript(hookScriptPath, { platform: opts.platform, resolveNode: opts.resolveNode });
 
   const claudeDir = path.join(absTarget, '.claude');
   const settingsPath = path.join(claudeDir, 'settings.local.json');
@@ -538,7 +547,7 @@ export function installHook(targetDir, opts = {}) {
     }
   }
 
-  const { settings: merged, changed } = mergeHookIntoSettings(existing, hookCommand);
+  const { settings: merged, changed } = mergeHookIntoSettings(existing, hookCommand, { platform: opts.platform, fileExists: opts.fileExists });
 
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });

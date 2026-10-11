@@ -1,4 +1,6 @@
+import * as fs from "fs";
 import { TYCOON_HOOK_SLOTS, LEGACY_MATCHER_ALIASES } from "./hookInstall";
+import { isElectronHostBinary } from "../../providers/codex/resolveNodeBinary";
 
 export type DoctorSeverity = "ok" | "warn" | "error";
 
@@ -30,8 +32,22 @@ export interface DoctorInput {
   activeAgentState?: { stack: unknown[]; agentId: string; timestampMs?: number } | null;
   /** Trailing raw lines from `.claude/tycoon/activity.jsonl` (already read by the caller). */
   activityTailLines?: string[];
+  /** Platform/fs seams for interpreter staleness (default: real host). */
+  env?: HookEnv;
+  /** Result of running the hook's node interpreter under a minimal PATH (see hookNodeCheck.ts). */
+  interpreterCheck?: { ok: boolean; interpreter: string };
+  /** TYCOON_NODE_PATH value that points at an editor/Electron helper (ignored by discovery). */
+  nodeOverrideRejected?: string;
   /** Clock used for staleness comparisons; defaults to Date.now(). Overridable for tests. */
   nowMs?: number;
+}
+
+/** Seams so staleness decisions do not depend on the host OS or disk. */
+export interface HookEnv {
+  platform?: NodeJS.Platform;
+  fileExists?: (p: string) => boolean;
+  /** Executable-bit probe; defaults to accessSync(X_OK), or "true" when a fileExists seam is supplied. */
+  isExecutable?: (p: string) => boolean;
 }
 
 const TYCOON_MARKER = "tycoon-claude-hook.cjs";
@@ -112,18 +128,47 @@ function countRelativeInSettings(settings: any | null): number {
   return count;
 }
 
+/**
+ * Minimal shell-word splitter for the hook command forms we write: double-quoted
+ * (no escapes, so Windows backslashes stay literal), single-quoted (with the
+ * `'\''` escape, i.e. a quote closed, an escaped quote, a quote reopened), and
+ * bare words. Adjacent quoted/bare pieces concatenate into one token.
+ */
 function leadingTokens(cmd: string, max: number): string[] {
   const tokens: string[] = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m: RegExpExecArray | null;
-  while (tokens.length < max && (m = re.exec(cmd.trim())) !== null) {
-    tokens.push(m[1] ?? m[2] ?? m[3]);
+  const text = cmd.trim();
+  let i = 0;
+  while (tokens.length < max && i < text.length) {
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (i >= text.length) break;
+    let tok = "";
+    while (i < text.length && !/\s/.test(text[i])) {
+      const ch = text[i];
+      if (ch === '"') {
+        const end = text.indexOf('"', i + 1);
+        const stop = end === -1 ? text.length : end;
+        tok += text.slice(i + 1, stop);
+        i = end === -1 ? text.length : end + 1;
+      } else if (ch === "'") {
+        const end = text.indexOf("'", i + 1);
+        const stop = end === -1 ? text.length : end;
+        tok += text.slice(i + 1, stop);
+        i = end === -1 ? text.length : end + 1;
+      } else if (ch === "\\" && text[i + 1] === "'") {
+        tok += "'";
+        i += 2;
+      } else {
+        tok += ch;
+        i++;
+      }
+    }
+    tokens.push(tok);
   }
   return tokens;
 }
 
 /** True only when the command's script argument (the token after the interpreter) is the Tycoon hook script. */
-function isTycoonCommand(cmd: string): boolean {
+export function isTycoonCommand(cmd: string): boolean {
   const tokens = leadingTokens(cmd, 2);
   const script = tokens.length >= 2 ? tokens[1] : tokens[0];
   if (!script) {
@@ -147,13 +192,78 @@ function slotIsWiredIn(settings: any | null, slot: { event: string; matcher: str
   return false;
 }
 
-function countStaleInSettings(settings: any | null, currentHookCommand: string): number {
+/**
+ * True when `cmd` (a Tycoon command) should be rewritten to `currentHookCommand`.
+ * On macOS/Linux a stored command whose interpreter is an ABSOLUTE node that
+ * exists, is executable and is not an Electron host, with the same script, is
+ * never stale, even when discovery now returns a different valid node (no
+ * ping-pong between two installs). Only bare `node`, or a missing, non-executable
+ * or Electron interpreter, is stale. Windows: any difference is stale.
+ */
+export function isStaleCommand(cmd: string, currentHookCommand: string, env: HookEnv = {}): boolean {
+  if (cmd === currentHookCommand) return false;
+  const platform = env.platform ?? process.platform;
+  if (platform === "win32") return true;
+  const cur = leadingTokens(currentHookCommand, 2);
+  const old = leadingTokens(cmd, 2);
+  if (cur.length === 2 && old.length === 2 && cur[1] === old[1] && old[0].startsWith("/") && !isElectronHostBinary(old[0])) {
+    const exists = env.fileExists ?? ((p: string) => fs.existsSync(p));
+    const executable =
+      env.isExecutable ??
+      (env.fileExists
+        ? () => true
+        : (p: string) => {
+            try {
+              fs.accessSync(p, fs.constants.X_OK);
+              return true;
+            } catch {
+              return false;
+            }
+          });
+    if (exists(old[0]) && executable(old[0])) return false;
+  }
+  return true;
+}
+
+/**
+ * Standalone re-install helper: rewrites existing Tycoon commands that are stale
+ * (bare `node`, or a missing/non-executable/Electron interpreter) to
+ * `currentHookCommand`, only when they run the SAME script, and never on Windows.
+ * Everything else is untouched. Returns the SAME object when nothing changed.
+ */
+export function rewriteStaleTycoonInterpreters(
+  settings: Record<string, unknown>,
+  currentHookCommand: string,
+  env: HookEnv = {}
+): { settings: Record<string, unknown>; changed: boolean } {
+  if ((env.platform ?? process.platform) === "win32") return { settings, changed: false };
+  const copy: any = JSON.parse(JSON.stringify(settings));
+  const curScript = leadingTokens(currentHookCommand, 2)[1];
+  let changed = false;
+  const hooks = getHooksSection(copy);
+  for (const event of Object.keys(hooks)) {
+    for (const entry of getEntriesForEvent(hooks, event)) {
+      if (!entry || !Array.isArray(entry.hooks)) continue;
+      for (const h of entry.hooks) {
+        if (!h || typeof h.command !== "string" || !isTycoonCommand(h.command)) continue;
+        if (leadingTokens(h.command, 2)[1] !== curScript) continue;
+        if (isStaleCommand(h.command, currentHookCommand, env)) {
+          h.command = currentHookCommand;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed ? { settings: copy, changed } : { settings, changed };
+}
+
+function countStaleInSettings(settings: any | null, currentHookCommand: string, env: HookEnv = {}): number {
   let count = 0;
   const hooks = getHooksSection(settings);
   for (const event of TYCOON_EVENTS) {
     for (const entry of getEntriesForEvent(hooks, event)) {
       for (const cmd of getCommandsFromEntry(entry)) {
-        if (isTycoonCommand(cmd) && cmd !== currentHookCommand) {
+        if (isTycoonCommand(cmd) && isStaleCommand(cmd, currentHookCommand, env)) {
           count++;
         }
       }
@@ -171,6 +281,22 @@ function hasDuplicateTycoonInSlot(settings: any | null, slot: { event: string; m
     }
   }
   return total > 1;
+}
+
+/** Interpreter (first token) of the first Tycoon hook command in `settings`, or undefined. */
+export function firstTycoonInterpreter(settings: any | null): string | undefined {
+  const hooks = getHooksSection(settings);
+  for (const event of TYCOON_EVENTS) {
+    for (const entry of getEntriesForEvent(hooks, event)) {
+      for (const cmd of getCommandsFromEntry(entry)) {
+        if (isTycoonCommand(cmd)) {
+          const tokens = leadingTokens(cmd, 2);
+          if (tokens.length >= 2) return tokens[0];
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 export function hasTycoonCommandsInSettings(settings: any | null): boolean {
@@ -219,8 +345,8 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
   }
 
   const staleCount =
-    countStaleInSettings(input.localSettings, input.currentHookCommand) +
-    countStaleInSettings(input.sharedSettings, input.currentHookCommand);
+    countStaleInSettings(input.localSettings, input.currentHookCommand, input.env) +
+    countStaleInSettings(input.sharedSettings, input.currentHookCommand, input.env);
   if (staleCount > 0) {
     findings.push({
       id: "hooks-stale",
@@ -228,6 +354,26 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
       title: "Stale hook paths",
       detail: `${staleCount} hook command(s) point to an outdated path.`,
       fixable: true,
+      destructive: false,
+    });
+  }
+
+  if ((input.interpreterCheck && !input.interpreterCheck.ok) || input.nodeOverrideRejected) {
+    const overrideHint = input.nodeOverrideRejected
+      ? `TYCOON_NODE_PATH ("${input.nodeOverrideRejected}") points at an editor helper (VS Code/Cursor/Electron), not node, and is ignored. Point it at a real node binary or unset it. `
+      : "";
+    const failed = input.interpreterCheck && !input.interpreterCheck.ok;
+    findings.push({
+      id: "hooks-node-missing",
+      severity: "error",
+      title: "Node.js not found for hooks",
+      detail:
+        (failed
+          ? `Claude Code could not run "${input.interpreterCheck!.interpreter}" for the hook command, so hooks fail silently and no activity is recorded. `
+          : "") +
+        overrideHint +
+        "Set TYCOON_NODE_PATH to the full path of node, or install Node.js, then reopen the panel.",
+      fixable: false,
       destructive: false,
     });
   }
@@ -383,7 +529,7 @@ export function diagnose(input: DoctorInput): DoctorFinding[] {
 export function repairSettings(
   localSettings: any | null,
   currentHookCommand: string,
-  opts: { removeForeign: boolean; foreignCommands?: string[] }
+  opts: { removeForeign: boolean; foreignCommands?: string[]; env?: HookEnv }
 ): { settings: any; changes: string[] } {
   const settings: any = JSON.parse(JSON.stringify(localSettings ?? {}));
   const changes: string[] = [];
@@ -447,7 +593,7 @@ export function repairSettings(
             continue;
           }
           seenTycoon = true;
-          if (h.command !== currentHookCommand) {
+          if (isStaleCommand(h.command, currentHookCommand, opts.env)) {
             h.command = currentHookCommand;
             fixedStale = true;
           }
@@ -487,7 +633,7 @@ export function repairSettings(
     for (const e of list) {
       if (!e || !Array.isArray(e.hooks)) continue;
       for (const h of e.hooks) {
-        if (h && typeof h.command === "string" && isTycoonCommand(h.command) && h.command !== currentHookCommand) {
+        if (h && typeof h.command === "string" && isTycoonCommand(h.command) && isStaleCommand(h.command, currentHookCommand, opts.env)) {
           h.command = currentHookCommand;
           fixed = true;
         }

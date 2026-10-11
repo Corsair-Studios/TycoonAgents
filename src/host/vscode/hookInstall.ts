@@ -7,6 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { mergeEnabledMcpJsonServer } from "./mcpCatalog";
+import { isElectronHostBinary, rejectedNodeOverride, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 
 interface HookCommand {
   type: "command";
@@ -38,9 +39,67 @@ interface HookCommand {
  *
  * `root` must be the resolved project root (NOT `process.cwd()`).
  */
-export function buildAbsoluteHookCommand(root: string): string {
-  const scriptPath = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
-  return `node "${scriptPath}"`;
+export function buildAbsoluteHookCommand(root: string, opts: HookCommandOptions = {}): string {
+  const joiner = (opts.platform ?? process.platform) === "win32" ? path.win32 : path.posix;
+  const scriptPath = joiner.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
+  return buildHookCommandForScript(scriptPath, opts);
+}
+
+/** Test/host seams for hook-command interpreter discovery. */
+export interface HookCommandOptions {
+  platform?: NodeJS.Platform;
+  /** Overrides node discovery (defaults to resolveNodeBinary: TYCOON_NODE_PATH, PATH, Homebrew, nvm, volta, login shell). */
+  resolveNode?: () => string;
+}
+
+/**
+ * The node interpreter written into a hook command. Windows keeps the bare name
+ * `node` (Claude Code's launcher resolves it there). On macOS/Linux the hook
+ * shell inherits the GUI app's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+ * so a bare `node` from Homebrew/nvm/volta is not found and every hook fails
+ * silently; there we write the discovered ABSOLUTE node path. `resolved` is
+ * false when discovery found nothing (or only an editor/Electron binary) and the
+ * bare name is the fallback. A TYCOON_NODE_PATH override that points at an
+ * editor helper is ignored and discovery re-runs without it.
+ */
+export function resolveHookInterpreter(opts: HookCommandOptions = {}): { interpreter: string; resolved: boolean } {
+  const platform = opts.platform ?? process.platform;
+  if (platform === "win32") return { interpreter: "node", resolved: true };
+  let found = "node";
+  try {
+    if (opts.resolveNode) {
+      found = opts.resolveNode();
+    } else {
+      found = resolveNodeBinary({ platform });
+    }
+  } catch {
+    found = "node";
+  }
+  if (!found.startsWith("/") || isElectronHostBinary(found)) return { interpreter: "node", resolved: false };
+  return { interpreter: found, resolved: true };
+}
+
+export { rejectedNodeOverride };
+
+/**
+ * Quotes one command token. Windows and POSIX paths without shell-special
+ * characters use double quotes (identical under cmd.exe and sh). On POSIX a token
+ * containing `$`, a backtick, `"` or a backslash is single-quoted instead (a
+ * single quote becomes quote-backslash-quote-quote) so sh performs no expansion.
+ */
+export function quoteHookToken(token: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32" && /[$`"\\]/.test(token)) {
+    return "'" + token.replace(/'/g, "'\\''") + "'";
+  }
+  return `"${token}"`;
+}
+
+/** `node "<script>"` on Windows or when discovery fails, else `"<abs node>" "<script>"`. */
+export function buildHookCommandForScript(scriptPath: string, opts: HookCommandOptions = {}): string {
+  const platform = opts.platform ?? process.platform;
+  const { interpreter, resolved } = resolveHookInterpreter(opts);
+  const script = quoteHookToken(scriptPath, platform);
+  return resolved && interpreter !== "node" ? `${quoteHookToken(interpreter, platform)} ${script}` : `node ${script}`;
 }
 interface HookEntry {
   matcher: string;

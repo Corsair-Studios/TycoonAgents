@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { diagnose, repairSettings, hasTycoonCommandsInSettings } from "./hookDoctor";
+import { diagnose, repairSettings, hasTycoonCommandsInSettings, isTycoonCommand, type HookEnv } from "./hookDoctor";
 import { TYCOON_HOOK_SLOTS } from "./hookInstall";
 
 /** Filesystem operations the repair uses; injectable so tests can force failures. */
@@ -74,14 +74,15 @@ export function backupSettingsCopy(root: string, raw: string | Buffer, fsImpl: R
   }
 }
 
-function wiredSlotKeys(settings: any, currentHookCommand: string): string[] {
+/** Slots holding any Tycoon command (whatever its interpreter form), matched by (event, matcher). */
+function wiredSlotKeys(settings: any, _currentHookCommand?: string): string[] {
   const out: string[] = [];
   for (const slot of TYCOON_HOOK_SLOTS) {
     const list = settings?.hooks?.[slot.event];
     if (!Array.isArray(list)) continue;
     const wired = list.some(
       (e: any) =>
-        e && e.matcher === slot.matcher && Array.isArray(e.hooks) && e.hooks.some((h: any) => h && h.command === currentHookCommand)
+        e && e.matcher === slot.matcher && Array.isArray(e.hooks) && e.hooks.some((h: any) => h && typeof h.command === "string" && isTycoonCommand(h.command))
     );
     if (wired) out.push(slotKey(slot));
   }
@@ -124,7 +125,8 @@ const SILENT_FIXABLE = new Set(["hooks-missing", "hooks-stale", "hooks-relative-
 export function silentRepairLocalHooks(
   root: string,
   currentHookCommand: string,
-  fsImpl: RepairFs = fs
+  fsImpl: RepairFs = fs,
+  hookEnv: HookEnv = {}
 ): SilentRepairResult {
   const claudeDir = path.join(root, ".claude");
   const localPath = path.join(claudeDir, "settings.local.json");
@@ -159,6 +161,7 @@ export function silentRepairLocalHooks(
     sharedSettings: shared,
     currentHookCommand,
     hookScriptExists: true,
+    env: hookEnv,
   });
   if (findings.some((f) => f.id === "hooks-split")) {
     return { status: "skipped", reason: "hooks split across settings files" };
@@ -171,7 +174,7 @@ export function silentRepairLocalHooks(
     return { status: "skipped", reason: "nothing to repair" };
   }
 
-  const repaired = repairSettings(local, currentHookCommand, { removeForeign: false });
+  const repaired = repairSettings(local, currentHookCommand, { removeForeign: false, env: hookEnv });
   const settings = repaired.settings;
   let changes: string[] = repaired.changes;
   // A slot recorded in the marker but absent now was removed on purpose: do not re-add it.

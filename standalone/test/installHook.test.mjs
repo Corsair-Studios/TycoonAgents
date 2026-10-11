@@ -621,3 +621,47 @@ test('installMcpBridgeHooksForConfig: no .claude/hooks reference copies nothing;
     fs.rmSync(src, { recursive: true, force: true });
   }
 });
+
+test('installHook: POSIX writes an absolute quoted node path; win32 keeps bare node', () => {
+  const dir = mkTempDir();
+  const dir2 = mkTempDir();
+  try {
+    const r = installHook(dir, { platform: 'darwin', resolveNode: () => '/opt/homebrew/bin/node' });
+    assert.equal(r.hookCommand, `"/opt/homebrew/bin/node" ${posixQuote(defaultHookScriptPath())}`);
+    assert.equal(countHookCommand(readSettings(r.settingsPath), r.hookCommand), TYCOON_HOOK_SLOTS.length);
+    const w = installHook(dir2, { platform: 'win32', resolveNode: () => '/opt/homebrew/bin/node' });
+    assert.equal(w.hookCommand, `node "${defaultHookScriptPath()}"`);
+    const bare = installHook(mkTempDir(), { platform: 'linux', resolveNode: () => 'node' });
+    assert.equal(bare.hookCommand, `node ${posixQuote(defaultHookScriptPath())}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir2, { recursive: true, force: true });
+  }
+});
+
+test('installHook: re-run rewrites an existing bare-node Tycoon command to the absolute node form (POSIX), keeps a valid absolute node', () => {
+  const dir = mkTempDir();
+  try {
+    const script = defaultHookScriptPath();
+    const bareCmd = `node ${posixQuote(script)}`;
+    const sp = path.join(dir, '.claude', 'settings.local.json');
+    fs.mkdirSync(path.dirname(sp), { recursive: true });
+    fs.writeFileSync(sp, JSON.stringify(mergeHookIntoSettings({}, bareCmd).settings));
+    const r = installHook(dir, { platform: 'darwin', resolveNode: () => '/opt/homebrew/bin/node', fileExists: () => true });
+    assert.equal(r.changed, true);
+    const abs = `"/opt/homebrew/bin/node" ${posixQuote(script)}`;
+    assert.equal(countHookCommand(readSettings(sp), abs), TYCOON_HOOK_SLOTS.length);
+    assert.equal(countHookCommand(readSettings(sp), bareCmd), 0);
+    // A different valid node from discovery does not ping-pong.
+    const again = installHook(dir, { platform: 'darwin', resolveNode: () => '/usr/local/bin/node', fileExists: () => true });
+    assert.equal(again.changed, false);
+    assert.equal(countHookCommand(readSettings(sp), abs), TYCOON_HOOK_SLOTS.length);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** POSIX token quoting as hookInstall.ts does it (a Windows test host has backslashes in the script path). */
+function posixQuote(token) {
+  return /[$`"\\]/.test(token) ? `'${token.replace(/'/g, "'\\''")}'` : `"${token}"`;
+}

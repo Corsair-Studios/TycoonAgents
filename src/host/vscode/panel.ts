@@ -278,10 +278,12 @@ import {
   enableMcpJsonServerInSettings,
   buildAbsoluteHookCommand,
   migrateRelativeHookCommand,
+  rejectedNodeOverride,
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
-import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings } from "./hookDoctor";
+import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings, firstTycoonInterpreter } from "./hookDoctor";
+import { checkHookInterpreterAsync, peekHookInterpreterCheck } from "./hookNodeCheck";
 import {
   projectScopeKey,
   readCompositeWithMigration,
@@ -1672,7 +1674,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
         } else if (message.type === MSG.RUN_DOCTOR) {
-          this._handleRunDoctor();
+          void this._handleRunDoctor();
         } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
           const parsedApplyDoctorFix = MSG_SCHEMAS.APPLY_DOCTOR_FIX.safeParse(message);
           if (parsedApplyDoctorFix.success) {
@@ -9482,8 +9484,12 @@ export class TycoonPanel {
     return { lockFileAgeMs, activeAgentState, activityTailLines };
   }
 
-  /** Assembles a full DoctorInput (settings + operational health) from disk for `root`. */
-  private _gatherDoctorInput(root: string): DoctorInput {
+  /**
+   * Assembles a full DoctorInput (settings + operational health) from disk for `root`.
+   * `interpreterCheck` is supplied by the caller: the async path awaits a real
+   * (non-blocking) spawn, the sync path passes only a cached verdict.
+   */
+  private _gatherDoctorInputWith(root: string, interpreterCheck: DoctorInput["interpreterCheck"]): DoctorInput {
     const claudeDir = path.join(root, ".claude");
     const localSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"));
     const sharedSettings = this._readSettingsTolerant(path.join(claudeDir, "settings.json"));
@@ -9496,6 +9502,8 @@ export class TycoonPanel {
       sharedSettings,
       currentHookCommand,
       hookScriptExists,
+      interpreterCheck,
+      nodeOverrideRejected: rejectedNodeOverride(),
       legacyArtifacts,
       lockFileAgeMs,
       activeAgentState,
@@ -9503,24 +9511,64 @@ export class TycoonPanel {
     };
   }
 
+  /** Interpreter (first token) of the installed hook command, if hooks are installed. */
+  private _installedHookInterpreter(root: string): string | undefined {
+    const claudeDir = path.join(root, ".claude");
+    return (
+      firstTycoonInterpreter(this._readSettingsTolerant(path.join(claudeDir, "settings.local.json"))) ??
+      firstTycoonInterpreter(this._readSettingsTolerant(path.join(claudeDir, "settings.json")))
+    );
+  }
+
+  /** Full DoctorInput; awaits the interpreter check (async spawn with timeout + SIGKILL, cached per session). */
+  private async _gatherDoctorInput(root: string): Promise<DoctorInput> {
+    const interp = this._installedHookInterpreter(root);
+    const interpreterCheck = interp ? await checkHookInterpreterAsync(interp) : undefined;
+    return this._gatherDoctorInputWith(root, interpreterCheck);
+  }
+
+  /** Sync DoctorInput for badge counts: uses only a cached interpreter verdict and warms the cache in the background. */
+  private _gatherDoctorInputCached(root: string): DoctorInput {
+    const interp = this._installedHookInterpreter(root);
+    let interpreterCheck: DoctorInput["interpreterCheck"];
+    if (interp) {
+      interpreterCheck = peekHookInterpreterCheck(interp);
+      if (!interpreterCheck) void checkHookInterpreterAsync(interp).catch(() => undefined);
+    }
+    return this._gatherDoctorInputWith(root, interpreterCheck);
+  }
+
+  /** Sync (badge/summary) diagnosis: never blocks on a node spawn. */
   private _diagnoseHooks(): { findings: DoctorFinding[]; foreign: string[] } {
     const root = this._projectRoot();
     if (root === "") {
       return { findings: [], foreign: [] };
     }
-    const input = this._gatherDoctorInput(root);
+    const input = this._gatherDoctorInputCached(root);
     const findings = diagnose(input);
     const foreign = findForeignHooks(input.localSettings, input.sharedSettings);
     return { findings, foreign };
   }
 
-  private _handleRunDoctor(): void {
+  /** Full diagnosis for the Hook Doctor: awaits the interpreter check. */
+  private async _diagnoseHooksAsync(): Promise<{ findings: DoctorFinding[]; foreign: string[] }> {
+    const root = this._projectRoot();
+    if (root === "") {
+      return { findings: [], foreign: [] };
+    }
+    const input = await this._gatherDoctorInput(root);
+    const findings = diagnose(input);
+    const foreign = findForeignHooks(input.localSettings, input.sharedSettings);
+    return { findings, foreign };
+  }
+
+  private async _handleRunDoctor(): Promise<void> {
     const root = this._projectRoot();
     if (root === "") {
       void this._panel.webview.postMessage({ type: MSG.DOCTOR_REPORT, findings: [], foreign: [], error: "No workspace folder open" });
       return;
     }
-    const { findings, foreign } = this._diagnoseHooks();
+    const { findings, foreign } = await this._diagnoseHooksAsync();
     void this._panel.webview.postMessage({ type: MSG.DOCTOR_REPORT, findings, foreign });
   }
 
@@ -9599,7 +9647,7 @@ export class TycoonPanel {
       // Explicit Fix re-adds every slot; record them so silent repair knows what was offered.
       recordAllHookSlots(root);
 
-      const input = this._gatherDoctorInput(root);
+      const input = await this._gatherDoctorInput(root);
       const findings = diagnose(input);
       const foreign = findForeignHooks(input.localSettings, input.sharedSettings);
       void this._panel.webview.postMessage({
