@@ -98,3 +98,7 @@ opencode.json
 # require() these two compiled installer modules at runtime.
 !out/src/providers/codex/installCodexHooks.js
 !out/src/providers/codex/installCodexDispatcher.js
+
+# Public-export tooling config (dev only; holds synthetic token fixtures)
+public-export.allow
+public-export.exclude
