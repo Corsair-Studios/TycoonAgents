@@ -2868,6 +2868,57 @@ if (typeof module !== "undefined" && module.exports) {
     if (typeof ResizeObserver === "function") new ResizeObserver(syncHookWaitOffset).observe(banner);
   }
 
+  /**
+   * Harness-mismatch hint (host message "harnessMismatch"): a person prompted the
+   * non-selected harness, so the stage ignores it. Compact, role=status, in the
+   * top-right notice stack. Switch posts setHarness (user click only); Dismiss is
+   * for the mismatching session/thread (the host remembers its id); "Don't show again" is stored by
+   * the host per project. Clears itself when the host reports active:false.
+   * @param {{active?:boolean, from?:string|null, selected?:string, promptAt?:number|null}} msg
+   */
+  function handleHarnessMismatch(msg) {
+    const existing = document.getElementById("harness-mismatch-notice");
+    if (!msg.active) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) existing.remove();
+    const fromCodex = msg.from === "codex";
+    const names = fromCodex
+      ? { from: "Codex", selected: "Claude Code", target: "claude-code", label: "Switch to Claude Code" }
+      : { from: "Claude Code", selected: "Codex", target: "codex", label: "Switch to Codex (Experimental)" };
+    const notice = document.createElement("div");
+    notice.id = "harness-mismatch-notice";
+    notice.className = "catalog-notice legacy-artifacts-notice harness-mismatch-notice";
+    notice.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.className = "legacy-artifacts-notice-text";
+    text.textContent = "You sent a prompt from " + names.from + ", but this project's harness is set to " +
+      names.selected + (names.selected === "Codex" ? " (Experimental)" : "") + ", so it won't show on the stage.";
+    notice.appendChild(text);
+    const addBtn = (label, onClick) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "hook-wait-banner-btn";
+      b.textContent = label;
+      b.addEventListener("click", onClick);
+      notice.appendChild(b);
+    };
+    addBtn(names.label, () => {
+      vscode.postMessage({ type: "setHarness", provider: names.target });
+      notice.remove();
+    });
+    addBtn("Dismiss", () => {
+      notice.remove();
+      vscode.postMessage({ type: "harnessMismatchDismiss" });
+    });
+    addBtn("Don't show again", () => {
+      notice.remove();
+      vscode.postMessage({ type: "harnessMismatchSuppress" });
+    });
+    noticeStack().appendChild(notice);
+  }
+
   /** Shared hint wording for the banner and Hook health. */
   function hookWaitHint(harness) {
     return "Hooks are ready, but no activity has arrived yet. If agents don't appear, start a new " +
@@ -16328,6 +16379,8 @@ if (typeof module !== "undefined" && module.exports) {
       showLegacyArtifactsNotice(Number(msg.artifactCount) || 0, Number(msg.foreignHookCount) || 0);
     } else if (msg && msg.type === "hookWait") {
       handleHookWait(msg);
+    } else if (msg && msg.type === "harnessMismatch") {
+      handleHarnessMismatch(msg);
     } else if (msg && msg.type === "hooksAutoUpdated") {
       showHooksAutoUpdatedNotice();
     } else if (msg && msg.type === "doctorReport") {

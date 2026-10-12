@@ -282,6 +282,7 @@ import {
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
+import { dismissMismatch, isMismatchSuppressed, loadDismissedMismatch, mismatchPayload, newHarnessMismatchState, scanHarnessMismatch, suppressMismatch, type HarnessMismatchState } from "./harnessMismatch";
 import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, noteRunVersion, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings, firstTycoonInterpreter } from "./hookDoctor";
 import { checkHookInterpreterAsync, peekHookInterpreterCheck } from "./hookNodeCheck";
@@ -794,6 +795,10 @@ export class TycoonPanel {
   private _hookEventScan: HookEventScanState = { offset: undefined };
   /** Last hookWait payload key posted to the webview, so the poll only posts on change. */
   private _lastHookWaitKey = "";
+  private _workspaceStateRef: vscode.Memento | undefined;
+  private _mismatchState: HarnessMismatchState = newHarnessMismatchState();
+  private _mismatchDismissedLoaded = false;
+  private _lastMismatchKey = "";
   private _pendingLegacyArtifactsNotice: { artifactCount: number; foreignHookCount: number } | null = null;
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
@@ -965,6 +970,7 @@ export class TycoonPanel {
     secrets: vscode.SecretStorage,
     bundledThemesReady?: Promise<unknown>,
     globalState?: vscode.Memento,
+    workspaceState?: vscode.Memento,
   ): TycoonPanel {
     // Dock beside the editor (ViewColumn.Two) so we never cover the active
     // Claude Code session in column One.
@@ -995,6 +1001,7 @@ export class TycoonPanel {
       secrets,
       bundledThemesReady,
       globalState,
+      workspaceState,
     );
     return TycoonPanel.currentPanel;
   }
@@ -1007,9 +1014,11 @@ export class TycoonPanel {
     secrets: vscode.SecretStorage,
     bundledThemesReady?: Promise<unknown>,
     globalState?: vscode.Memento,
+    workspaceState?: vscode.Memento,
   ) {
     this._panel = panel;
     this._globalStateRef = globalState;
+    this._workspaceStateRef = workspaceState;
     this._bundledThemesReady = bundledThemesReady;
     this._extensionUri = extensionUri;
     this._runtime = runtime;
@@ -1086,6 +1095,7 @@ export class TycoonPanel {
       (e) => {
         if (e.webviewPanel.visible) {
           this._postHookWait();
+          this._postHarnessMismatch();
           void this._themeServiceHost.handleGetStatus();
         }
       },
@@ -1198,8 +1208,13 @@ export class TycoonPanel {
     // Hook-wait banner: re-evaluate every 5 s (a stat + in-memory compare; posts only on change).
     // Skipped while the panel is hidden; one catch-up check runs on becoming visible.
     this._hookWaitTimer = setInterval(() => {
-      if (this._panel.visible) this._postHookWait();
+      if (this._panel.visible) {
+        this._postHookWait();
+        this._postHarnessMismatch();
+      }
     }, 5000);
+    // Baseline the activity.jsonl position now so a prompt typed in the first seconds is seen.
+    this._postHarnessMismatch();
 
     // Watch plan.json + execution.json so the Project Plan section updates
     // live as the project-plan skill rewrites plan.json during execution
@@ -1239,6 +1254,7 @@ export class TycoonPanel {
           // life (cleared after the first delivery).
           this._webviewReadySeen = true;
           this._postHookWait(true);
+          this._postHarnessMismatch(true);
           if (this._pendingHooksAutoUpdated) {
             this._pendingHooksAutoUpdated = false;
             void this._panel.webview.postMessage({ type: MSG.HOOKS_AUTO_UPDATED });
@@ -1691,6 +1707,14 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
+        } else if (message.type === MSG.HARNESS_MISMATCH_SUPPRESS) {
+          const root = this._projectRoot();
+          if (root !== "") suppressMismatch(this._workspaceStateRef, root);
+          this._postHarnessMismatch(true);
+        } else if (message.type === MSG.HARNESS_MISMATCH_DISMISS) {
+          const root = this._projectRoot();
+          if (root !== "") dismissMismatch(this._mismatchState, this._workspaceStateRef, root);
+          this._postHarnessMismatch(true);
         } else if (message.type === MSG.RELOAD_WINDOW) {
           void vscode.commands.executeCommand("workbench.action.reloadWindow");
         } else if (message.type === MSG.RUN_DOCTOR) {
@@ -6307,6 +6331,33 @@ export class TycoonPanel {
       if (!force && key === this._lastHookWaitKey) return;
       this._lastHookWaitKey = key;
       void this._panel.webview.postMessage({ type: MSG.HOOK_WAIT, waiting: w.waiting, changedAt: w.changedAt, harness: w.harness });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Harness-mismatch hint: a person prompted Claude Code on a Codex project (or the
+   * reverse), which the stage ignores by design. Display-only; never changes the
+   * harness. Posts only when the state changed; `force` always posts.
+   */
+  private _postHarnessMismatch(force = false): void {
+    if (this._disposed) return;
+    try {
+      const root = this._projectRoot();
+      if (root === "") return;
+      const selected = this._effectiveHarness(root);
+      if (!this._mismatchDismissedLoaded) {
+        this._mismatchDismissedLoaded = true;
+        loadDismissedMismatch(this._mismatchState, this._workspaceStateRef, root);
+      }
+      scanHarnessMismatch(root, selected, this._mismatchState);
+      if (!this._webviewReadySeen) return;
+      const payload = mismatchPayload(this._mismatchState, selected, isMismatchSuppressed(this._workspaceStateRef, root));
+      const key = `${payload.active}:${payload.from ?? ""}:${payload.selected}:${payload.promptAt ?? ""}`;
+      if (!force && key === this._lastMismatchKey) return;
+      this._lastMismatchKey = key;
+      void this._panel.webview.postMessage({ type: MSG.HARNESS_MISMATCH, ...payload });
     } catch {
       /* best-effort */
     }

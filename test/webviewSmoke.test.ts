@@ -1194,6 +1194,40 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assertNoErrors('notice-stack');
     });
 
+    await t.test('10d. harness mismatch hint: role=status in the notice stack, switch posts setHarness, dismiss + suppress, auto-clear', async () => {
+      const hint = () => doc.getElementById('harness-mismatch-notice');
+      dispatch({ type: 'harnessMismatch', active: true, from: 'claude-code', selected: 'codex', promptAt: 10 });
+      const h = hint();
+      assert.ok(h, 'hint shown');
+      assert.equal(h.getAttribute('role'), 'status');
+      assert.equal(h.parentElement.id, 'top-notice-stack');
+      assert.match(h.textContent, /You sent a prompt from Claude Code, but this project's harness is set to Codex \(Experimental\), so it won't show on the stage\./);
+      assert.deepEqual([...h.querySelectorAll('button')].map((x: any) => x.textContent), ['Switch to Codex (Experimental)', 'Dismiss', "Don't show again"]);
+
+      dispatch({ type: 'harnessMismatch', active: false, from: null, selected: 'codex', promptAt: null });
+      assert.equal(hint(), null, 'auto-clears');
+
+      dispatch({ type: 'harnessMismatch', active: true, from: 'codex', selected: 'claude-code', promptAt: 20 });
+      assert.match(hint().textContent, /You sent a prompt from Codex, but this project's harness is set to Claude Code, so it won't show on the stage\./);
+      const before = posted.length;
+      [...hint().querySelectorAll('button')][0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(posted.slice(before).some((m: any) => m && m.type === 'setHarness' && m.provider === 'claude-code'), 'Switch posts setHarness');
+      assert.equal(hint(), null);
+
+      dispatch({ type: 'harnessMismatch', active: true, from: 'codex', selected: 'claude-code', promptAt: 30 });
+      const beforeDismiss = posted.length;
+      [...hint().querySelectorAll('button')][1].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.equal(hint(), null);
+      assert.ok(posted.slice(beforeDismiss).some((m: any) => m && m.type === 'harnessMismatchDismiss'), 'Dismiss posts the per-session dismiss message');
+      // Session-scoped suppression is host-side: a later active payload (new session) shows the hint.
+      dispatch({ type: 'harnessMismatch', active: true, from: 'codex', selected: 'claude-code', promptAt: 31 });
+      assert.ok(hint(), 'host re-raises only for a new session');
+      [...hint().querySelectorAll('button')][2].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(posted.some((m: any) => m && m.type === 'harnessMismatchSuppress'), "Don't show again posts the suppress message");
+      assert.equal(hint(), null);
+      assertNoErrors('harness-mismatch');
+    });
+
     await t.test('10a. settings: Review for trimming is disabled unless host says enabled', async () => {
       const find = () =>
         [...doc.getElementById('setup-config').querySelectorAll('button')].find(

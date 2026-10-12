@@ -513,9 +513,10 @@ function mapNotifyPayload(payload, activityFile, at, env = process.env) {
 
   // "user" thread_source, or no rollout available: today's default mapping.
   if (!hasSeenSessionStart(activityFile, threadId)) {
-    records.push({ event: "UserPromptSubmit", provider: "codex", sessionId: threadId, at });
+    records.push({ event: "UserPromptSubmit", provider: "codex", sessionId: threadId, at, userPrompt: true });
   }
-  records.push({ event: "Stop", provider: "codex", sessionId: threadId, at: at + 1 });
+  // userPrompt: a person-initiated Codex turn (bridge children exit earlier); the panel hints when the harness is not Codex.
+  records.push({ event: "Stop", provider: "codex", sessionId: threadId, at: at + 1, userPrompt: true });
   return records;
 }
 
@@ -554,6 +555,14 @@ function mapHooksPayload(eventName, payload, at) {
     record.tool = payload.tool_name || payload.tool || "unknown";
   } else if (eventName === "subagent_stop") {
     record.workerId = payload.receiver_thread_id || payload.sender_thread_id || undefined;
+  } else if (eventName === "user_prompt_submit" && threadId) {
+    // A person's own prompt (rollout thread_source "user"); never a subagent thread. Lets the panel hint on a harness mismatch.
+    try {
+      const meta = codexRollout.resolveSessionMeta(threadId, undefined, process.env);
+      if (meta && (!meta.thread_source || meta.thread_source === "user")) record.userPrompt = true;
+    } catch {
+      /* fail-open: no flag */
+    }
   }
 
   // Strip undefined keys (JSON.stringify already omits them, but keep the

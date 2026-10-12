@@ -14,6 +14,8 @@ export interface HookRecord {
                               // mapHookRecord defaults it to mappingRegistry's DEFAULT_PROVIDER_ID
                               // ("claude-code") in that case, matching mappingRegistry.resolveProviderId's
                               // own fallback so a legacy record's provider tag is never ambiguous.
+  userPrompt?: boolean;      // UserPromptSubmit/Stop: set by the hooks on a person-initiated top-level prompt/turn (never a
+                              // subagent or bridge child); the panel uses it for the harness-mismatch hint only.
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session

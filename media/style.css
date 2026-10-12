@@ -3440,6 +3440,15 @@ body {
   flex: 1;
 }
 
+/* Harness-mismatch hint: text on top, action buttons wrap beneath. */
+.harness-mismatch-notice {
+  flex-wrap: wrap;
+}
+
+.harness-mismatch-notice .legacy-artifacts-notice-text {
+  flex: 1 1 100%;
+}
+
 .legacy-artifacts-notice-dismiss {
   background: transparent;
   border: none;

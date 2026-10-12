@@ -166,6 +166,13 @@ export const MSG = {
   // Host -> webview { waiting, changedAt, harness }: hooks are installed but
   // no hook event has arrived since the last hooks change (see hookWait.ts).
   HOOK_WAIT: "hookWait",
+  // Host -> webview { active, from, selected, promptAt }: a person prompted the
+  // non-selected harness (Claude Code vs Codex); active:false clears the hint.
+  HARNESS_MISMATCH: "harnessMismatch",
+  // Webview -> host, no payload: "Don't show again" for the harness-mismatch hint (per project).
+  // Webview -> host: Dismiss for the mismatching session/thread (host keys on its id).
+  HARNESS_MISMATCH_DISMISS: "harnessMismatchDismiss",
+  HARNESS_MISMATCH_SUPPRESS: "harnessMismatchSuppress",
   // Webview -> host, no payload: run workbench.action.reloadWindow.
   RELOAD_WINDOW: "reloadWindow",
   // "Generate diagnostic report" (bug-report): host gathers already-computed

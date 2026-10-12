@@ -2689,6 +2689,8 @@
       showLegacyArtifactsNotice(Number(msg.artifactCount) || 0, Number(msg.foreignHookCount) || 0);
     } else if (msg && msg.type === "hookWait") {
       handleHookWait(msg);
+    } else if (msg && msg.type === "harnessMismatch") {
+      handleHarnessMismatch(msg);
     } else if (msg && msg.type === "hooksAutoUpdated") {
       showHooksAutoUpdatedNotice();
     } else if (msg && msg.type === "doctorReport") {

@@ -3270,6 +3270,10 @@ function main(raw) {
   if (toolName) record.tool = toolName;
   if (delegationMode) record.delegationMode = delegationMode;
   if (payload.session_id) record.sessionId = payload.session_id;
+  // Top-level prompt typed by a person (not a subagent session): lets the panel hint when the project harness is not Claude Code.
+  // Known/accepted: a headless `claude -p` run counts as a person prompt; agent-team teammate sessions carry no
+  // distinguishing UserPromptSubmit payload field, so they are not excluded here either.
+  if (hookEvent === "UserPromptSubmit" && !(typeof payload.agent_id === "string" && payload.agent_id !== "")) record.userPrompt = true;
 
   try {
     fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
