@@ -447,3 +447,50 @@ test('validation: a nonexistent cwd is rejected before spawning', async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+async function permissionModeArgv(envMode) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-cli-mcp-perm-'));
+  const argvLogPath = path.join(tmpDir, 'argv.json');
+  const stdinLogPath = path.join(tmpDir, 'stdin.txt');
+  const jsEntry = writeFakeClaudeJs(tmpDir, FIXTURE_RESULT, argvLogPath, stdinLogPath);
+  const bin = process.platform === 'win32'
+    ? (() => {
+        const cmdPath = path.join(tmpDir, 'direct-node.cmd');
+        fs.writeFileSync(cmdPath, `@ECHO off\r\nnode "${jsEntry}" %*\r\n`);
+        return cmdPath;
+      })()
+    : jsEntry;
+  const env = { CLAUDE_CLI_BIN: bin };
+  if (envMode === undefined) delete process.env.CLAUDE_CLI_PERMISSION_MODE;
+  else env.CLAUDE_CLI_PERMISSION_MODE = envMode;
+  const { child } = spawnMcpServer(env);
+  const nextLine = makeLineReader(child);
+  try {
+    await initializeAndListTools(child, nextLine);
+    await callClaude(child, nextLine, { prompt: 'hi', model: 'claude-haiku-4-5', max_turns: 1 });
+    return JSON.parse(fs.readFileSync(argvLogPath, 'utf8'));
+  } finally {
+    child.kill();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+test('CLAUDE_CLI_PERMISSION_MODE: bypassPermissions, dontAsk and unknown values fall back to plan; no skip-permissions flag ever', async () => {
+  for (const bad of ['bypassPermissions', 'dontAsk', 'nonsense', '--dangerously-skip-permissions']) {
+    const argv = await permissionModeArgv(bad);
+    assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'plan', bad);
+    assert.ok(!argv.some((a) => /dangerously-skip-permissions|bypassPermissions|dontAsk/.test(a)), bad);
+  }
+});
+
+test('CLAUDE_CLI_PERMISSION_MODE: acceptEdits is honored as an explicit operator opt-in', async () => {
+  const argv = await permissionModeArgv('acceptEdits');
+  assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'acceptEdits');
+});
+
+test('CLAUDE_CLI_PERMISSION_MODE: plan and default are honored', async () => {
+  for (const ok of ['plan', 'default']) {
+    const argv = await permissionModeArgv(ok);
+    assert.equal(argv[argv.indexOf('--permission-mode') + 1], ok);
+  }
+});

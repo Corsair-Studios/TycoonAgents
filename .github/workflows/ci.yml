@@ -39,3 +39,8 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Dependency audit (non-blocking)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high || true

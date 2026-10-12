@@ -77,7 +77,9 @@
  * Permission mode: defaults to "plan" (read-only planning, no tool side
  * effects) via CLAUDE_CLI_PERMISSION_MODE, since this bridge exists to let a
  * subscription do read/advise work, not to hand it unattended write access.
- * Override only when the caller understands the consequences.
+ * Override only when the caller understands the consequences. Only plan,
+ * default and acceptEdits are honored (hooks/claudePermissionMode.cjs);
+ * bypassPermissions, dontAsk and unknown values fall back to plan.
  *
  * Binary discovery (docs/PATH-DISCOVERY.md ladder — explicit override first,
  * then multiple independent signals, never one guess, fail with every path
@@ -153,6 +155,7 @@ const path = require("path");
 const readline = require("readline");
 const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
 const binDiscovery = require("./binDiscovery.cjs");
+const { safePermissionMode } = require("./claudePermissionMode.cjs");
 
 const SERVER_NAME = "claude-cli-mcp";
 const SERVER_VERSION = "1.0.0";
@@ -404,7 +407,10 @@ async function handleClaudeTool(args) {
   }
 
   const maxTurns = typeof args.max_turns === "number" && args.max_turns > 0 ? args.max_turns : DEFAULT_MAX_TURNS;
-  const permissionMode = process.env.CLAUDE_CLI_PERMISSION_MODE || DEFAULT_PERMISSION_MODE;
+  // CLAUDE_CLI_PERMISSION_MODE=acceptEdits or default is an explicit operator
+  // opt-in (this bridge has no role of its own; the base mode is plan).
+  // bypassPermissions/dontAsk and unknown values are always rejected.
+  const permissionMode = safePermissionMode(process.env.CLAUDE_CLI_PERMISSION_MODE, DEFAULT_PERMISSION_MODE);
 
   let system;
   if (typeof args.system === "string" && args.system) {

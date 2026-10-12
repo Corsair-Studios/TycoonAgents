@@ -6,7 +6,6 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { mergeEnabledMcpJsonServer } from "./mcpCatalog";
 import { isElectronHostBinary, rejectedNodeOverride, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 
 interface HookCommand {
@@ -576,6 +575,7 @@ export const MCP_BRIDGE_HOOK_FILES: ReadonlyArray<string> = [
   "fallbackChain.js",
   "harnessModelDefaults.cjs",
   "binDiscovery.cjs",
+  "claudePermissionMode.cjs",
 ];
 
 /**
@@ -759,51 +759,6 @@ export interface CleanupResult {
 }
 
 const SETTINGS_FILE_NAMES: ReadonlyArray<string> = ["settings.local.json", "settings.json"];
-
-/**
- * Idempotently adds `id` to `settings.local.json`'s `enabledMcpjsonServers`
- * array so Claude Code auto-approves a project `.mcp.json` server instead of
- * leaving it "Pending approval" (which times out non-interactive sessions).
- * Called right after a pack/MCP install writes an entry into `.mcp.json`
- * (see panel.ts `_handleInstallMcp` and the pack-install `pack.mcp` branch).
- *
- * - Creates `settings.local.json` if it doesn't exist yet.
- * - Uses the pure, unit-tested `mergeEnabledMcpJsonServer` (mcpCatalog.ts) so
- *   existing `env`/`hooks`/`permissions`/other keys are preserved untouched
- *   and the id is never duplicated across repeated calls.
- * - If the file exists but isn't valid JSON (or isn't a JSON object), this
- *   logs and skips rather than clobbering an unparseable file.
- *
- * Returns true if the file was written (created or changed), false if
- * skipped (already present, or unparseable existing file).
- */
-export function enableMcpJsonServerInSettings(claudeDirRoot: string, id: string): boolean {
-  const filePath = path.join(claudeDirRoot, "settings.local.json");
-  let existing: Record<string, unknown> | null = {};
-  if (fs.existsSync(filePath)) {
-    existing = readJsonFileSafe(filePath);
-    if (existing === null) {
-      console.error(
-        `[TycoonAgents] Skipping enabledMcpjsonServers merge: ${filePath} is not valid JSON.`
-      );
-      return false;
-    }
-  }
-
-  const list = existing.enabledMcpjsonServers;
-  if (Array.isArray(list) && list.includes(id)) {
-    return false;
-  }
-
-  const merged = mergeEnabledMcpJsonServer(existing, id);
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), "utf8");
-    return true;
-  } catch (e) {
-    console.error(`[TycoonAgents] Failed writing ${filePath}: ${String(e)}`);
-    return false;
-  }
-}
 
 export interface CleanupForeignHookArtifactsOptions {
   /**
@@ -996,9 +951,9 @@ export function cleanupForeignHookArtifacts(
 /** Direct `require("./x")` companions of each bridge file (transitively closed by {@link bridgeFilesForConfig}). */
 const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
   "gemini-mcp-wrapper.cjs": ["bridge-result.cjs"],
-  "claude-cli-mcp.cjs": ["bridge-result.cjs", "binDiscovery.cjs"],
+  "claude-cli-mcp.cjs": ["bridge-result.cjs", "binDiscovery.cjs", "claudePermissionMode.cjs"],
   "openai-compatible-mcp.cjs": ["bridge-result.cjs", "localEnvStore.js"],
-  "dispatcherAdapters.cjs": ["binDiscovery.cjs"],
+  "dispatcherAdapters.cjs": ["binDiscovery.cjs", "claudePermissionMode.cjs"],
   "codex-mcp-launcher.cjs": ["bridge-result.cjs", "binDiscovery.cjs"],
   "codex-app-server-mcp.cjs": ["bridge-result.cjs", "codex-mcp-launcher.cjs"],
   "tycoon-dispatcher-mcp.cjs": [
@@ -1011,6 +966,7 @@ const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
     "gateEvents.cjs",
     "harnessModelDefaults.cjs",
     "binDiscovery.cjs",
+    "claudePermissionMode.cjs",
   ],
   "dispatcherBridgeClient.cjs": ["bridge-result.cjs"],
   "dispatcherClaudeChain.cjs": ["bridge-result.cjs", "dispatcherAdapters.cjs", "dispatcherBridgeClient.cjs"],
