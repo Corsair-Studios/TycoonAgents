@@ -454,6 +454,31 @@ test("_ensureCodexInstallsCurrent: never installs when the user hasn't installed
   });
 });
 
+test("_ensureCodexInstallsCurrent: refreshes an outdated AGENTS.md managed block, preserves user text, and never creates one", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome(() => {
+    const fake = makeFakePanel(root, { _extensionUri: { fsPath: process.cwd() } });
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.existsSync(path.join(root, "AGENTS.md")), false, "no AGENTS.md created when none had a block");
+
+    const agentsPath = path.join(root, "AGENTS.md");
+    const NL = String.fromCharCode(10);
+    const startM = "<!-- TYCOON-CODEX-MANAGED:START -->";
+    const endM = "<!-- TYCOON-CODEX-MANAGED:END -->";
+    const head = ["# Mine", "", "user text", "", ""].join(NL);
+    const tail = ["", "", "tail", ""].join(NL);
+    fs.writeFileSync(agentsPath, head + startM + NL + "stale" + NL + endM + tail);
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    const out = fs.readFileSync(agentsPath, "utf8");
+    assert.ok(out.startsWith(head));
+    assert.ok(out.endsWith(tail));
+    assert.ok(!out.includes("stale"));
+    assert.ok(out.includes("### Writing the brief"));
+  });
+});
+
 test("_ensureCodexInstallsCurrent: does nothing when Codex is not the harness", () => {
   configuredProviderSetting = undefined;
   const root = tmpRoot();

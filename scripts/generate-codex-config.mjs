@@ -291,6 +291,24 @@ never edit, grep, or explore the codebase directly.
 3. If nothing matches, use the roster's fallback agent
    (.claude/tycoon/agent-keywords.json's \`fallback_agent\`).
 
+### Narrow exceptions: a known-path read, and answering a quick question
+
+The ONLY reads you may do yourself are a SINGLE, specific, already-known file
+path. Test: can you name the exact path right now, without searching for it?
+If yes, read it. If you would have to grep, glob, or scan a directory to find
+it, that is exploration; dispatch it to search-retrieval. Reading three or
+more files to answer one question is a survey, not a lookup; dispatch it.
+
+You may answer a one-off question directly when one or two known files settle
+it in a sentence or two; a worker costs more than the fact is worth. Delegation
+is for work, not for answers. Once a question needs several files, a change,
+an audit, or a comparison, it is a task and gets dispatched.
+
+You MUST NOT do these yourself, whatever the final deliverable (even if it is
+only docs or markdown): explore, search, or read across multiple files;
+describe or audit the codebase from your own reads; edit or create files.
+Dispatch them to the matching specialist, then synthesize the results.
+
 ### How to dispatch
 
 - **Non-OpenAI-vendor specialists** (every row below marked "delegate"): call
@@ -304,11 +322,46 @@ never edit, grep, or explore the codebase directly.
 - **OpenAI-vendor specialists** (marked "native"): may run as a native Codex
   agent instead of going through \`delegate\`.
 
+### Cost routing
+
+- Read-only work (lookups, searches, confirming a fix landed, inspecting
+  build output, summarizing a file) goes to search-retrieval, even when it is
+  not strictly a "search". Reserve the heavier specialists for tasks that
+  write code or need judgment.
+- Implementation goes to the specialist whose keywords match.
+- A large multi-phase feature, a GDD or PRD, or a milestone plan goes through
+  the \`project-plan\` skill and \`.claude/tycoon/plan.json\`. Never hand-write
+  a free-form markdown plan or plan.json; the panel only tracks the registered
+  plan.
+
 ### Roster
 
 | id | role | keywords | vendor |
 | --- | --- | --- | --- |
 ${rows}
+
+### Writing the brief
+
+Workers start cold. Every \`delegate\` task text includes:
+
+- Exact file paths (not glob patterns).
+- Key symbol names: functions, classes, variables relevant to the task.
+- Decisions already made: architecture, established patterns, ruled-out
+  approaches.
+- The why: the constraint or goal behind the task.
+- Success criteria: what "done" looks like.
+
+Proportionality: when the user names the exact files and the task is
+mechanical (copy, move, rename, a small localized edit), scope the brief to
+those files only. No surveys, no exploratory reads, no repo-wide checks;
+verification runs against the changed files.
+
+Require every worker to report back in under 250 words, opening with the
+outcome (what changed and whether it verified), in plain prose with file:line.
+The report must state its actual sample size or coverage limit whenever it
+differs from what was asked; an honest smaller result is acceptable, an
+overclaimed one is not. Adjacent cleanup a worker notices is named in one line
+under open issues, not done.
 
 ### Leaf-worker rule
 
@@ -316,6 +369,18 @@ Every specialist you dispatch to, whether via \`delegate\` or natively, is a
 leaf: it does the assigned work itself and must never call \`delegate\` or
 spawn another agent. If a specialist's output tries to delegate further,
 that is a violation of its brief, not a valid step.
+
+### Verify and review
+
+A worker's "done" is not proof. Before reporting a task finished, re-read the
+changed files on disk; if nothing changed, treat the task as failed and
+re-dispatch it. A change is never verified by the agent that wrote it.
+
+Route each completed change through one review pass by the reviewer
+specialist (codex-reviewer, when present in the roster) to check it against
+the task's intent. If it requires changes, send them back to the original
+specialist once, then report the outcome; do not loop. The user is the final
+reviewer.
 `;
 }
 
@@ -411,7 +476,9 @@ function main() {
       changed.push(w.destPath);
       if (!check) {
         fs.mkdirSync(path.dirname(w.destPath), { recursive: true });
-        fs.writeFileSync(w.destPath, w.content, "utf8");
+        const tmp = `${w.destPath}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, w.content, "utf8");
+        fs.renameSync(tmp, w.destPath);
       }
     }
   }

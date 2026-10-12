@@ -8736,6 +8736,21 @@ export class TycoonPanel {
       const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
       if (describeProviderSelection({ settingValue, cwd: root }).effective !== "codex") return;
 
+      // Keep AGENTS.md's Codex managed block current across extension updates.
+      // Only when the project already has the block (never creates one); the
+      // generator replaces just the marked region and writes only if changed.
+      try {
+        const agentsMdPath = path.join(root, "AGENTS.md");
+        if (
+          fs.existsSync(agentsMdPath) &&
+          fs.readFileSync(agentsMdPath, "utf8").includes("<!-- TYCOON-CODEX-MANAGED:START -->")
+        ) {
+          this._runCodexConfigGenerator(root);
+        }
+      } catch {
+        /* doctrine refresh must never block panel open */
+      }
+
       const hookState = this._detectCodexNotifyState();
       if (hookState === "stale-installed" || hookState === "stale-wrapped") {
         try {

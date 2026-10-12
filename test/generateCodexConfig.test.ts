@@ -243,3 +243,57 @@ test("routing.json override: agents.<id>.model replaces the openai specialist's 
     rmSync(projectDir, { recursive: true, force: true });
   }
 });
+
+test("AGENTS.md block carries briefing, narrow-exception, cost, verify and review guidance with no Claude-only terms", async () => {
+  const { generateCodexConfig } = await dynamicImport(SCRIPT_URL);
+  const { projectDir } = makeRosterFixture();
+  try {
+    const { agentsMdBlock } = generateCodexConfig({ projectDir });
+    for (const heading of [
+      "### Narrow exceptions: a known-path read, and answering a quick question",
+      "### Cost routing",
+      "### Writing the brief",
+      "### Verify and review",
+    ]) {
+      assert.ok(agentsMdBlock.includes(heading), `missing ${heading}`);
+    }
+    assert.match(agentsMdBlock, /Reading three or\s+more files to answer one question is a survey/);
+    assert.match(agentsMdBlock, /under 250 words/);
+    assert.match(agentsMdBlock, /Proportionality/);
+    assert.match(agentsMdBlock, /project-plan/);
+    assert.match(agentsMdBlock, /re-read the\s+changed files on disk/);
+    assert.match(agentsMdBlock, /one review pass/);
+    // existing delegation text is unchanged
+    for (const old of [
+      "never edit, grep, or explore the codebase directly.",
+      "1. An explicit specialist name in the request always wins.",
+      "### Leaf-worker rule",
+      "Do NOT spawn a native Codex agent for these",
+      "that is a violation of its brief, not a valid step.",
+    ]) {
+      assert.ok(agentsMdBlock.replace(/\s+/g, " ").includes(old.replace(/\s+/g, " ")), `lost: ${old}`);
+    }
+    for (const forbidden of [/Task tool/i, /subagent_type/i, /\bHaiku\b/i, /\bSonnet\b/i, /\bOpus\b/i, /SubagentStart/i, /visualization/i, /session[- ]journal/i]) {
+      assert.doesNotMatch(agentsMdBlock, forbidden);
+    }
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("upsertCodexBlock replaces only the managed block and preserves user text", async () => {
+  const { generateCodexConfig, upsertCodexBlock } = await dynamicImport(SCRIPT_URL);
+  const { projectDir } = makeRosterFixture();
+  try {
+    const { agentsMdBlock } = generateCodexConfig({ projectDir });
+    const existing =
+      "# My notes\n\nkeep me\n\n<!-- TYCOON-CODEX-MANAGED:START -->\nold outdated block\n<!-- TYCOON-CODEX-MANAGED:END -->\n\ntrailer text\n";
+    const out = upsertCodexBlock(existing, agentsMdBlock);
+    assert.ok(out.startsWith("# My notes\n\nkeep me\n\n"));
+    assert.ok(out.endsWith("\n\ntrailer text\n"));
+    assert.ok(!out.includes("old outdated block"));
+    assert.ok(out.includes("### Writing the brief"));
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
