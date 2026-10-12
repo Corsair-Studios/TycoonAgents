@@ -64,7 +64,7 @@
 
 const readline = require("readline");
 const { spawn } = require("child_process");
-const { discoverCodexBinary, needsShell } = require("./codex-mcp-launcher.cjs");
+const { discoverCodexBinary, needsShell, resolveBareOnPath } = require("./codex-mcp-launcher.cjs");
 const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs");
 
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -220,7 +220,7 @@ class AppServerClient {
     // shell:false, throwing ENOENT (p69-t2,
     // docs/codex-reviewer-onboarding-friction-2026-09-18.md #6).
     const shell = needsShell(this.binaryPath);
-    const child = spawn(this.binaryPath, args, {
+    const child = spawn(resolveBareOnPath(this.binaryPath), args, {
       shell,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],

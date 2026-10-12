@@ -179,4 +179,82 @@ function findBinary(name, opts) {
   return { bin: null, tried };
 }
 
-module.exports = { findBinary, posixSearchDirs, loginShellLookup, parseLastAbsolutePath, newestNvmBinDir, LOGIN_SHELL_TIMEOUT_MS };
+/**
+ * Windows resolves a bare command against the process/child cwd BEFORE PATH, so
+ * a project directory can plant npm.cmd / taskkill.exe. These helpers resolve
+ * absolutely instead and never consult cwd.
+ */
+function systemExe(name, opts) {
+  const o = opts || {};
+  if ((o.platform || process.platform) !== "win32") return null;
+  const env = o.env || process.env;
+  const exists = o.exists || fs.existsSync;
+  const full = path.join(env.SystemRoot || env.SYSTEMROOT || "C:\\Windows", "System32", name);
+  try {
+    return exists(full) ? full : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Absolute npm invocation { command, args } that needs no shell and no cwd
+ * lookup, or null. win32: node.exe + npm-cli.js from the node install dir (next to
+ * process.execPath) or an absolute PATH entry. POSIX: an absolute npm on PATH.
+ */
+function npmInvocation(opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  const env = o.env || process.env;
+  const exists = o.exists || fs.existsSync;
+  const cwd = (o.cwd !== undefined ? o.cwd : process.cwd()) || "";
+  const dirs = [];
+  const execPath = o.execPath !== undefined ? o.execPath : process.execPath;
+  if (execPath && /^node(\.exe)?$/i.test(path.basename(execPath))) dirs.push(path.dirname(execPath));
+  const pathVar = env.PATH || env.Path || "";
+  for (const d of pathVar.split(platform === "win32" ? ";" : ":")) {
+    if (d && path.isAbsolute(d)) dirs.push(d);
+  }
+  const sameDir = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  for (const d of dirs) {
+    try {
+      if (platform === "win32" && cwd && sameDir(d, cwd)) continue;
+      if (platform === "win32") {
+        const cli = path.join(d, "node_modules", "npm", "bin", "npm-cli.js");
+        const node = path.join(d, "node.exe");
+        if (exists(cli) && exists(node)) return { command: node, args: [cli] };
+      } else {
+        const npm = path.join(d, "npm");
+        if (exists(npm)) return { command: npm, args: [] };
+      }
+    } catch {
+      /* try the next dir */
+    }
+  }
+  return null;
+}
+
+/**
+ * Windows: a bare command name resolves against the child's cwd before PATH. Resolves
+ * it through absolute PATH entries only (never cwd); returns the command unchanged
+ * when it is not a bare name, not on win32, or not found.
+ */
+function resolveBareOnPath(command, opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  if (platform !== "win32" || !command || /[\\/]/.test(command)) return command;
+  const env = o.env || process.env;
+  const fsApi = o.fs || fs;
+  const cwd = (o.cwd !== undefined ? o.cwd : process.cwd()) || "";
+  const norm = (d) => path.resolve(d).toLowerCase();
+  for (const d of String(env.PATH || env.Path || "").split(";")) {
+    if (!d || !path.isAbsolute(d) || (cwd && norm(d) === norm(cwd))) continue;
+    for (const ext of [".exe", ".cmd", ".bat", ""]) {
+      const full = path.join(d, command + ext);
+      if (isFileSync(fsApi, full)) return full;
+    }
+  }
+  return command;
+}
+
+module.exports = { resolveBareOnPath, systemExe, npmInvocation, findBinary, posixSearchDirs, loginShellLookup, parseLastAbsolutePath, newestNvmBinDir, LOGIN_SHELL_TIMEOUT_MS };

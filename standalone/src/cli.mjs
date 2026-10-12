@@ -19,6 +19,7 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { winSystemExe } from './winSystem.mjs';
 import { installHook, installMcpBridgeHooks, installOpenCodePlugin, InstallHookError } from './installHook.mjs';
 import { seedAgents, SeedAgentsError } from './seedAgents.mjs';
 import { startServer, ServerStartError } from './server.mjs';
@@ -127,7 +128,7 @@ function openInBrowser(url) {
     // cmd's built-in `start` treats its first quoted argument as the window
     // title, not the target — pass an empty title first so `url` isn't
     // swallowed as one.
-    command = 'cmd';
+    command = process.env.ComSpec && path.isAbsolute(process.env.ComSpec) ? process.env.ComSpec : winSystemExe('cmd.exe');
     args = ['/c', 'start', '""', url];
   } else if (platform === 'darwin') {
     command = 'open';

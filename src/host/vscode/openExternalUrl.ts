@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
+import { systemExe } from "../../core/safeExec";
 
 export type OpenExternalLogger = (message: string) => void;
 
@@ -71,7 +72,7 @@ function openViaPlatformOpener(url: string): Promise<boolean> {
         // this never passes the URL through cmd.exe's shell parser, so `&`,
         // `%`, and `#` in a fragment/query survive intact instead of
         // splitting the command or triggering env-var expansion.
-        child = spawn("rundll32", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore" });
+        child = spawn(systemExe("rundll32.exe") ?? "rundll32", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore" });
       } else if (process.platform === "darwin") {
         child = spawn("open", [url], { detached: true, stdio: "ignore" });
       } else {

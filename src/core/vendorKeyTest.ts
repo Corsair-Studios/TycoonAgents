@@ -20,6 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as childProcess from "child_process";
+import { systemExe } from "./safeExec";
 
 import { getValue as localEnvGetValue, hasValue as localEnvHasValue } from "./localEnvStore";
 import * as http from "http";
@@ -196,8 +197,9 @@ const inFlight = new Map<string, InFlight>();
 
 function killChild(c: childProcess.ChildProcess): void {
   try {
-    if (process.platform === "win32" && c.pid) {
-      childProcess.spawn("taskkill", ["/PID", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const taskkill = process.platform === "win32" && c.pid ? systemExe("taskkill.exe") : null;
+    if (taskkill) {
+      childProcess.spawn(taskkill, ["/PID", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
       return;
     }
     c.kill();
@@ -232,7 +234,7 @@ function loadClientTracked(file: string, track: Set<childProcess.ChildProcess>):
   const orig = cp.spawn;
   cp.spawn = function (this: unknown, ...a: unknown[]) {
     const child = orig.apply(this, a);
-    if (a[0] !== "taskkill") track.add(child);
+    if (!/(^|[\\/])taskkill(\.exe)?$/i.test(String(a[0]))) track.add(child);
     return child;
   };
   try {
@@ -298,16 +300,17 @@ async function runVendorKeyTestInner(opts: RunVendorKeyTestOptions, slot: InFlig
   let projectDir = opts.projectRoot;
   let tempDir: string | undefined;
   try {
-    if (client.readServerEntry(projectDir, server).error) {
-      // No .mcp.json entry: launch the bridge script directly, from the project's
-      // .claude/hooks first, then the host's own hooks/ copy.
+    // Always launch the host's own bridge script (opts.hooksDir): the project's
+    // .mcp.json entry and .claude/hooks copy are repo-controlled and the bridge
+    // client only runs the dispatcher's own sibling script.
+    {
       const file = BRIDGE_FILE[server];
-      const script = [path.join(opts.projectRoot, ".claude", "hooks", file), path.join(opts.hooksDir, file)].find((p) => fs.existsSync(p));
-      if (!script) return makeResult(spec.id, "not_installed", undefined, secrets);
+      const script = path.join(opts.hooksDir, file);
+      if (!fs.existsSync(script)) return makeResult(spec.id, "not_installed", undefined, secrets);
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-keytest-"));
       fs.writeFileSync(
         path.join(tempDir, ".mcp.json"),
-        JSON.stringify({ mcpServers: { [server]: { command: process.execPath, args: [script] } } }),
+        JSON.stringify({ mcpServers: { [server]: { command: "node", args: [script] } } }),
         "utf8"
       );
       projectDir = tempDir;

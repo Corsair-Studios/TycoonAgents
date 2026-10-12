@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import * as path from 'path';
+import * as os from 'os';
 import { execFileSync } from 'child_process';
 
 /**
@@ -105,7 +106,7 @@ export async function handleCheckTeamReadinessStandalone({ requireCompiledOrThro
   try {
     const teamSetupHostPath = path.join(repoRoot, 'out', 'src', 'host', 'vscode', 'teamSetupHost.js');
     const { buildTeamReadinessHost } = requireCompiledOrThrow(teamSetupHostPath, 'teamSetupHost');
-    const execSeam = (command) => execFileSync(command, { encoding: 'utf8' });
+    const execSeam = (command) => execFileSync(command, { encoding: 'utf8', cwd: os.tmpdir() });
     return await buildTeamReadinessHost({
       root: projectRoot,
       env: process.env,

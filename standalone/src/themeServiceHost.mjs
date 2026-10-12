@@ -26,6 +26,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { winSystemExe } from './winSystem.mjs';
 import { createStandaloneThemeServiceTokenStore } from './themeServiceToken.mjs';
 import { resolveAppDataDir, createAppData } from './appData.mjs';
 
@@ -107,7 +108,7 @@ function openExternalUrl(url) {
       // `%`, and `#` in the OAuth browserUrl (query-string separators/PKCE
       // params) survive intact instead of splitting the command or
       // triggering env-var expansion.
-      spawn('rundll32', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
+      spawn(winSystemExe('rundll32.exe'), ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
     } else if (process.platform === 'darwin') {
       spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
     } else {

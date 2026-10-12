@@ -155,6 +155,7 @@ function looksLikeCommandNotFound(stdout, stderr) {
 function probeCandidate(command, spawnSyncFn) {
   try {
     const result = spawnSyncFn(command, ["--version"], {
+      cwd: os.tmpdir(),
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
@@ -334,12 +335,17 @@ function collectNpmGlobalSignal(list, seen) {
   const basename = process.platform === "win32" ? "codex.cmd" : "codex";
 
   try {
-    const result = spawnSync("npm", ["prefix", "-g"], {
-      shell: true,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10_000,
-    });
+    // No shell and never the project cwd: Windows resolves a bare command against cwd first,
+    // so a project could plant npm.cmd. Resolve npm absolutely; skip this rung if unresolvable.
+    const npm = binDiscovery.npmInvocation();
+    const result = npm
+      ? spawnSync(npm.command, [...npm.args, "prefix", "-g"], {
+          cwd: os.tmpdir(),
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 10_000,
+        })
+      : { stdout: "" };
     const prefix = (result.stdout || "").trim();
     if (!result.error && prefix) {
       const npmBin = process.platform === "win32" ? prefix : path.join(prefix, "bin");
@@ -655,6 +661,7 @@ function getHelpText(command, subArgs, spawnSyncFn, cache) {
   let text = "";
   try {
     const result = spawn(command, [...subArgs, "--help"], {
+      cwd: os.tmpdir(),
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
@@ -981,7 +988,8 @@ function main(opts) {
   // responses carry the shared envelope and a timeout (see the file header).
   // Every other launch (e.g. `codex --version`) keeps stdio inherited.
   const proxied = wantsMcpServer && args.includes("mcp-server");
-  const child = spawnFn(command, args, {
+  // A bare name would be resolved against the project cwd first on Windows (a planted codex.cmd).
+  const child = spawnFn(binDiscovery.resolveBareOnPath(command), args, {
     shell: needsShell(command),
     stdio: proxied ? ["pipe", "pipe", "inherit"] : "inherit",
     windowsHide: true,
@@ -1010,6 +1018,8 @@ function main(opts) {
 
 module.exports = {
   discoverCodexBinary,
+  resolveBareOnPath: binDiscovery.resolveBareOnPath,
+  npmInvocation: binDiscovery.npmInvocation,
   main,
   needsShell,
   applyReasoningEffortOverride,

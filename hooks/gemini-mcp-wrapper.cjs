@@ -207,10 +207,18 @@ function shellCommandLine(command, args) {
   return [quote(command), ...(args || []).map(quote)].join(" ");
 }
 
+/** Absolute System32 taskkill.exe (a bare name is resolved against cwd first on Windows); null if absent. */
+function taskkillPath() {
+  const p = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+  try { return fs.existsSync(p) ? p : null; } catch { return null; }
+}
+
 function killTree(child) {
   if (!child || child.exitCode !== null || !child.pid) return;
   try {
-    if (IS_WIN) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const tk = IS_WIN ? taskkillPath() : null;
+    if (IS_WIN && !tk) child.kill("SIGKILL");
+    else if (IS_WIN) spawnSync(tk, ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     else process.kill(-child.pid, "SIGKILL");
   } catch {
     try {
@@ -238,13 +246,19 @@ function callModelOf(msg) {
   return a && typeof a.model === "string" ? a.model.trim() : "";
 }
 
+// The ../out fallback is for a dev checkout only; a project copy (.claude/hooks) must never load project-controlled code from ../out.
+function localEnvStoreCandidates() {
+  const own = path.join(__dirname, "localEnvStore.js");
+  if (path.basename(path.dirname(__dirname)).toLowerCase() === ".claude") return [own];
+  return [own, path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")];
+}
 let _localEnvStore;
 let _localEnvStoreTried = false;
 /** The per-user local env store (hooks/localEnvStore.js, or the compiled core copy in a dev checkout), else undefined. */
 function localEnvStore() {
   if (_localEnvStoreTried) return _localEnvStore;
   _localEnvStoreTried = true;
-  for (const candidate of [path.join(__dirname, "localEnvStore.js"), path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")]) {
+  for (const candidate of localEnvStoreCandidates()) {
     try {
       if (fs.existsSync(candidate)) {
         _localEnvStore = require(candidate);
@@ -1007,4 +1021,4 @@ function run() {
 
 if (require.main === module) run();
 
-module.exports = { PINNED_PACKAGE, parseAgyOutput, capPromptForArgv, winQuotedArgLength, safePromptStart, agyLaunch, ARGV_PROMPT_MAX_CHARS, resolveAgy, childEnv, normalizeCallResult, inlineReferencedFiles, prepareCall, resolveCommand, shellCommandLine };
+module.exports = { PINNED_PACKAGE, parseAgyOutput, capPromptForArgv, winQuotedArgLength, safePromptStart, agyLaunch, ARGV_PROMPT_MAX_CHARS, resolveAgy, childEnv, normalizeCallResult, inlineReferencedFiles, prepareCall, resolveCommand, shellCommandLine, taskkillPath };
