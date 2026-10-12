@@ -479,6 +479,20 @@ test("_ensureCodexInstallsCurrent: refreshes an outdated AGENTS.md managed block
   });
 });
 
+test("_ensureCodexInstallsCurrent: AGENTS.md with a START marker but no END marker is left untouched", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexProvider(root);
+  withCodexHome(() => {
+    const fake = makeFakePanel(root, { _extensionUri: { fsPath: process.cwd() } });
+    const agentsPath = path.join(root, "AGENTS.md");
+    const text = "# Mine\n\n<!-- TYCOON-CODEX-MANAGED:START -->\nhalf a block\n";
+    fs.writeFileSync(agentsPath, text);
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.readFileSync(agentsPath, "utf8"), text);
+  });
+});
+
 test("_ensureCodexInstallsCurrent: does nothing when Codex is not the harness", () => {
   configuredProviderSetting = undefined;
   const root = tmpRoot();

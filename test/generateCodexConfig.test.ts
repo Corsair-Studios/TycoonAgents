@@ -31,6 +31,8 @@ const dynamicImport = new Function("specifier", "return import(specifier);") as 
     specialists: Array<{ id: string; vendor: string; model?: string; description: string; pattern?: string }>;
   };
   upsertCodexBlock: (existingAgentsMd: string, blockBody: string) => string;
+  matchLineEndings: (existing: string, next: string) => string;
+  writeFileAtomic: (destPath: string, content: string, fsImpl?: unknown) => void;
 }>;
 
 function makeRosterFixture(): { projectDir: string; rosterDir: string } {
@@ -295,5 +297,49 @@ test("upsertCodexBlock replaces only the managed block and preserves user text",
     assert.ok(out.includes("### Writing the brief"));
   } finally {
     rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("review line names the reviewer id found in the roster", async () => {
+  const { generateCodexConfig } = await dynamicImport(SCRIPT_URL);
+  const { projectDir, rosterDir } = makeRosterFixture();
+  try {
+    assert.match(generateCodexConfig({ projectDir }).agentsMdBlock, /\(codex-reviewer\)/);
+    writeFileSync(join(rosterDir, "reviewer.md"), "---\nname: reviewer\n---\n\n# Reviewer\n\nReviews changes.\n", "utf8");
+    const withBoth = generateCodexConfig({ projectDir }).agentsMdBlock;
+    assert.match(withBoth, /specialist \(reviewer\)/);
+    rmSync(join(rosterDir, "reviewer.md"));
+    rmSync(join(rosterDir, "codex-reviewer.md"));
+    const none = generateCodexConfig({ projectDir }).agentsMdBlock;
+    assert.match(none.replace(/\s+/g, " "), /if the roster has one/);
+    assert.doesNotMatch(none, /codex-reviewer, when present/);
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("matchLineEndings keeps CRLF only when the existing file uses it", async () => {
+  const { matchLineEndings, upsertCodexBlock } = await dynamicImport(SCRIPT_URL);
+  const crlf = "# T\r\n\r\n<!-- TYCOON-CODEX-MANAGED:START -->\r\nold\r\n<!-- TYCOON-CODEX-MANAGED:END -->\r\n";
+  const out = matchLineEndings(crlf, upsertCodexBlock(crlf, "new\nbody\n"));
+  assert.ok(!/(^|[^\r])\n/.test(out), "no bare LF remains");
+  assert.ok(out.includes("new\r\nbody"));
+  assert.equal(matchLineEndings("# T\n", "a\nb\n"), "a\nb\n");
+});
+
+test("writeFileAtomic removes the temp file when rename throws", async () => {
+  const { writeFileAtomic } = await dynamicImport(SCRIPT_URL);
+  const dir = mkdtempSync(join(tmpdir(), "tycoon-atomic-"));
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fsMod = require("node:fs");
+    const failing = { ...fsMod, renameSync: () => { throw new Error("boom"); } };
+    const dest = join(dir, "AGENTS.md");
+    assert.throws(() => writeFileAtomic(dest, "x", failing), /boom/);
+    assert.deepEqual(fsMod.readdirSync(dir), []);
+    writeFileAtomic(dest, "ok");
+    assert.equal(readFileSync(dest, "utf8"), "ok");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

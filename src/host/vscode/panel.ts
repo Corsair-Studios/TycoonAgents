@@ -8741,11 +8741,14 @@ export class TycoonPanel {
       // generator replaces just the marked region and writes only if changed.
       try {
         const agentsMdPath = path.join(root, "AGENTS.md");
-        if (
-          fs.existsSync(agentsMdPath) &&
-          fs.readFileSync(agentsMdPath, "utf8").includes("<!-- TYCOON-CODEX-MANAGED:START -->")
-        ) {
-          this._runCodexConfigGenerator(root);
+        if (fs.existsSync(agentsMdPath)) {
+          const agentsMdText = fs.readFileSync(agentsMdPath, "utf8");
+          if (
+            agentsMdText.includes("<!-- TYCOON-CODEX-MANAGED:START -->") &&
+            agentsMdText.includes("<!-- TYCOON-CODEX-MANAGED:END -->")
+          ) {
+            this._runCodexConfigGenerator(root);
+          }
         }
       } catch {
         /* doctrine refresh must never block panel open */

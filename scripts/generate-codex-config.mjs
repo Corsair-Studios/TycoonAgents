@@ -267,6 +267,11 @@ function buildAgentsToml(specialists) {
 
 /** Build the AGENTS.md Codex-managed block body (without the surrounding markers). */
 function buildAgentsMdCodexBlock(specialists) {
+  const ids = specialists.map((s) => s.id);
+  const reviewerId = ids.includes("reviewer") ? "reviewer" : ids.includes("codex-reviewer") ? "codex-reviewer" : null;
+  const reviewerPhrase = reviewerId
+    ? `the reviewer specialist (${reviewerId})`
+    : "the reviewer specialist, if the roster has one";
   const rows = specialists
     .map((s) => {
       const keywordPart = s.pattern ? s.pattern : "(fallback only)";
@@ -376,12 +381,32 @@ A worker's "done" is not proof. Before reporting a task finished, re-read the
 changed files on disk; if nothing changed, treat the task as failed and
 re-dispatch it. A change is never verified by the agent that wrote it.
 
-Route each completed change through one review pass by the reviewer
-specialist (codex-reviewer, when present in the roster) to check it against
-the task's intent. If it requires changes, send them back to the original
+Route each completed change through one review pass by ${reviewerPhrase}
+to check it against the task's intent. If it requires changes, send them back to the original
 specialist once, then report the outcome; do not loop. The user is the final
 reviewer.
 `;
+}
+
+/** Rewrite `next` with CRLF line endings when `existing` uses CRLF; otherwise unchanged. */
+export function matchLineEndings(existing, next) {
+  if (!existing.includes("\r\n")) return next;
+  return next.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+}
+
+/** Write via a temp file + rename; the temp file is removed if anything throws. */
+export function writeFileAtomic(destPath, content, fsImpl = fs) {
+  const tmp = `${destPath}.${process.pid}.tmp`;
+  try {
+    fsImpl.writeFileSync(tmp, content, "utf8");
+    fsImpl.renameSync(tmp, destPath);
+  } finally {
+    try {
+      if (fsImpl.existsSync(tmp)) fsImpl.rmSync(tmp, { force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
 }
 
 export function upsertCodexBlock(existingAgentsMd, blockBody) {
@@ -460,7 +485,7 @@ function main() {
 
   const agentsMdPath = path.join(root, "AGENTS.md");
   const existing = fs.existsSync(agentsMdPath) ? fs.readFileSync(agentsMdPath, "utf8") : "";
-  const newAgentsMd = upsertCodexBlock(existing, agentsMdBlock);
+  const newAgentsMd = matchLineEndings(existing, upsertCodexBlock(existing, agentsMdBlock));
 
   const tomlPath = path.join(root, ".claude", "tycoon", "codex-agents.toml.generated");
   const existingToml = fs.existsSync(tomlPath) ? fs.readFileSync(tomlPath, "utf8") : null;
@@ -476,9 +501,7 @@ function main() {
       changed.push(w.destPath);
       if (!check) {
         fs.mkdirSync(path.dirname(w.destPath), { recursive: true });
-        const tmp = `${w.destPath}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, w.content, "utf8");
-        fs.renameSync(tmp, w.destPath);
+        writeFileAtomic(w.destPath, w.content);
       }
     }
   }
