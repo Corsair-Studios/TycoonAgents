@@ -282,6 +282,7 @@ import {
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
+import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, noteRunVersion, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings, firstTycoonInterpreter } from "./hookDoctor";
 import { checkHookInterpreterAsync, peekHookInterpreterCheck } from "./hookNodeCheck";
 import {
@@ -787,6 +788,12 @@ export class TycoonPanel {
    */
   private _pendingHooksAutoUpdated = false;
   private _webviewReadySeen = false;
+  /** Extension globalState (when provided); holds the per-project last-run version for the hook-wait banner. */
+  private _globalStateRef: vscode.Memento | undefined;
+  private _hookWaitTimer: NodeJS.Timeout | undefined;
+  private _hookEventScan: HookEventScanState = { offset: undefined };
+  /** Last hookWait payload key posted to the webview, so the poll only posts on change. */
+  private _lastHookWaitKey = "";
   private _pendingLegacyArtifactsNotice: { artifactCount: number; foreignHookCount: number } | null = null;
   /** Engine ids with an in-flight probe fetch — guards against stacking probes across poll ticks. */
   private _engineProbeInFlight: Set<string> = new Set();
@@ -1002,6 +1009,7 @@ export class TycoonPanel {
     globalState?: vscode.Memento,
   ) {
     this._panel = panel;
+    this._globalStateRef = globalState;
     this._bundledThemesReady = bundledThemesReady;
     this._extensionUri = extensionUri;
     this._runtime = runtime;
@@ -1077,6 +1085,7 @@ export class TycoonPanel {
     this._panel.onDidChangeViewState(
       (e) => {
         if (e.webviewPanel.visible) {
+          this._postHookWait();
           void this._themeServiceHost.handleGetStatus();
         }
       },
@@ -1129,6 +1138,9 @@ export class TycoonPanel {
     // again.
     this._ensureHookMatchersFresh();
     this._ensureHookCommandAbsolute();
+    // An extension update is a hooks-change moment: a Claude Code session
+    // that started before the update may not pick up the new hook setup.
+    this._noteExtensionVersionForHooks();
     // Silent, async, once-per-construction upgrade repair of stale Tycoon
     // hooks (see _ensureHooksSilentlyCurrent).
     this._ensureHooksSilentlyCurrent();
@@ -1183,6 +1195,11 @@ export class TycoonPanel {
     // Start the engine-status poller (fires immediately, then every 10 s).
     this._pollEngineStatus();
     this._enginePollInterval = setInterval(() => this._pollEngineStatus(), 10000);
+    // Hook-wait banner: re-evaluate every 5 s (a stat + in-memory compare; posts only on change).
+    // Skipped while the panel is hidden; one catch-up check runs on becoming visible.
+    this._hookWaitTimer = setInterval(() => {
+      if (this._panel.visible) this._postHookWait();
+    }, 5000);
 
     // Watch plan.json + execution.json so the Project Plan section updates
     // live as the project-plan skill rewrites plan.json during execution
@@ -1221,6 +1238,7 @@ export class TycoonPanel {
           // yet. Not resent on subsequent READY pings within the same panel
           // life (cleared after the first delivery).
           this._webviewReadySeen = true;
+          this._postHookWait(true);
           if (this._pendingHooksAutoUpdated) {
             this._pendingHooksAutoUpdated = false;
             void this._panel.webview.postMessage({ type: MSG.HOOKS_AUTO_UPDATED });
@@ -1673,6 +1691,8 @@ export class TycoonPanel {
           }
         } else if (message.type === MSG.GET_ENGINE_STATUS) {
           this._pollEngineStatus();
+        } else if (message.type === MSG.RELOAD_WINDOW) {
+          void vscode.commands.executeCommand("workbench.action.reloadWindow");
         } else if (message.type === MSG.RUN_DOCTOR) {
           void this._handleRunDoctor();
         } else if (message.type === MSG.APPLY_DOCTOR_FIX) {
@@ -6175,6 +6195,7 @@ export class TycoonPanel {
       if (!migrated.changed && !healed.changed) return; // already current -> no write, no mtime churn
 
       fs.writeFileSync(settingsPath, JSON.stringify(healed.settings, null, 2));
+      recordHooksChanged(root);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
@@ -6230,9 +6251,64 @@ export class TycoonPanel {
 
       backupSettingsCopy(root, fs.readFileSync(settingsPath));
       atomicWrite(settingsPath, JSON.stringify(settings, null, 2));
+      recordHooksChanged(root);
       log("panel: migrated relative Tycoon hook command(s) to absolute form");
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
+    }
+  }
+
+  /** Stamp a hooks-change moment when the running extension version differs from the one that last ran in this project. */
+  private _noteExtensionVersionForHooks(): void {
+    try {
+      const root = this._projectRoot();
+      if (root === "" || !this._globalStateRef) return;
+      if (!noteRunVersion(this._globalStateRef, root, this._currentExtensionVersion())) return;
+      if (this._hooksInstalledForWait(root)) recordHooksChanged(root);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private _hooksInstalledForWait(root: string): boolean {
+    return this._effectiveHarness(root) === "codex" ? this._detectCodexHooksInstalled(root) : this._hookInstalled(root);
+  }
+
+  /**
+   * Cause-agnostic "hooks are ready but nothing has arrived" signal. changedAt
+   * is the Tycoon-owned marker `.claude/tycoon/hooks-changed.json` (stamped by
+   * install / Fix / silent repair / auto-heals / version change); the last
+   * event is the persisted `hook-last-event.json` marker, fed by an
+   * incremental ingest of activity.jsonl (event `at` ms) that a metrics reset
+   * or log rotation never touches.
+   */
+  private _computeHookWait(root: string): { waiting: boolean; changedAt: number | null; harness: "claude" | "codex" } {
+    const harness = root !== "" && this._effectiveHarness(root) === "codex" ? "codex" : "claude";
+    if (root === "") return { waiting: false, changedAt: null, harness };
+    scanHookEvents(root, this._hookEventScan);
+    const changedAt = readHooksChangedAt(root);
+    const waiting = isWaitingForFirstHookEvent({
+      installed: this._hooksInstalledForWait(root),
+      changedAt,
+      lastEventAt: readLastHookEventAt(root),
+      now: Date.now(),
+      graceMs: HOOK_WAIT_GRACE_MS,
+    });
+    return { waiting, changedAt, harness };
+  }
+
+  /** Posts MSG.HOOK_WAIT when the waiting state (or its change stamp) changed; `force` always posts. */
+  private _postHookWait(force = false): void {
+    if (this._disposed || !this._webviewReadySeen) return;
+    try {
+      const root = this._projectRoot();
+      const w = this._computeHookWait(root);
+      const key = `${w.waiting}:${w.changedAt ?? ""}:${w.harness}`;
+      if (!force && key === this._lastHookWaitKey) return;
+      this._lastHookWaitKey = key;
+      void this._panel.webview.postMessage({ type: MSG.HOOK_WAIT, waiting: w.waiting, changedAt: w.changedAt, harness: w.harness });
+    } catch {
+      /* best-effort */
     }
   }
 
@@ -6251,6 +6327,8 @@ export class TycoonPanel {
         if (root === "") return;
         const result = silentRepairLocalHooks(root, this._buildHookCommand(root));
         if (result.status !== "repaired") return;
+        recordHooksChanged(root);
+        this._postHookWait();
         log("panel: silently repaired outdated Tycoon hooks");
         if (this._webviewReadySeen) {
           void this._panel.webview.postMessage({ type: MSG.HOOKS_AUTO_UPDATED });
@@ -6882,6 +6960,7 @@ export class TycoonPanel {
       // 6. Write merged settings.
       fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
       recordAllHookSlots(root);
+      recordHooksChanged(root);
 
       // 6b. (Backfill routing keywords for any already-present hand-authored
       // agent moved to after step 7's agent-file installs below — see the
@@ -8244,6 +8323,7 @@ export class TycoonPanel {
     const hookHealth = codexSlice
       ? { healthy: codexSlice.healthy, issueCount: codexSlice.healthy ? 0 : 1, harness: "codex", status: codexSlice.status, label: codexSlice.label }
       : { healthy: issueCount === 0, issueCount };
+    if (this._computeHookWait(root).waiting) (hookHealth as { waiting?: boolean }).waiting = true;
 
     // Build context budget (CLAUDE.md + agent .md files)
     let contextBudget;
@@ -8687,6 +8767,7 @@ export class TycoonPanel {
         platform: process.platform,
         hookScriptPath: this._codexHookScriptPath(),
       });
+      recordHooksChanged(root);
       this._codexHookWarnings = result.warnings;
     } catch (err) {
       console.error("TycoonAgents: installCodexHooks failed:", err instanceof Error ? err.message : err);
@@ -9646,6 +9727,7 @@ export class TycoonPanel {
       atomicWrite(settingsLocalPath, JSON.stringify(settings, null, 2));
       // Explicit Fix re-adds every slot; record them so silent repair knows what was offered.
       recordAllHookSlots(root);
+      recordHooksChanged(root);
 
       const input = await this._gatherDoctorInput(root);
       const findings = diagnose(input);
@@ -10361,6 +10443,10 @@ export class TycoonPanel {
     if (this._enginePollInterval !== undefined) {
       clearInterval(this._enginePollInterval);
       this._enginePollInterval = undefined;
+    }
+    if (this._hookWaitTimer !== undefined) {
+      clearInterval(this._hookWaitTimer);
+      this._hookWaitTimer = undefined;
     }
     if (this._planWatcherDebounce !== undefined) {
       clearTimeout(this._planWatcherDebounce);

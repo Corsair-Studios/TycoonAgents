@@ -3409,11 +3409,27 @@ body {
    showLegacyArtifactsNotice). Base look reused from .catalog-notice;
    fixed-position overlay so it never shoves the scene/layout — it floats
    above whatever view is showing instead of taking a document flow slot. */
-.legacy-artifacts-notice {
+/* Fixed top-right stack (noticeStack in media/main.js) holding the legacy,
+   hooks-updated and orchestrator-model notices so they never overlap. */
+#top-notice-stack {
   position: fixed;
   top: 10px;
   right: 10px;
   z-index: 500;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100vw - 20px);
+  pointer-events: none;
+}
+
+#top-notice-stack > * {
+  pointer-events: auto;
+  margin-bottom: 0;
+}
+
+.legacy-artifacts-notice {
   max-width: 320px;
   display: flex;
   align-items: center;
@@ -3438,14 +3454,45 @@ body {
   color: var(--text);
 }
 
+/* Hooks-ready-but-silent banner (media/main.js handleHookWait). Compact
+   fixed bar at the bottom so it never shoves the scene. */
+.hook-wait-banner {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 500;
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hook-wait-banner-text {
+  flex: 1 1 220px;
+}
+
+.hook-wait-banner-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.hook-wait-banner-btn:hover,
+.hook-wait-banner-btn:focus-visible {
+  border-color: var(--text);
+}
+
 /* Orchestrator model warning (issue #25) — same fixed-overlay notice
    pattern as .legacy-artifacts-notice, distinct id/class so the two never
    collide when both conditions are true at once. */
 .orchestrator-model-notice {
-  position: fixed;
-  top: 10px;
-  right: 10px;
-  z-index: 500;
   max-width: 320px;
   display: flex;
   align-items: center;
@@ -8034,7 +8081,7 @@ button.theme-review-preview:focus-visible::after {
 #toast-host {
   position: fixed;
   left: 50%;
-  bottom: 24px;
+  bottom: calc(24px + var(--hook-wait-h, 0px));
   transform: translateX(-50%) translateY(8px);
   z-index: 400;
   background: var(--surface);

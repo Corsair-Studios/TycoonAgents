@@ -72,6 +72,9 @@ const RUNTIME_CREATED_IDS = new Set([
   'menu-edit-stage',
   'settings-modal-close',
   'stage-edit-panel',
+  'hook-wait-banner',
+  'top-notice-stack',
+  'hooks-auto-updated-notice',
 ]);
 
 // ── Fake 2D canvas context ──────────────────────────────────────────────────
@@ -1126,6 +1129,69 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(checked, 'a delegation-mode radio should be checked');
       assert.equal(checked.value, 'team_leads', 'radio selection must reflect the payload mode');
       assertNoErrors('delegation-chooser-visibility');
+    });
+
+    await t.test('10b. hookWait banner: role=status, reload + dismiss, self-clearing; Hook health shows waiting', async () => {
+      const banner = () => doc.getElementById('hook-wait-banner');
+      dispatch({ type: 'hookWait', waiting: true, changedAt: 111, harness: 'claude' });
+      const b = banner();
+      assert.ok(b, 'banner shown when host reports waiting');
+      assert.equal(b.getAttribute('role'), 'status');
+      assert.match(
+        b.textContent,
+        /Hooks are ready, but no activity has arrived yet\. If agents don't appear, start a new Claude Code conversation or reload the window\./
+      );
+      const btns = [...b.querySelectorAll('button')];
+      assert.deepEqual(btns.map((x: any) => x.textContent), ['Reload Window', 'Dismiss']);
+      btns[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.ok(posted.some((m: any) => m && m.type === 'reloadWindow'), 'Reload Window posts reloadWindow');
+
+      // Self-clearing on the first event.
+      dispatch({ type: 'hookWait', waiting: false, changedAt: 111, harness: 'claude' });
+      assert.equal(banner(), null);
+
+      // Dismiss is session-sticky for the same change stamp, but a new change re-surfaces it.
+      dispatch({ type: 'hookWait', waiting: true, changedAt: 111, harness: 'claude' });
+      [...banner().querySelectorAll('button')][1].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+      assert.equal(banner(), null);
+      dispatch({ type: 'hookWait', waiting: true, changedAt: 111, harness: 'claude' });
+      assert.equal(banner(), null, 'dismissed for this change');
+      dispatch({ type: 'hookWait', waiting: true, changedAt: 222, harness: 'claude' });
+      assert.ok(banner(), 'a newer hooks change shows it again');
+      dispatch({ type: 'hookWait', waiting: false, changedAt: 222, harness: 'claude' });
+
+      // Hook health: waiting is not "healthy".
+      dispatch({ type: 'installState', installed: true });
+      dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'flat',
+          delegationHealth: {},
+          hookHealth: { healthy: true, issueCount: 0, waiting: true },
+          contextBudget: null,
+        },
+      });
+      await flush();
+      const text = String(doc.getElementById('setup-config').textContent);
+      assert.match(text, /Waiting for first activity/);
+      assert.doesNotMatch(text, /Hooks healthy — no issues detected/);
+      assertNoErrors('hook-wait-banner');
+    });
+
+    await t.test('10c. top-right notices share one stack container and the toast is lifted by the banner height', async () => {
+      dispatch({ type: 'hooksAutoUpdated' });
+      dispatch({ type: 'hookWait', waiting: true, changedAt: 333, harness: 'claude' });
+      await flush();
+      const note = doc.getElementById('hooks-auto-updated-notice');
+      assert.ok(note, 'hooks-updated note shown');
+      assert.equal(note.parentElement.id, 'top-notice-stack', 'note lives in the shared stack, not a body-level fixed overlay');
+      assert.ok(doc.getElementById('hook-wait-banner'), 'banner shown with the note');
+      assert.notEqual(doc.getElementById('hook-wait-banner').parentElement.id, 'top-notice-stack');
+      dispatch({ type: 'hookWait', waiting: false, changedAt: 333, harness: 'claude' });
+      note.remove();
+      assertNoErrors('notice-stack');
     });
 
     await t.test('10a. settings: Review for trimming is disabled unless host says enabled', async () => {

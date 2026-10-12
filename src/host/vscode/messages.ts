@@ -163,6 +163,11 @@ export const MSG = {
   // Host -> webview, no payload: panel-open silent hook repair rewrote stale
   // Tycoon hooks in settings.local.json; shows a dismissible one-line note.
   HOOKS_AUTO_UPDATED: "hooksAutoUpdated",
+  // Host -> webview { waiting, changedAt, harness }: hooks are installed but
+  // no hook event has arrived since the last hooks change (see hookWait.ts).
+  HOOK_WAIT: "hookWait",
+  // Webview -> host, no payload: run workbench.action.reloadWindow.
+  RELOAD_WINDOW: "reloadWindow",
   // "Generate diagnostic report" (bug-report): host gathers already-computed
   // health signals, builds a SANITIZED Markdown report (diagnosticReport.ts),
   // writes it to .claude/tycoon/, opens it for review, and copies it to the

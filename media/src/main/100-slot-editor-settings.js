@@ -3566,8 +3566,11 @@
     hookStatus.appendChild(activityLine);
     const hookHealth = (lastSettings.hookHealth) || { healthy: true, issueCount: 0 };
     const healthLine = document.createElement("div");
-    healthLine.className = hookHealth.healthy ? "hook-ok" : "hook-warn";
-    healthLine.textContent = hookHealth.healthy
+    const hookWaiting = !!hookHealth.waiting;
+    healthLine.className = hookHealth.healthy && !hookWaiting ? "hook-ok" : "hook-warn";
+    healthLine.textContent = hookWaiting
+      ? "Waiting for first activity — " + hookWaitHint(codexHook ? "codex" : "claude")
+      : hookHealth.healthy
       ? (codexHook ? "✓ Codex hook healthy — no issues detected" : "✓ Hooks healthy — no issues detected")
       : codexHook
         ? "⚠ " + (hookHealth.label || "Codex hook needs attention") + " — use Codex hooks below to install again"

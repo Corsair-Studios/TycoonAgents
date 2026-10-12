@@ -937,7 +937,82 @@
     dismissBtn.addEventListener("click", () => dismissLegacyArtifactsNotice());
     notice.appendChild(dismissBtn);
 
-    document.body.appendChild(notice);
+    noticeStack().appendChild(notice);
+  }
+
+  /** Shared fixed top-right container so the legacy / hooks-updated / orchestrator-model notices stack instead of overlapping. */
+  function noticeStack() {
+    let el = document.getElementById("top-notice-stack");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "top-notice-stack";
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  /** Lift the bottom toast above the hook-wait banner by publishing its height as --hook-wait-h. */
+  function syncHookWaitOffset() {
+    const b = document.getElementById("hook-wait-banner");
+    document.documentElement.style.setProperty("--hook-wait-h", b ? (b.offsetHeight + 10) + "px" : "0px");
+  }
+
+  /**
+   * Hooks-ready-but-silent banner (host message "hookWait"). Compact, role=status,
+   * dismissible for the session (keyed by the hooks-change stamp so a later change
+   * re-surfaces it). Clears itself when the host reports waiting:false.
+   * @param {{waiting?:boolean, changedAt?:number|null, harness?:string}} msg
+   */
+  function handleHookWait(msg) {
+    const existing = document.getElementById("hook-wait-banner");
+    const changedAt = typeof msg.changedAt === "number" ? msg.changedAt : null;
+    let dismissed = false;
+    try {
+      const st = vscode.getState() || {};
+      dismissed = st.hookWaitDismissedFor != null && st.hookWaitDismissedFor === changedAt;
+    } catch (e) { dismissed = false; }
+    if (!msg.waiting || dismissed) {
+      if (existing) existing.remove();
+      syncHookWaitOffset();
+      return;
+    }
+    if (existing) return;
+    const banner = document.createElement("div");
+    banner.id = "hook-wait-banner";
+    banner.className = "catalog-notice hook-wait-banner";
+    banner.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.className = "hook-wait-banner-text";
+    text.textContent = hookWaitHint(msg.harness);
+    banner.appendChild(text);
+    const reloadBtn = document.createElement("button");
+    reloadBtn.type = "button";
+    reloadBtn.className = "hook-wait-banner-btn";
+    reloadBtn.textContent = "Reload Window";
+    reloadBtn.addEventListener("click", () => vscode.postMessage({ type: "reloadWindow" }));
+    banner.appendChild(reloadBtn);
+    const dismissBtn = document.createElement("button");
+    dismissBtn.type = "button";
+    dismissBtn.className = "hook-wait-banner-btn";
+    dismissBtn.textContent = "Dismiss";
+    dismissBtn.addEventListener("click", () => {
+      banner.remove();
+      syncHookWaitOffset();
+      try {
+        const prev = vscode.getState() || {};
+        vscode.setState({ ...prev, hookWaitDismissedFor: changedAt });
+      } catch (e) { /* session-only convenience */ }
+    });
+    banner.appendChild(dismissBtn);
+    document.body.appendChild(banner);
+    syncHookWaitOffset();
+    if (typeof ResizeObserver === "function") new ResizeObserver(syncHookWaitOffset).observe(banner);
+  }
+
+  /** Shared hint wording for the banner and Hook health. */
+  function hookWaitHint(harness) {
+    return "Hooks are ready, but no activity has arrived yet. If agents don't appear, start a new " +
+      (harness === "codex" ? "Codex session" : "Claude Code conversation") + " or reload the window.";
   }
 
   /** One-line dismissible note after the host silently repaired outdated hooks. */
@@ -956,7 +1031,7 @@
     dismissBtn.textContent = "×";
     dismissBtn.addEventListener("click", () => notice.remove());
     notice.appendChild(dismissBtn);
-    document.body.appendChild(notice);
+    noticeStack().appendChild(notice);
   }
 
   /**
@@ -1011,7 +1086,7 @@
     dismissBtn.addEventListener("click", () => dismissOrchestratorModelBanner(family));
     notice.appendChild(dismissBtn);
 
-    document.body.appendChild(notice);
+    noticeStack().appendChild(notice);
   }
 
   /**
