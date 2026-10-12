@@ -145,6 +145,29 @@ let sessionToken = '';
 // bound port: 127.0.0.1 and localhost.
 let allowedOrigins = new Set();
 
+// Host-header allowlist (DNS-rebinding defence), derived from the real bound
+// host:port plus loopback names and TYCOON_STANDALONE_ALLOWED_HOSTS. Checked
+// on EVERY request in every mode.
+let allowedHosts = new Set();
+
+// Remote mode (non-loopback bind, explicitly opted into): the embedded
+// session token is NOT used; a separate access token (never embedded in any
+// served page) gates every request except the login page.
+let remoteMode = false;
+let accessToken = '';
+
+const AUTH_COOKIE_PREFIX = 'tycoon_session_';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const SESSION_MAX = 1000;
+// Server-side login sessions: random session id -> expiry (ms). The cookie
+// carries only the id, never the access token.
+const sessions = new Map();
+let secureCookie = false;
+const AUTH_FAIL_THRESHOLD = 10;
+const AUTH_FAIL_MAX_BLOCK_MS = 5 * 60 * 1000;
+// Per-IP failed-auth backoff: ip -> { fails, blockedUntil }.
+const authFailures = new Map();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -4319,8 +4342,196 @@ function tokensMatch(presented, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
+export function isLoopbackHost(host) {
+  if (typeof host !== 'string') return false;
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '::1') return true;
+  const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  return Boolean(m) && m.slice(1).every((o) => Number(o) <= 255);
+}
+
+function buildAllowedHosts(boundHost, boundPort, extraHosts) {
+  const names = new Set(['localhost', '127.0.0.1', '[::1]']);
+  const bound = String(boundHost).toLowerCase();
+  names.add(bound.includes(':') && !bound.startsWith('[') ? `[${bound}]` : bound);
+  const hosts = new Set();
+  for (const n of names) hosts.add(`${n}:${boundPort}`);
+  for (const raw of String(extraHosts || '').split(',')) {
+    const e = raw.trim().toLowerCase();
+    if (!e) continue;
+    hosts.add(/:\d+$/.test(e) ? e : `${e}:${boundPort}`);
+  }
+  return hosts;
+}
+
+function forbidden(res, status = 403) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: 'forbidden' }));
+  return false;
+}
+
+function clientIp(req) {
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+
+function authBlocked(req) {
+  const rec = authFailures.get(clientIp(req));
+  return Boolean(rec && rec.blockedUntil > Date.now());
+}
+
+function recordAuthFailure(req) {
+  const ip = clientIp(req);
+  const rec = authFailures.get(ip) || { fails: 0, blockedUntil: 0 };
+  rec.fails += 1;
+  if (rec.fails >= AUTH_FAIL_THRESHOLD) {
+    const backoff = Math.min(AUTH_FAIL_MAX_BLOCK_MS, 1000 * 2 ** (rec.fails - AUTH_FAIL_THRESHOLD));
+    rec.blockedUntil = Date.now() + backoff;
+  }
+  authFailures.set(ip, rec);
+  if (authFailures.size > 1000) {
+    const now = Date.now();
+    let victim;
+    for (const [k, v] of authFailures) {
+      if (k !== ip && v.blockedUntil <= now) { victim = k; break; }
+    }
+    if (victim === undefined) victim = authFailures.keys().next().value;
+    authFailures.delete(victim);
+  }
+}
+
+function clearAuthFailures(req) {
+  authFailures.delete(clientIp(req));
+}
+
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (typeof header !== 'string') return undefined;
+  for (const part of header.split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return undefined;
+}
+
+function cookieName(req) {
+  const port = (req.socket && req.socket.localPort) || 0;
+  return `${AUTH_COOKIE_PREFIX}${port}`;
+}
+
+function createSession() {
+  const now = Date.now();
+  for (const [id, exp] of sessions) if (exp <= now) sessions.delete(id);
+  while (sessions.size >= SESSION_MAX) sessions.delete(sessions.keys().next().value);
+  const id = crypto.randomBytes(32).toString('hex');
+  sessions.set(id, now + SESSION_TTL_MS);
+  return id;
+}
+
+function sessionValid(id) {
+  const exp = sessions.get(id);
+  if (exp === undefined) return false;
+  if (exp <= Date.now()) {
+    sessions.delete(id);
+    return false;
+  }
+  return true;
+}
+
+/** Remote-mode auth: method is 'bearer' | 'cookie' | null; `presented` is
+ * true when a bearer token was supplied (null method + presented means a
+ * wrong token). Unknown/expired session cookies are not counted as failed
+ * attempts: session ids are 256-bit random values. */
+function remoteAuth(req) {
+  const authz = req.headers.authorization;
+  let presented = false;
+  if (typeof authz === 'string' && /^bearer /i.test(authz)) {
+    presented = true;
+    if (tokensMatch(authz.slice(7).trim(), accessToken)) return { method: 'bearer', presented };
+  }
+  const cookie = readCookie(req, cookieName(req));
+  if (cookie !== undefined && sessionValid(cookie)) return { method: 'cookie', presented };
+  return { method: null, presented };
+}
+
+function tooManyAttempts(res, asJson) {
+  res.writeHead(429, {
+    'Content-Type': asJson ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
+    'Retry-After': '60',
+  });
+  res.end(asJson ? JSON.stringify({ error: 'too many failed attempts' }) : 'Too many failed attempts');
+}
+
+function loginPageHtml(errorText) {
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TycoonAgents sign in</title>
+<style>body{font-family:system-ui,sans-serif;max-width:24rem;margin:4rem auto;padding:0 1rem}input,button{font:inherit;padding:.5rem;width:100%;box-sizing:border-box;margin-top:.5rem}.err{color:#b00020}</style></head>
+<body><h1>TycoonAgents</h1><p>Enter the access token printed in the server terminal.</p>${errorText ? `<p class="err">${errorText}</p>` : ''}
+<form method="POST" action="/login"><input type="password" name="token" autocomplete="off" autofocus required /><button type="submit">Sign in</button></form></body></html>`;
+}
+
+function handleLogin(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  const origin = req.headers.origin;
+  if (!origin || !allowedOrigins.has(origin)) {
+    forbidden(res);
+    return;
+  }
+  let body = '';
+  req.on('data', (chunk) => {
+    body += chunk;
+    if (body.length > 4096) req.destroy();
+  });
+  req.on('end', () => {
+    const presented = new URLSearchParams(body).get('token') || '';
+    if (!tokensMatch(presented, accessToken)) {
+      if (authBlocked(req)) {
+        tooManyAttempts(res, false);
+        return;
+      }
+      recordAuthFailure(req);
+      const html = loginPageHtml('Incorrect token.');
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html) });
+      res.end(html);
+      return;
+    }
+    clearAuthFailures(req);
+    const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+    res.writeHead(303, {
+      'Set-Cookie': `${cookieName(req)}=${createSession()}; Max-Age=${maxAge}; HttpOnly; SameSite=Strict; Path=/${secureCookie ? '; Secure' : ''}`,
+      Location: '/',
+      'Cache-Control': 'no-store',
+    });
+    res.end();
+  });
+}
+
 function checkOriginAndToken(req, res, url, { requireToken }) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  if (remoteMode) {
+    const origin = req.headers.origin;
+    if (origin) {
+      if (!allowedOrigins.has(origin)) return forbidden(res);
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    const auth = remoteAuth(req);
+    if (!auth.method) {
+      if (auth.presented) {
+        if (authBlocked(req)) {
+          tooManyAttempts(res, true);
+          return false;
+        }
+        recordAuthFailure(req);
+      }
+      return forbidden(res, 401);
+    }
+    if (auth.method === 'bearer') clearAuthFailures(req);
+    // Cookie-authenticated state-changing requests must carry a matching
+    // Origin (CSRF); bearer callers hold no ambient credential and may omit it.
+    if (requireToken && auth.method === 'cookie' && !origin) return forbidden(res);
+    return true;
+  }
 
   const origin = req.headers.origin;
   if (origin) {
@@ -4339,6 +4550,10 @@ function checkOriginAndToken(req, res, url, { requireToken }) {
     const queryToken = url.searchParams.get('token');
     const presented = req.method === 'GET' ? queryToken : headerToken;
     if (!tokensMatch(presented, sessionToken)) {
+      if (presented) {
+        if (authBlocked(req)) return forbidden(res, 429);
+        recordAuthFailure(req);
+      }
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ error: 'forbidden' }));
       return false;
@@ -4348,15 +4563,71 @@ function checkOriginAndToken(req, res, url, { requireToken }) {
   return true;
 }
 
+function badRequest(res) {
+  res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+  res.end(JSON.stringify({ error: 'bad request' }));
+}
+
 function requestListener(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+  try {
+    handleRequest(req, res);
+  } catch (err) {
+    // Never log request data (URL, headers, body); only the error class.
+    console.error(`[standalone] request handler error: ${err && err.name ? err.name : 'Error'}`);
+    if (!res.headersSent) {
+      try {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      } catch { /* socket already gone */ }
+    }
+    try { res.end(); } catch { /* socket already gone */ }
+  }
+}
+
+function handleRequest(req, res) {
+  // DNS-rebinding defence: the Host header must be one we expect, in every
+  // mode, before anything else (including URL parsing or the login page).
+  const hostHeader = String(req.headers.host || '').toLowerCase();
+  if (!hostHeader || !/^[a-z0-9.\-_[\]:]+$/.test(hostHeader)) {
+    badRequest(res);
+    return;
+  }
+  if (!allowedHosts.has(hostHeader)) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    forbidden(res);
+    return;
+  }
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    badRequest(res);
+    return;
+  }
   const pathname = url.pathname;
+
+  if (remoteMode) {
+    if (req.method === 'POST' && pathname === '/login') {
+      handleLogin(req, res);
+      return;
+    }
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html') && !remoteAuth(req).method) {
+      const html = loginPageHtml('');
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': Buffer.byteLength(html),
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(html);
+      return;
+    }
+  }
 
   const requireToken = req.method === 'POST' || (req.method === 'GET' && pathname === '/events');
   if (!checkOriginAndToken(req, res, url, { requireToken })) return;
 
   if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-    const html = buildHostHtml(sessionToken);
+    const html = buildHostHtml(remoteMode ? '' : sessionToken);
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Length': Buffer.byteLength(html),
@@ -4575,10 +4846,42 @@ export async function startServer({
   const { roots } = resolveProjectRoots({ argv, env, cwd });
   const [primary, ...secondary] = roots;
 
+  // Loopback by default. A non-loopback bind exposes the UI and its
+  // protected endpoints to the network, so it needs an explicit opt-in and a
+  // separate access token (never embedded in a served page).
+  const wantsRemote = !isLoopbackHost(host);
+  let generatedAccessToken = false;
+  let nextAccessToken = '';
+  if (wantsRemote) {
+    if (env.TYCOON_STANDALONE_ALLOW_REMOTE !== '1') {
+      throw new ServerStartError(
+        `TycoonAgents standalone: refusing to bind to non-loopback host "${host}". Anyone who can reach that ` +
+          `address could control agents and project files on this machine. Use the default (127.0.0.1) and an SSH ` +
+          `tunnel for remote access, or set TYCOON_STANDALONE_ALLOW_REMOTE=1 to accept the risk (an access token ` +
+          `is then required).`,
+      );
+    }
+    const supplied = env.TYCOON_STANDALONE_TOKEN;
+    if (supplied) {
+      if (supplied.length < 32) {
+        throw new ServerStartError('TycoonAgents standalone: TYCOON_STANDALONE_TOKEN must be at least 32 characters.');
+      }
+      nextAccessToken = supplied;
+    } else {
+      nextAccessToken = crypto.randomBytes(32).toString('hex');
+      generatedAccessToken = true;
+    }
+  }
+
   // p49-t0: fresh per-instance CSRF token — set here (not at module load) so
   // a second startServer() call in the same process (test harness) never
   // reuses a prior instance's token. In-memory only; never logged/persisted.
   sessionToken = crypto.randomBytes(32).toString('hex');
+  remoteMode = wantsRemote;
+  accessToken = nextAccessToken;
+  authFailures.clear();
+  sessions.clear();
+  secureCookie = env.TYCOON_STANDALONE_SECURE_COOKIE === '1';
 
   // Set here (not just captured in the closure below) so a fresh
   // startServer() call (e.g. a test harness spinning up multiple server
@@ -4819,9 +5122,20 @@ export async function startServer({
   // never from a client-controlled request header. Reset on every
   // startServer() call so a second instance in the same process (tests)
   // never validates against a stale prior instance's port.
-  allowedOrigins = new Set([`http://127.0.0.1:${boundPort}`, `http://localhost:${boundPort}`]);
+  allowedHosts = buildAllowedHosts(host, boundPort, env.TYCOON_STANDALONE_ALLOWED_HOSTS);
+  allowedOrigins = new Set();
+  for (const h of allowedHosts) {
+    allowedOrigins.add(`http://${h}`);
+    allowedOrigins.add(`https://${h}`);
+  }
 
   console.log(`[tycoonagents-standalone] serving on ${url}`);
+  if (remoteMode) {
+    console.log('[tycoonagents-standalone] WARNING: remote mode. The server is reachable from the network; sign in with the access token.');
+    if (generatedAccessToken) {
+      console.log(`[tycoonagents-standalone] access token (shown once): ${accessToken}`);
+    }
+  }
   console.log(`[tycoonagents-standalone] media dir (in place): ${MEDIA_DIR}`);
   console.log(`[tycoonagents-standalone] watching project (primary, drives the board): ${primary.root}`);
   for (const target of secondary) {
@@ -4881,6 +5195,8 @@ export async function startServer({
     // ?token= on requests against this instance); never logged, never
     // written to disk.
     sessionToken,
+    // Remote mode only (empty on loopback); exposed for tests.
+    accessToken,
   };
 }
 

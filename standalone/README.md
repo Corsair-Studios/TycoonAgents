@@ -88,7 +88,10 @@ net on the first theme-generation call.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `TYCOON_STANDALONE_PORT` | HTTP port the server binds to. | `4173` |
-| `TYCOON_STANDALONE_HOST` | HTTP host/interface the server binds to. | `127.0.0.1` |
+| `TYCOON_STANDALONE_HOST` | HTTP host/interface the server binds to. A non-loopback value is refused unless `TYCOON_STANDALONE_ALLOW_REMOTE=1` is also set (see "Network access"). | `127.0.0.1` |
+| `TYCOON_STANDALONE_ALLOW_REMOTE` | Set to `1` to allow binding a non-loopback host. | unset |
+| `TYCOON_STANDALONE_TOKEN` | Remote mode only: access token (at least 32 characters). If unset, a random token is generated and printed once in the terminal. | generated |
+| `TYCOON_STANDALONE_ALLOWED_HOSTS` | Comma-separated extra `Host` names accepted (for example a reverse-proxy name). | unset |
 | `TYCOON_STANDALONE_PROJECT_ROOT` | Comma-separated project director(y/ies) to watch, used when no CLI directory argument is given. | current working directory |
 | `TYCOON_STANDALONE_DATA_DIR` | Overrides the OS-default app-data directory (`appData.mjs`). | per-OS (see below) |
 | `TYCOON_STANDALONE_NO_OPEN` | Set to `1` to suppress the `watch` command's automatic browser launch. | unset (browser opens) |
@@ -101,6 +104,38 @@ on Windows, `~/Library/Application Support/TycoonAgents` on macOS, and
 startup (`startServer()`'s returned `themeDataDir`) — the root the theme
 file store reads/writes generated theme manifests and images from/to (see
 "Running the theme host end to end" below).
+
+## Network access
+
+The server listens on loopback (`127.0.0.1`) only. The UI can control agents
+and read and write project files, so it is not meant to be exposed to a
+network. To reach it from another machine, use an SSH tunnel
+(`ssh -L 4173:127.0.0.1:4173 user@host`) and open `http://localhost:4173`.
+
+Binding a non-loopback host requires `TYCOON_STANDALONE_ALLOW_REMOTE=1`;
+without it the server refuses to start. In that remote mode:
+
+- Every request, including the event stream, needs a separate access token
+  that is never embedded in any served page. Set `TYCOON_STANDALONE_TOKEN`
+  (32+ characters) or use the random one printed once at startup. Browsers
+  sign in on a small login page, which sets an HttpOnly, SameSite=Strict
+  cookie (`tycoon_session_<port>`) holding a random session id that expires
+  after 12 hours, never the token itself; scripts can send
+  `Authorization: Bearer <token>`. Tokens are never put in URLs or logs.
+- Cookie-authenticated POSTs must carry a matching `Origin` header.
+- Failed attempts from one address are rate limited; a correct token is
+  always accepted and resets that address's count. Behind a reverse proxy
+  every client shares the proxy's address and therefore one limiter, so have
+  the proxy do its own rate limiting.
+- Traffic is plain HTTP; put a TLS-terminating reverse proxy in front, list
+  its name in `TYCOON_STANDALONE_ALLOWED_HOSTS`, and set
+  `TYCOON_STANDALONE_SECURE_COOKIE=1` so the session cookie is marked
+  `Secure`.
+
+In every mode the `Host` header must be the bound `host:port`, `localhost`,
+`127.0.0.1`, `[::1]` (with the port) or a name in
+`TYCOON_STANDALONE_ALLOWED_HOSTS`, and any `Origin` must match one of those;
+other requests get 403 (DNS-rebinding protection).
 
 Precedence for project targets: explicit CLI directory argument(s) > `TYCOON_STANDALONE_PROJECT_ROOT` > current working directory. See `src/projectRoots.mjs`.
 
