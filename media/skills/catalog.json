@@ -50,8 +50,8 @@
   {
     "id": "unreal-engine",
     "name": "Unreal Engine",
-    "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows.",
-    "summary": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows."
+    "description": "Unreal Engine C++/Blueprint gameplay, actors, and editor workflows, plus live editor control through Unreal's built-in MCP server.",
+    "summary": "Unreal C++/Blueprint gameplay and editor workflows, plus live control via the built-in MCP server."
   },
   {
     "id": "threejs",

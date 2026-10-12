@@ -1,6 +1,6 @@
 ---
 name: unreal-engine
-description: Unreal Engine C++/Blueprint gameplay, actors, and editor workflows.
+description: Unreal Engine C++/Blueprint gameplay, actors, and editor workflows, plus live editor control through Unreal's built-in MCP server.
 ---
 
 # Unreal Engine
@@ -69,9 +69,29 @@ protected:
 - `GENERATED_BODY()` and UHT-generated `.generated.h` includes are mandatory for any `UCLASS`/`USTRUCT`/`UENUM` — deleting or misordering the include breaks compilation in ways that look unrelated to the actual edit.
 - Garbage-collected `UObject`/`AActor` pointers must be held via `UPROPERTY()` (even on non-editor-exposed fields) or they can be GC'd out from under you.
 
-## Version note
+## Live editor control (Unreal MCP)
 
-Unreal Engine 5.8 is the current release. Epic's built-in Unreal MCP server needs UE 5.8+ with both the Unreal MCP and All Toolsets plugins enabled.
+Recent Unreal Engine versions ship an MCP server inside the editor (HTTP `127.0.0.1:8000/mcp` by default). It is provided by the **ModelContextProtocol** plugin, and it exposes no tools unless the **AllToolsets** plugin is also enabled.
+
+Setup:
+1. Enable both plugins in the project and restart the editor.
+2. Start the server with the console command `ModelContextProtocol.StartServer` (optionally pass a port), or turn on auto-start in Editor Preferences.
+3. Run `ModelContextProtocol.GenerateClientConfig ClaudeCode` to write the project's `.mcp.json`. Re-run it if the port or URL changes.
+4. Confirm the `unreal-mcp` server is connected via `/mcp`. A connected client does not prove the editor is reachable, so make a read-only call first.
+
+Discovery workflow: do not rely on remembered tool names. The server advertises three meta-tools; use them in order:
+1. `list_toolsets` to see the available toolsets (30+).
+2. `describe_toolset` for the one you need, to get its real tool names and argument schemas.
+3. `call_tool` with the toolset, tool name, and arguments.
+
+If a tool seems missing, the editor may be down or the client may hold a stale catalog; re-run `list_toolsets`. Check every result, since some failures return a status instead of an error. Run dependent calls one at a time, save the project before and after bulk changes (edits are not always undoable), wait for compilation to finish, and stop Play-in-Editor if results look wrong. If the project registers Agent Skills, check `AgentSkillToolset.ListSkills` first and follow them.
+
+Official plugin: Epic publishes a fuller skill as a Claude Code plugin. Install it with `/plugin install unreal-engine-skills-for-claude-code@claude-plugins-official` (add the marketplace first with `/plugin marketplace add anthropics/claude-plugins-official` if needed). On Windows it needs bash on PATH (Git Bash or WSL) for its session hook. When it is installed, defer to its guidance for MCP operations; this skill then only supplies the general project knowledge above and the TycoonAgents routing below.
+
+Safety:
+- `ProgrammaticToolset.execute_tool_script` runs arbitrary Python inside the editor with full project access and can change or delete content.
+- Localhost is not a trust boundary: any process running as the same user can reach the server. Do not expose the port beyond loopback or run it on shared machines.
+- Never bypass permission prompts (for example `--dangerously-skip-permissions`) with this server connected. Use source control and review diffs afterward.
 
 ## TycoonAgents integration
 
