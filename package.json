@@ -52,6 +52,11 @@
           "default": true,
           "description": "Automatically open the live agent panel when a workspace opens."
         },
+        "tycoonagents.mcp.approveButton": {
+          "type": "boolean",
+          "default": false,
+          "description": "Experimental: show a button that approves TycoonAgents' own MCP servers for the current project."
+        },
         "tycoonagents.idleFreezeMinutes": {
           "type": "number",
           "default": 3,

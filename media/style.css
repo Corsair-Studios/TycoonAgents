@@ -8641,3 +8641,139 @@ button.theme-review-preview:focus-visible::after {
 .orchestrator-limit-banner-dismiss:hover {
   color: var(--text);
 }
+/* ── Multi-LLM bridge picker + "Needs setup" badge ─────────────────── */
+.bridge-picker {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(161, 161, 170, 0.25));
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.bridge-picker[hidden] {
+  display: none;
+}
+
+.bridge-picker-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.bridge-picker-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bridge-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.bridge-picker-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 190px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bridge-picker-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bridge-status {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.bridge-status--ok {
+  color: var(--muted);
+}
+
+.bridge-status--warn {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.bridge-other-toggle {
+  margin: 2px 0 6px;
+  padding-left: 0;
+}
+
+.bridge-other-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.bridge-other-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bridge-other-label {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bridge-other-hint {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.bridge-other-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.bridge-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-bridge-setup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-left: 8px;
+}
+
+.agent-needs-setup-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  white-space: nowrap;
+}
+
+/* -- Explicit TycoonAgents MCP approval (074-mcp-approval.js) -- */
+.mcp-approval-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0; font-size: 12px; }
+.mcp-approval-line { color: var(--text); line-height: 1.4; overflow-wrap: anywhere; }
+.mcp-approval-btn { white-space: normal; text-align: left; }
+#mcp-approval-modal { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; padding: 0 16px; }
+#mcp-approval-modal[hidden] { display: none; }
+#mcp-approval-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.62); }
+#mcp-approval-dialog { position: relative; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 100%; max-width: 420px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7); display: flex; flex-direction: column; gap: 12px; }
+#mcp-approval-title { font-size: 18px; font-weight: 600; color: var(--text); }
+.mcp-approval-text { margin: 0; font-size: 13px; color: var(--text); line-height: 1.5; }
+.mcp-approval-list { margin: 0; padding-left: 20px; font-size: 13px; color: var(--text); font-family: var(--vscode-editor-font-family, monospace); }
+.mcp-approval-optin { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); line-height: 1.4; }

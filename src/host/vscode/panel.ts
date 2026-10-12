@@ -33,6 +33,7 @@ import { isUnpinnedMcpConfig, mergeMcpServer, hasMcpServer, removeMcpServer, res
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
 import {
   installCodexHooks,
+  repointCodexNotifyUserLevel,
   uninstallCodexHooks,
   resolveCodexHome,
   detectCodexNotifyState,
@@ -75,6 +76,14 @@ import {
   type ProviderId,
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
+import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
+import { buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson } from "../../core/bridgeSetup";
+import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
+import { tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
+import type { ApprovalEnv } from "../../core/mcpApproval";
+import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
+import { withHookWrite } from "../../core/hookWriteGate";
+import { ensureTycoonGitignore } from "../../core/tycoonGitignore";
 import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
 import { runVendorKeyTest, runCustomEndpointTest, cancelAllVendorKeyTests, type VendorKeyTestResult } from "../../core/vendorKeyTest";
 import { setGeminiBackend } from "../../core/hostBridgeSettings";
@@ -1219,6 +1228,8 @@ export class TycoonPanel {
     // live as the project-plan skill rewrites plan.json during execution
     // (see _postPlanState / _setupPlanWatcher doc comments).
     this._setupPlanWatcher();
+    // Always-on safety check: revoke approvals of TycoonAgents MCP servers changed since approval.
+    void runApprovalGuardSoon(this._extensionUri).catch(() => undefined);
     // Handle messages from the webview
     this._panel.webview.onDidReceiveMessage(
       async (message: {
@@ -1645,10 +1656,32 @@ export class TycoonPanel {
               parsedInstallPack.data.id,
               parsedInstallPack.data.thirdParty === true,
               parsedInstallPack.data.disclosures,
+              parsedInstallPack.data.selection,
             );
           } else {
             console.error("TycoonAgents: installPack payload rejected:", parsedInstallPack.error.message);
           }
+        } else if (message.type === MSG.INSTALL_BRIDGE_SERVER) {
+          const parsedBridgeServer = MSG_SCHEMAS.INSTALL_BRIDGE_SERVER.safeParse(message);
+          if (parsedBridgeServer.success) {
+            this._handleInstallBridgeServer(parsedBridgeServer.data.id);
+          } else {
+            console.error("TycoonAgents: installBridgeServer payload rejected:", parsedBridgeServer.error.message);
+          }
+        } else if (message.type === MSG.APPROVE_TYCOON_MCP) {
+          const parsedApprove = MSG_SCHEMAS.APPROVE_TYCOON_MCP.safeParse(message);
+          if (parsedApprove.success) {
+            this._handleApproveTycoonMcp(parsedApprove.data.ids, parsedApprove.data.allowTools === true);
+          } else {
+            console.error("TycoonAgents: approveTycoonMcp payload rejected:", parsedApprove.error.message);
+          }
+        } else if (message.type === MSG.REVOKE_TYCOON_MCP_APPROVAL) {
+          const parsedRevoke = MSG_SCHEMAS.REVOKE_TYCOON_MCP_APPROVAL.safeParse(message);
+          if (parsedRevoke.success) this._handleRevokeTycoonMcpApproval(parsedRevoke.data.id);
+        } else if (message.type === MSG.REPAIR_TYCOON_MCP_HOOKS) {
+          this._handleRepairTycoonMcpHooks();
+        } else if (message.type === MSG.REMOVE_TYCOON_MCP_APPROVALS) {
+          this._handleRemoveTycoonMcpApprovals();
         } else if (message.type === MSG.REMOVE_PACK) {
           const parsedRemovePack = MSG_SCHEMAS.ID_ONLY.safeParse(message);
           if (parsedRemovePack.success) {
@@ -3274,6 +3307,9 @@ export class TycoonPanel {
         if (e.affectsConfiguration("tycoonagents.agents.multiProvider")) {
           this._handleGetRouting();
         }
+        if (e.affectsConfiguration("tycoonagents.mcp.approveButton")) {
+          this._handleGetSettings();
+        }
       })
     );
   }
@@ -4382,7 +4418,9 @@ export class TycoonPanel {
             skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),
             mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
             agent: (() => {
-              return root !== "" && packAgents.length > 0 && packAgents.every((a: any) => fs.existsSync(path.join(root, ".claude", "agents", `${a.id}.md`)));
+              const onDisk = (a: any): boolean => fs.existsSync(path.join(root, ".claude", "agents", `${a.id}.md`));
+              // Picker packs install a chosen subset, so any installed agent counts.
+              return root !== "" && packAgents.length > 0 && (pack.picker === "bridges" ? packAgents.some(onDisk) : packAgents.every(onDisk));
             })(),
           },
           skills,
@@ -4395,12 +4433,171 @@ export class TycoonPanel {
           mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
           thirdParty: disclosures.length > 0,
           disclosures,
+          ...(pack.picker === "bridges" && root !== ""
+            ? { picker: buildBridgePicker(packAgents as PackAgent[], this._bridgeSetupContext(root)) }
+            : {}),
         };
       });
       this._panel.webview.postMessage({ type: MSG.PACKS, packs: result });
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACKS, packs: [], error: String(e) });
     }
+  }
+
+  /** Shared MCP-entry installer for the bridge picker and the "Needs setup" action (no approval key is written). */
+  private _installMcpEntryForBridge(root: string, mcpId: string): McpInstallOutcome {
+    let catalog: any[] = [];
+    try { catalog = this._loadMcpCatalog(); } catch { catalog = []; }
+    return installMcpEntry(root, mcpId, catalog, {
+      platform: process.platform,
+      resolveTokens: (c) => this._resolveConfigTokens(c),
+      finalize: (id, c, r) => withDispatcherProjectDir(id, this._resolveCodexBinaryForInstall(id, c), r),
+      afterWrite: (r, c) => this._copyBridgeHooksForMcp(r, c),
+    });
+  }
+
+  private _bridgeSetupContext(root: string): { root: string; harness: string; env: NodeJS.ProcessEnv } {
+    return { root, harness: this._resolveEffectiveHarness(root), env: process.env };
+  }
+
+  /** Multi-LLM picker install: selected agents + the servers they need (shared openai-compatible server once). */
+  private _installBridgePicker(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): void {
+    withHookWrite(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => void>)._installBridgePickerUngated.call(this, pack, root, selection));
+  }
+
+  private _installBridgePickerUngated(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): void {
+    try {
+      if (!selection || ((selection.agents?.length ?? 0) === 0 && (selection.others?.length ?? 0) === 0)) {
+        this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id: pack.id, ok: false, error: "Choose at least one model to install." });
+        return;
+      }
+      const packAgents: PackAgent[] = Array.isArray(pack.agents) ? pack.agents : [];
+      const ctx = this._bridgeSetupContext(root);
+      const res = installBridgeSelection({
+        root,
+        packAgents,
+        selectedAgentIds: selection.agents ?? [],
+        others: selection.others ?? [],
+        harness: ctx.harness,
+        claudeSubscriptionOptIn: readClaudeSubscriptionOptIn(),
+        installMcp: (mcpId) => this._installMcpEntryForBridge(root, mcpId),
+        storeLocalValue: (name, value) => { setLocalEnvValue(name, value, process.env); },
+        getLocalValue: (name) => getLocalEnvValue(name),
+      });
+      if (res.installed.length > 0) {
+        let cfg = this._readKeywordsConfig(root);
+        for (const { agent: a } of res.installed) {
+          cfg = setKeywordPattern(cfg, a.id, a.keywords);
+          this._runtime.ingest({ type: "WorkerRegistered", at: Date.now(), workerId: a.id, name: a.name, model: a.model, description: a.role });
+        }
+        const keywordsPath = path.join(root, ".claude", "tycoon", "agent-keywords.json");
+        fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+        fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+        this._rosterModelCache = undefined;
+      }
+      this._panel.webview.postMessage({
+        type: MSG.PACK_INSTALLED,
+        id: pack.id,
+        ok: res.ok && res.errors.length === 0,
+        ...(res.errors.length > 0 ? { error: res.errors.join(" ") } : {}),
+        results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost },
+      });
+      this._handleGetSettings();
+    } catch (e) {
+      this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id: pack.id, ok: false, error: String(e) });
+    }
+  }
+
+  /** "Needs setup" action: add the MCP server an installed bridge agent depends on. */
+  private _handleInstallBridgeServer(agentId: string): void {
+    const root = this._projectRoot();
+    let error: string | undefined;
+    let outcome: McpInstallOutcome | undefined;
+    const server = root === "" ? null : serverForInstalledAgent(root, agentId);
+    if (root === "") error = "No workspace folder open";
+    else if (server === null) error = "This agent does not use an MCP server.";
+    else if (!harnessUsesMcpJson(this._resolveEffectiveHarness(root))) error = "On this harness bridges run through the TycoonAgents dispatcher; nothing is added to .mcp.json.";
+    else {
+      try { outcome = this._installMcpEntryForBridge(root, server); } catch (e) { error = String(e); }
+      if (typeof outcome === "object") error = outcome.error;
+    }
+    void this._panel.webview.postMessage({ type: MSG.BRIDGE_SERVER_INSTALLED, id: agentId, ok: error === undefined, ...(error ? { error } : {}) });
+    this._handleGetSettings();
+    this._handleGetPacks();
+  }
+
+  /** Approval slice for the settings payload; undefined off the Claude Code harness or with no .mcp.json servers of ours. */
+  private _buildMcpApprovalSlice(root: string): ReturnType<typeof approvalSliceFromState> {
+    if (!this._approveButtonEnabled()) return undefined;
+    if (root === "" || !harnessUsesMcpJson(this._resolveEffectiveHarness(root))) return undefined;
+    try {
+      return approvalSliceFromState(computeMcpApprovalState(root, this._tycoonServerDefs(), this._approvalEnv()));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private _tycoonServerDefs(): ReturnType<typeof tycoonServerDefsFromMedia> {
+    return tycoonServerDefsFromMedia(path.join(this._extensionUri.fsPath, "media"));
+  }
+
+  /** Content checks compare against the INSTALLED extension's copy, the same source the installer copies from. */
+  private _approvalEnv(): ApprovalEnv {
+    return {
+      resolveSrc: (fileName) => {
+        const hooksPath = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
+        if (fs.existsSync(hooksPath)) return hooksPath;
+        const outPath = vscode.Uri.joinPath(this._extensionUri, "out", "src", "core", fileName).fsPath;
+        return fs.existsSync(outPath) ? outPath : undefined;
+      },
+    };
+  }
+
+  /** User-clicked: revoke one approval whose server changed since it was approved. */
+  private _handleRevokeTycoonMcpApproval(id: string): void {
+    const root = this._projectRoot();
+    const res = root === ""
+      ? { ok: false, ids: [] as string[], error: "No workspace folder open" }
+      : revokeTycoonMcpApproval(root, this._tycoonServerDefs(), id, this._approvalEnv());
+    void this._panel.webview.postMessage({ type: MSG.TYCOON_MCP_APPROVAL_RESULT, action: "revoke", ...res });
+    this._handleGetSettings();
+  }
+
+  /** User-clicked: re-copy our hook files for entries whose script differs from the installed version. */
+  private _handleRepairTycoonMcpHooks(): void {
+    const root = this._projectRoot();
+    const res = root === ""
+      ? { ok: false, ids: [] as string[], error: "No workspace folder open" }
+      : repairTycoonHookCopies(root, this._tycoonServerDefs(), this._approvalEnv());
+    if (root !== "") ensureTycoonGitignore(root);
+    void this._panel.webview.postMessage({ type: MSG.TYCOON_MCP_APPROVAL_RESULT, action: "repair", ...res });
+    this._handleGetSettings();
+  }
+
+  /** Experimental flag (default off): the approve UI and host approve action only exist when this is true. */
+  private _approveButtonEnabled(): boolean {
+    return vscode.workspace.getConfiguration("tycoonagents").get<boolean>("mcp.approveButton", false) === true;
+  }
+
+  /** User-clicked approval of TycoonAgents' own MCP servers. Re-validated here; the webview list is not trusted. */
+  private _handleApproveTycoonMcp(requested: string[] | undefined, allowTools: boolean): void {
+    const root = this._projectRoot();
+    let res: { ok: boolean; ids: string[]; error?: string };
+    if (!this._approveButtonEnabled()) res = { ok: false, ids: [], error: "Approving servers from TycoonAgents is turned off (tycoonagents.mcp.approveButton). Claude Code will ask you to approve them." };
+    else if (root === "") res = { ok: false, ids: [], error: "No workspace folder open" };
+    else if (!harnessUsesMcpJson(this._resolveEffectiveHarness(root))) res = { ok: false, ids: [], error: "MCP approvals apply to the Claude Code harness only." };
+    else res = approveTycoonMcpServers(root, this._tycoonServerDefs(), requested ?? [], allowTools, this._approvalEnv());
+    void this._panel.webview.postMessage({ type: MSG.TYCOON_MCP_APPROVAL_RESULT, action: "approve", ...res });
+    this._handleGetSettings();
+  }
+
+  private _handleRemoveTycoonMcpApprovals(): void {
+    const root = this._projectRoot();
+    const res = root === ""
+      ? { ok: false, ids: [] as string[], error: "No workspace folder open" }
+      : removeTycoonMcpApprovals(root, this._tycoonServerDefs(), this._approvalEnv());
+    void this._panel.webview.postMessage({ type: MSG.TYCOON_MCP_APPROVAL_RESULT, action: "remove", ...res });
+    this._handleGetSettings();
   }
 
   /** Build the modal-confirm body listing a pack's third-party sources. */
@@ -4483,7 +4680,8 @@ export class TycoonPanel {
   private async _handleInstallPack(
     id: string,
     thirdParty = false,
-    passedDisclosures?: any[]
+    passedDisclosures?: any[],
+    selection?: { agents?: string[]; others?: OtherAgentSpec[] }
   ): Promise<void> {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
@@ -4496,6 +4694,13 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") {
         this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: "No workspace folder open" });
+        return;
+      }
+
+      // Picker pack (Multi-LLM): install only the models the user ticked, each
+      // with the MCP server it needs. Never installs "everything" implicitly.
+      if (pack.picker === "bridges") {
+        this._installBridgePicker(pack, root, selection);
         return;
       }
 
@@ -5230,6 +5435,10 @@ export class TycoonPanel {
 
   /** Project-relative MCP entries launch `.claude/hooks/<file>`; make sure those copies exist. */
   private _copyBridgeHooksForMcp(root: string, config: unknown): void {
+    withHookWrite(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => void>)._copyBridgeHooksForMcpUngated.call(this, root, config));
+  }
+
+  private _copyBridgeHooksForMcpUngated(root: string, config: unknown): void {
     copyMcpBridgeHooks(
       root,
       config,
@@ -5241,6 +5450,7 @@ export class TycoonPanel {
       },
       (m) => console.warn(m),
     );
+    ensureTycoonGitignore(root);
   }
 
   private _resolveConfigTokens(config: unknown): unknown {
@@ -6849,6 +7059,10 @@ export class TycoonPanel {
   }
 
   private _handleInstallHooks(delegationMode: DelegationMode = "flat"): void {
+    withHookWrite(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => void>)._handleInstallHooksUngated.call(this, delegationMode));
+  }
+
+  private _handleInstallHooksUngated(delegationMode: DelegationMode = "flat"): void {
     void this._panel.webview.postMessage({ type: MSG.INSTALL_STATE, busy: true });
     try {
       const root = this._projectRoot();
@@ -6896,6 +7110,7 @@ export class TycoonPanel {
       if (hookSyncStatus === "refreshed") {
         console.log(`TycoonAgents: refreshed ${dest}`);
       }
+      ensureTycoonGitignore(root);
 
       // 2b. Copy the compiled agentBackend/modelAliases modules next to the
       // hook so it can require() them for generic backend-aware routing
@@ -8311,12 +8526,15 @@ export class TycoonPanel {
     // SAME shared helper the standalone server uses so both hosts agree.
     const agentRoutes = describeAgentRoutes(root, { harness: this._resolveEffectiveHarness(root) });
 
+    let bridgeSetup: Record<string, BridgeSetupInfo> = {};
+    try { bridgeSetup = describeBridgeSetup(this._bridgeSetupContext(root)); } catch { bridgeSetup = {}; }
     const agents = loadAgentRoster(agentsDir).map((agent) => {
       const entry = keywordAgents[agent.id];
       const keywords =
         entry && typeof entry.pattern === "string" ? entry.pattern : "";
       const route = agentRoutes[agent.id];
       return {
+        bridgeSetup: bridgeSetup[agent.id] ?? null,
         id: agent.id,
         name: agent.name,
         // `model` reflects the RESOLVED route's Claude tier (falling back to
@@ -8441,6 +8659,7 @@ export class TycoonPanel {
           sessionId: currentSessionId,
         },
         hookHealth,
+        mcpApproval: this._buildMcpApprovalSlice(root),
         contextBudget,
         foreignManagedBlocks,
         harness: this._buildHarnessSettings(root),
@@ -8728,9 +8947,41 @@ export class TycoonPanel {
   private _ensureCodexInstallsCurrent(): void {
     try {
       const root = this._projectRoot();
-      if (root === "") return;
       const settingValue = readExplicitProviderSetting(vscode.workspace.getConfiguration("tycoonagents"));
-      if (describeProviderSelection({ settingValue, cwd: root }).effective !== "codex") return;
+      const codexHarness = root !== "" && describeProviderSelection({ settingValue, cwd: root }).effective === "codex";
+
+      // User-level repoint only (CODEX_HOME/config.toml), whatever the
+      // project's harness: an extension update otherwise leaves Codex pointing
+      // at a folder VS Code later deletes. Only entries we installed before
+      // are touched, only older/missing paths, and nothing project-level.
+      if (!codexHarness) {
+        try {
+          if (this._detectCodexNotifyState() !== "none") {
+            repointCodexNotifyUserLevel({
+              env: process.env,
+              platform: process.platform,
+              hookScriptPath: this._codexHookScriptPath(),
+            });
+          }
+        } catch {
+          /* best effort */
+        }
+        try {
+          // Script path only (empty expected env names): an env_vars difference alone must
+          // never make an older window rewrite a newer install.
+          if (readCodexDispatcherState(process.env, process.platform, this._codexDispatcherScriptPath(), undefined, []) === "stale") {
+            installCodexDispatcher({
+              projectDir: root,
+              env: process.env,
+              platform: process.platform,
+              serverScriptPath: this._codexDispatcherScriptPath(),
+            });
+          }
+        } catch {
+          /* best effort */
+        }
+        return;
+      }
 
       // Keep AGENTS.md's Codex managed block current across extension updates.
       // Only when the project already has the block (never creates one); the

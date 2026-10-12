@@ -4,6 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
+import { withHookWrite } from "../../core/hookWriteGate";
 import * as fs from "fs";
 import * as path from "path";
 import { isElectronHostBinary, rejectedNodeOverride, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
@@ -624,7 +625,7 @@ export type RuntimeFileSyncStatus = "created" | "refreshed" | "unchanged";
  * {@link RUNTIME_HOOK_FILES}), never a user-authored file, so overwriting on
  * a content mismatch is always safe.
  */
-export function syncRuntimeFile(srcPath: string, destPath: string): RuntimeFileSyncStatus {
+function syncRuntimeFileUngated(srcPath: string, destPath: string): RuntimeFileSyncStatus {
   const srcBuf = fs.readFileSync(srcPath);
   let destBuf: Buffer | undefined;
   try {
@@ -950,10 +951,10 @@ export function cleanupForeignHookArtifacts(
 
 /** Direct `require("./x")` companions of each bridge file (transitively closed by {@link bridgeFilesForConfig}). */
 const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "gemini-mcp-wrapper.cjs": ["bridge-result.cjs"],
+  "gemini-mcp-wrapper.cjs": ["bridge-result.cjs", "localEnvStore.js"],
   "claude-cli-mcp.cjs": ["bridge-result.cjs", "binDiscovery.cjs", "claudePermissionMode.cjs"],
   "openai-compatible-mcp.cjs": ["bridge-result.cjs", "localEnvStore.js"],
-  "dispatcherAdapters.cjs": ["binDiscovery.cjs", "claudePermissionMode.cjs"],
+  "dispatcherAdapters.cjs": ["binDiscovery.cjs", "claudePermissionMode.cjs", "localEnvStore.js"],
   "codex-mcp-launcher.cjs": ["bridge-result.cjs", "binDiscovery.cjs"],
   "codex-app-server-mcp.cjs": ["bridge-result.cjs", "codex-mcp-launcher.cjs"],
   "tycoon-dispatcher-mcp.cjs": [
@@ -967,6 +968,17 @@ const BRIDGE_REQUIRES: Readonly<Record<string, ReadonlyArray<string>>> = {
     "harnessModelDefaults.cjs",
     "binDiscovery.cjs",
     "claudePermissionMode.cjs",
+    "localEnvStore.js",
+    "bridge-result.cjs",
+    "dispatcherBridgeClient.cjs",
+    // Every bridge script the dispatcher may spawn (dispatcherBridgeClient's
+    // canonical-form gate runs only these, from its own directory), so a hash
+    // check of the dispatcher covers them.
+    "claude-cli-mcp.cjs",
+    "openai-compatible-mcp.cjs",
+    "gemini-mcp-wrapper.cjs",
+    "codex-mcp-launcher.cjs",
+    "codex-app-server-mcp.cjs",
   ],
   "dispatcherBridgeClient.cjs": ["bridge-result.cjs"],
   "dispatcherClaudeChain.cjs": ["bridge-result.cjs", "dispatcherAdapters.cjs", "dispatcherBridgeClient.cjs"],
@@ -1003,7 +1015,7 @@ export function bridgeFilesForConfig(config: unknown): string[] {
  * plus the CommonJS marker. A config with no `.claude/hooks/` reference copies
  * nothing. Never throws.
  */
-export function copyMcpBridgeHooks(
+function copyMcpBridgeHooksUngated(
   projectRoot: string,
   config: unknown,
   resolveSrc: (fileName: string) => string | undefined,
@@ -1036,7 +1048,7 @@ const EXTENSION_BRIDGE_PATH_RE = /(?:^|[\\/])tycoonagents[^\\/]*[\\/]hooks[\\/](
  * bridge files are touched; every other entry and key is preserved. Never throws.
  * Returns the rewritten server ids.
  */
-export function rewriteMcpJsonBridgePaths(
+function rewriteMcpJsonBridgePathsUngated(
   projectRoot: string,
   resolveSrc: (fileName: string) => string | undefined,
   warn: (message: string) => void = () => undefined,
@@ -1110,7 +1122,7 @@ export function rewriteMcpJsonBridgePaths(
  * each dir holding them. Never adds files, never throws. Warns (leaves the
  * file) when a user package.json there pins "type":"module".
  */
-export function healInstalledHookCopies(
+function healInstalledHookCopiesUngated(
   projectRoot: string,
   resolveSrc: (fileName: string) => string | undefined,
   warn: (message: string) => void = () => undefined,
@@ -1144,4 +1156,24 @@ export function healInstalledHookCopies(
   }
   rewriteMcpJsonBridgePaths(projectRoot, resolveSrc, warn);
   return refreshed;
+}
+
+/** Held under the hook-write gate so the approval guard never hashes a half-copied closure. */
+export function copyMcpBridgeHooks(projectRoot: string, config: unknown, resolveSrc: (fileName: string) => string | undefined, warn: (message: string) => void = () => undefined): string[] {
+  return withHookWrite(() => copyMcpBridgeHooksUngated(projectRoot, config, resolveSrc, warn));
+}
+
+/** Held under the hook-write gate so the approval guard never hashes a half-copied closure. */
+export function rewriteMcpJsonBridgePaths(projectRoot: string, resolveSrc: (fileName: string) => string | undefined, warn: (message: string) => void = () => undefined): string[] {
+  return withHookWrite(() => rewriteMcpJsonBridgePathsUngated(projectRoot, resolveSrc, warn));
+}
+
+/** Held under the hook-write gate so the approval guard never hashes a half-copied closure. */
+export function healInstalledHookCopies(projectRoot: string, resolveSrc: (fileName: string) => string | undefined, warn: (message: string) => void = () => undefined): string[] {
+  return withHookWrite(() => healInstalledHookCopiesUngated(projectRoot, resolveSrc, warn));
+}
+
+/** Held under the hook-write gate so the approval guard never hashes a half-copied closure. */
+export function syncRuntimeFile(srcPath: string, destPath: string): RuntimeFileSyncStatus {
+  return withHookWrite(() => syncRuntimeFileUngated(srcPath, destPath));
 }

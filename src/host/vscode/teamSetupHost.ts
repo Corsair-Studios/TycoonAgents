@@ -21,6 +21,7 @@
 // secrets into the manifest or the returned result.
 // ---------------------------------------------------------------------------
 
+import { withHookWrite } from "../../core/hookWriteGate";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -383,6 +384,10 @@ function seedAgentFile(root: string, catalog: Map<string, PackAgent>, entry: { i
  * (see panel.ts's `_buildHookCommand`), so no vscode.Uri is needed here.
  */
 function installPortableHooks(root: string, hookSourceDir: string, delegationMode: "flat" | "team_leads"): StepResult {
+  return withHookWrite(() => installPortableHooksUngated(root, hookSourceDir, delegationMode));
+}
+
+function installPortableHooksUngated(root: string, hookSourceDir: string, delegationMode: "flat" | "team_leads"): StepResult {
   try {
     const claudeDir = path.join(root, ".claude");
     const tycoonDir = path.join(claudeDir, "tycoon");

@@ -1663,6 +1663,8 @@
         approvalNote.className = "mcp-approval-note";
         approvalNote.textContent = MCP_APPROVAL_NOTE;
         setupStatusEl.appendChild(approvalNote);
+        const setupApprovalBlock = buildMcpApprovalBlock();
+        if (setupApprovalBlock) setupStatusEl.appendChild(setupApprovalBlock);
       }
       installHooksBtn.removeAttribute("hidden");
       installHooksBtn.removeAttribute("disabled");

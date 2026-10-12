@@ -2115,6 +2115,11 @@
       head.appendChild(kwBadge);
     }
 
+    // Bridge agents (foreign-LLM relays): "Needs setup" badge when the MCP
+    // server is missing from .mcp.json or a required key is unset.
+    const bridgeSetupEl = buildBridgeNeedsSetup(a);
+    if (bridgeSetupEl) head.appendChild(bridgeSetupEl);
+
     if (density === "full" && routingAgent && routingAgent.description) {
       const desc = document.createElement("span");
       desc.className = "routing-agent-desc";
@@ -3593,6 +3598,10 @@
     // under the harness picker are the fix.
     if (!codexHook) hookRow.appendChild(troubleshootBtn);
     hookSection.appendChild(hookRow);
+    if (!codexHook) {
+      const approvalBlock = buildMcpApprovalBlock();
+      if (approvalBlock) hookSection.appendChild(approvalBlock);
+    }
     const doctorResultsEl = document.createElement("div");
     doctorResultsEl.id = "doctor-results";
     hookSection.appendChild(doctorResultsEl);

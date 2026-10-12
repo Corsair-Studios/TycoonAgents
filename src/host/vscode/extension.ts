@@ -15,6 +15,7 @@ import { activate as activateTheater, deactivate as deactivateTheater } from "..
 import { upgradeInstalledThemes } from "../../extension/themeService";
 import { seedBundledThemes, type SeedResult } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
+import { startMcpApprovalGuard } from "./mcpApprovalGuardHost";
 import { initLog, log } from "./log";
 import { resolveProviderId } from "../../core/providerSelection";
 import type { ProviderId } from "../../core/providerSelection";
@@ -247,6 +248,13 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(openCmd, demoCmd, upgradeThemesCmd);
+
+  // Always-on safety: auto-revoke approvals of TycoonAgents MCP servers whose files changed since approval.
+  try {
+    context.subscriptions.push(startMcpApprovalGuard(context.extensionUri));
+  } catch (error) {
+    console.warn("TycoonAgents: MCP approval guard failed to start:", error);
+  }
 
   // Auto-open the live panel on startup if the setting is enabled
   const autoShow = vscode.workspace

@@ -2582,6 +2582,10 @@
       renderSettings();
     } else if (msg && msg.type === "packInstalled") {
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
+    } else if (msg && msg.type === "tycoonMcpApprovalResult") {
+      handleMcpApprovalResult(msg);
+    } else if (msg && msg.type === "bridgeServerInstalled") {
+      handleBridgeServerInstalled(msg.id, msg.ok, msg.error);
     } else if (msg && msg.type === "packRemoved") {
       handlePackRemoved(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "agentRemoved") {

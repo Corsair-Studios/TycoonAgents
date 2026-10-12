@@ -52,6 +52,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { createStateFeed } from './stateFeed.mjs';
+import { winSystemExe } from './winSystem.mjs';
 import { healInstalledHookCopies, installMcpBridgeHooksForConfig } from './installHook.mjs';
 import { resolveProjectRoots, ProjectRootError } from './projectRoots.mjs';
 import { createDefaultAppData } from './appData.mjs';
@@ -458,6 +459,20 @@ function agentBackendModule() {
 // p18-t1: shared route-aware Settings helper (describeAgentRoutes/
 // describeRoutingVisibility/overrideAgentToClaudeTier) — same "pure, no
 // vscode import" posture as the modules above.
+const LOCAL_ENV_STORE_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'localEnvStore.js');
+function localEnvStoreGet(name) {
+  return requireCompiledOrThrow(LOCAL_ENV_STORE_JS, 'localEnvStore').getValue(name);
+}
+const BRIDGE_SETUP_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'bridgeSetup.js');
+let _bridgeSetupModule;
+function bridgeSetupModule() {
+  if (!_bridgeSetupModule) _bridgeSetupModule = requireCompiledOrThrow(BRIDGE_SETUP_JS, 'bridgeSetup');
+  return _bridgeSetupModule;
+}
+function bridgeSetupContextStandalone(root) {
+  return { root, harness: resolveEffectiveHarness(root), env: process.env };
+}
+
 const AGENT_SETTINGS_ROUTE_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'agentSettingsRoute.js');
 let _agentSettingsRouteModule;
 function agentSettingsRouteModule() {
@@ -954,6 +969,22 @@ function handleBrowserMessage(msg) {
       // see buildPacksPayload() below.
       broadcast('message', buildPacksPayload());
       break;
+    case 'installBridgeServer':
+      // Standalone analog of panel.ts's _handleInstallBridgeServer ("Needs setup" action).
+      handleInstallBridgeServerStandalone(msg);
+      break;
+    case 'approveTycoonMcp':
+      handleTycoonMcpApprovalStandalone('approve', msg);
+      break;
+    case 'revokeTycoonMcpApproval':
+      handleTycoonMcpApprovalStandalone('revoke', msg);
+      break;
+    case 'repairTycoonMcpHooks':
+      handleTycoonMcpApprovalStandalone('repair', msg);
+      break;
+    case 'removeTycoonMcpApprovals':
+      handleTycoonMcpApprovalStandalone('remove', msg);
+      break;
     case 'installPack':
       // Standalone analog of panel.ts's _handleInstallPack (~line 3768-
       // 3982) — see handleInstallPack() below for what is/isn't replicated.
@@ -1416,7 +1447,7 @@ function handleBrowserMessage(msg) {
         }
         const { spawn } = requireCompiledModule('node:child_process');
         if (process.platform === 'win32') {
-          spawn('explorer', [`/select,${agentPath}`], { detached: true, stdio: 'ignore' }).unref();
+          spawn(winSystemExe('explorer.exe', { inWindowsDir: true }), [`/select,${agentPath}`], { detached: true, stdio: 'ignore' }).unref();
         } else if (process.platform === 'darwin') {
           spawn('open', ['-R', agentPath], { detached: true, stdio: 'ignore' }).unref();
         } else {
@@ -2067,7 +2098,8 @@ function buildPacksPayload() {
       installed: {
         skill: packSkills.length > 0 && packSkills.every((id) => skillInstalled(id)),
         mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
-        agent: root !== '' && packAgents.length > 0 && packAgents.every((a) => agentInstalled(a.id)),
+        // Picker packs install a chosen subset, so any installed agent counts.
+        agent: root !== '' && packAgents.length > 0 && (pack.picker === 'bridges' ? packAgents.some((a) => agentInstalled(a.id)) : packAgents.every((a) => agentInstalled(a.id))),
       },
       skills,
       commands: packCommands,
@@ -2075,6 +2107,9 @@ function buildPacksPayload() {
       mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
       thirdParty: disclosures.length > 0,
       disclosures,
+      ...(pack.picker === 'bridges' && root
+        ? { picker: bridgeSetupModule().buildBridgePicker(packAgents, bridgeSetupContextStandalone(root)) }
+        : {}),
     };
   });
   return { type: 'packs', packs: result };
@@ -2341,6 +2376,11 @@ function handleInstallPack(payload) {
       return;
     }
 
+    if (pack.picker === 'bridges') {
+      installBridgePickerStandalone(pack, root, payload && payload.selection);
+      return;
+    }
+
     const results = {};
     const packSkills = Array.isArray(pack.skills) ? pack.skills : [];
     if (packSkills.length > 0) {
@@ -2462,6 +2502,165 @@ function handleInstallPack(payload) {
   } catch (e) {
     broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
   }
+}
+
+/** Standalone MCP-entry installer for the bridge picker and the "Needs setup" action (no approval key is written). */
+function installMcpEntryForBridgeStandalone(root, mcpId) {
+  const { installMcpEntry } = bridgeSetupModule();
+  const { withDispatcherProjectDir } = mcpCatalogModule();
+  let catalog = [];
+  try {
+    catalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
+  } catch {
+    catalog = [];
+  }
+  return installMcpEntry(root, mcpId, catalog, {
+    platform: process.platform,
+    resolveTokens: (c) => resolveConfigTokensStandalone(c),
+    finalize: (id, c, r) => withDispatcherProjectDir(id, resolveCodexBinaryForInstallStandalone(id, c), r),
+    afterWrite: (r, c) => {
+      try {
+        installMcpBridgeHooksForConfig(r, c);
+      } catch (err) {
+        console.error('[tycoonagents-standalone] bridge hook copy failed:', err);
+      }
+    },
+  });
+}
+
+/** Standalone analog of panel.ts's _installBridgePicker (Multi-LLM picker install). */
+function installBridgePickerStandalone(pack, root, selection) {
+  const id = pack.id;
+  try {
+    const sel = selection && typeof selection === 'object' ? selection : {};
+    const agentsSel = Array.isArray(sel.agents) ? sel.agents.filter((x) => typeof x === 'string').slice(0, 20) : [];
+    const othersSel = Array.isArray(sel.others) ? sel.others.slice(0, 10) : [];
+    if (agentsSel.length === 0 && othersSel.length === 0) {
+      broadcast('message', { type: 'packInstalled', id, ok: false, error: 'Choose at least one model to install.' });
+      return;
+    }
+    const { installBridgeSelection } = bridgeSetupModule();
+    const { setKeywordPattern } = agentConfigModule();
+    const { setLocalEnvValue } = routingHostOpsModule();
+    const harness = resolveEffectiveHarness(root);
+    const res = installBridgeSelection({
+      root,
+      packAgents: Array.isArray(pack.agents) ? pack.agents : [],
+      selectedAgentIds: agentsSel,
+      others: othersSel,
+      harness,
+      claudeSubscriptionOptIn: claudeSubscriptionModule().readClaudeSubscriptionOptIn(),
+      installMcp: (mcpId) => installMcpEntryForBridgeStandalone(root, mcpId),
+      storeLocalValue: (name, value) => {
+        setLocalEnvValue(name, value, process.env);
+      },
+      getLocalValue: (name) => localEnvStoreGet(name),
+    });
+    if (res.installed.length > 0) {
+      let cfg = readKeywordsConfigStandalone(root);
+      for (const { agent } of res.installed) cfg = setKeywordPattern(cfg, agent.id, agent.keywords);
+      const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+      fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
+      fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
+    }
+    broadcast('message', {
+      type: 'packInstalled',
+      id,
+      ok: res.ok && res.errors.length === 0,
+      ...(res.errors.length > 0 ? { error: res.errors.join(' ') } : {}),
+      results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost },
+    });
+    broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+  } catch (e) {
+    broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
+  }
+}
+
+const MCP_APPROVAL_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'mcpApproval.js');
+let _mcpApprovalModule;
+function mcpApprovalModule() {
+  if (!_mcpApprovalModule) _mcpApprovalModule = requireCompiledOrThrow(MCP_APPROVAL_JS, 'mcpApproval');
+  return _mcpApprovalModule;
+}
+
+/** Content checks compare against this install's hooks/ folder, the installer's own source. */
+function mcpApprovalEnvStandalone() {
+  return {
+    resolveSrc: (file) => {
+      const p = path.join(REPO_ROOT, 'hooks', file);
+      return fs.existsSync(p) ? p : undefined;
+    },
+  };
+}
+
+/** Experimental approve-button flag (default off): TYCOON_STANDALONE_MCP_APPROVE_BUTTON=1 turns it on. */
+function mcpApproveButtonEnabledStandalone() {
+  return process.env.TYCOON_STANDALONE_MCP_APPROVE_BUTTON === '1';
+}
+
+/** Approval slice for the settings payload (Claude Code harness only); undefined when nothing to show or the flag is off. */
+function buildMcpApprovalSliceStandalone(root) {
+  try {
+    if (!mcpApproveButtonEnabledStandalone()) return undefined;
+    if (!root || !bridgeSetupModule().harnessUsesMcpJson(resolveEffectiveHarness(root))) return undefined;
+    const m = mcpApprovalModule();
+    return m.approvalSliceFromState(m.computeMcpApprovalState(root, m.tycoonServerDefsFromMedia(MEDIA_DIR), mcpApprovalEnvStandalone()));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Standalone analog of panel.ts's _handleApproveTycoonMcp / _handleRemoveTycoonMcpApprovals (user-clicked only). */
+function handleTycoonMcpApprovalStandalone(action, msg) {
+  const root = primaryProjectRoot;
+  let res;
+  try {
+    const m = mcpApprovalModule();
+    const ours = m.tycoonServerDefsFromMedia(MEDIA_DIR);
+    if (action === 'approve' && !mcpApproveButtonEnabledStandalone()) {
+      res = { ok: false, ids: [], error: 'Approving servers from TycoonAgents is turned off. Claude Code will ask you to approve them.' };
+    } else if (!root) res = { ok: false, ids: [], error: 'No project root resolved' };
+    else if (!bridgeSetupModule().harnessUsesMcpJson(resolveEffectiveHarness(root))) {
+      res = { ok: false, ids: [], error: 'MCP approvals apply to the Claude Code harness only.' };
+    } else if (action === 'approve') {
+      const ids = msg && Array.isArray(msg.ids) && msg.ids.every((x) => typeof x === 'string') ? msg.ids : [];
+      res = m.approveTycoonMcpServers(root, ours, ids, msg && msg.allowTools === true, mcpApprovalEnvStandalone());
+    } else if (action === 'revoke') {
+      res = m.revokeTycoonMcpApproval(root, ours, msg && typeof msg.id === 'string' ? msg.id : '', mcpApprovalEnvStandalone());
+    } else if (action === 'repair') {
+      res = m.repairTycoonHookCopies(root, ours, mcpApprovalEnvStandalone());
+    } else {
+      res = m.removeTycoonMcpApprovals(root, ours, mcpApprovalEnvStandalone());
+    }
+  } catch (e) {
+    res = { ok: false, ids: [], error: String(e) };
+  }
+  broadcast('message', { type: 'tycoonMcpApprovalResult', action, ...res });
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+}
+
+/** Standalone analog of panel.ts's _handleInstallBridgeServer. */
+function handleInstallBridgeServerStandalone(msg) {
+  const agentId = msg && typeof msg.id === 'string' ? msg.id : '';
+  const root = primaryProjectRoot;
+  let error;
+  try {
+    const { serverForInstalledAgent, harnessUsesMcpJson } = bridgeSetupModule();
+    const server = root && agentId ? serverForInstalledAgent(root, agentId) : null;
+    if (!root) error = 'No project root resolved';
+    else if (server === null) error = 'This agent does not use an MCP server.';
+    else if (!harnessUsesMcpJson(resolveEffectiveHarness(root))) {
+      error = 'On this harness bridges run through the TycoonAgents dispatcher; nothing is added to .mcp.json.';
+    } else {
+      const outcome = installMcpEntryForBridgeStandalone(root, server);
+      if (outcome && typeof outcome === 'object') error = outcome.error;
+    }
+  } catch (e) {
+    error = String(e);
+  }
+  broadcast('message', { type: 'bridgeServerInstalled', id: agentId, ok: error === undefined, ...(error ? { error } : {}) });
+  broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+  broadcast('message', buildPacksPayload());
 }
 
 /**
@@ -2848,11 +3047,18 @@ function buildStandaloneSettingsPayload() {
       } catch (err) {
         console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: describeAgentRoutes failed:', err);
       }
+      let bridgeSetup = {};
+      try {
+        bridgeSetup = bridgeSetupModule().describeBridgeSetup(bridgeSetupContextStandalone(primaryProjectRoot));
+      } catch (err) {
+        console.error('[tycoonagents-standalone] buildStandaloneSettingsPayload: describeBridgeSetup failed:', err);
+      }
       agents = loadAgentRoster(agentsDir).map((agent) => {
         const entry = keywordAgents[agent.id];
         const keywords = entry && typeof entry.pattern === 'string' ? entry.pattern : '';
         const route = agentRoutes[agent.id];
         return {
+          bridgeSetup: bridgeSetup[agent.id] ?? null,
           id: agent.id,
           name: agent.name,
           // `model` reflects the RESOLVED route's Claude tier, falling back
@@ -2897,6 +3103,7 @@ function buildStandaloneSettingsPayload() {
       ? { healthy: codexSlice.healthy, issueCount: codexSlice.healthy ? 0 : 1, harness: 'codex', status: codexSlice.status, label: codexSlice.label }
       : { healthy: true, issueCount: 0 },
     contextBudget: buildStandaloneContextBudget(),
+    mcpApproval: buildMcpApprovalSliceStandalone(primaryProjectRoot),
     foreignManagedBlocks: [],
     harness: buildStandaloneHarnessSettings(),
     routing: buildStandaloneRoutingVisibility(),

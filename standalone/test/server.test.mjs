@@ -445,6 +445,75 @@ test('POST /message {type: "getPacks"} -> lists every catalog pack with installe
   }
 });
 
+test('POST /message {type: "installPack", id: "multi-llm"} with no selection installs nothing and reports an error', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const installedPromise = collectSseEvent(reader, 'packInstalled');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
+      body: JSON.stringify({ type: 'installPack', id: 'multi-llm', thirdParty: false, disclosures: [] }),
+    });
+    assert.equal(messageRes.status, 202);
+    const installed = await installedPromise;
+    assert.equal(installed.ok, false);
+    assert.match(installed.error, /Choose at least one model/);
+    assert.equal(fs.existsSync(path.join(projectRoot, '.claude', 'agents', 'codex-reviewer.md')), false);
+    assert.equal(fs.existsSync(path.join(projectRoot, '.mcp.json')), false);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
+test('POST /message {type: "installPack", id: "multi-llm", selection} installs only the chosen agents plus their servers, once', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const installedPromise = collectSseEvent(reader, 'packInstalled');
+    const messageRes = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
+      body: JSON.stringify({
+        type: 'installPack',
+        id: 'multi-llm',
+        selection: {
+          agents: ['grok-reviewer', 'kimi-reviewer'],
+          others: [{ agentId: 'local-llama', label: 'Local Llama', model: 'llama3', endpointEnv: 'OLLAMA_BASE_URL', apiKeyEnv: 'OLLAMA_API_KEY' }],
+        },
+      }),
+    });
+    assert.equal(messageRes.status, 202);
+    const installed = await installedPromise;
+    assert.equal(installed.ok, true, `install must succeed: ${installed.error}`);
+    const agentsDir = path.join(projectRoot, '.claude', 'agents');
+    assert.deepEqual(fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md')).sort(), ['grok-reviewer.md', 'kimi-reviewer.md', 'local-llama.md']);
+    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8'));
+    assert.deepEqual(Object.keys(mcp.mcpServers), ['openai-compatible']);
+    assert.ok(!('enabledMcpjsonServers' in mcp), 'no approval key may be written');
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});
+
 test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identical agent markdown and getPacks then reports installed', async () => {
   const projectRoot = mkTempProject();
   const dataDir = path.join(mkTempProject(), 'appdata');
@@ -465,7 +534,7 @@ test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identi
     const messageRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
       headers: { 'X-Tycoon-Token': runtime.sessionToken },
-      body: JSON.stringify({ type: 'installPack', id: 'multi-llm', thirdParty: false, disclosures: [] }),
+      body: JSON.stringify({ type: 'installPack', id: 'multi-llm', thirdParty: false, disclosures: [], selection: { agents: pack.agents.map((a) => a.id) } }),
     });
     assert.equal(messageRes.status, 202);
 
@@ -1258,3 +1327,32 @@ test('startup: an explicit projectPlanEnabled:false is respected - no skill, no 
   }
 });
 
+
+test('POST /message approveTycoonMcp is rejected and the approval slice hidden while the approve button flag is off', async () => {
+  const projectRoot = mkTempProject();
+  const dataDir = path.join(mkTempProject(), 'appdata');
+  const runtime = await startServer({
+    argv: [projectRoot],
+    env: { TYCOON_STANDALONE_PORT: '0', TYCOON_STANDALONE_DATA_DIR: dataDir },
+    cwd: projectRoot,
+  });
+  const controller = new AbortController();
+  try {
+    const eventsRes = await fetch(`${runtime.url}/events?token=${runtime.sessionToken}`, { signal: controller.signal });
+    const reader = eventsRes.body.getReader();
+    const resultPromise = collectSseEvent(reader, 'tycoonMcpApprovalResult');
+    const res = await fetch(`${runtime.url}/message`, {
+      method: 'POST',
+      headers: { 'X-Tycoon-Token': runtime.sessionToken },
+      body: JSON.stringify({ type: 'approveTycoonMcp', ids: ['tycoon'], allowTools: false }),
+    });
+    assert.equal(res.status, 202);
+    const result = await resultPromise;
+    assert.equal(result.action, 'approve');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /turned off/);
+  } finally {
+    controller.abort();
+    await runtime.close();
+  }
+});

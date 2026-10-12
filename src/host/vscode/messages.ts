@@ -217,6 +217,14 @@ export const MSG = {
   GET_PACKS: "getPacks",
   PACKS: "packs",
   INSTALL_PACK: "installPack",
+  INSTALL_BRIDGE_SERVER: "installBridgeServer",
+  BRIDGE_SERVER_INSTALLED: "bridgeServerInstalled",
+  // Explicit user-clicked approval of TycoonAgents MCP servers (settings.local.json only).
+  APPROVE_TYCOON_MCP: "approveTycoonMcp",
+  REMOVE_TYCOON_MCP_APPROVALS: "removeTycoonMcpApprovals",
+  REPAIR_TYCOON_MCP_HOOKS: "repairTycoonMcpHooks",
+  REVOKE_TYCOON_MCP_APPROVAL: "revokeTycoonMcpApproval",
+  TYCOON_MCP_APPROVAL_RESULT: "tycoonMcpApprovalResult",
   PACK_INSTALLED: "packInstalled",
   REMOVE_PACK: "removePack",
   PACK_REMOVED: "packRemoved",
@@ -561,9 +569,39 @@ export const MSG_SCHEMAS = {
   // p68-t1: no payload beyond type.
   OPEN_AGENT_KEYWORDS_FILE: z.object({}).passthrough(),
 
+  // Agent id of an installed bridge agent whose MCP server is missing ("Needs setup" action).
+  INSTALL_BRIDGE_SERVER: z.object({ id: z.string().min(1).max(80) }).passthrough(),
+  REVOKE_TYCOON_MCP_APPROVAL: z.object({ id: z.string().min(1).max(80) }).passthrough(),
+  APPROVE_TYCOON_MCP: z.object({ ids: z.array(z.string().min(1).max(80)).max(32).optional(), allowTools: z.boolean().optional() }).passthrough(),
+
   INSTALL_PACK: z
     .object({
       id: z.string().min(1),
+      // Multi-LLM picker: pack agent ids the user ticked plus "Other" endpoints.
+      // Names only; an optional baseUrl VALUE is stored per user, never in a project.
+      selection: z
+        .object({
+          agents: z.array(z.string().max(80)).max(20).optional(),
+          others: z
+            .array(
+              z
+                .object({
+                  agentId: z.string().max(80),
+                  label: z.string().max(200),
+                  model: z.string().max(200),
+                  endpointEnv: z.string().max(100),
+                  apiKeyEnv: z.string().max(100).optional(),
+                  baseUrl: z.string().max(500).optional(),
+                  role: z.string().max(500).optional(),
+                  keywords: z.string().max(500).optional(),
+                })
+                .strict(),
+            )
+            .max(10)
+            .optional(),
+        })
+        .strict()
+        .optional(),
       thirdParty: z.boolean().optional(),
       disclosures: z
         .array(

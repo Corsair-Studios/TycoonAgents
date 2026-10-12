@@ -1101,8 +1101,8 @@ test("copyMcpBridgeHooks: a server with no .claude/hooks reference copies nothin
     assert.deepEqual(copyMcpBridgeHooks(root, { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] }, resolve), []);
     assert.ok(!fs.existsSync(path.join(root, ".claude")));
     const copied = copyMcpBridgeHooks(root, { command: "node", args: [".claude/hooks/gemini-mcp-wrapper.cjs"] }, resolve);
-    assert.deepEqual(copied.sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs"]);
-    assert.deepEqual(fs.readdirSync(path.join(root, ".claude", "hooks")).sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs", "package.json"]);
+    assert.deepEqual(copied.sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs", "localEnvStore.js"]);
+    assert.deepEqual(fs.readdirSync(path.join(root, ".claude", "hooks")).sort(), ["bridge-result.cjs", "gemini-mcp-wrapper.cjs", "localEnvStore.js", "package.json"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(srcDir, { recursive: true, force: true });
