@@ -29,7 +29,7 @@ import {
   isSafeAgentId,
 } from "./agentConfig";
 import { loadAgentRoster } from "../../providers/claude-code/agentRoster";
-import { mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, withDispatcherProjectDir, type McpPlatformsEntry } from "./mcpCatalog";
+import { isUnpinnedMcpConfig, mergeMcpServer, hasMcpServer, removeMcpServer, resolveConfigForPlatform, withDispatcherProjectDir, type McpPlatformsEntry } from "./mcpCatalog";
 import { discoverCodexBinary, CodexDiscoveryError } from "../../providers/codex/codexDiscovery";
 import {
   installCodexHooks,
@@ -275,7 +275,6 @@ import {
   ensureCommonJsMarker,
   healInstalledHookCopies,
   copyMcpBridgeHooks,
-  enableMcpJsonServerInSettings,
   buildAbsoluteHookCommand,
   migrateRelativeHookCommand,
   rejectedNodeOverride,
@@ -4112,6 +4111,7 @@ export class TycoonPanel {
       description: e.description,
       summary: catalogSummary(e),
       installed: hasMcpServer(parsed, e.id),
+      unpinned: hasMcpServer(parsed, e.id) && isUnpinnedMcpConfig((parsed as any).mcpServers?.[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
       docsUrl: e.docsUrl,
@@ -4251,10 +4251,8 @@ export class TycoonPanel {
       const merged = mergeMcpServer(existing, id, finalConfig);
       fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
       this._copyBridgeHooksForMcp(root, finalConfig);
-      // Auto-approve the newly-added server so `claude mcp list` doesn't
-      // leave it "Pending approval" (which times out non-interactive
-      // sessions) — see enableMcpJsonServerInSettings (hookInstall.ts).
-      enableMcpJsonServerInSettings(path.join(root, ".claude"), id);
+      // Approval is deliberately NOT written: Claude Code asks the user to
+      // approve a new .mcp.json server the first time it is used.
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
         id,
@@ -4638,9 +4636,7 @@ export class TycoonPanel {
             const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
             fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
             this._copyBridgeHooksForMcp(root, finalConfig);
-            // Auto-approve so `claude mcp list` doesn't leave the pack's
-            // server "Pending approval" for non-interactive sessions.
-            enableMcpJsonServerInSettings(path.join(root, ".claude"), pack.mcp);
+            // No approval written; Claude Code asks the user on first use.
             results.mcp = "installed";
           }
         }

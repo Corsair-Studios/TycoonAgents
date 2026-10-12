@@ -115,6 +115,7 @@
     "copy:hookruntime": "node scripts/copy-hook-runtime.mjs",
     "opencode:config": "node scripts/generate-opencode-config.mjs",
     "generate:codex-config": "node scripts/generate-codex-config.mjs",
+    "mcp:outdated": "node scripts/check-mcp-updates.mjs",
     "check:paths": "node scripts/check-no-absolute-paths.mjs",
     "export:public": "node scripts/export-public.mjs",
     "build:webview": "node scripts/build-webview.mjs",

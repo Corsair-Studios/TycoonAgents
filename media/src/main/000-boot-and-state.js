@@ -994,6 +994,9 @@
   const tabSkillsBtn = /** @type {HTMLElement} */ (document.getElementById("tab-skills"));
   const tabMcpBtn    = /** @type {HTMLElement} */ (document.getElementById("tab-mcp"));
   const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
+  const MCP_APPROVAL_NOTE =
+    "Claude Code will ask you once to approve the TycoonAgents servers (tycoon, codex, claude-worker, gemini). Choose Approve so delegation can use them.";
+
   const mcpListEl    = /** @type {HTMLElement} */ (document.getElementById("mcp-list"));
   const packsListEl  = /** @type {HTMLElement} */ (document.getElementById("packs-list"));
 

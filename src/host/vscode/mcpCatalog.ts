@@ -48,40 +48,6 @@ export function mergeMcpServer(
  * preserved. The input is never mutated. No fs/vscode usage, so this is
  * unit-testable.
  */
-/**
- * Pure merge of a server id into a parsed `settings.local.json`/`settings.json`
- * object's `enabledMcpjsonServers` array, so Claude Code auto-approves a
- * project `.mcp.json` server instead of leaving it "Pending approval" for
- * non-interactive sessions. Returns a NEW object: the top level is shallow
- * cloned, `enabledMcpjsonServers` is cloned (defaulting to `[]` when absent
- * or not an array), and `id` is appended only if not already present
- * (idempotent). All other keys (e.g. `env`, `hooks`, `permissions`) are
- * preserved untouched. The input is never mutated. No fs/vscode usage, so
- * this is unit-testable. A blank/whitespace-only `id` is rejected: the
- * input is returned unchanged (no throw) since there is no valid server id
- * to enable.
- */
-export function mergeEnabledMcpJsonServer(
-  existing: Record<string, unknown>,
-  id: string
-): Record<string, unknown> {
-  if (!id || id.trim().length === 0) {
-    return existing;
-  }
-  const result: Record<string, unknown> = { ...existing };
-  const srcList = existing.enabledMcpjsonServers;
-  // When enabledMcpjsonServers already exists but isn't an array (e.g. a
-  // hand-edited or corrupted settings file), it's replaced with a fresh
-  // array rather than preserved or thrown on — the field is documented as
-  // an array, so a non-array value is treated as absent.
-  const list: unknown[] = Array.isArray(srcList) ? [...srcList] : [];
-  if (!list.includes(id)) {
-    list.push(id);
-  }
-  result.enabledMcpjsonServers = list;
-  return result;
-}
-
 export function removeMcpServer(
   existing: Record<string, unknown>,
   id: string
@@ -167,4 +133,55 @@ export function resolveConfigForPlatform(
   }
   const name = entry.id ?? "This server";
   return { ok: false, error: `${name} is not supported on this OS (${platform}); no command is defined for it.` };
+}
+
+/**
+ * Extracts the package spec an `npx` / `uvx` / `pipx run` launch command would
+ * fetch, or null when the command is not one of those launchers (or names no
+ * package). Pure; used by the catalog pin check and the "unpinned" UI hint.
+ */
+export function launcherPackageSpec(cfg: unknown): string | null {
+  if (cfg === null || typeof cfg !== "object") {
+    return null;
+  }
+  const c = cfg as { command?: unknown; args?: unknown };
+  if (typeof c.command !== "string" || !Array.isArray(c.args)) {
+    return null;
+  }
+  const base = c.command.split("\\").join("/").split("/").pop()!.toLowerCase().replace(/\.(cmd|exe|bat)$/, "");
+  const args = c.args.filter((a): a is string => typeof a === "string");
+  if (base === "npx") {
+    return args.find((a) => !a.startsWith("-")) ?? null;
+  }
+  if (base === "uvx" || base === "pipx") {
+    const rest = base === "pipx" ? args.filter((a) => a !== "run") : args;
+    const fromIdx = rest.indexOf("--from");
+    if (fromIdx >= 0 && typeof rest[fromIdx + 1] === "string") {
+      return rest[fromIdx + 1];
+    }
+    return rest.find((a) => !a.startsWith("-")) ?? null;
+  }
+  return null;
+}
+
+/**
+ * True when `cfg` launches a package via npx/uvx/pipx without an exact
+ * version (no version, `@latest`, or a dist-tag-like spec). Configs that do not
+ * use those launchers are never "unpinned".
+ */
+export function isUnpinnedMcpConfig(cfg: unknown): boolean {
+  const spec = launcherPackageSpec(cfg);
+  if (spec === null) {
+    return false;
+  }
+  if (spec.includes("==")) {
+    return false; // PEP 440 exact pin
+  }
+  const body = spec.startsWith("@") ? spec.slice(1) : spec;
+  const at = body.indexOf("@");
+  if (at < 0) {
+    return true;
+  }
+  const ver = body.slice(at + 1).split("#")[0];
+  return ver === "" || /^(latest|next|beta|alpha|canary|rc)$/i.test(ver);
 }

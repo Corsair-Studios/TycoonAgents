@@ -7025,3 +7025,54 @@ test('media/main.js Theme Service disclosure names Corsair Theme Service and is 
     'The feedback "what\'s never sent" disclosure block must also name the Corsair Theme Service generate-only condition'
   );
 });
+
+test('MCP install tells Claude Code users about the one-time approval prompt, and not Codex users', async () => {
+  const NOTE = 'Claude Code will ask you once to approve the TycoonAgents servers';
+  for (const [effective, expectNote] of [['claude-code', true], ['codex', false]] as const) {
+    const h = await bootObjScaleHarness();
+    try {
+      if (!h.win.CSS) h.win.CSS = { escape: (v: string) => v };
+      h.dispatch({
+        type: 'settings',
+        payload: {
+          hook: { installed: true, lastActivityAt: null },
+          agents: [],
+          delegation_mode: 'flat',
+          delegationHealth: {},
+          hookHealth: { healthy: true, issueCount: 0 },
+          contextBudget: null,
+          harness: { effective, source: 'execution', fileValue: effective, running: effective, mismatch: false, options: [], requiresRestart: false },
+        },
+      });
+      h.dispatch({ type: 'mcp', servers: [{ id: 'demo-mcp', name: 'Demo', description: 'd', installed: false }] });
+      await h.flush();
+      h.dispatch({ type: 'mcpInstalled', id: 'demo-mcp', ok: true });
+      await h.flush();
+      const note = h.doc.querySelector('#mcp-list .mcp-approval-note');
+      if (expectNote) {
+        assert.ok(note, 'claude-code harness shows the approval note');
+        assert.ok((note.textContent || '').includes(NOTE));
+        assert.ok((note.textContent || '').includes('Choose Approve'));
+      } else {
+        assert.equal(note, null, 'codex harness shows no approval note');
+      }
+    } finally {
+      h.win.close();
+    }
+  }
+});
+
+test('first-run setup status carries the approval note on Claude Code only', async () => {
+  for (const [harness, expectNote] of [['claude-code', true], ['codex', false]] as const) {
+    const h = await bootObjScaleHarness();
+    try {
+      h.dispatch({ type: 'installState', installed: false, harness });
+      await h.flush();
+      const text = h.doc.getElementById('setup-status')?.textContent || '';
+      assert.ok(text.includes("isn't installed yet"), 'setup status text renders: ' + text);
+      assert.equal(text.includes('Claude Code will ask you once'), expectNote);
+    } finally {
+      h.win.close();
+    }
+  }
+});

@@ -28,7 +28,8 @@
     "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
     "thirdParty": true,
     "vendor": "Model Context Protocol (Anthropic)",
-    "package": "@modelcontextprotocol/server-filesystem (run via npx)",
+    "pinned": { "manager": "npm", "name": "@modelcontextprotocol/server-filesystem", "version": "1.0.0" },
+    "package": "@modelcontextprotocol/server-filesystem@1.0.0 (run via npx)",
     "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
     "network": false,
     "dataNote": "Runs locally with no network calls, but exposes the configured directory's files to the AI model.",
@@ -36,7 +37,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-filesystem",
+        "@modelcontextprotocol/server-filesystem@1.0.0",
         "."
       ]
     }
@@ -50,7 +51,8 @@
     "docsUrl": "https://github.com/microsoft/playwright-mcp",
     "thirdParty": true,
     "vendor": "Microsoft",
-    "package": "@playwright/mcp (run via npx; downloads browser binaries)",
+    "pinned": { "manager": "npm", "name": "@playwright/mcp", "version": "0.0.83" },
+    "package": "@playwright/mcp@0.0.83 (run via npx; downloads browser binaries)",
     "homepage": "https://github.com/microsoft/playwright-mcp",
     "network": true,
     "dataNote": "Downloads browser binaries on first run and navigates to URLs you or the model open.",
@@ -58,7 +60,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@playwright/mcp@latest"
+        "@playwright/mcp@0.0.83"
       ]
     }
   },
@@ -90,7 +92,8 @@
     "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
     "thirdParty": true,
     "vendor": "Model Context Protocol (Anthropic)",
-    "package": "@modelcontextprotocol/server-sequential-thinking (run via npx)",
+    "pinned": { "manager": "npm", "name": "@modelcontextprotocol/server-sequential-thinking", "version": "1.0.0" },
+    "package": "@modelcontextprotocol/server-sequential-thinking@1.0.0 (run via npx)",
     "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
     "network": false,
     "dataNote": "Runs locally; a reasoning scratchpad with no external calls.",
@@ -98,7 +101,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-sequential-thinking"
+        "@modelcontextprotocol/server-sequential-thinking@1.0.0"
       ]
     }
   },

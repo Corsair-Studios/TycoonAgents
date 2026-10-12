@@ -501,6 +501,13 @@
       nameEl.textContent = server.name;
       header.appendChild(nameEl);
 
+      if (server.installed && server.unpinned) {
+        const pinBadge = document.createElement("span");
+        pinBadge.className = "mcp-setup-badge";
+        pinBadge.textContent = "unpinned — reinstall to pin";
+        header.appendChild(pinBadge);
+      }
+
       if (server.needsSetup) {
         const setupBadge = document.createElement("span");
         setupBadge.className = "mcp-setup-badge";
@@ -598,6 +605,15 @@
       btn.classList.add("skill-btn--installed");
       btn.setAttribute("disabled", "");
       btn.removeAttribute("data-mcp-id");
+      const okRow = btn.closest(".skill-row");
+      const harnessInfo = lastSettings && lastSettings.harness;
+      const onCodex = harnessInfo && harnessInfo.effective === "codex";
+      if (okRow && !onCodex && !okRow.querySelector(".mcp-approval-note")) {
+        const note = document.createElement("span");
+        note.className = "mcp-approval-note";
+        note.textContent = MCP_APPROVAL_NOTE;
+        okRow.appendChild(note);
+      }
     } else {
       btn.textContent = "Install";
       btn.removeAttribute("disabled");

@@ -995,6 +995,9 @@
   const tabSkillsBtn = /** @type {HTMLElement} */ (document.getElementById("tab-skills"));
   const tabMcpBtn    = /** @type {HTMLElement} */ (document.getElementById("tab-mcp"));
   const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
+  const MCP_APPROVAL_NOTE =
+    "Claude Code will ask you once to approve the TycoonAgents servers (tycoon, codex, claude-worker, gemini). Choose Approve so delegation can use them.";
+
   const mcpListEl    = /** @type {HTMLElement} */ (document.getElementById("mcp-list"));
   const packsListEl  = /** @type {HTMLElement} */ (document.getElementById("packs-list"));
 
@@ -3517,6 +3520,12 @@ if (typeof module !== "undefined" && module.exports) {
         info.harness === "codex"
           ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
           : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+      if (info.harness !== "codex") {
+        const approvalNote = document.createElement("div");
+        approvalNote.className = "mcp-approval-note";
+        approvalNote.textContent = MCP_APPROVAL_NOTE;
+        setupStatusEl.appendChild(approvalNote);
+      }
       installHooksBtn.removeAttribute("hidden");
       installHooksBtn.removeAttribute("disabled");
       installHooksBtn.textContent = "Install hooks";
@@ -17681,6 +17690,13 @@ function themeAnimPreviewDraw(player) {
       nameEl.textContent = server.name;
       header.appendChild(nameEl);
 
+      if (server.installed && server.unpinned) {
+        const pinBadge = document.createElement("span");
+        pinBadge.className = "mcp-setup-badge";
+        pinBadge.textContent = "unpinned — reinstall to pin";
+        header.appendChild(pinBadge);
+      }
+
       if (server.needsSetup) {
         const setupBadge = document.createElement("span");
         setupBadge.className = "mcp-setup-badge";
@@ -17778,6 +17794,15 @@ function themeAnimPreviewDraw(player) {
       btn.classList.add("skill-btn--installed");
       btn.setAttribute("disabled", "");
       btn.removeAttribute("data-mcp-id");
+      const okRow = btn.closest(".skill-row");
+      const harnessInfo = lastSettings && lastSettings.harness;
+      const onCodex = harnessInfo && harnessInfo.effective === "codex";
+      if (okRow && !onCodex && !okRow.querySelector(".mcp-approval-note")) {
+        const note = document.createElement("span");
+        note.className = "mcp-approval-note";
+        note.textContent = MCP_APPROVAL_NOTE;
+        okRow.appendChild(note);
+      }
     } else {
       btn.textContent = "Install";
       btn.removeAttribute("disabled");

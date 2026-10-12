@@ -1975,6 +1975,7 @@ function buildMcpPayload() {
   const hasMcpServer = (id) =>
     servers !== null && typeof servers === 'object' && Object.prototype.hasOwnProperty.call(servers, id);
   const { catalogSummary } = catalogSummaryModule();
+  const { isUnpinnedMcpConfig } = mcpCatalogModule();
 
   return {
     type: 'mcp',
@@ -1984,6 +1985,7 @@ function buildMcpPayload() {
       description: e.description,
       summary: catalogSummary(e),
       installed: hasMcpServer(e.id),
+      unpinned: hasMcpServer(e.id) && isUnpinnedMcpConfig(servers[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
       docsUrl: e.docsUrl,

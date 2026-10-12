@@ -1658,6 +1658,12 @@
         info.harness === "codex"
           ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
           : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+      if (info.harness !== "codex") {
+        const approvalNote = document.createElement("div");
+        approvalNote.className = "mcp-approval-note";
+        approvalNote.textContent = MCP_APPROVAL_NOTE;
+        setupStatusEl.appendChild(approvalNote);
+      }
       installHooksBtn.removeAttribute("hidden");
       installHooksBtn.removeAttribute("disabled");
       installHooksBtn.textContent = "Install hooks";

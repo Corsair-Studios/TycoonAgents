@@ -20,7 +20,7 @@ test("mergeMcpServer adds server to empty object", () => {
 });
 
 test("mergeMcpServer preserves existing unrelated server", () => {
-  const existingCfg = { command: "npx", args: ["-y", "@playwright/mcp@latest"] };
+  const existingCfg = { command: "npx", args: ["-y", "@playwright/mcp@0.0.83"] };
   const input: Record<string, unknown> = { mcpServers: { playwright: existingCfg } };
   const result = mergeMcpServer(input, "github", cfg);
   const servers = result.mcpServers as Record<string, unknown>;
@@ -64,7 +64,7 @@ test("removeMcpServer deletes the target server", () => {
 });
 
 test("removeMcpServer preserves other servers", () => {
-  const playwrightCfg = { command: "npx", args: ["-y", "@playwright/mcp@latest"] };
+  const playwrightCfg = { command: "npx", args: ["-y", "@playwright/mcp@0.0.83"] };
   const input: Record<string, unknown> = { mcpServers: { github: cfg, playwright: playwrightCfg } };
   const result = removeMcpServer(input, "github");
   const servers = result.mcpServers as Record<string, unknown>;
