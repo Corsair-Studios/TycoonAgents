@@ -23,7 +23,7 @@ import { resolveCodexHome, samePath, isNewerExtensionPath, type ResolveCodexHome
 import { allVendorKeyEnvNames, customEndpointNameProblem, customKeyNameProblem } from "../../core/vendorKeys";
 import { hasValue as localEnvHasValue } from "../../core/localEnvStore";
 import { NODE_NOT_FOUND_WARNING, isBareNodeCommand, resolveNodeBinary } from "./resolveNodeBinary";
-import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
+import { writeFileAtomic, collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** Marker delimiting the block this installer owns inside config.toml, so uninstall removes only its own lines. */
 const DISPATCHER_MARKER_START = "# tycoon-dispatcher: managed mcp server (do not edit by hand)";
@@ -439,12 +439,18 @@ export function installCodexDispatcher(options: InstallCodexDispatcherOptions): 
   const configTomlPath = path.join(codexHome, "config.toml");
   const existing = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : undefined;
   const nodePath = options.nodePath ?? resolveNodeBinary();
+  // Never downgrade: keep an existing script path from a newer extension that still exists.
+  let serverScriptPath = options.serverScriptPath;
+  const existingScript = existing !== undefined ? readManagedScriptPath(existing) : undefined;
+  if (existingScript !== undefined && isNewerExtensionPath(existingScript, serverScriptPath) && fs.existsSync(existingScript)) {
+    serverScriptPath = existingScript;
+  }
   const merged = mergeDispatcherIntoConfigToml(existing, {
     nodePath,
-    serverScriptPath: options.serverScriptPath,
+    serverScriptPath,
     envVarNames: unionEnvVarNames(readManagedEnvVars(existing ?? ""), dispatcherEnvVarNames(options.projectDir, { env: options.env })),
   });
-  fs.writeFileSync(configTomlPath, merged.text, "utf8");
+  if (merged.text !== existing) writeFileAtomic(configTomlPath, merged.text);
   const warnings = [...(merged.warnings ?? []), ...(isBareNodeCommand(nodePath) ? [NODE_NOT_FOUND_WARNING] : [])];
   return { configTomlPath, ...(warnings.length ? { warnings } : {}) };
 }
@@ -461,7 +467,7 @@ export function uninstallCodexDispatcher(options: UninstallCodexDispatcherOption
   if (!fs.existsSync(configTomlPath)) return;
   const existing = fs.readFileSync(configTomlPath, "utf8");
   const stripped = removeDispatcherFromConfigToml(existing);
-  if (stripped !== existing) fs.writeFileSync(configTomlPath, stripped, "utf8");
+  if (stripped !== existing) writeFileAtomic(configTomlPath, stripped);
 }
 
 /**
@@ -540,12 +546,27 @@ export function detectCodexDispatcherState(
   return oldDir !== undefined && curDir !== undefined && oldDir !== curDir ? "stale" : "installed";
 }
 
+/** Script path (first args element) of the managed dispatcher block, if parseable. */
+function readManagedScriptPath(text: string): string | undefined {
+  const stripped = stripManagedRegion(text, true);
+  if (!stripped) return undefined;
+  const m = /^[ \t]*args[ \t]*=[ \t]*(\[[^\r\n]*\])/m.exec(text.slice(stripped.start, stripped.end));
+  if (!m) return undefined;
+  try {
+    const args: unknown = JSON.parse(m[1]);
+    return Array.isArray(args) && typeof args[0] === "string" ? args[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Bounded, never-throwing config.toml read + detectCodexDispatcherState. */
 export function readCodexDispatcherState(
   env: ResolveCodexHomeEnv,
   platform: NodeJS.Platform | undefined,
   currentScriptPath: string,
   projectDir?: string,
+  expectedEnvVars?: string[],
 ): "none" | "installed" | "stale" {
   try {
     const { codexHome } = resolveCodexHome({ env, platform });
@@ -555,7 +576,7 @@ export function readCodexDispatcherState(
       fs.readFileSync(configTomlPath, "utf8"),
       currentScriptPath,
       fs.existsSync,
-      dispatcherEnvVarNames(projectDir),
+      expectedEnvVars ?? dispatcherEnvVarNames(projectDir),
     );
   } catch {
     return "none";

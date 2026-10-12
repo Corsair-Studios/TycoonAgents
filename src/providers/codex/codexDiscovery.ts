@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { execFileSync } from "child_process";
+import { npmInvocation } from "../../core/safeExec";
 import { loginShellLookup, posixSearchDirs } from "./posixBinDiscovery";
 
 /**
@@ -74,6 +75,8 @@ export type CodexExecFn = (command: string) => string;
 
 const defaultExec: CodexExecFn = (command) =>
   execFileSync(command, ["--version"], {
+    // Never the project cwd: cmd.exe would run a planted codex.cmd/codex.bat from it first.
+    cwd: os.tmpdir(),
     shell: true,
     encoding: "utf8",
     windowsHide: true,
@@ -212,12 +215,16 @@ function collectNpmGlobalSignal(list: CodexCandidate[], seen: Set<string>): void
   const basename = process.platform === "win32" ? "codex.cmd" : "codex";
 
   try {
-    const prefix = execFileSync("npm", ["prefix", "-g"], {
-      shell: true,
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 10_000,
-    }).trim();
+    // No shell and never the project cwd (a planted npm.cmd); skip this rung when npm is unresolvable.
+    const npm = npmInvocation();
+    const prefix = npm
+      ? execFileSync(npm.command, [...npm.args, "prefix", "-g"], {
+          cwd: os.tmpdir(),
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 10_000,
+        }).trim()
+      : "";
     if (prefix) {
       const npmBin = process.platform === "win32" ? prefix : path.join(prefix, "bin");
       const npmNodeModules = process.platform === "win32" ? path.join(prefix, "node_modules") : path.join(prefix, "lib", "node_modules");

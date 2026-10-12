@@ -198,7 +198,8 @@ test("hook copies: absolute and ${CLAUDE_PROJECT_DIR} references keep the files 
     put();
     const abs = join(dir, ".claude", "hooks", "tycoon-dispatcher-mcp.cjs");
     writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { tycoon: { command: "node", args: [abs] } } }), "utf8");
-    assert.deepEqual(removeOrphanCodexHookCopies({ projectDir: dir }).sort(), ["codex-app-server-mcp.cjs", "codex-mcp-launcher.cjs"]);
+    // The dispatcher's closure includes every bridge script it may spawn, so the codex bridge copies are kept.
+    assert.deepEqual(removeOrphanCodexHookCopies({ projectDir: dir }), []);
 
     put();
     writeFileSync(
@@ -206,7 +207,8 @@ test("hook copies: absolute and ${CLAUDE_PROJECT_DIR} references keep the files 
       JSON.stringify({ mcpServers: { tycoon: { command: "node", args: ["${CLAUDE_PROJECT_DIR}\\.claude\\hooks\\tycoon-dispatcher-mcp.cjs"] } } }),
       "utf8",
     );
-    assert.deepEqual(removeOrphanCodexHookCopies({ projectDir: dir }).sort(), ["codex-app-server-mcp.cjs", "codex-mcp-launcher.cjs"]);
+    assert.deepEqual(removeOrphanCodexHookCopies({ projectDir: dir }), []);
+    assert.ok(existsSync(join(hooks, "codex-mcp-launcher.cjs")) && existsSync(join(hooks, "codex-app-server-mcp.cjs")));
     assert.ok(existsSync(join(hooks, "codexRollout.cjs")) && existsSync(join(hooks, "codexRouting.cjs")));
   } finally {
     rmSync(dir, { recursive: true, force: true });

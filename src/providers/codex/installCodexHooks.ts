@@ -36,7 +36,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { NODE_NOT_FOUND_WARNING, isBareNodeCommand, isElectronHostBinary, resolveNodeBinary } from "./resolveNodeBinary";
 import { removeCodexManagedAgentsBlock, removeOrphanCodexHookCopies } from "./uninstallCodexExtras";
-import { collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
+import { writeFileAtomic, collapseBlankRunAt, detectEol, scanTomlLines, type TomlLine } from "./tomlScan";
 
 /** The 12 hook event names codex-cli 0.153.0's own HookEventName/HookEventsToml enum accepts, per docs/codex-harness-findings.md. */
 export const CODEX_HOOK_EVENTS: readonly string[] = [
@@ -674,6 +674,31 @@ function mergeHooksJson(
 }
 
 /**
+ * User-level only repoint of an already-installed notify hook in
+ * CODEX_HOME/config.toml (no project .codex/hooks.json, no install when absent).
+ * Touches the file only when the notify state is stale-* and the merged text
+ * differs. Returns whether it wrote.
+ */
+export function repointCodexNotifyUserLevel(options: {
+  hookScriptPath: string;
+  env: ResolveCodexHomeEnv;
+  platform?: NodeJS.Platform;
+  nodePath?: string;
+}): { wrote: boolean; warnings?: string[] } {
+  const { codexHome } = resolveCodexHome({ env: options.env, platform: options.platform });
+  const configTomlPath = path.join(codexHome, "config.toml");
+  if (!fs.existsSync(configTomlPath)) return { wrote: false };
+  const existing = fs.readFileSync(configTomlPath, "utf8");
+  const nodePath = options.nodePath ?? resolveNodeBinary();
+  const state = detectCodexNotifyState(existing, options.hookScriptPath, nodePath);
+  if (state !== "stale-installed" && state !== "stale-wrapped") return { wrote: false };
+  const merged = mergeNotifyIntoConfigToml(existing, options.hookScriptPath, nodePath);
+  if (merged.text === existing) return { wrote: false, warnings: merged.warnings };
+  writeFileAtomic(configTomlPath, merged.text);
+  return { wrote: true, warnings: merged.warnings };
+}
+
+/**
  * Installs both artifacts. Idempotent: re-running replaces this
  * installer's own managed block/marker without disturbing any other
  * content a user (or another tool) has in config.toml, and without ever
@@ -686,7 +711,7 @@ export function installCodexHooks(options: InstallCodexHooksOptions): InstallCod
   const existing = fs.existsSync(configTomlPath) ? fs.readFileSync(configTomlPath, "utf8") : undefined;
   const nodePath = options.nodePath ?? resolveNodeBinary();
   const merged = mergeNotifyIntoConfigToml(existing, options.hookScriptPath, nodePath);
-  fs.writeFileSync(configTomlPath, merged.text, "utf8");
+  writeFileAtomic(configTomlPath, merged.text);
 
   const dotCodexDir = path.join(options.projectDir, ".codex");
   fs.mkdirSync(dotCodexDir, { recursive: true });
@@ -731,7 +756,7 @@ export function uninstallCodexHooks(options: UninstallCodexHooksOptions): { warn
   if (fs.existsSync(configTomlPath)) {
     const existing = fs.readFileSync(configTomlPath, "utf8");
     const stripped = removeWrappedHookFromConfigToml(removeNotifyFromConfigToml(existing));
-    if (stripped !== existing) fs.writeFileSync(configTomlPath, stripped, "utf8");
+    if (stripped !== existing) writeFileAtomic(configTomlPath, stripped);
     const state = detectCodexNotifyState(stripped);
     if (state === "wrapped" || state === "stale-wrapped") warnings.push(CODEX_NOTIFY_WRAPPED_UNINSTALL_MESSAGE);
   }

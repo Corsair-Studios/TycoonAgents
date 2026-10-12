@@ -3,6 +3,9 @@
  * Releases: https://github.com/Corsair-Studios/TycoonAgents/releases
  * Attribution header - optional; end users may remove it.
  */
+import * as fs from "fs";
+import * as path from "path";
+
 
 // Minimal line scanner for Codex's config.toml, shared by the hook and
 // dispatcher installers. It is not a TOML parser: it only tracks what the
@@ -164,4 +167,20 @@ export function collapseBlankRunAt(text: string, idx: number, eol: string): stri
   const run = text.slice(a, b);
   if ((run.match(/\n/g) ?? []).length <= 2) return text;
   return text.slice(0, a) + eol + eol + text.slice(b);
+}
+
+/** Write via a temp file in the same directory, then rename; the temp file is removed on failure. */
+export function writeFileAtomic(filePath: string, text: string): void {
+  const tmp = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, text, "utf8");
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* best effort */
+    }
+    throw err;
+  }
 }

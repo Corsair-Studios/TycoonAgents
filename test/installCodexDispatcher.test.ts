@@ -464,3 +464,39 @@ test("unionEnvVarNames: capped at 200, base names kept, newly expected custom na
   assert.ok(merged.length <= 200);
   assert.ok(merged.includes("NEW_BASE_URL") && merged.includes("MISTRAL_API_KEY"));
 });
+
+test("installCodexDispatcher keeps an existing newer extension script path even when env_vars differ", () => {
+  const base = mkdtempSync(join(tmpdir(), "disp-newer-"));
+  const mk = (v: string) => {
+    const d = join(base, "extensions", `tycoonagents.tycoonagents-${v}`, "hooks");
+    mkdirSync(d, { recursive: true });
+    const f = join(d, "tycoon-dispatcher-mcp.cjs");
+    writeFileSync(f, "//\n");
+    return f;
+  };
+  const newer = mk("0.0.711");
+  const older = mk("0.0.710");
+  const codexHome = join(base, "codex");
+  mkdirSync(codexHome);
+  const env = { CODEX_HOME: codexHome };
+  installCodexDispatcher({ projectDir: base, env, platform: process.platform, serverScriptPath: newer, nodePath: "/usr/bin/node" });
+  installCodexDispatcher({ projectDir: base, env, platform: process.platform, serverScriptPath: older, nodePath: "/usr/bin/node" });
+  const toml = readFileSync(join(codexHome, "config.toml"), "utf8");
+  assert.ok(toml.includes(JSON.stringify(newer)), "newer path kept");
+  assert.ok(!toml.includes("0.0.710"));
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("writeFileAtomic leaves no temp file behind when the rename fails", async () => {
+  const { writeFileAtomic } = await import("../src/providers/codex/tomlScan");
+  const { readdirSync } = await import("node:fs");
+  const dir = mkdtempSync(join(tmpdir(), "atomic-"));
+  const target = join(dir, "config.toml");
+  mkdirSync(target); // rename onto a directory fails
+  assert.throws(() => writeFileAtomic(target, "x"));
+  assert.deepEqual(readdirSync(dir), ["config.toml"]);
+  const ok = join(dir, "ok.toml");
+  writeFileAtomic(ok, "hello");
+  assert.equal(readFileSync(ok, "utf8"), "hello");
+  rmSync(dir, { recursive: true, force: true });
+});

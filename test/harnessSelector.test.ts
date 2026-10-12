@@ -493,22 +493,72 @@ test("_ensureCodexInstallsCurrent: AGENTS.md with a START marker but no END mark
   });
 });
 
-test("_ensureCodexInstallsCurrent: does nothing when Codex is not the harness", () => {
+function installOldThenSwitchToClaude(codexHome: string, root: string, oldVer: string, newVer: string) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
+  const oldV = versionDir(base, oldVer);
+  const newV = versionDir(base, newVer);
+  withCodexProvider(root);
+  const oldFake = makeFakePanel(root, {
+    _codexHookScriptPath: () => oldV.hook,
+    _codexDispatcherScriptPath: () => oldV.dispatcher,
+    _extensionUri: { fsPath: base },
+  });
+  (TycoonPanel.prototype as any)._handleInstallCodexHooks.call(oldFake);
+  (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(oldFake);
+  fs.rmSync(path.join(base, "extensions", `tycoonagents.tycoonagents-${oldVer}`), { recursive: true, force: true });
+  fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "claude-code" }));
+  return { oldV, newV, configPath: path.join(codexHome, "config.toml") };
+}
+
+test("_ensureCodexInstallsCurrent: Claude-harness project repoints stale user-level dispatcher and notify paths, project files untouched", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexHome((codexHome) => {
+    const { oldV, newV, configPath } = installOldThenSwitchToClaude(codexHome, root, "0.0.709", "0.0.710");
+    const hooksJson = path.join(root, ".codex", "hooks.json");
+    const hooksBefore = fs.existsSync(hooksJson) ? fs.readFileSync(hooksJson, "utf8") : undefined;
+    const fake = makeFakePanel(root, { _codexHookScriptPath: () => newV.hook, _codexDispatcherScriptPath: () => newV.dispatcher });
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    const toml = fs.readFileSync(configPath, "utf8");
+    assert.ok(toml.includes(JSON.stringify(newV.dispatcher)), "dispatcher repointed");
+    assert.ok(toml.includes(JSON.stringify(newV.hook)), "notify hook repointed");
+    assert.ok(!toml.includes(oldV.hook) && !toml.includes("0.0.709"), "old path gone");
+    assert.equal(fs.existsSync(hooksJson) ? fs.readFileSync(hooksJson, "utf8") : undefined, hooksBefore, "project hooks.json untouched");
+    // Second run is a no-op: no rewrite.
+    const mtime = fs.statSync(configPath).mtimeMs;
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.statSync(configPath).mtimeMs, mtime, "unchanged config is not rewritten");
+  });
+});
+
+test("_ensureCodexInstallsCurrent: Claude-harness project with no tycoon entries leaves config.toml alone", () => {
   configuredProviderSetting = undefined;
   const root = tmpRoot();
   withCodexHome((codexHome) => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "extBase-"));
-    const oldV = versionDir(base, "0.0.709");
-    const newV = versionDir(base, "0.0.710");
-    withCodexProvider(root);
-    const oldFake = makeFakePanel(root, { _codexHookScriptPath: () => oldV.hook, _codexDispatcherScriptPath: () => oldV.dispatcher, _extensionUri: { fsPath: base } });
-    (TycoonPanel.prototype as any)._handleInstallCodexDispatcher.call(oldFake);
-    fs.rmSync(path.join(base, "extensions", "tycoonagents.tycoonagents-0.0.709"), { recursive: true, force: true });
-    fs.writeFileSync(path.join(root, ".claude", "tycoon", "execution.json"), JSON.stringify({ provider: "claude-code" }));
-    const before = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+    const cur = versionDir(base, "0.0.710");
+    const fake = makeFakePanel(root, { _codexHookScriptPath: () => cur.hook, _codexDispatcherScriptPath: () => cur.dispatcher });
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.existsSync(path.join(codexHome, "config.toml")), false, "no config.toml created");
+    const foreign = '[mcp_servers.other]\ncommand = "x"\n';
+    fs.writeFileSync(path.join(codexHome, "config.toml"), foreign);
+    (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
+    assert.equal(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), foreign);
+  });
+});
+
+test("_ensureCodexInstallsCurrent: Claude-harness project never rewrites entries that point at a newer extension", () => {
+  configuredProviderSetting = undefined;
+  const root = tmpRoot();
+  withCodexHome((codexHome) => {
+    const { configPath, newV } = installOldThenSwitchToClaude(codexHome, root, "0.0.711", "0.0.710");
+    // Recreate the newer folder so its paths exist, as another window's install would.
+    const base2 = path.dirname(path.dirname(path.dirname(path.dirname(newV.hook))));
+    versionDir(base2, "0.0.711");
+    const before = fs.readFileSync(configPath, "utf8");
     const fake = makeFakePanel(root, { _codexHookScriptPath: () => newV.hook, _codexDispatcherScriptPath: () => newV.dispatcher });
     (TycoonPanel.prototype as any)._ensureCodexInstallsCurrent.call(fake);
-    assert.equal(fs.readFileSync(path.join(codexHome, "config.toml"), "utf8"), before);
+    assert.equal(fs.readFileSync(configPath, "utf8"), before);
   });
 });
 
