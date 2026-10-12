@@ -109,3 +109,23 @@ test("_stageSkillTree refreshes a locally-modified core skill file back to shipp
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("tycoon-ready-test skill spawns agents under their own subagent_type and pings bridges", () => {
+  const text = fs.readFileSync(path.join(REPO_ROOT, "media", "skills", "tycoon-ready-test", "SKILL.md"), "utf8");
+  assert.match(text, /subagent_type[^\n]*agent's name/);
+  assert.match(text, /Never use `general-purpose` or `Explore` as a stand-in/);
+  assert.match(text, /Bridge ping/);
+  assert.match(text, /ONE route before calling/);
+  assert.match(text, /no retry on another route/);
+  assert.match(text, /make no tool calls and reply in one line/);
+  assert.match(text, /X passed, W warnings, Y failed/);
+  assert.match(text, /keyword routing/);
+  assert.doesNotMatch(text, /## ## /);
+  assert.match(text, /bridge not installed/);
+  assert.match(text, /key or login missing/);
+  assert.match(text, /answered by <vendor\/model>/);
+  assert.match(text, /Claude Code harness/);
+  assert.match(text, /Codex harness has no Task tool/);
+  const dev = fs.readFileSync(path.join(REPO_ROOT, ".claude", "skills", "tycoon-ready-test", "SKILL.md"), "utf8");
+  assert.equal(dev, text, "repo .claude copy must match shipped copy");
+});

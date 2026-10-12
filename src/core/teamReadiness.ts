@@ -29,6 +29,7 @@
 // passes vendor/model identifiers (never secret values) into probes.
 // ---------------------------------------------------------------------------
 
+import * as os from "os";
 import type { TeamHarnessId, TeamManifest, TeamManifestRouting } from "./teamSetup";
 export type { TeamManifestRouting };
 
@@ -451,7 +452,8 @@ export function createDefaultProbes(opts: CreateDefaultProbesOptions): TeamReadi
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { execFileSync } = require("child_process") as typeof import("child_process");
     const [bin, ...args] = command.split(" ");
-    return execFileSync(bin, args, { encoding: "utf8", timeout: 5000 });
+    // cwd off the project: Windows resolves a bare command against cwd first.
+    return execFileSync(bin, args, { encoding: "utf8", timeout: 5000, cwd: os.tmpdir() });
   };
 
   const probeHarnessClaudeCode = async (): Promise<HarnessInstallStatus> => {

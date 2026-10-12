@@ -141,7 +141,7 @@ test("every agent-id-shaped reference in shipped skill/command markdown is in th
     // Reported, not asserted-fatal for ids seeded by a separate UEFN pack
     // install (uefn-auditor, verse-expert) — those are legitimately outside
     // this catalog. Anything else here is a real drift and should fail.
-    // "parallel-agent" (tycoon-ready-test/SKILL.md:28) is prose ("sonnet
+    // "parallel-agent" (tycoon-ready-test/SKILL.md) is prose ("sonnet
     // parallel-agent limit"), not an id reference. "verse-auditor"
     // (tycoon-diagnose/SKILL.md:109) is an illustrative example of a WRONG
     // id inside prose documenting a naming-mismatch failure mode, not a
