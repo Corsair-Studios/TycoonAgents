@@ -309,7 +309,8 @@ function runClaudeCli(command, args, cwd, timeoutMs, promptText) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+      // TYCOON_BRIDGE_CHILD=1: the claude -p child's Tycoon hook must skip it (tracked on the delegating row; no double count, no harness-mismatch hint).
+      child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, TYCOON_BRIDGE_CHILD: "1" } });
     } catch (err) {
       resolve({ error: `Failed to spawn ${command}: ${err && err.message ? err.message : String(err)}` });
       return;

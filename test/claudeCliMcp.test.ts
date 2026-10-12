@@ -36,7 +36,7 @@ process.stdin.on("end", () => {
   if (prompt === "AUTH") return fail("401 Unauthorized: not logged in");
   if (prompt === "QUOTA") return fail("Claude usage limit reached");
   if (prompt === "EMPTY") { process.stdout.write(JSON.stringify({ ...base, is_error: false, result: "  " })); return; }
-  const result = prompt === "BIG" ? "y".repeat(200) : "answer";
+  const result = prompt === "ENV" ? "marker=" + process.env.TYCOON_BRIDGE_CHILD : prompt === "BIG" ? "y".repeat(200) : "answer";
   process.stdout.write(JSON.stringify({ ...base, is_error: false, result }));
 });
 `;
@@ -113,4 +113,9 @@ test("truncation: output above TYCOON_BRIDGE_MAX_CHARS is capped, truncated=true
   assert.equal(env.truncated, true);
   assert.ok(env.summary.length < 100, env.summary);
   assert.equal(reply!.result!.isError, false);
+});
+
+test("the claude -p child is marked TYCOON_BRIDGE_CHILD=1 so the Tycoon hooks skip it", async () => {
+  const { reply } = await claude("ENV");
+  assert.equal(envelopeOf(reply).summary, "marker=1");
 });
