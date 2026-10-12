@@ -470,6 +470,8 @@
     lastMcpServers = Array.isArray(servers) ? servers : [];
     mcpListEl.innerHTML = "";
     mcpListEl.appendChild(buildCatalogNotice("third-party"));
+    const approvalBlock = buildMcpApprovalBlock();
+    if (approvalBlock) mcpListEl.appendChild(approvalBlock);
     if (error) {
       const errEl = document.createElement("p");
       errEl.className = "skills-error";
@@ -613,6 +615,8 @@
         note.className = "mcp-approval-note";
         note.textContent = MCP_APPROVAL_NOTE;
         okRow.appendChild(note);
+        const rowBlock = buildMcpApprovalBlock();
+        if (rowBlock) okRow.appendChild(rowBlock);
       }
     } else {
       btn.textContent = "Install";
@@ -782,11 +786,18 @@
       renderPackChips(parts, pack);
       header.appendChild(parts);
 
-      const fully = packFullyInstalled(pack);
+      const fully = !pack.picker && packFullyInstalled(pack);
       const anyInstalled = packAnyInstalled(pack);
 
       const btn = document.createElement("button");
-      if (fully) {
+      if (pack.picker) {
+        // Picker packs (Multi-LLM) never auto-install everything: the button
+        // opens a per-model checklist instead of posting installPack directly.
+        btn.className = "skill-btn";
+        btn.textContent = anyInstalled ? "Add or change models…" : "Choose models…";
+        btn.setAttribute("data-pack-picker-id", pack.id);
+        btn.addEventListener("click", () => toggleBridgePicker(pack.id));
+      } else if (fully) {
         btn.className = "skill-btn skill-btn--installed";
         btn.textContent = "Installed";
         btn.setAttribute("disabled", "");
@@ -857,6 +868,7 @@
         }
       });
       textBlock.appendChild(details);
+      if (pack.picker) textBlock.appendChild(buildBridgePickerPanel(pack));
 
       row.appendChild(textBlock);
       packsListEl.appendChild(row);
@@ -875,6 +887,11 @@
    */
   function handlePackInstalled(id, ok, _results, error, cancelled) {
     if (!packsListEl) return;
+    if (handleBridgePackInstalled(id, ok, _results, error, cancelled)) return;
+    if (!ok && !cancelled && error && !packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)) {
+      // No picker panel and no row button (e.g. started from the setup wizard): still tell the user why.
+      showToast(error, "error");
+    }
     const btn = /** @type {HTMLElement|null} */ (
       packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)
     );
