@@ -145,9 +145,13 @@ async function delegate(project: Project, task = "review this diff"): Promise<To
   process.env.TYCOON_DISPATCH_STEP_TIMEOUT_MS = "15000";
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // These fake bridges are not canonical TycoonAgents bridges, so bypass the trust gate (covered in dispatcherBridgeTrust.test.ts).
+    const client = require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: (n: string, e: any) => unknown) => void };
+    client.setTrustOverrideForTests((_n, e) => ({ command: e.command, args: e.args, env: e.env }));
     const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<ToolResult> };
     return await mod.handleDelegateTool({ specialist: "fake-reviewer", task });
   } finally {
+    (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: undefined) => void }).setTrustOverrideForTests(undefined);
     for (const [k, v] of [["TYCOON_PROJECT_DIR", prev.dir], ["TYCOON_DISPATCH_HOST", prev.host], ["TYCOON_DISPATCH_DEPTH", prev.depth], ["TYCOON_DISPATCH_STEP_TIMEOUT_MS", prev.timeout]] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -364,9 +368,11 @@ test("a hung primary times out and falls back; the hung child is cleaned up", as
     let res: ToolResult;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
+      (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: (n: string, e: any) => unknown) => void }).setTrustOverrideForTests((_n, e) => ({ command: e.command, args: e.args, env: e.env }));
       const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<ToolResult> };
       res = await mod.handleDelegateTool({ specialist: "fake-reviewer", task: "review" });
     } finally {
+      (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: undefined) => void }).setTrustOverrideForTests(undefined);
       for (const [k, v] of [["TYCOON_PROJECT_DIR", prev.dir], ["TYCOON_DISPATCH_HOST", prev.host], ["TYCOON_DISPATCH_STEP_TIMEOUT_MS", prev.timeout], ["TYCOON_DISPATCH_GUARD_GRACE_MS", undefined]] as const) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
@@ -446,9 +452,11 @@ test("hinted _tycoon session from the hook wins over the activity-log heuristic"
     process.env.TYCOON_DISPATCH_HOST = "claude";
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
+      (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: (n: string, e: any) => unknown) => void }).setTrustOverrideForTests((_n, e) => ({ command: e.command, args: e.args, env: e.env }));
       const mod = require(modPath) as { handleDelegateTool: (a: Record<string, unknown>) => Promise<ToolResult> };
       await mod.handleDelegateTool({ specialist: "fake-reviewer", task: "t", _tycoon: { sessionId: "sess-1", callerAgentId: "fake-reviewer" } });
     } finally {
+      (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: undefined) => void }).setTrustOverrideForTests(undefined);
       delete process.env.TYCOON_PROJECT_DIR;
       delete process.env.TYCOON_DISPATCH_HOST;
     }
@@ -767,6 +775,7 @@ test("retry budget: the same-slot retry runs with only the REMAINING step budget
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const chainMod = require("../../hooks/dispatcherClaudeChain.cjs") as { runProviderChain: (c: Record<string, unknown>) => Promise<ToolResult> };
+    (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: (n: string, e: any) => unknown) => void }).setTrustOverrideForTests((_n, e) => ({ command: e.command, args: e.args, env: e.env }));
     const started = Date.now();
     const res = await chainMod.runProviderChain({
       projectDir: project.dir,
@@ -789,6 +798,7 @@ test("retry budget: the same-slot retry runs with only the REMAINING step budget
     // First try + wait + retry all fit in ONE 2500ms step budget (plus kill grace), never ~2 x 2500.
     assert.ok(elapsed < 2500 + 1500, `took ${elapsed}ms`);
   } finally {
+    (require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: undefined) => void }).setTrustOverrideForTests(undefined);
     await assertNoLeakedBridges(project);
     cleanup(project);
   }

@@ -83,11 +83,11 @@ test("mapBridgeAttempt maps envelope status + error.kind", () => {
 
 const SECRET = "sk-fake-secret-value-0123456789";
 
-function fakeBridgeSource(): string {
+function fakeBridgeSource(mode: string, argsFile: string): string {
   return `
 "use strict";
 const br = require(${JSON.stringify(path.join(HOOKS_DIR, "bridge-result.cjs").replace(/\\/g, "/"))});
-const mode = process.env.FAKE_MODE || "ok";
+const mode = ${JSON.stringify(mode)};
 let buf = "";
 process.stdin.on("data", (c) => {
   buf += c;
@@ -99,7 +99,7 @@ process.stdin.on("data", (c) => {
     if (msg.method === "initialize") {
       out({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } } });
     } else if (msg.method === "tools/call") {
-      if (process.env.FAKE_ARGS_FILE) require("fs").writeFileSync(process.env.FAKE_ARGS_FILE, JSON.stringify(msg.params));
+      if (${JSON.stringify(argsFile)}) require("fs").writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(msg.params));
       if (mode === "hang") return;
       let result;
       if (mode === "ok") result = br.formatBridgeResult({ provider: "fake", model: "m", text: "pong" });
@@ -114,13 +114,26 @@ function out(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
 `;
 }
 
+let lastHooksDir = HOOKS_DIR;
+/** hooksDir of the most recent makeProject(): the real client plus the fake bridge under the server's canonical file name. */
+function lastHooks(): string {
+  return lastHooksDir;
+}
+
 function makeProject(mode: string, server = "openai-compatible", extraEnv: Record<string, string> = {}): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vk-proj-"));
-  const script = path.join(root, "fake-bridge.cjs");
-  fs.writeFileSync(script, fakeBridgeSource(), "utf8");
+  // The bridge client only runs the dispatcher's own sibling script, so the fake
+  // is installed as the canonical bridge file next to a copy of the real client.
+  const hooks = path.join(root, "hooks-under-test");
+  fs.mkdirSync(hooks);
+  for (const f of ["dispatcherBridgeClient.cjs", "bridge-result.cjs"]) fs.copyFileSync(path.join(HOOKS_DIR, f), path.join(hooks, f));
+  const bridgeFile = server === "gemini" ? "gemini-mcp-wrapper.cjs" : "openai-compatible-mcp.cjs";
+  fs.writeFileSync(path.join(hooks, bridgeFile), fakeBridgeSource(mode, extraEnv.FAKE_ARGS_FILE ?? ""), "utf8");
+  lastHooksDir = hooks;
+  const { FAKE_ARGS_FILE: _ignored, ...entryEnv } = extraEnv;
   fs.writeFileSync(
     path.join(root, ".mcp.json"),
-    JSON.stringify({ mcpServers: { [server]: { command: process.execPath, args: [script], env: { FAKE_MODE: mode, ...extraEnv } } } }),
+    JSON.stringify({ mcpServers: { [server]: { command: "node", args: [path.join(hooks, bridgeFile)], env: entryEnv } } }),
     "utf8"
   );
   return root;
@@ -146,32 +159,32 @@ test("runVendorKeyTest: missing key short-circuits without spawning the bridge",
 
 test("runVendorKeyTest: ok / auth / not_found map from the real bridge envelope", () =>
   withEmptyStore(async () => {
-    const ok = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const ok = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(ok.state, "ok");
-    const nf = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("not_found"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const nf = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("not_found"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(nf.state, "not_found");
-    const auth = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("auth"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const auth = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("auth"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(auth.state, "auth");
     assert.ok(!JSON.stringify(auth).includes(SECRET), "key value redacted from the result");
   }));
 
 test("runVendorKeyTest: bridge that never answers times out", () =>
   withEmptyStore(async () => {
-    const r = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("hang"), hooksDir: HOOKS_DIR, env: KEYED_ENV, timeoutMs: 6000 });
+    const r = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("hang"), hooksDir: lastHooks(), env: KEYED_ENV, timeoutMs: 6000 });
     assert.equal(r.state, "timeout");
   }));
 
 test("runVendorKeyTest: sends a 1-token chat with the slot's prefixed model, else the spec test model", () =>
   withEmptyStore(async () => {
     const argsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "vk-args-")), "args.json");
-    const r1 = await runVendorKeyTest({ vendorId: "xai", model: "xai/grok-4.7", projectRoot: makeProject("echo", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const r1 = await runVendorKeyTest({ vendorId: "xai", model: "xai/grok-4.7", projectRoot: makeProject("echo", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(r1.state, "ok");
     const call1 = JSON.parse(fs.readFileSync(argsFile, "utf8"));
     assert.equal(call1.name, "chat");
     assert.equal(call1.arguments.model, "xai/grok-4.7");
     assert.equal(call1.arguments.max_tokens, 1);
     // A model without the vendor prefix would route to the generic endpoint, so the spec's test model is used.
-    const r2 = await runVendorKeyTest({ vendorId: "xai", model: "llama3", projectRoot: makeProject("echo", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const r2 = await runVendorKeyTest({ vendorId: "xai", model: "llama3", projectRoot: makeProject("echo", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(r2.state, "ok");
     assert.equal(JSON.parse(fs.readFileSync(argsFile, "utf8")).arguments.model, "xai/grok-build-0.1");
   }));
@@ -206,33 +219,33 @@ test("runVendorKeyTest: a custom base URL (env, .mcp.json env, or store) is neve
   withEmptyStore(async () => {
     const argsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "vk-args-")), "args.json");
     // env var
-    const r1 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: HOOKS_DIR, env: { ...KEYED_ENV, XAI_BASE_URL: "https://proxy.example.net/v1" } });
+    const r1 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok", "openai-compatible", { FAKE_ARGS_FILE: argsFile }), hooksDir: lastHooks(), env: { ...KEYED_ENV, XAI_BASE_URL: "https://proxy.example.net/v1" } });
     assert.equal(r1.state, "custom_url");
     assert.match(r1.message, /proxy\.example\.net/);
     assert.equal(fs.existsSync(argsFile), false, "bridge not spawned");
     // .mcp.json env block
-    const r2 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok", "openai-compatible", { XAI_BASE_URL: "http://api.x.ai/v1", FAKE_ARGS_FILE: argsFile }), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const r2 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok", "openai-compatible", { XAI_BASE_URL: "http://api.x.ai/v1", FAKE_ARGS_FILE: argsFile }), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(r2.state, "custom_url");
     assert.equal(fs.existsSync(argsFile), false);
     // per-user store
     const { setValue } = await import("../src/core/localEnvStore");
     setValue("XAI_BASE_URL", "https://stored.example.org/v1");
-    const r3 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const r3 = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(r3.state, "custom_url");
     // the default host itself is fine
-    const r4 = await runVendorKeyTest({ vendorId: "mistral", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: { MISTRAL_API_KEY: "k-mistral", MISTRAL_BASE_URL: "https://api.mistral.ai/v1" } as NodeJS.ProcessEnv });
+    const r4 = await runVendorKeyTest({ vendorId: "mistral", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: { MISTRAL_API_KEY: "k-mistral", MISTRAL_BASE_URL: "https://api.mistral.ai/v1" } as NodeJS.ProcessEnv });
     assert.equal(r4.state, "ok");
   }));
 
 test("runVendorKeyTest: second request for the same vendor while one runs returns busy; cancel kills the child", () =>
   withEmptyStore(async () => {
-    const first = runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("hang"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const first = runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("hang"), hooksDir: lastHooks(), env: KEYED_ENV });
     await new Promise((r) => setTimeout(r, 300));
-    const second = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const second = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(second.state, "busy");
     assert.match(second.message, /Already testing/);
     // a different vendor is not blocked by this one
-    const other = await runVendorKeyTest({ vendorId: "mistral", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: { MISTRAL_API_KEY: "k" } as NodeJS.ProcessEnv });
+    const other = await runVendorKeyTest({ vendorId: "mistral", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: { MISTRAL_API_KEY: "k" } as NodeJS.ProcessEnv });
     assert.equal(other.state, "ok");
     const started = Date.now();
     cancelAllVendorKeyTests();
@@ -241,7 +254,7 @@ test("runVendorKeyTest: second request for the same vendor while one runs return
     assert.equal(r.state, "error");
     assert.match(r.message, /cancelled/i);
     // slot freed
-    const again = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: HOOKS_DIR, env: KEYED_ENV });
+    const again = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("ok"), hooksDir: lastHooks(), env: KEYED_ENV });
     assert.equal(again.state, "ok");
   }));
 
@@ -252,7 +265,7 @@ test("runVendorKeyTest: redacts every spec key value (any length) found in env, 
     process.env.MISTRAL_API_KEY = "zz9";
     try {
       // The fake bridge echoes XAI_API_KEY into its auth error; add the other vendor's value via env too.
-      const r = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("auth"), hooksDir: HOOKS_DIR, env: process.env });
+      const r = await runVendorKeyTest({ vendorId: "xai", projectRoot: makeProject("auth"), hooksDir: lastHooks(), env: process.env });
       assert.equal(r.state, "auth");
       assert.ok(!r.message.includes("abc"), r.message);
       assert.match(r.message, /\[redacted\]/);

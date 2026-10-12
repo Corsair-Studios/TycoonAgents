@@ -98,12 +98,18 @@ const { formatBridgeResult, providerErrorResult } = require("./bridge-result.cjs
 //      hasn't run copy-hook-runtime yet.
 // The stored value is never logged.
 // ---------------------------------------------------------------------------
+// The ../out fallback is for a dev checkout only; a project copy (.claude/hooks) must never load project-controlled code from ../out.
+function localEnvStoreCandidates() {
+  const own = path.join(__dirname, "localEnvStore.js");
+  if (path.basename(path.dirname(__dirname)).toLowerCase() === ".claude") return [own];
+  return [own, path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")];
+}
 let _localEnvStore;
 let _localEnvStoreTried = false;
 function localEnvStore() {
   if (_localEnvStoreTried) return _localEnvStore;
   _localEnvStoreTried = true;
-  const candidates = [path.join(__dirname, "localEnvStore.js"), path.join(__dirname, "..", "out", "src", "core", "localEnvStore.js")];
+  const candidates = localEnvStoreCandidates();
   for (const candidate of candidates) {
     try {
       if (fs.existsSync(candidate)) {

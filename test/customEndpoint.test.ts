@@ -407,7 +407,15 @@ function out(o) { process.stdout.write(JSON.stringify(o) + "\\n"); }
   const activity = path.join(root, "activity.jsonl");
   const primary = { vendor: "ollama-windows", transport: "openai-compatible", mcpServer: "openai-compatible", tools: ["chat"], model: "ollama-windows/llama3", endpointEnv: "OLLAMA_BASE_URL", apiKeyEnv: "OLLAMA_API_KEY" };
   await withEnv({ OLLAMA_BASE_URL: "http://127.0.0.1:9", OLLAMA_API_KEY: KEY }, async () => {
-    const result = await chain.runProviderChain({ projectDir: root, activityFile: activity, workerId: "loc", task: "do it", primary, chain: [], fallbackChain: null });
+    // The fake bridge is not a canonical TycoonAgents bridge, so bypass the trust gate (covered in dispatcherBridgeTrust.test.ts).
+    const bridgeClient = require("../../hooks/dispatcherBridgeClient.cjs") as { setTrustOverrideForTests: (fn?: (n: string, e: any) => unknown) => void };
+    bridgeClient.setTrustOverrideForTests((_n, e) => ({ command: e.command, args: e.args, env: e.env }));
+    let result;
+    try {
+      result = await chain.runProviderChain({ projectDir: root, activityFile: activity, workerId: "loc", task: "do it", primary, chain: [], fallbackChain: null });
+    } finally {
+      bridgeClient.setTrustOverrideForTests(undefined);
+    }
     assert.ok(!result.isError, JSON.stringify(result).slice(0, 300));
   });
   const call = JSON.parse(fs.readFileSync(argsFile, "utf8"));

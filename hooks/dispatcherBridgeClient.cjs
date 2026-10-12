@@ -19,8 +19,11 @@
  * silently skipped. Relative `args` are resolved against projectDir so the
  * dispatcher can be launched from any cwd.
  *
- * Secrets: only the child's own env block from .mcp.json is forwarded, plus
- * this process's env; nothing is logged.
+ * Trust: the entry is only a pointer. It is spawned only in canonical form
+ * (see resolveTrustedBridge); anything else fails with kind "bridge_untrusted".
+ *
+ * Secrets: only allowlisted env keys from .mcp.json are forwarded, plus this
+ * process's env; nothing is logged.
  */
 
 const { spawn } = require("child_process");
@@ -74,39 +77,121 @@ function expandVars(value, env) {
   });
 }
 
-function resolveArg(arg, projectDir) {
-  // Only project-relative script paths (e.g. ".claude/hooks/x.cjs") are rebased;
-  // flags and other values pass through untouched.
-  if (typeof arg !== "string") return String(arg);
-  if (/^\.{1,2}[\\/]/.test(arg) || /^\.claude[\\/]/.test(arg)) {
-    const abs = path.resolve(projectDir, arg);
-    return fs.existsSync(abs) ? abs : arg;
-  }
-  return arg;
+/**
+ * Canonical-form gate. A project's .mcp.json is repo-controlled, so the
+ * dispatcher never runs an entry's command/args/env as written. It spawns only
+ * `process.execPath <our own bridge script>` where the script is one of the
+ * known bridge files for that server, sitting in the dispatcher's own
+ * directory (realpath-checked: no symlink, junction or escape). Anything
+ * else is refused with kind "bridge_untrusted" and nothing is spawned.
+ */
+const BRIDGE_SCRIPTS_BY_SERVER = {
+  "openai-compatible": ["openai-compatible-mcp.cjs"],
+  "claude-cli": ["claude-cli-mcp.cjs"],
+  codex: ["codex-mcp-launcher.cjs", "codex-app-server-mcp.cjs"],
+  gemini: ["gemini-mcp-wrapper.cjs"],
+};
+
+/** Entry env keys that may carry a literal value (enum-like settings, no paths or secrets). */
+const ENV_LITERAL_KEYS = {
+  TYCOON_CODEX_BACKEND: /^(auto|mcp-server|app-server)$/,
+  GEMINI_MCP_BACKEND: /^(agy|gemini)$/,
+  TYCOON_DISPATCH_HOST: /^(claude|codex|opencode|gemini)$/,
+  TYCOON_BRIDGE_TIMEOUT_MS: /^\d{1,9}$/,
+};
+/** Entry env keys that may only reference the user's own same-named variable (`${NAME}`). */
+const ENV_REFERENCE_KEYS = new Set([
+  "OPENAI_COMPAT_BASE_URL",
+  "OPENAI_COMPAT_API_KEY",
+  "OPENAI_COMPAT_MODEL",
+  "GEMINI_API_KEY",
+]);
+/** `-c key=value` Codex launcher args that stay within a safe sandbox. */
+const CODEX_CONFIG_ARG = {
+  model: /^"[A-Za-z0-9._:\/-]{1,80}"$/,
+  model_reasoning_effort: /^"(minimal|low|medium|high|xhigh)"$/,
+  approval_policy: /^"(never|on-request|on-failure|untrusted)"$/,
+  sandbox_mode: /^"(read-only|workspace-write)"$/,
+};
+
+function untrusted(serverName, why) {
+  return {
+    error: `MCP server "${serverName}" in the project's .mcp.json is not in the canonical TycoonAgents bridge form (${why}); the dispatcher will not launch it. Reinstall the bridge from the TycoonAgents MCP catalog.`,
+    kind: "bridge_untrusted",
+  };
 }
 
-function spawnBridge(entry, projectDir, extraEnv) {
-  const base = Object.assign({}, process.env);
-  const command = expandVars(entry.command, base);
-  const args = (Array.isArray(entry.args) ? entry.args : []).map((a) => resolveArg(expandVars(a, base), projectDir));
-  const entryEnv = {};
-  if (entry.env && typeof entry.env === "object") {
-    for (const [k, v] of Object.entries(entry.env)) entryEnv[k] = expandVars(v, base);
+function safeRealpath(p) {
+  try { return fs.realpathSync.native ? fs.realpathSync.native(p) : fs.realpathSync(p); } catch { return undefined; }
+}
+
+function sameFile(a, b) {
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/** Returns { command, args, env } to spawn, or { error, kind } when the entry is not canonical. */
+function resolveTrustedBridge(serverName, entry, projectDir, hooksDir) {
+  const allowed = Object.prototype.hasOwnProperty.call(BRIDGE_SCRIPTS_BY_SERVER, serverName) ? BRIDGE_SCRIPTS_BY_SERVER[serverName] : undefined;
+  if (!allowed) return untrusted(serverName, "unknown bridge server");
+  if (entry.command !== "node") return untrusted(serverName, "command must be node");
+  const args = Array.isArray(entry.args) ? entry.args : [];
+  if (args.length === 0 || typeof args[0] !== "string") return untrusted(serverName, "no bridge script");
+  const base = path.basename(args[0].split("\\").join("/"));
+  if (!allowed.includes(base)) return untrusted(serverName, "script is not a known bridge for this server");
+  const ownPath = path.join(hooksDir, base);
+  let st;
+  try { st = fs.lstatSync(ownPath); } catch { return untrusted(serverName, "bridge script is missing next to the dispatcher"); }
+  if (!st.isFile() || st.isSymbolicLink()) return untrusted(serverName, "bridge script is not a regular file");
+  const ownReal = safeRealpath(ownPath);
+  const dirReal = safeRealpath(hooksDir);
+  if (!ownReal || !dirReal || !sameFile(ownReal, path.join(dirReal, base))) return untrusted(serverName, "bridge script path escapes the dispatcher directory");
+  const requested = path.resolve(projectDir, args[0]);
+  const requestedReal = safeRealpath(requested);
+  if (!requestedReal || !sameFile(requestedReal, ownReal)) return untrusted(serverName, "script is not the dispatcher's own copy");
+  const extra = args.slice(1);
+  if (extra.length > 0) {
+    if (serverName !== "codex" || extra.length % 2 !== 0) return untrusted(serverName, "unexpected arguments");
+    for (let i = 0; i < extra.length; i += 2) {
+      const m = extra[i] === "-c" && typeof extra[i + 1] === "string" ? /^([a-z_]+)=([\s\S]*)$/.exec(extra[i + 1]) : null;
+      const rule = m && Object.prototype.hasOwnProperty.call(CODEX_CONFIG_ARG, m[1]) ? CODEX_CONFIG_ARG[m[1]] : undefined;
+      if (!rule || !rule.test(m[2])) return untrusted(serverName, "unexpected arguments");
+    }
   }
-  const env = Object.assign({}, base, entryEnv, extraEnv || {});
-  const isWinShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
-  if (isWinShim) {
-    const quote = (s) => (/[\s"&|<>^]/.test(s) ? '"' + String(s).replace(/"/g, '""') + '"' : s);
-    return spawn([quote(command), ...args.map(quote)].join(" "), { cwd: projectDir, env, shell: true, stdio: ["pipe", "pipe", "pipe"] });
+  const env = {};
+  if (entry.env !== undefined && entry.env !== null) {
+    if (typeof entry.env !== "object" || Array.isArray(entry.env)) return untrusted(serverName, "malformed env");
+    for (const [k, v] of Object.entries(entry.env)) {
+      if (typeof v !== "string") return untrusted(serverName, `env ${k} is not allowed`);
+      if (Object.prototype.hasOwnProperty.call(ENV_LITERAL_KEYS, k) && ENV_LITERAL_KEYS[k].test(v)) env[k] = v;
+      else if (ENV_REFERENCE_KEYS.has(k) && v === "${" + k + "}") env[k] = expandVars(v, process.env);
+      else return untrusted(serverName, `env ${k} is not allowed`);
+    }
   }
-  return spawn(command, args, { cwd: projectDir, env, stdio: ["pipe", "pipe", "pipe"] });
+  return { command: process.execPath, args: [ownReal, ...extra], env };
+}
+
+/** Test seam: replaces the canonical-form gate with fn(serverName, entry) -> { command, args, env }. Pass undefined to restore. */
+let trustOverride;
+function setTrustOverrideForTests(fn) { trustOverride = fn; }
+
+function spawnBridge(resolved, projectDir, extraEnv, spawnImpl) {
+  const env = Object.assign({}, process.env, resolved.env || {}, extraEnv || {});
+  const doSpawn = spawnImpl || spawn;
+  return doSpawn(resolved.command, resolved.args, { cwd: projectDir, env, stdio: ["pipe", "pipe", "pipe"] });
 }
 
 /** Kills the child and, on Windows, its whole tree (a .cmd/shell shim or launcher leaves grandchildren otherwise). */
+/** Absolute System32 taskkill.exe (a bare name is resolved against cwd first on Windows); null if absent. */
+function taskkillPath() {
+  const p = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe");
+  try { return fs.existsSync(p) ? p : null; } catch { return null; }
+}
+
 function killTree(child) {
-  if (process.platform === "win32" && child.pid) {
+  const tk = process.platform === "win32" && child.pid ? taskkillPath() : null;
+  if (tk) {
     try {
-      const k = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      const k = spawn(tk, ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
       k.on("error", () => { try { child.kill(); } catch { /* gone */ } });
       return;
     } catch { /* fall through */ }
@@ -119,7 +204,7 @@ function killTree(child) {
  * Resolves { result } (the raw MCP CallToolResult) or { error, kind } for
  * transport-level failures (spawn error, early exit, JSON-RPC error, timeout).
  *
- * opts: { projectDir, serverName, toolName, toolArgs, timeoutMs?, env? }
+ * opts: { projectDir, serverName, toolName, toolArgs, timeoutMs?, env?, hooksDir?, spawn? } (hooksDir/spawn are test seams)
  */
 function callBridgeTool(opts) {
   return new Promise((resolve) => {
@@ -133,9 +218,23 @@ function callBridgeTool(opts) {
     const bridgeTimeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_STEP_TIMEOUT_MS;
     const graceMs = Number(opts.graceMs) >= 0 ? Number(opts.graceMs) : DEFAULT_GUARD_GRACE_MS;
     const timeoutMs = bridgeTimeoutMs + graceMs;
+    let resolved;
+    if (trustOverride) {
+      const o = trustOverride(opts.serverName, found.entry);
+      const base = Object.assign({}, process.env);
+      const oenv = {};
+      for (const [k, v] of Object.entries(o.env || {})) oenv[k] = expandVars(v, base);
+      resolved = { command: expandVars(o.command, base), args: (o.args || []).map((a) => expandVars(a, base)), env: oenv };
+    } else {
+      resolved = resolveTrustedBridge(opts.serverName, found.entry, opts.projectDir, opts.hooksDir || __dirname);
+      if (resolved.error) {
+        resolve({ error: resolved.error, kind: resolved.kind });
+        return;
+      }
+    }
     let child;
     try {
-      child = spawnBridge(found.entry, opts.projectDir, opts.env);
+      child = spawnBridge(resolved, opts.projectDir, opts.env, opts.spawn);
     } catch (err) {
       resolve({ error: `Failed to spawn MCP server "${opts.serverName}": ${err && err.message ? err.message : String(err)}`, kind: "cli_missing" });
       return;
@@ -268,7 +367,10 @@ module.exports = {
   DEFAULT_STEP_TIMEOUT_MS,
   defaultToolForServer,
   readServerEntry,
+  resolveTrustedBridge,
+  setTrustOverrideForTests,
   expandVars,
   callBridgeTool,
   normalizeAttempt,
+  taskkillPath,
 };
