@@ -8692,8 +8692,14 @@ button.theme-review-preview:focus-visible::after {
 }
 
 .bridge-status {
+  flex: 0 0 100%;
+  text-align: left;
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+.bridge-status[hidden] {
+  display: none;
 }
 
 .bridge-status--ok {

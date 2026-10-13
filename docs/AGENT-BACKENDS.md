@@ -149,7 +149,7 @@ OpenCode support is coming soon, so this native path is not available yet. Use t
 
 Claude Code has no native Grok host. Under Claude Code, xAI's Grok is reached
 the same way Kimi is (see the Kimi example above): a Claude subagent —
-`grok-reviewer`, shipped in the optional "Multi-LLM agents" pack alongside
+`grok-reviewer`, added from the Agents screen's "Add an agent from another provider" alongside
 `kimi-reviewer` (`src/host/vscode/packCatalog.ts`'s `FOREIGN_LLM_AGENTS`,
 `media/packs/catalog.json` id `multi-llm`) — relays the call through the same
 `openai-compatible` MCP server (`hooks/openai-compatible-mcp.cjs`). This
@@ -327,9 +327,11 @@ holding any credential themselves.
 ### Getting these agents on a fresh install
 
 A fresh install obtains these agents — Codex Reviewer, Gemini Reviewer, Kimi
-Reviewer, Grok Reviewer, and Claude Worker — via the optional **Multi-LLM
-agents** pack (`media/packs/catalog.json`, id `multi-llm`) from the panel's
-Packs view. Install it only after configuring the matching MCP server
-(codex, gemini, openai-compatible — shared by Kimi Reviewer and Grok
-Reviewer — or claude-cli); the pack has no single MCP dependency, so the
-panel does not show a needs-MCP badge for it.
+Reviewer, Grok Reviewer, Mistral Reviewer, and Claude Worker — from the Agents
+screen: with "I use more than one AI provider" on, **Add an agent from another
+provider** lists them (plus an "Other" OpenAI-compatible endpoint). Adding an
+agent also registers the MCP server it needs (codex, gemini, openai-compatible —
+shared by Kimi, Grok, Mistral and custom endpoints — or claude-cli) at Claude
+local scope, so there is no separate server step. Start a new Claude chat to
+load a newly added server. The catalog behind the list is the hidden
+`multi-llm` entry in `media/packs/catalog.json`, which Packs does not show.

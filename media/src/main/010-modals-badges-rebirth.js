@@ -1850,6 +1850,8 @@
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // Picker data for "Add an agent from another provider" (multi-provider mode).
+    vscode.postMessage({ type: "getProviderAgents" });
     // p68-t2: refresh the keyword-health card on every open (the host also
     // posts it proactively, but an on-demand ask keeps a reopened panel from
     // showing a stale card after Fix all/adds happened elsewhere).

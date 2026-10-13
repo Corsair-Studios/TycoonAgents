@@ -79,15 +79,17 @@
   </p>
 
   <div class="section-head">
-    <div class="s-title">&sect; 15.2 &middot; Option 1 &middot; the Multi-LLM agents pack</div>
+    <div class="s-title">&sect; 15.2 &middot; Option 1 &middot; Add an agent from another provider</div>
     <div class="s-caption">ready-made foreign-LLM specialists</div>
   </div>
   <p>
-    The optional <strong>Multi-LLM agents</strong> pack (Packs view, id
-    <code>multi-llm</code>) adds five agents that each reach a different
-    backend through an MCP bridge. Install the matching MCP server first
-    &mdash; the pack itself has no single MCP dependency, so the panel
-    won't show a needs-MCP badge to remind you.
+    With <strong>I use more than one AI provider</strong> on, the Agents
+    screen has an <strong>Add an agent from another provider</strong>
+    section. Tick the providers you want and click Add: each agent is
+    created together with the MCP server it needs, registered for this
+    project, so there is no separate server step. Start a new Claude chat
+    to load a newly added server. Each agent reaches a different backend
+    through an MCP bridge.
   </p>
   <div class="ref-table">
   <table>
@@ -103,7 +105,7 @@
   </table>
   </div>
   <p>
-    Every agent in the pack reviews or implements and returns a
+    Every one of these agents reviews or implements and returns a
     structured, machine-parseable verdict &mdash; never free-form prose
     &mdash; and treats an unreachable/quota-exhausted provider as
     <code>provider-unavailable</code>, never a silent pass. Each is a
@@ -201,7 +203,7 @@
   </div>
   <p>
     The Routing view (Chapter 03, &sect; 3.8) is the other path in, and it
-    doesn't require the Multi-LLM agents pack at all. Its
+    doesn't require adding an agent from another provider at all. Its
     <strong>Custom endpoint&hellip;</strong> vendor option targets any
     OpenAI-compatible server &mdash; Grok, Kimi, Qwen, or a model you're
     hosting yourself:
@@ -434,9 +436,9 @@ Reference env var names only, never a value.</pre>
   <table>
     <thead><tr><th>Situation</th><th>Pick</th></tr></thead>
     <tbody>
-      <tr><td>Want a ready-made reviewer/worker on Codex, Gemini, Kimi, Grok, Mistral, or a Claude subscription seat</td><td>Multi-LLM agents pack (&sect; 15.2)</td></tr>
+      <tr><td>Want a ready-made reviewer/worker on Codex, Gemini, Kimi, Grok, Mistral, or a Claude subscription seat</td><td>Add an agent from another provider (&sect; 15.2)</td></tr>
       <tr><td>Want an existing agent to run on a different model, no new verdict contract needed</td><td>Routing view &middot; Custom endpoint&hellip; (&sect; 15.3)</td></tr>
-      <tr><td>Want a brand-new specialist role backed by a vendor not covered by the pack</td><td>Copy-paste prompt in your harness (&sect; 15.4)</td></tr>
+      <tr><td>Want a brand-new specialist role backed by a vendor not in that list</td><td>Copy-paste prompt in your harness (&sect; 15.4)</td></tr>
       <tr><td>Want automatic recovery when a provider is unreachable or out of quota</td><td>Fallback chain + default fallback (&sect; 15.5)</td></tr>
       <tr><td>Want the work tracked in Metrics/Delegation and eligible for fallback</td><td>Stay in your current harness with a subagent, not a separate tool</td></tr>
     </tbody>

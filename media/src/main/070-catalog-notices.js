@@ -534,8 +534,8 @@
         btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
         btn.className = "skill-btn";
-        btn.textContent = pendingEnable ? "Enable" : "Install";
-        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable");
+        btn.textContent = pendingEnable ? "Enable MCP" : "Install";
+        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable MCP");
         btn.setAttribute("data-mcp-id", server.id);
       }
       header.appendChild(btn);
@@ -709,6 +709,17 @@
   }
 
   /**
+   * True when every part the pack `has`, other than its MCP server, is `installed`.
+   * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
+   * @returns {boolean}
+   */
+  function packOthersInstalled(pack) {
+    const has = pack.has || {};
+    const installed = pack.installed || {};
+    return PACK_PARTS.every(([key]) => key === "mcp" || !has[key] || installed[key]);
+  }
+
+  /**
    * True when every part the pack `has` is also `installed`.
    * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
    * @returns {boolean}
@@ -811,18 +822,11 @@
       renderPackChips(parts, pack);
       header.appendChild(parts);
 
-      const fully = !pack.picker && packFullyInstalled(pack);
+      const fully = packFullyInstalled(pack);
       const anyInstalled = packAnyInstalled(pack);
 
       const btn = document.createElement("button");
-      if (pack.picker) {
-        // Picker packs (Multi-LLM) never auto-install everything: the button
-        // opens a per-model checklist instead of posting installPack directly.
-        btn.className = "skill-btn";
-        btn.textContent = anyInstalled ? "Add or change models…" : "Choose models…";
-        btn.setAttribute("data-pack-picker-id", pack.id);
-        btn.addEventListener("click", () => toggleBridgePicker(pack.id));
-      } else if (fully) {
+      if (fully) {
         btn.className = "skill-btn skill-btn--installed";
         btn.textContent = "Installed";
         btn.setAttribute("disabled", "");
@@ -831,14 +835,17 @@
         btn.textContent = "Install";
         btn.setAttribute("data-pack-id", pack.id);
       }
-      header.appendChild(btn);
+      // Skill and agent are installed and only the MCP is pending: Install has nothing
+      // left to do, so show just "Enable MCP" and "Remove".
+      const onlyMcpPending = !fully && packMcpPending(pack) && packOthersInstalled(pack);
+      if (!onlyMcpPending) header.appendChild(btn);
 
       // MCP server only in .mcp.json: Claude Code has not loaded it. Offer the same
       // explicit Enable as the MCP tab (registers the pinned config at local scope).
-      if (!pack.picker && packMcpPending(pack)) {
+      if (packMcpPending(pack)) {
         const enableBtn = document.createElement("button");
         enableBtn.className = "skill-btn";
-        enableBtn.textContent = "Enable";
+        enableBtn.textContent = "Enable MCP";
         enableBtn.setAttribute("data-pack-enable-mcp", pack.mcpId);
         header.appendChild(enableBtn);
       }
@@ -903,8 +910,6 @@
         }
       });
       textBlock.appendChild(details);
-      if (pack.picker) textBlock.appendChild(buildBridgePickerPanel(pack));
-
       row.appendChild(textBlock);
       packsListEl.appendChild(row);
     }
@@ -929,7 +934,7 @@
       return;
     }
     for (const b of btns) {
-      b.textContent = "Enable";
+      b.textContent = "Enable MCP";
       b.removeAttribute("disabled");
     }
     if (!cancelled && error) showToast(error, "error");
@@ -946,8 +951,8 @@
    * @param {boolean|undefined} cancelled
    */
   function handlePackInstalled(id, ok, _results, error, cancelled) {
-    if (!packsListEl) return;
     if (handleBridgePackInstalled(id, ok, _results, error, cancelled)) return;
+    if (!packsListEl) return;
     if (!ok && !cancelled && error && !packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)) {
       // No picker panel and no row button (e.g. started from the setup wizard): still tell the user why.
       showToast(error, "error");

@@ -2587,6 +2587,8 @@
       if (msg.ok && msg.results && msg.results.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "tycoonMcpApprovalResult") {
       handleMcpApprovalResult(msg);
+    } else if (msg && msg.type === "providerAgents") {
+      handleProviderAgents(msg);
     } else if (msg && msg.type === "bridgeServerInstalled") {
       handleBridgeServerInstalled(msg.id, msg.ok, msg.error);
       if (msg.ok && msg.newChatHint) showToast(NEW_CHAT_HINT, "info");
@@ -2676,6 +2678,8 @@
       });
     } else if (msg && msg.type === ROUTING_MSG.SAVED) {
       handleRoutingSaved(msg);
+    } else if (msg && msg.type === "routingServerSetup") {
+      handleRoutingServerSetup(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
       handleEnvProbeReply(msg);
     } else if (msg && msg.type === ROUTING_MSG.TEST_VENDOR_KEY_RESULT) {

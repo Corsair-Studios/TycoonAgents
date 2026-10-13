@@ -219,8 +219,8 @@ only ever run OpenCode has none yet. Create it one of two ways:
 
 Either path seeds only the core worker roster plus a reviewer, matching a
 fresh VS Code install. Foreign-LLM reviewers (`codex-reviewer`,
-`gemini-reviewer`, `kimi-reviewer`) come from the multi-llm pack, installed
-from the panel's Packs view (VS Code or standalone).
+`gemini-reviewer`, `kimi-reviewer`) are added from the Agents screen with
+**Add an agent from another provider** (VS Code or standalone).
 
 Both `scripts/apply-routing-profile.mjs` and the OpenCode plugin's routing
 skip any agent id with no roster file rather than failing — see

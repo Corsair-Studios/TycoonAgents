@@ -77,7 +77,8 @@ import {
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
-import { buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
+import { loadRoutingProfile } from "../../core/routingProfile";
+import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
 import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
 import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
@@ -294,7 +295,8 @@ import {
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
 import { dismissMismatch, isMismatchSuppressed, loadDismissedMismatch, mismatchPayload, newHarnessMismatchState, scanHarnessMismatch, suppressMismatch, type HarnessMismatchState } from "./harnessMismatch";
-import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, noteRunVersion, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
+import { copiesFromNewerInstall, discoverSiblingExtensions } from "./installedExtensions";
+import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
 import { diagnose, DoctorFinding, DoctorInput, findForeignHooks, repairSettings, firstTycoonInterpreter } from "./hookDoctor";
 import { checkHookInterpreterAsync, peekHookInterpreterCheck } from "./hookNodeCheck";
 import {
@@ -803,6 +805,10 @@ export class TycoonPanel {
   /** Extension globalState (when provided); holds the per-project last-run version for the hook-wait banner. */
   private _globalStateRef: vscode.Memento | undefined;
   private _hookWaitTimer: NodeJS.Timeout | undefined;
+  /** When this panel was constructed; the hook-wait banner never shows before graceMs after it (never right on load). */
+  private readonly _createdAt: number = (TycoonPanel._firstOpenAt ??= Date.now());
+  /** First panel construction in this window session; re-creations keep the original grace start. */
+  private static _firstOpenAt: number | undefined;
   private _hookEventScan: HookEventScanState = { offset: undefined };
   /** Last hookWait payload key posted to the webview, so the poll only posts on change. */
   private _lastHookWaitKey = "";
@@ -1159,9 +1165,6 @@ export class TycoonPanel {
     // again.
     this._ensureHookMatchersFresh();
     this._ensureHookCommandAbsolute();
-    // An extension update is a hooks-change moment: a Claude Code session
-    // that started before the update may not pick up the new hook setup.
-    this._noteExtensionVersionForHooks();
     // Silent, async, once-per-construction upgrade repair of stale Tycoon
     // hooks (see _ensureHooksSilentlyCurrent).
     this._ensureHooksSilentlyCurrent();
@@ -1460,7 +1463,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.SAVE_ROUTING) {
           const parsedSaveRouting = MSG_SCHEMAS.SAVE_ROUTING.safeParse(message);
           if (parsedSaveRouting.success) {
-            this._handleSaveRouting(parsedSaveRouting.data.profile);
+            await this._handleSaveRouting(parsedSaveRouting.data.profile);
           } else {
             console.error("TycoonAgents: saveRouting payload rejected:", parsedSaveRouting.error.message);
           }
@@ -1669,6 +1672,8 @@ export class TycoonPanel {
           } else {
             console.error("TycoonAgents: installPack payload rejected:", parsedInstallPack.error.message);
           }
+        } else if (message.type === MSG.GET_PROVIDER_AGENTS) {
+          this._handleGetProviderAgents();
         } else if (message.type === MSG.INSTALL_BRIDGE_SERVER) {
           const parsedBridgeServer = MSG_SCHEMAS.INSTALL_BRIDGE_SERVER.safeParse(message);
           if (parsedBridgeServer.success) {
@@ -4411,7 +4416,8 @@ export class TycoonPanel {
   private _handleGetPacks(): void {
     try {
       const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
-      const packs: any[] = JSON.parse(fs.readFileSync(packsPath, "utf8"));
+      // Hidden entries (the bridge-agent catalog behind the Agents screen) are not packs the user installs.
+      const packs: any[] = (JSON.parse(fs.readFileSync(packsPath, "utf8")) as any[]).filter((p) => !(p && p.hidden === true));
       let mcpCatalog: any[] = [];
       try { mcpCatalog = this._loadMcpCatalog(); } catch { mcpCatalog = []; }
       // Load the skills catalog once to resolve display names for bundled skills.
@@ -4479,6 +4485,27 @@ export class TycoonPanel {
       this._panel.webview.postMessage({ type: MSG.PACKS, packs: result });
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACKS, packs: [], error: String(e) });
+    }
+  }
+
+  /**
+   * Agents screen "Add an agent from another provider": the picker payload (models, Other
+   * endpoints, per-model setup state). Names only. Adding goes through installPack with the
+   * hidden bridge pack id, so the same installBridgeSelection path runs.
+   */
+  private _handleGetProviderAgents(): void {
+    try {
+      const root = this._projectRoot();
+      const packsPath = path.join(this._extensionUri.fsPath, "media", "packs", "catalog.json");
+      const pack = (JSON.parse(fs.readFileSync(packsPath, "utf8")) as any[]).find((p) => p && p.id === BRIDGE_PACK_ID);
+      const packAgents: PackAgent[] = pack && Array.isArray(pack.agents) ? pack.agents : [];
+      void this._panel.webview.postMessage({
+        type: MSG.PROVIDER_AGENTS,
+        packId: BRIDGE_PACK_ID,
+        ...(root !== "" ? { picker: buildBridgePicker(packAgents, this._bridgeSetupContext(root)) } : {}),
+      });
+    } catch (e) {
+      void this._panel.webview.postMessage({ type: MSG.PROVIDER_AGENTS, packId: BRIDGE_PACK_ID, error: String(e) });
     }
   }
 
@@ -4560,7 +4587,7 @@ export class TycoonPanel {
     return { root, harness: this._resolveEffectiveHarness(root), env: process.env };
   }
 
-  /** Multi-LLM picker install: selected agents + the servers they need (shared openai-compatible server once). */
+  /** Agents screen "Add an agent from another provider" install: selected agents + the servers they need (shared openai-compatible server once). */
   private async _installBridgePicker(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): Promise<void> {
     await withHookWriteAsync(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => Promise<void>>)._installBridgePickerUngated.call(this, pack, root, selection));
   }
@@ -4605,6 +4632,8 @@ export class TycoonPanel {
         results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost, ...(newChatHint ? { newChatHint: true } : {}) },
       });
       this._handleGetSettings();
+      this._handleGetProviderAgents();
+      this._handleGetRouting();
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id: pack.id, ok: false, error: String(e) });
     }
@@ -4801,7 +4830,7 @@ export class TycoonPanel {
         return;
       }
 
-      // Picker pack (Multi-LLM): install only the models the user ticked, each
+      // Picker pack (hidden bridge catalog, added from the Agents screen): install only the models the user ticked, each
       // with the MCP server it needs. Never installs "everything" implicitly.
       if (pack.picker === "bridges") {
         await this._installBridgePicker(pack, root, selection);
@@ -6473,8 +6502,18 @@ export class TycoonPanel {
       const root = this._projectRoot();
       if (root === "") return;
 
+      // Another editor's NEWER install already wrote this project's copies:
+      // never downgrade them (two editors would otherwise overwrite each
+      // other on every open). Equal/older stamps refresh by content.
+      // Evidence is on-disk installs only (never a file inside the project).
+      const extVersion = this._currentExtensionVersion();
+      if (copiesFromNewerInstall(root, extVersion, discoverSiblingExtensions(this._extensionUri.fsPath))) return;
+      // Codex projects: leave Claude hook copies alone unless Claude hooks are installed and in use.
+      if (this._effectiveHarness(root) === "codex" && !this._hookInstalled(root)) return;
+
       // Heal older installs (stale bridge/runtime copies, missing CommonJS
       // marker) before the early returns below. Existing files only.
+      let runtimeChanged = false;
       try {
         const resolveSrc = (fileName: string): string | undefined => {
           const hooksPath = vscode.Uri.joinPath(this._extensionUri, "hooks", fileName).fsPath;
@@ -6482,10 +6521,15 @@ export class TycoonPanel {
           const outPath = vscode.Uri.joinPath(this._extensionUri, "out", "src", "core", fileName).fsPath;
           return fs.existsSync(outPath) ? outPath : undefined;
         };
-        healInstalledHookCopies(root, resolveSrc, (m) => console.warn(m));
+        const refreshed = healInstalledHookCopies(root, resolveSrc, (m) => console.warn(m));
+        if (refreshed.length > 0) runtimeChanged = true; // .claude/tycoon or .claude/hooks content changed
       } catch (err) {
         console.warn("TycoonAgents: hook copy heal failed:", err);
       }
+
+      // A real content change of the hook files (not merely a newer extension
+      // version) is the only thing that stamps a hooks-change moment.
+      if (runtimeChanged) recordHooksChanged(root);
 
       const dest = path.join(root, ".claude", "tycoon", "tycoon-claude-hook.cjs");
       if (!fs.existsSync(dest)) return; // never auto-create — opt-in preserved
@@ -6501,6 +6545,7 @@ export class TycoonPanel {
       if (srcContent === destContent) return; // already current
 
       fs.writeFileSync(dest, srcContent);
+      if (!runtimeChanged) recordHooksChanged(root);
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
@@ -6621,18 +6666,6 @@ export class TycoonPanel {
     }
   }
 
-  /** Stamp a hooks-change moment when the running extension version differs from the one that last ran in this project. */
-  private _noteExtensionVersionForHooks(): void {
-    try {
-      const root = this._projectRoot();
-      if (root === "" || !this._globalStateRef) return;
-      if (!noteRunVersion(this._globalStateRef, root, this._currentExtensionVersion())) return;
-      if (this._hooksInstalledForWait(root)) recordHooksChanged(root);
-    } catch {
-      /* best-effort */
-    }
-  }
-
   private _hooksInstalledForWait(root: string): boolean {
     return this._effectiveHarness(root) === "codex" ? this._detectCodexHooksInstalled(root) : this._hookInstalled(root);
   }
@@ -6656,6 +6689,7 @@ export class TycoonPanel {
       lastEventAt: readLastHookEventAt(root),
       now: Date.now(),
       graceMs: HOOK_WAIT_GRACE_MS,
+      observedSince: this._createdAt,
     });
     return { waiting, changedAt, harness };
   }
@@ -8499,12 +8533,45 @@ export class TycoonPanel {
    * pattern). scriptsDir is this extension's own install root — the
    * generator scripts live at `<extensionPath>/scripts/*.mjs`.
    */
-  private _handleSaveRouting(profile: unknown): void {
+  private async _handleSaveRouting(profile: unknown): Promise<void> {
     const root = this._projectRoot();
     const effectiveHarness = this._resolveEffectiveHarness(root);
+    // Read the previous profile before the write so only slots changed by THIS Save register a server.
+    let previous: unknown = null;
+    try { previous = root !== "" ? loadRoutingProfile(root).profile : null; } catch { previous = null; }
     const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath, effectiveHarness });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
     this._handleGetRouting();
+    // Save is the user's consent to use a foreign vendor: register that vendor's bridge server
+    // (Claude local scope) if it is not already, after the save reply and without blocking it.
+    // Other harnesses use the dispatcher: nothing to add.
+    if (result.ok && root !== "" && harnessUsesMcpJson(effectiveHarness)) {
+      void this._registerBridgeServersForProfile(root, profile, previous).then((serverSetup) => {
+        if (!serverSetup || this._disposed) return;
+        void this._panel.webview.postMessage({ type: MSG.ROUTING_SERVER_SETUP, ...serverSetup });
+        this._handleGetSettings();
+        this._handleGetProviderAgents();
+      }).catch(() => { /* never throws; defensive */ });
+    }
+  }
+
+  /** Register the bridge servers a saved profile needs; never throws. Returns undefined when none are needed. */
+  private async _registerBridgeServersForProfile(root: string, profile: unknown, previous: unknown): Promise<{ registered: string[]; failed: Array<{ server: string; error: string }>; newChatHint: boolean } | undefined> {
+    const servers = bridgeServersForRoutingProfile(profile, previous);
+    if (servers.length === 0) return undefined;
+    const registered: string[] = [];
+    const failed: Array<{ server: string; error: string }> = [];
+    for (const server of servers) {
+      try {
+        const outcome = await this._installMcpEntryForBridge(root, server);
+        if (outcome === "installed") registered.push(server);
+        else if (typeof outcome === "object") failed.push({ server, error: outcome.error });
+      } catch (e) {
+        failed.push({ server, error: String(e) });
+      }
+    }
+    if (registered.length === 0 && failed.length === 0) return undefined;
+    return { registered, failed, newChatHint: registered.length > 0 && this._useLocalMcp(root) };
   }
 
   /** Shared effective-harness resolution for saveRoutingProfile callers

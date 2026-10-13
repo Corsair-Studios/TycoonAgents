@@ -219,6 +219,10 @@ export const MSG = {
   INSTALL_PACK: "installPack",
   INSTALL_BRIDGE_SERVER: "installBridgeServer",
   BRIDGE_SERVER_INSTALLED: "bridgeServerInstalled",
+  // Agents screen "Add an agent from another provider": picker data request / reply.
+  // Adding reuses INSTALL_PACK with the hidden bridge pack id and the PACK_INSTALLED reply.
+  GET_PROVIDER_AGENTS: "getProviderAgents",
+  PROVIDER_AGENTS: "providerAgents",
   // Explicit user-clicked approval of TycoonAgents MCP servers (settings.local.json only).
   APPROVE_TYCOON_MCP: "approveTycoonMcp",
   REMOVE_TYCOON_MCP_APPROVALS: "removeTycoonMcpApprovals",
@@ -451,6 +455,8 @@ export const MSG = {
   ROUTING: "routing",
   SAVE_ROUTING: "saveRouting",
   ROUTING_SAVED: "routingSaved",
+  // Follow-up to ROUTING_SAVED: result of registering newly needed bridge servers ({registered, failed, newChatHint}).
+  ROUTING_SERVER_SETUP: "routingServerSetup",
   CLEAR_ROUTING: "clearRouting",
   // p74-t1: webview -> host, writes tycoonagents.agents.multiProvider
   // (ConfigurationTarget.Global) then re-posts a fresh MSG.ROUTING so the
@@ -571,13 +577,14 @@ export const MSG_SCHEMAS = {
 
   // Agent id of an installed bridge agent whose MCP server is missing ("Needs setup" action).
   INSTALL_BRIDGE_SERVER: z.object({ id: z.string().min(1).max(80) }).passthrough(),
+  GET_PROVIDER_AGENTS: z.object({}).passthrough(),
   REVOKE_TYCOON_MCP_APPROVAL: z.object({ id: z.string().min(1).max(80) }).passthrough(),
   APPROVE_TYCOON_MCP: z.object({ ids: z.array(z.string().min(1).max(80)).max(32).optional(), allowTools: z.boolean().optional() }).passthrough(),
 
   INSTALL_PACK: z
     .object({
       id: z.string().min(1),
-      // Multi-LLM picker: pack agent ids the user ticked plus "Other" endpoints.
+      // Agents screen provider picker: agent ids the user ticked plus "Other" endpoints.
       // Names only; an optional baseUrl VALUE is stored per user, never in a project.
       selection: z
         .object({

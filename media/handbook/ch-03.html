@@ -110,7 +110,8 @@ node standalone/src/cli.mjs watch .</pre>
   <div class="callout note">
     <span class="callout-label">Note</span>
     <p>
-      An optional "Multi-LLM agents" pack adds specialist agents
+      The Agents screen's <strong>Add an agent from another provider</strong>
+      (shown when "I use more than one AI provider" is on) adds specialist agents
       (Codex, Gemini, Kimi, Grok, Mistral, and a subscription-backed Claude Worker)
       that run on another vendor through an MCP bridge instead of the
       orchestrator's own model &mdash; see Chapter 15 for the full walkthrough
@@ -127,7 +128,7 @@ node standalone/src/cli.mjs watch .</pre>
     <span class="callout-label">Grok (xAI) via Claude Code</span>
     <p>
       Claude Code itself has no native Grok support, but the optional
-      "Multi-LLM agents" pack's <strong>Grok Reviewer</strong> agent reaches
+      <strong>Grok Reviewer</strong> agent reaches
       it through the same <code>openai-compatible</code> MCP bridge Kimi
       Reviewer uses &mdash; a Claude subagent relays each call to xAI's
       OpenAI-compatible endpoint (<code>https://api.x.ai/v1</code>), so a

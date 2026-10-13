@@ -26,9 +26,9 @@ to create it:
 Either path seeds only the core worker roster (`search-retrieval`,
 `primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
 matching a fresh VS Code install. Foreign-LLM reviewers such as
-`codex-reviewer`, `gemini-reviewer`, and `kimi-reviewer` come from the
-multi-llm pack, installed separately from the panel's Packs view (works in
-both VS Code and the standalone panel).
+`codex-reviewer`, `gemini-reviewer`, and `kimi-reviewer` are added
+separately from the Agents screen with **Add an agent from another provider**
+(works in both VS Code and the standalone panel).
 
 `scripts/apply-routing-profile.mjs` (below) never creates agent files: an
 agent id in `routing.json` with no matching `.claude/agents/<id>.md` is
@@ -200,9 +200,9 @@ additive.
 
 ## Full example
 
-`kimi-reviewer` below is a foreign-LLM reviewer from the multi-llm pack (see
-"Prerequisite: the agent roster" above) — install that pack from the panel's
-Packs view before this profile can resolve it; the seeded core roster alone
+`kimi-reviewer` below is a foreign-LLM reviewer (see "Prerequisite: the agent
+roster" above) — add it from the Agents screen ("Add an agent from another
+provider") before this profile can resolve it; the seeded core roster alone
 does not include it.
 
 ```jsonc

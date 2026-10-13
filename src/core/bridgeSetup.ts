@@ -169,6 +169,53 @@ export function bridgeServerFor(backend: Backend | null | undefined): string | n
   return null;
 }
 
+/** Bridge MCP servers TycoonAgents may register on the user's behalf from the Agents screen. */
+const REGISTRABLE_BRIDGE_SERVERS = new Set(["codex", "gemini", OPENAI_COMPAT_SERVER, "claude-cli"]);
+
+/** Slot vendor -> bridge server, for slots that do not name one. Anthropic is native: no server. */
+const VENDOR_BRIDGE_SERVER: Record<string, string> = {
+  openai: "codex",
+  google: "gemini",
+  xai: OPENAI_COMPAT_SERVER,
+  mistral: OPENAI_COMPAT_SERVER,
+  moonshot: OPENAI_COMPAT_SERVER,
+};
+
+function slotRouteKey(slot: unknown): string {
+  if (!slot || typeof slot !== "object") return "";
+  const s = slot as Record<string, unknown>;
+  return JSON.stringify([s["vendor"], s["model"], s["transport"], s["mcpServer"], s["endpointEnv"]]);
+}
+
+/**
+ * Bridge servers that THIS Save newly needs (deduplicated, stable order): only agent slots whose
+ * vendor/model/route differs from the previously saved profile (`previous`, read from disk before
+ * the write). An unchanged slot never registers anything, so a deliberate removal sticks and a
+ * repo-shipped profile cannot trigger registration. The user choosing a foreign vendor/model is
+ * the consent to register that vendor's bridge at Claude local scope. Native slots need nothing.
+ */
+export function bridgeServersForRoutingProfile(profile: unknown, previous?: unknown): string[] {
+  const out: string[] = [];
+  const agents = profile && typeof profile === "object" ? (profile as { agents?: unknown }).agents : undefined;
+  if (!agents || typeof agents !== "object") return out;
+  const prevAgents = previous && typeof previous === "object" ? (previous as { agents?: unknown }).agents : undefined;
+  const prev = prevAgents && typeof prevAgents === "object" ? (prevAgents as Record<string, unknown>) : {};
+  for (const [id, slot] of Object.entries(agents as Record<string, unknown>)) {
+    if (!slot || typeof slot !== "object") continue;
+    if (Object.prototype.hasOwnProperty.call(prev, id) && slotRouteKey(prev[id]) === slotRouteKey(slot)) continue;
+    const s = slot as { vendor?: unknown; transport?: unknown; mcpServer?: unknown; endpointEnv?: unknown };
+    const vendor = typeof s.vendor === "string" ? s.vendor.trim().toLowerCase() : "";
+    if (vendor === "anthropic") continue; // runs natively on Claude Code (as claude-worker does): no bridge
+    let server: string | undefined;
+    if (typeof s.mcpServer === "string" && s.mcpServer !== "") server = s.mcpServer;
+    else if (s.transport === "openai-compatible") server = OPENAI_COMPAT_SERVER;
+    else if (vendor !== "" && VENDOR_BRIDGE_SERVER[vendor] !== undefined) server = VENDOR_BRIDGE_SERVER[vendor];
+    else if (vendor !== "" && vendor !== "anthropic" && typeof s.endpointEnv === "string" && s.endpointEnv !== "") server = OPENAI_COMPAT_SERVER;
+    if (server !== undefined && REGISTRABLE_BRIDGE_SERVERS.has(server) && !out.includes(server)) out.push(server);
+  }
+  return out;
+}
+
 /** Describe one backend's setup state. Pure given the context. Returns null for a native (non-bridge) agent. */
 export function describeBackendSetup(backend: Backend | null | undefined, ctx: BridgeSetupContext): BridgeSetupInfo | null {
   const server = bridgeServerFor(backend);

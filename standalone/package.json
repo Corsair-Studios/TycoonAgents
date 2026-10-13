@@ -18,7 +18,7 @@
     "prestart": "npm --prefix .. run build",
     "start": "node src/server.mjs",
     "build": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test \"test/**/*.test.mjs\""
+    "test": "node --import ./test/_isolate-claude.mjs --test \"test/**/*.test.mjs\""
   },
   "engines": {
     "node": ">=18"

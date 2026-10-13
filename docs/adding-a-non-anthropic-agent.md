@@ -7,7 +7,7 @@ the full postmortem this guide fixes.
 
 ## 1. Install the MCP server
 
-Use the **Multi-LLM agents** pack from the MCP/pack panel, or copy the relevant entry from
+Use **Add an agent from another provider** on the Agents screen (it registers the server for you), or copy the relevant entry from
 `.mcp.json.example` into your project's `.mcp.json`. The Codex entry launches the bundled
 `codex-mcp-launcher.cjs` launcher (copied into `.claude/hooks/` by the hook installer —
 `MCP_BRIDGE_HOOK_FILES` in `src/host/vscode/hookInstall.ts`), never `codex mcp-server` directly.

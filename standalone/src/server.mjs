@@ -387,6 +387,13 @@ function vendorKeyTestModule() {
 }
 
 let _routingHostOpsModule;
+const ROUTING_PROFILE_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'routingProfile.js');
+let _routingProfileModule;
+function routingProfileModule() {
+  if (!_routingProfileModule) _routingProfileModule = requireCompiledOrThrow(ROUTING_PROFILE_JS, 'routingProfile');
+  return _routingProfileModule;
+}
+
 function routingHostOpsModule() {
   if (!_routingHostOpsModule) _routingHostOpsModule = requireCompiledOrThrow(ROUTING_HOST_OPS_JS, 'routingHostOps');
   return _routingHostOpsModule;
@@ -1034,6 +1041,10 @@ function handleBrowserMessage(msg) {
       // see buildPacksPayload() below.
       broadcast('message', buildPacksPayload());
       break;
+    case 'getProviderAgents':
+      // Standalone analog of panel.ts's _handleGetProviderAgents (Agents screen picker data).
+      broadcast('message', buildProviderAgentsPayload());
+      break;
     case 'installBridgeServer':
       // Standalone analog of panel.ts's _handleInstallBridgeServer ("Needs setup" action).
       handleInstallBridgeServerStandalone(msg).catch((err) => {
@@ -1084,9 +1095,24 @@ function handleBrowserMessage(msg) {
         const { saveRoutingProfile } = routingHostOpsModule();
         const root = primaryProjectRoot || process.cwd();
         const effectiveHarness = resolveEffectiveHarness(root);
+        // Read the previous profile before the write so only slots changed by THIS Save register a server.
+        let previous = null;
+        try { previous = routingProfileModule().loadRoutingProfile(root).profile; } catch { previous = null; }
         const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT, effectiveHarness });
         broadcast('message', { type: 'routingSaved', ...result });
         broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
+        // Save is the user's consent to a foreign vendor: register its bridge server if missing,
+        // after the save reply and without blocking it.
+        if (result.ok && bridgeSetupModule().harnessUsesMcpJson(effectiveHarness)) {
+          registerBridgeServersForProfileStandalone(root, msg.profile, previous).then((serverSetup) => {
+            if (!serverSetup) return;
+            broadcast('message', { type: 'routingServerSetup', ...serverSetup });
+            broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+            broadcast('message', buildProviderAgentsPayload());
+          }).catch((err) => {
+            console.error('[tycoonagents-standalone] bridge server registration failed:', err);
+          });
+        }
       } catch (err) {
         console.error('[tycoonagents-standalone] saveRouting failed:', err);
       }
@@ -2132,7 +2158,8 @@ function buildPacksPayload() {
   const packsPath = path.join(MEDIA_DIR, 'packs', 'catalog.json');
   let packs;
   try {
-    packs = JSON.parse(fs.readFileSync(packsPath, 'utf8'));
+    // Hidden entries (the bridge-agent catalog behind the Agents screen) are not packs the user installs.
+    packs = JSON.parse(fs.readFileSync(packsPath, 'utf8')).filter((p) => !(p && p.hidden === true));
   } catch (err) {
     return { type: 'packs', packs: [], error: String(err) };
   }
@@ -2639,7 +2666,42 @@ async function installMcpEntryForBridgeStandalone(root, mcpId) {
   });
 }
 
-/** Standalone analog of panel.ts's _installBridgePicker (Multi-LLM picker install). */
+/** Standalone analog of panel.ts's _handleGetProviderAgents. */
+function buildProviderAgentsPayload() {
+  const { BRIDGE_PACK_ID, buildBridgePicker } = bridgeSetupModule();
+  const root = primaryProjectRoot;
+  try {
+    const packs = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'packs', 'catalog.json'), 'utf8'));
+    const pack = packs.find((p) => p && p.id === BRIDGE_PACK_ID);
+    const packAgents = pack && Array.isArray(pack.agents) ? pack.agents : [];
+    return { type: 'providerAgents', packId: BRIDGE_PACK_ID, ...(root ? { picker: buildBridgePicker(packAgents, bridgeSetupContextStandalone(root)) } : {}) };
+  } catch (e) {
+    return { type: 'providerAgents', packId: BRIDGE_PACK_ID, error: String(e) };
+  }
+}
+
+/** Standalone analog of panel.ts's _registerBridgeServersForProfile. Never throws. */
+async function registerBridgeServersForProfileStandalone(root, profile, previous) {
+  const servers = bridgeSetupModule().bridgeServersForRoutingProfile(profile, previous);
+  if (servers.length === 0) return undefined;
+  const registered = [];
+  const failed = [];
+  for (const server of servers) {
+    try {
+      const outcome = await installMcpEntryForBridgeStandalone(root, server);
+      if (outcome === 'installed') registered.push(server);
+      else if (outcome && typeof outcome === 'object') failed.push({ server, error: outcome.error });
+    } catch (e) {
+      failed.push({ server, error: String(e) });
+    }
+  }
+  if (registered.length === 0 && failed.length === 0) return undefined;
+  const newChatHint = registered.length > 0 && useLocalMcpStandalone(root);
+  if (newChatHint) console.log(`[tycoonagents-standalone] ${NEW_CHAT_HINT}`);
+  return { registered, failed, newChatHint };
+}
+
+/** Standalone analog of panel.ts's _installBridgePicker (Agents screen provider-agent install). */
 async function installBridgePickerStandalone(pack, root, selection) {
   const id = pack.id;
   try {
@@ -2685,6 +2747,8 @@ async function installBridgePickerStandalone(pack, root, selection) {
       results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost, ...(newChatHint ? { newChatHint: true } : {}) },
     });
     broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
+    broadcast('message', buildProviderAgentsPayload());
+    broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
   } catch (e) {
     broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
   }

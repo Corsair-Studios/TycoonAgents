@@ -7096,7 +7096,16 @@ test('Packs tab: a pack whose MCP server is pending shows "not enabled" and an E
     assert.ok(!text.includes('Installed'), 'no Installed label while pending');
     const enable = list?.querySelector('[data-pack-enable-mcp="playwright"]');
     assert.ok(enable, 'Enable button present');
-    assert.equal((enable!.textContent || '').trim(), 'Enable');
+    assert.equal((enable!.textContent || '').trim(), 'Enable MCP');
+    // Everything but the MCP is installed: Install is hidden; Enable MCP and Remove remain.
+    assert.equal(list?.querySelector('[data-pack-id="playwright-qa"]'), null, 'Install hidden when only the MCP is pending');
+    assert.ok(list?.querySelector('[data-remove-pack-id="playwright-qa"]'), 'Remove stays');
+    // A missing skill keeps Install visible next to Enable MCP.
+    h.dispatch({ type: 'packs', packs: [mk({ has: { skill: true, mcp: true, agent: true } })] });
+    await h.flush();
+    assert.ok(h.doc.querySelector('#packs-list [data-pack-id="playwright-qa"]'), 'Install shown while the skill is missing');
+    h.dispatch({ type: 'packs', packs: [mk({})] });
+    await h.flush();
 
     // Truly installed (state installed, every part present): Installed label, no Enable, no "not enabled".
     h.dispatch({ type: 'packs', packs: [mk({ installed: { skill: false, mcp: true, agent: true }, mcpState: 'installed' })] });

@@ -186,6 +186,8 @@ Specialist agents can run on a different vendor than the orchestrator. Delegatio
 - **Gemini**, through the Antigravity CLI (`agy`) — no API key needed by default.
 - **OpenAI-compatible endpoints** — Kimi, Qwen, Mistral, Grok (xAI), and local or VM-hosted servers.
 
+To add an agent that runs on another provider, tick **I use more than one AI provider** in Settings, open **Agents**, and use **Add an agent from another provider** (Codex, Gemini, Grok, Kimi, Mistral, Claude Worker, or an OpenAI-compatible endpoint of your own: variable names only, never values). Saving an agent that uses another provider registers that provider's MCP server for this project at Claude local scope; start a new Claude chat to load it. If a key or sign-in is missing, the agent shows **Needs setup** naming the variable, and a server found only in `.mcp.json` shows **Enable MCP**.
+
 Each agent has its own routing (vendor and model) plus an ordered fallback chain. When a provider hits a usage limit or quota error (401/429), or is unreachable, the work falls back automatically along the chain; fallback rows show an amber **(fb)** marker, and the default fallback shows **(dfb)**. Set it up in the **Routing** view (see the walkthrough below) and see the handbook chapter "Adding Other AIs: Agents, Routing & Fallback".
 
 ### OpenCode (Coming Soon)
@@ -200,7 +202,7 @@ Any recent Codex CLI works: a runtime launcher discovers the Codex binary and pi
 
 The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login accepts; `gpt-6-astra` is available as a higher tier. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
 
-The **Multi-LLM agents** pack installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
+Adding a Codex agent from the Agents screen installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
 
 ### Routing walkthrough
 

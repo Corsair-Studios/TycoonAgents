@@ -2772,6 +2772,14 @@
     var externalBox = buildExternalSettingsBox(payload.bridge);
     if (externalBox) routingContentEl.appendChild(externalBox);
 
+    // "I use more than one AI provider" (multi mode): add an agent that runs on
+    // another provider. Adding it registers the provider's MCP server; there is
+    // no separate pack for this.
+    if (uiMode !== "single" && isClaudeHarness) {
+      var providerAgentsEl = buildProviderAgentsSection();
+      if (providerAgentsEl) routingContentEl.appendChild(providerAgentsEl);
+    }
+
     // ── Orchestrator (p19-t1: read-only session-model card in both
     // densities; full-only slot/fallback editor appended below it) ──
     var orchestratorAgent = ((lastSettings && lastSettings.agents) || []).find(function (ag) { return ag.isOrchestrator; });
@@ -3506,6 +3514,15 @@
     // makes the hint disappear without requiring a panel reload.
     if (msg && msg.ok !== false) {
       vscode.postMessage({ type: "getSettings" });
+    }
+  }
+
+  /** routingServerSetup follow-up: choosing another provider registered its bridge server on the host. */
+  function handleRoutingServerSetup(msg) {
+    if (msg && Array.isArray(msg.failed) && msg.failed.length) {
+      showToast("Could not add the " + msg.failed.map(function (f) { return f.server; }).join(", ") + " server: " + msg.failed[0].error, "error");
+    } else if (msg && msg.newChatHint) {
+      showToast(NEW_CHAT_HINT, "info");
     }
   }
 

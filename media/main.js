@@ -3714,6 +3714,8 @@ if (typeof module !== "undefined" && module.exports) {
     renderRoutingModal();
     openModal(routingModalEl, routingCloseBtnEl);
     vscode.postMessage({ type: ROUTING_MSG.GET });
+    // Picker data for "Add an agent from another provider" (multi-provider mode).
+    vscode.postMessage({ type: "getProviderAgents" });
     // p68-t2: refresh the keyword-health card on every open (the host also
     // posts it proactively, but an on-demand ask keeps a reopened panel from
     // showing a stale card after Fix all/adds happened elsewhere).
@@ -16313,6 +16315,8 @@ if (typeof module !== "undefined" && module.exports) {
       if (msg.ok && msg.results && msg.results.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "tycoonMcpApprovalResult") {
       handleMcpApprovalResult(msg);
+    } else if (msg && msg.type === "providerAgents") {
+      handleProviderAgents(msg);
     } else if (msg && msg.type === "bridgeServerInstalled") {
       handleBridgeServerInstalled(msg.id, msg.ok, msg.error);
       if (msg.ok && msg.newChatHint) showToast(NEW_CHAT_HINT, "info");
@@ -16402,6 +16406,8 @@ if (typeof module !== "undefined" && module.exports) {
       });
     } else if (msg && msg.type === ROUTING_MSG.SAVED) {
       handleRoutingSaved(msg);
+    } else if (msg && msg.type === "routingServerSetup") {
+      handleRoutingServerSetup(msg);
     } else if (msg && msg.type === ROUTING_MSG.PROBE_REPLY) {
       handleEnvProbeReply(msg);
     } else if (msg && msg.type === ROUTING_MSG.TEST_VENDOR_KEY_RESULT) {
@@ -17758,8 +17764,8 @@ function themeAnimPreviewDraw(player) {
         btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
         btn.className = "skill-btn";
-        btn.textContent = pendingEnable ? "Enable" : "Install";
-        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable");
+        btn.textContent = pendingEnable ? "Enable MCP" : "Install";
+        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable MCP");
         btn.setAttribute("data-mcp-id", server.id);
       }
       header.appendChild(btn);
@@ -17933,6 +17939,17 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
+   * True when every part the pack `has`, other than its MCP server, is `installed`.
+   * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
+   * @returns {boolean}
+   */
+  function packOthersInstalled(pack) {
+    const has = pack.has || {};
+    const installed = pack.installed || {};
+    return PACK_PARTS.every(([key]) => key === "mcp" || !has[key] || installed[key]);
+  }
+
+  /**
    * True when every part the pack `has` is also `installed`.
    * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
    * @returns {boolean}
@@ -18035,18 +18052,11 @@ function themeAnimPreviewDraw(player) {
       renderPackChips(parts, pack);
       header.appendChild(parts);
 
-      const fully = !pack.picker && packFullyInstalled(pack);
+      const fully = packFullyInstalled(pack);
       const anyInstalled = packAnyInstalled(pack);
 
       const btn = document.createElement("button");
-      if (pack.picker) {
-        // Picker packs (Multi-LLM) never auto-install everything: the button
-        // opens a per-model checklist instead of posting installPack directly.
-        btn.className = "skill-btn";
-        btn.textContent = anyInstalled ? "Add or change models…" : "Choose models…";
-        btn.setAttribute("data-pack-picker-id", pack.id);
-        btn.addEventListener("click", () => toggleBridgePicker(pack.id));
-      } else if (fully) {
+      if (fully) {
         btn.className = "skill-btn skill-btn--installed";
         btn.textContent = "Installed";
         btn.setAttribute("disabled", "");
@@ -18055,14 +18065,17 @@ function themeAnimPreviewDraw(player) {
         btn.textContent = "Install";
         btn.setAttribute("data-pack-id", pack.id);
       }
-      header.appendChild(btn);
+      // Skill and agent are installed and only the MCP is pending: Install has nothing
+      // left to do, so show just "Enable MCP" and "Remove".
+      const onlyMcpPending = !fully && packMcpPending(pack) && packOthersInstalled(pack);
+      if (!onlyMcpPending) header.appendChild(btn);
 
       // MCP server only in .mcp.json: Claude Code has not loaded it. Offer the same
       // explicit Enable as the MCP tab (registers the pinned config at local scope).
-      if (!pack.picker && packMcpPending(pack)) {
+      if (packMcpPending(pack)) {
         const enableBtn = document.createElement("button");
         enableBtn.className = "skill-btn";
-        enableBtn.textContent = "Enable";
+        enableBtn.textContent = "Enable MCP";
         enableBtn.setAttribute("data-pack-enable-mcp", pack.mcpId);
         header.appendChild(enableBtn);
       }
@@ -18127,8 +18140,6 @@ function themeAnimPreviewDraw(player) {
         }
       });
       textBlock.appendChild(details);
-      if (pack.picker) textBlock.appendChild(buildBridgePickerPanel(pack));
-
       row.appendChild(textBlock);
       packsListEl.appendChild(row);
     }
@@ -18153,7 +18164,7 @@ function themeAnimPreviewDraw(player) {
       return;
     }
     for (const b of btns) {
-      b.textContent = "Enable";
+      b.textContent = "Enable MCP";
       b.removeAttribute("disabled");
     }
     if (!cancelled && error) showToast(error, "error");
@@ -18170,8 +18181,8 @@ function themeAnimPreviewDraw(player) {
    * @param {boolean|undefined} cancelled
    */
   function handlePackInstalled(id, ok, _results, error, cancelled) {
-    if (!packsListEl) return;
     if (handleBridgePackInstalled(id, ok, _results, error, cancelled)) return;
+    if (!packsListEl) return;
     if (!ok && !cancelled && error && !packsListEl.querySelector(`[data-pack-id="${CSS.escape(id)}"]`)) {
       // No picker panel and no row button (e.g. started from the setup wizard): still tell the user why.
       showToast(error, "error");
@@ -18233,30 +18244,27 @@ function themeAnimPreviewDraw(player) {
    * @param {boolean|undefined} cancelled
    */
 // Part: 72-bridge-picker
-// Multi-LLM pack picker (one checkbox per model + "Other" OpenAI-compatible
-// endpoint) and the "Needs setup" badge for installed bridge agents. Env var
-// NAMES only are ever shown or sent; key values go through the existing
-// per-user key entry UI (Agents > Routing), never through this picker.
+// Agents screen "Add an agent from another provider" section (one checkbox per
+// model + "Other" OpenAI-compatible endpoint) and the "Needs setup" badge for
+// installed bridge agents. Env var NAMES only are ever shown or sent; key
+// values go through the existing per-user key entry UI (Agents > Routing),
+// never through this picker.
 
-  /** Pack id -> picker UI state, kept across packs-list re-renders. */
-  var bridgePickerState = {};
-
-  function bridgePickerStateFor(packId) {
-    if (!bridgePickerState[packId]) {
-      bridgePickerState[packId] = { open: false, checked: {}, others: [], formOpen: false, message: "", busy: false };
-    }
-    return bridgePickerState[packId];
-  }
+  /** Picker UI state, kept across Agents-screen re-renders. */
+  var providerAgentsState = { open: false, checked: {}, others: [], formOpen: false, message: "", busy: false, draft: {} };
+  /** Latest { packId, picker, error } from the host (providerAgents message), or null before the first reply. */
+  var lastProviderAgents = null;
 
   /**
    * One-line status for a bridge: server + key/sign-in, names only.
    * @param {any} setup BridgeSetupInfo from the host (may be null)
    * @returns {{text:string, warn:boolean}}
    */
-  function bridgeStatusSummary(setup) {
+  function bridgeStatusSummary(setup, showServer) {
     if (!setup) return { text: "No setup needed", warn: false };
     const bits = [];
-    if (setup.serverState === "missing") bits.push("Server not installed");
+    if (showServer === false) { /* unticked and not installed: only the helpful part */ }
+    else if (setup.serverState === "missing") bits.push("Server not installed");
     else if (setup.serverState === "pending") bits.push("Server not enabled");
     else if (setup.serverState === "installed") bits.push("Server ready");
     else if (setup.serverState === "dispatcher") bits.push("Runs through the dispatcher");
@@ -18274,25 +18282,33 @@ function themeAnimPreviewDraw(player) {
 
   /** Slug rule mirrored from src/core/bridgeSetup.ts (host re-validates). */
   var BRIDGE_SLUG_RE = /^[a-z][a-z0-9-]{1,39}$/;
+  /** Reserved ids mirrored from src/core/bridgeSetup.ts RESERVED_IDS (Windows device names included); host re-validates. */
+  var BRIDGE_RESERVED_IDS = ["orchestrator", "primary-agent", "reviewer", "tycoon", "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
   var BRIDGE_ENDPOINT_ENV_RE = /^[A-Z][A-Z0-9_]{0,63}_BASE_URL$/;
   var BRIDGE_KEY_ENV_RE = /^[A-Z][A-Z0-9_]*(_API_KEY|_KEY|_TOKEN)$/;
 
-  function bridgeKnownAgentIds(pack) {
+  function bridgeKnownAgentIds(picker) {
     const ids = new Set();
     if (lastSettings && Array.isArray(lastSettings.agents)) {
       for (const a of lastSettings.agents) if (a && a.id) ids.add(String(a.id).toLowerCase());
     }
-    if (pack && Array.isArray(pack.agents)) for (const a of pack.agents) ids.add(String(a.id).toLowerCase());
-    if (pack && pack.picker && Array.isArray(pack.picker.others)) for (const o of pack.picker.others) ids.add(String(o.agentId).toLowerCase());
+    if (picker && Array.isArray(picker.models)) for (const m of picker.models) ids.add(String(m.agentId).toLowerCase());
+    if (picker && Array.isArray(picker.others)) for (const o of picker.others) ids.add(String(o.agentId).toLowerCase());
     return ids;
   }
 
-  function toggleBridgePicker(packId) {
-    const st = bridgePickerStateFor(packId);
-    st.open = !st.open;
-    st.message = "";
-    const panel = packsListEl ? packsListEl.querySelector('[data-bridge-picker="' + CSS.escape(packId) + '"]') : null;
-    if (panel) panel.hidden = !st.open;
+  /** providerAgents reply from the host. */
+  function handleProviderAgents(msg) {
+    lastProviderAgents = msg && typeof msg === "object" ? msg : null;
+    if (routingModalEl && !routingModalEl.hidden) renderRoutingModal();
+  }
+
+  function toggleProviderAgents() {
+    providerAgentsState.open = !providerAgentsState.open;
+    providerAgentsState.message = "";
+    renderRoutingModal();
   }
 
   function bridgeField(labelText, input, hint) {
@@ -18325,23 +18341,44 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
-   * Build the picker panel for a picker pack. Hidden until the pack's
-   * "Choose models" button is clicked; state survives list re-renders.
-   * @param {any} pack
+   * Build the "Add an agent from another provider" section for the Agents
+   * screen (multi-provider mode). Collapsed until its button is clicked; state
+   * survives re-renders. Returns null until the host has sent the picker data.
+   * @returns {HTMLElement|null}
    */
-  function buildBridgePickerPanel(pack) {
-    const st = bridgePickerStateFor(pack.id);
-    const picker = pack.picker || { models: [], others: [], dispatcherHost: false };
+  function buildProviderAgentsSection() {
+    const info = lastProviderAgents;
+    if (!info || !info.picker) return null;
+    const section = buildSection("Add an agent from another provider");
+    section.setAttribute("data-provider-agents", "");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "skill-btn";
+    toggle.setAttribute("data-provider-agents-toggle", "");
+    toggle.textContent = providerAgentsState.open ? "Hide" : "Add an agent from another provider…";
+    toggle.addEventListener("click", toggleProviderAgents);
+    section.appendChild(toggle);
+    if (providerAgentsState.open) section.appendChild(buildBridgePickerPanel(info));
+    return section;
+  }
+
+  /**
+   * The picker panel: model checklist, "Other" form, Add button.
+   * @param {{packId:string, picker:any}} info
+   */
+  function buildBridgePickerPanel(info) {
+    const st = providerAgentsState;
+    const pack = { id: info.packId };
+    const picker = info.picker || { models: [], others: [], dispatcherHost: false };
     const panel = document.createElement("div");
     panel.className = "bridge-picker";
     panel.setAttribute("data-bridge-picker", pack.id);
-    panel.hidden = !st.open;
 
     const intro = document.createElement("p");
     intro.className = "bridge-picker-note";
     intro.textContent = picker.dispatcherHost
-      ? "Tick the models you use. This project runs bridges through the TycoonAgents dispatcher, so only the agent files are added; nothing is written to .mcp.json."
-      : "Tick the models you use. Each one is installed with the MCP server it needs; start a new Claude chat to load a newly added server.";
+      ? "Tick the providers you want an agent for. This project runs bridges through the TycoonAgents dispatcher, so only the agent files are added; nothing is written to .mcp.json."
+      : "Tick the providers you want an agent for. Each agent is added with the MCP server it needs; start a new Claude chat to load a newly added server. Keys are entered below under each agent and stay on this machine.";
     panel.appendChild(intro);
 
     const list = document.createElement("ul");
@@ -18351,13 +18388,20 @@ function themeAnimPreviewDraw(player) {
       const li = document.createElement("li");
       li.className = "bridge-picker-row";
       li.setAttribute("data-bridge-model", m.agentId);
+      const stEl = document.createElement("span");
       const lab = document.createElement("label");
       lab.className = "bridge-picker-check";
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = !!st.checked[m.agentId];
       cb.setAttribute("data-bridge-agent", m.agentId);
-      cb.addEventListener("change", function () { st.checked[m.agentId] = cb.checked; });
+      cb.addEventListener("change", function () {
+        st.checked[m.agentId] = cb.checked;
+        const next = bridgeStatusSummary(m.setup, !!(cb.checked || m.installed));
+        stEl.textContent = next.text;
+        stEl.hidden = !next.text;
+        stEl.className = "bridge-status" + (next.warn ? " bridge-status--warn" : " bridge-status--ok");
+      });
       lab.appendChild(cb);
       const nm = document.createElement("span");
       nm.className = "bridge-picker-name";
@@ -18365,26 +18409,22 @@ function themeAnimPreviewDraw(player) {
       nm.textContent = m.label + (m.installed ? (notEnabled ? " (not enabled)" : " (installed)") : "");
       lab.appendChild(nm);
       li.appendChild(lab);
-      const status = bridgeStatusSummary(m.setup);
-      const stEl = document.createElement("span");
+      const status = bridgeStatusSummary(m.setup, !!(st.checked[m.agentId] || m.installed));
       stEl.className = "bridge-status" + (status.warn ? " bridge-status--warn" : " bridge-status--ok");
       stEl.textContent = status.text;
+      stEl.hidden = !status.text;
       li.appendChild(stEl);
       if (notEnabled && m.setup.server) {
         const enableBtn = document.createElement("button");
         enableBtn.type = "button";
         enableBtn.className = "link-button bridge-enable-server";
-        enableBtn.textContent = "Enable";
-        enableBtn.setAttribute("data-pack-enable-mcp", m.setup.server);
+        enableBtn.textContent = "Enable MCP";
+        enableBtn.addEventListener("click", function () {
+          enableBtn.disabled = true;
+          enableBtn.textContent = "Enabling…";
+          vscode.postMessage({ type: "installBridgeServer", id: m.agentId });
+        });
         li.appendChild(enableBtn);
-      }
-      if (m.setup && Array.isArray(m.setup.env) && m.setup.env.some(function (e) { return e.required && !e.present; })) {
-        const keyLink = document.createElement("button");
-        keyLink.type = "button";
-        keyLink.className = "link-button bridge-key-link";
-        keyLink.textContent = "Enter key in Agents";
-        keyLink.addEventListener("click", function () { openRoutingModal(); });
-        li.appendChild(keyLink);
       }
       list.appendChild(li);
     }
@@ -18417,7 +18457,7 @@ function themeAnimPreviewDraw(player) {
       rm.textContent = "Remove";
       rm.addEventListener("click", function () {
         st.others.splice(idx, 1);
-        renderPacksList(lastPacks);
+        renderRoutingModal();
       });
       li.appendChild(rm);
       list.appendChild(li);
@@ -18431,7 +18471,7 @@ function themeAnimPreviewDraw(player) {
     otherBtn.textContent = st.formOpen ? "Hide Other (OpenAI-compatible endpoint)" : "Add Other (OpenAI-compatible endpoint)…";
     otherBtn.addEventListener("click", function () {
       st.formOpen = !st.formOpen;
-      renderPacksList(lastPacks);
+      renderRoutingModal();
     });
     panel.appendChild(otherBtn);
 
@@ -18450,6 +18490,10 @@ function themeAnimPreviewDraw(player) {
       const fUrl = bridgeTextInput("baseUrl", "http://localhost:11434/v1 (optional)", 300);
       const fRole = bridgeTextInput("role", "Optional one-line role", 240);
       const fKw = bridgeTextInput("keywords", "Optional routing keywords, e.g. local|ollama", 200);
+      [[fName, "agentId"], [fLabel, "label"], [fModel, "model"], [fUrlEnv, "endpointEnv"], [fKeyEnv, "apiKeyEnv"], [fUrl, "baseUrl"], [fRole, "role"], [fKw, "keywords"]].forEach(function (pair) {
+        pair[0].value = st.draft[pair[1]] || "";
+        pair[0].addEventListener("input", function () { st.draft[pair[1]] = pair[0].value; });
+      });
       form.appendChild(bridgeField("Agent name", fName, "Lower-case letters, digits and hyphens."));
       form.appendChild(bridgeField("Display label", fLabel));
       form.appendChild(bridgeField("Model id", fModel));
@@ -18477,9 +18521,9 @@ function themeAnimPreviewDraw(player) {
         if (fRole.value.trim()) spec.role = fRole.value.trim();
         if (fKw.value.trim()) spec.keywords = fKw.value.trim();
         let problem = "";
-        const known = bridgeKnownAgentIds(pack);
+        const known = bridgeKnownAgentIds(picker);
         if (!BRIDGE_SLUG_RE.test(spec.agentId)) problem = "Agent name must be a lower-case slug (letters, digits, hyphens; starts with a letter).";
-        else if (known.has(spec.agentId.toLowerCase()) || st.others.some(function (o) { return o.agentId === spec.agentId; })) problem = "An agent named \"" + spec.agentId + "\" already exists.";
+        else if (BRIDGE_RESERVED_IDS.indexOf(spec.agentId.toLowerCase()) !== -1 || known.has(spec.agentId.toLowerCase()) || st.others.some(function (o) { return o.agentId === spec.agentId; })) problem = "An agent named \"" + spec.agentId + "\" already exists.";
         else if (!spec.label) problem = "Enter a display label.";
         else if (!spec.model) problem = "Enter a model id.";
         else if (!BRIDGE_ENDPOINT_ENV_RE.test(spec.endpointEnv)) problem = "Base URL variable must be upper case and end in _BASE_URL, e.g. OLLAMA_BASE_URL.";
@@ -18490,7 +18534,8 @@ function themeAnimPreviewDraw(player) {
         }
         st.others.push(spec);
         st.formOpen = false;
-        renderPacksList(lastPacks);
+        st.draft = {};
+        renderRoutingModal();
       });
       form.appendChild(addBtn);
       form.appendChild(formErr);
@@ -18503,18 +18548,18 @@ function themeAnimPreviewDraw(player) {
     installBtn.type = "button";
     installBtn.className = "skill-btn";
     installBtn.setAttribute("data-bridge-install", pack.id);
-    installBtn.textContent = st.busy ? "Installing…" : "Install selected";
+    installBtn.textContent = st.busy ? "Adding…" : "Add selected";
     installBtn.disabled = !!st.busy;
     installBtn.addEventListener("click", function () {
       const agents = Object.keys(st.checked).filter(function (k) { return st.checked[k]; });
       if (agents.length === 0 && st.others.length === 0) {
-        st.message = "Tick at least one model first.";
-        renderPacksList(lastPacks);
+        st.message = "Tick at least one provider first.";
+        renderRoutingModal();
         return;
       }
       st.busy = true;
       st.message = "";
-      installBtn.textContent = "Installing…";
+      installBtn.textContent = "Adding…";
       installBtn.disabled = true;
       vscode.postMessage({
         type: "installPack",
@@ -18529,7 +18574,7 @@ function themeAnimPreviewDraw(player) {
     closeBtn.type = "button";
     closeBtn.className = "link-button";
     closeBtn.textContent = "Close";
-    closeBtn.addEventListener("click", function () { toggleBridgePicker(pack.id); });
+    closeBtn.addEventListener("click", toggleProviderAgents);
     actions.appendChild(closeBtn);
     panel.appendChild(actions);
 
@@ -18542,16 +18587,15 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
-   * packInstalled for a picker pack. Returns true when handled (the caller skips
-   * the generic single-button logic).
+   * packInstalled for the hidden bridge pack (the Agents screen picker's Add).
+   * Returns true when handled (the caller skips the generic pack-row logic).
    */
   function handleBridgePackInstalled(id, ok, results, error, cancelled) {
-    const panel = packsListEl ? packsListEl.querySelector('[data-bridge-picker="' + CSS.escape(id) + '"]') : null;
-    if (!panel) return false;
-    const st = bridgePickerStateFor(id);
+    if (!lastProviderAgents || lastProviderAgents.packId !== id) return false;
+    const st = providerAgentsState;
     st.busy = false;
     if (cancelled) {
-      renderPacksList(lastPacks);
+      renderRoutingModal();
       return true;
     }
     const notes = [];
@@ -18568,12 +18612,13 @@ function themeAnimPreviewDraw(player) {
       st.open = false;
       st.others = [];
       st.checked = {};
+      st.draft = {};
       st.message = "";
     } else {
       st.message = [error].concat(notes).filter(Boolean).join(" ");
     }
-    vscode.postMessage({ type: "getPacks" });
-    renderPacksList(lastPacks);
+    // The host also re-sends providerAgents, settings and routing after an add.
+    renderRoutingModal();
     return true;
   }
 
@@ -18605,7 +18650,7 @@ function themeAnimPreviewDraw(player) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "link-button bridge-install-server";
-      btn.textContent = (setup.serverState === "pending" ? "Enable " : "Install ") + setup.server + " server";
+      btn.textContent = setup.serverState === "pending" ? "Enable MCP" : "Install " + setup.server + " server";
       btn.addEventListener("click", function () {
         btn.disabled = true;
         btn.textContent = "Installing…";
@@ -25703,6 +25748,14 @@ function themeAnimPreviewDraw(player) {
     var externalBox = buildExternalSettingsBox(payload.bridge);
     if (externalBox) routingContentEl.appendChild(externalBox);
 
+    // "I use more than one AI provider" (multi mode): add an agent that runs on
+    // another provider. Adding it registers the provider's MCP server; there is
+    // no separate pack for this.
+    if (uiMode !== "single" && isClaudeHarness) {
+      var providerAgentsEl = buildProviderAgentsSection();
+      if (providerAgentsEl) routingContentEl.appendChild(providerAgentsEl);
+    }
+
     // ── Orchestrator (p19-t1: read-only session-model card in both
     // densities; full-only slot/fallback editor appended below it) ──
     var orchestratorAgent = ((lastSettings && lastSettings.agents) || []).find(function (ag) { return ag.isOrchestrator; });
@@ -26437,6 +26490,15 @@ function themeAnimPreviewDraw(player) {
     // makes the hint disappear without requiring a panel reload.
     if (msg && msg.ok !== false) {
       vscode.postMessage({ type: "getSettings" });
+    }
+  }
+
+  /** routingServerSetup follow-up: choosing another provider registered its bridge server on the host. */
+  function handleRoutingServerSetup(msg) {
+    if (msg && Array.isArray(msg.failed) && msg.failed.length) {
+      showToast("Could not add the " + msg.failed.map(function (f) { return f.server; }).join(", ") + " server: " + msg.failed[0].error, "error");
+    } else if (msg && msg.newChatHint) {
+      showToast(NEW_CHAT_HINT, "info");
     }
   }
 

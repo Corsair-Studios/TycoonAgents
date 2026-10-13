@@ -436,15 +436,12 @@ test('POST /message {type: "getPacks"} -> lists every catalog pack with installe
 
     const packs = await packsPromise;
     assert.ok(Array.isArray(packs.packs));
-    assert.equal(packs.packs.length, catalog.length, 'every catalog pack must be listed');
+    assert.equal(packs.packs.length, catalog.filter((p) => !p.hidden).length, 'every non-hidden catalog pack must be listed');
     assert.ok(
       packs.packs.every((p) => typeof p.summary === 'string' && p.summary.length > 0 && p.summary.length <= 120),
       'every pack payload item must carry a non-empty summary <= 120 chars',
     );
-    const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
-    assert.ok(multiLlm, 'multi-llm pack must be present');
-    assert.equal(multiLlm.installed.agent, false, 'no agent files exist yet in the fresh temp project');
-    assert.deepEqual(multiLlm.agents.map((a) => a.id).sort(), ['claude-worker', 'codex-reviewer', 'gemini-reviewer', 'grok-reviewer', 'kimi-reviewer', 'mistral-reviewer']);
+    assert.equal(packs.packs.find((p) => p.id === 'multi-llm'), undefined, 'the hidden bridge catalog is not a pack in Packs');
   } finally {
     controller.abort();
     await runtime.close();
@@ -556,16 +553,16 @@ test('POST /message {type: "installPack", id: "multi-llm"} -> writes byte-identi
       assert.equal(written, expected, `${agent.id}.md must be byte-identical to buildAgentMarkdown's output`);
     }
 
-    const packsPromise = collectSseEvent(reader, 'packs');
-    const getPacksRes = await fetch(`${runtime.url}/message`, {
+    const providerPromise = collectSseEvent(reader, 'providerAgents');
+    const getProviderRes = await fetch(`${runtime.url}/message`, {
       method: 'POST',
       headers: { 'X-Tycoon-Token': runtime.sessionToken },
-      body: JSON.stringify({ type: 'getPacks' }),
+      body: JSON.stringify({ type: 'getProviderAgents' }),
     });
-    assert.equal(getPacksRes.status, 202);
-    const packs = await packsPromise;
-    const multiLlm = packs.packs.find((p) => p.id === 'multi-llm');
-    assert.equal(multiLlm.installed.agent, true, 'getPacks must report the pack as installed after installPack');
+    assert.equal(getProviderRes.status, 202);
+    const provider = await providerPromise;
+    assert.equal(provider.packId, 'multi-llm');
+    assert.ok(provider.picker.models.every((m) => m.installed === true), 'getProviderAgents must report every added agent as installed');
   } finally {
     controller.abort();
     await runtime.close();

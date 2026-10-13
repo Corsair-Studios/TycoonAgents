@@ -173,8 +173,8 @@ roster existing before their routing scripts can resolve agent backends.
 This seeds only the core worker roster (`search-retrieval`,
 `primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
 matching a fresh VS Code install. Foreign-LLM reviewers (`codex-reviewer`,
-`gemini-reviewer`, `kimi-reviewer`) come from the multi-llm pack, installed
-from the panel's Packs view.
+`gemini-reviewer`, `kimi-reviewer`) are added from the Agents screen with
+**Add an agent from another provider** (needs "I use more than one AI provider").
 
 ## OpenCode
 

@@ -16,6 +16,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { startServer } from '../src/server.mjs';
 
+// Saving a routing profile that uses another provider registers its MCP server in the user's
+// Claude config (local scope); keep these tests off the real ~/.claude.json and the real `claude` binary.
+process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-claude-cfg-'));
+process.env.TYCOON_CLAUDE_BIN = 'none';
+
 /** Same collector as server.test.mjs's collectSseEvent — bounded so a
  * missing broadcast fails the test instead of hanging. */
 async function collectSseEvent(reader, matchType, maxChunks = 50) {
