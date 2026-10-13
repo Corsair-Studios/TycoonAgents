@@ -15,7 +15,7 @@ TycoonAgents ships a UEFN *pack* that is entirely independent of Power Tools:
 
 - Download, install, stage, or update Power Tools or any of its files.
 - Delete, "heal", or rewrite Power Tools files (the old `powerToolsInstall.ts`, `legacyBridgeCleanup.ts`, and `mcpHeal.ts` modules that did this have been removed).
-- Write to or rewrite the user's `.mcp.json` `uefn-bridge` entry — one-click install of `thirdParty` catalog entries is refused with a message pointing at manual setup.
+- Write to or rewrite the user's `.mcp.json` `uefn-bridge` entry — one-click install of the `uefn-bridge` catalog entry is refused: the user installs Power Tools, then clicks Enable MCP, which shows the exact command from the `.mcp.json` entry Power Tools wrote and, on confirm, registers that same entry at Claude local scope.
 - Write to UEFN's `Content/` tree or invoke Python inside a UEFN/Fortnite install.
 
 ## How a user wires up the MCP

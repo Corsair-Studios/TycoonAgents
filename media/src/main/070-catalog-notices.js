@@ -727,7 +727,17 @@
   function packFullyInstalled(pack) {
     const has = pack.has || {};
     const installed = pack.installed || {};
-    return PACK_PARTS.every(([key]) => !has[key] || installed[key]);
+    return PACK_PARTS.every(([key]) => !has[key] || installed[key] || (key === "mcp" && packMcpExternal(pack)));
+  }
+
+  /**
+   * True when the pack's MCP server is provided by a separately installed product (host `mcpProvidedBy`):
+   * the pack never installs it, so it does not count toward the pack being installed.
+   * @param {{mcpProvidedBy?:{label?:string,url?:string}}} pack
+   * @returns {boolean}
+   */
+  function packMcpExternal(pack) {
+    return !!pack && !!pack.mcpProvidedBy;
   }
 
   /**
@@ -738,7 +748,7 @@
   function packAnyInstalled(pack) {
     const has = pack.has || {};
     const installed = pack.installed || {};
-    return PACK_PARTS.some(([key]) => has[key] && installed[key]);
+    return PACK_PARTS.some(([key]) => has[key] && installed[key] && !(key === "mcp" && packMcpExternal(pack)));
   }
 
   /**
@@ -756,7 +766,11 @@
       const notEnabled = key === "mcp" && !done && packMcpPending(pack);
       const chip = document.createElement("span");
       chip.className = "pack-chip" + (done ? " pack-chip--done" : "");
-      chip.textContent = done ? `${label} ✓` : notEnabled ? `${label} · not enabled` : label;
+      if (key === "mcp" && packMcpExternal(pack)) {
+        chip.textContent = done ? `${label} ✓ · via Power Tools` : notEnabled ? `${label} · via Power Tools · not enabled` : `${label} · via Power Tools`;
+      } else {
+        chip.textContent = done ? `${label} ✓` : notEnabled ? `${label} · not enabled` : label;
+      }
       container.appendChild(chip);
     }
   }
@@ -867,6 +881,19 @@
       summaryLine.textContent = catalogSummaryFor(pack);
       textBlock.appendChild(summaryLine);
 
+      if (packMcpExternal(pack)) {
+        const viaLine = document.createElement("div");
+        viaLine.className = "catalog-summary pack-mcp-via";
+        viaLine.appendChild(document.createTextNode(`The MCP comes from ${pack.mcpProvidedBy.label || "its own product"}, installed separately. Source: `));
+        if (pack.mcpProvidedBy.url) {
+          const link = document.createElement("a");
+          link.href = pack.mcpProvidedBy.url;
+          link.textContent = pack.mcpProvidedBy.url;
+          viaLine.appendChild(link);
+        }
+        textBlock.appendChild(viaLine);
+      }
+
       const details = buildCatalogDetails(`pack:${pack.id}`, (body) => {
         const descEl = document.createElement("span");
         descEl.className = "skill-desc";
@@ -969,6 +996,11 @@
       return;
     }
     if (ok) {
+      // Never silent: an MCP step the pack could not complete is reported (a provided MCP is not a failure).
+      const mcpResult = _results && _results.mcp;
+      if (mcpResult && typeof mcpResult === "object" && mcpResult.status === "skipped") {
+        showToast(String(mcpResult.error || "The MCP server was not installed."), "error");
+      }
       if (btn) {
         btn.textContent = "Installed";
         btn.classList.add("skill-btn--installed");
@@ -979,7 +1011,9 @@
         if (parts) {
           // Optimistically mark every present chip done; the getPacks
           // refresh below reconciles to authoritative state.
+          const mcpDone = !mcpResult || mcpResult === "installed" || mcpResult === "exists";
           for (const chip of parts.querySelectorAll(".pack-chip")) {
+            if (!mcpDone && /^MCP/.test(chip.textContent || "")) continue;
             chip.classList.add("pack-chip--done");
             if (!chip.textContent.includes("✓")) chip.textContent += " ✓";
           }

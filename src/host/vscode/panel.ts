@@ -85,6 +85,7 @@ import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
 import { createLocalMcpOps, localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
 import type { LocalMcpOps } from "../../core/claudeLocalMcp";
+import { POWER_TOOLS_MCP_MISSING, providedMcpConfirmDetail, sanitizeProvidedMcpEntry } from "../../core/providedMcp";
 import { repointLocalMcpEntries } from "../../core/claudeLocalMcpSync";
 import { withHookWrite, withHookWriteAsync } from "../../core/hookWriteGate";
 import { ensureTycoonGitignore } from "../../core/tycoonGitignore";
@@ -4099,6 +4100,8 @@ export class TycoonPanel {
     network?: string;
     dataNote?: string;
     needsSetup?: boolean;
+    /** Server owned by a separately installed product ("power-tools"): never installed from our catalog config. */
+    providedBy?: string;
     config: unknown;
     platforms?: McpPlatformsEntry["platforms"];
   }> {
@@ -4209,6 +4212,59 @@ export class TycoonPanel {
   }
 
   /** Merge a catalog MCP server's config into the project's .mcp.json. */
+  /**
+   * Servers owned by a separately installed product (catalog `providedBy`, uefn-bridge only): we never
+   * install our own catalog config. When the product's own installer already wrote an entry to the
+   * project's .mcp.json, the user may Enable it: a modal shows the EXACT command and args, and on
+   * confirm that same entry is registered at Claude local scope. Every outcome posts a reply.
+   */
+  private async _enableProvidedMcp(root: string, id: string, entry: { name: string; providedBy?: string; homepage?: string }): Promise<void> {
+    const reply = (extra: Record<string, unknown>): void => {
+      void this._panel.webview.postMessage({ type: MSG.MCP_INSTALLED, id, ok: false, ...extra });
+    };
+    const useLocal = this._useLocalMcp(root);
+    if (useLocal && this._localMcpOps().has(root, id)) {
+      reply({ ok: true, alreadyExisted: true });
+      return;
+    }
+    const fileEntry = (this._readMcpConfig(path.join(root, ".mcp.json")) as { mcpServers?: Record<string, unknown> }).mcpServers?.[id];
+    if (!useLocal) {
+      if (fileEntry !== undefined) reply({ ok: true, alreadyExisted: true });
+      else reply({ error: POWER_TOOLS_MCP_MISSING });
+      return;
+    }
+    if (fileEntry === undefined || fileEntry === null || typeof fileEntry !== "object" || Array.isArray(fileEntry)) {
+      reply({ error: POWER_TOOLS_MCP_MISSING });
+      return;
+    }
+    const sane = sanitizeProvidedMcpEntry(id, fileEntry);
+    if (!sane.ok) {
+      reply({ error: sane.error });
+      return;
+    }
+    const toRegister = sane.config;
+    // Cancel is first (the default button, so Enter cancels) and the close affordance (Escape).
+    const cancelItem: vscode.MessageItem = { title: "Cancel", isCloseAffordance: true };
+    const enableItem: vscode.MessageItem = { title: "Enable" };
+    const answer = await vscode.window.showWarningMessage(
+      `Enable ${entry.name || id}?`,
+      { modal: true, detail: providedMcpConfirmDetail(id, toRegister, entry.homepage) },
+      cancelItem,
+      enableItem
+    );
+    if (answer !== enableItem) {
+      reply({ cancelled: true });
+      return;
+    }
+    // Exactly the object the dialog showed.
+    const r = await this._localMcpOps().set(root, id, toRegister);
+    if (!r.ok) {
+      reply({ error: r.error ?? `Could not register ${id}.` });
+      return;
+    }
+    reply({ ok: true, alreadyExisted: false, newChatHint: true });
+  }
+
   private async _handleInstallMcp(id: string, _thirdParty = false): Promise<void> {
     try {
       let catalog;
@@ -4243,6 +4299,11 @@ export class TycoonPanel {
           ok: false,
           error: "No workspace folder open",
         });
+        return;
+      }
+
+      if (entry.providedBy) {
+        await this._enableProvidedMcp(root, id, entry);
         return;
       }
 
@@ -4406,7 +4467,8 @@ export class TycoonPanel {
     const disclosures: any[] = [];
     if (pack && pack.mcp) {
       const m = mcpCatalog.find((x) => x.id === pack.mcp);
-      if (m && m.thirdParty) {
+      // A server owned by a separately installed product is not installed by the pack: nothing to disclose.
+      if (m && m.thirdParty && !m.providedBy) {
         disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote });
       }
     }
@@ -4475,6 +4537,7 @@ export class TycoonPanel {
           agents: packAgents.map((a: any) => ({ id: a.id, name: a.name })),
           mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
           ...(pack.mcp ? { mcpId: pack.mcp, mcpState } : {}),
+          ...(mcpEntry && mcpEntry.providedBy ? { mcpProvidedBy: { name: mcpEntry.vendor ?? mcpEntry.name, url: mcpEntry.homepage ?? "", label: mcpEntry.providedBy === "power-tools" ? "Trashbyrd's Power Tools" : (mcpEntry.vendor ?? mcpEntry.name) } } : {}),
           thirdParty: disclosures.length > 0,
           disclosures,
           ...(pack.picker === "bridges" && root !== ""
@@ -4739,6 +4802,11 @@ export class TycoonPanel {
     const lines: string[] = [];
     lines.push(`Install ${packName || "this pack"}?`);
     lines.push("");
+    if (disclosures.length === 0) {
+      lines.push("This installs the pack's skills, commands and agents into this project.");
+      lines.push("Its MCP server is provided separately by the product that owns it and is not installed here.");
+      return lines.join("\n");
+    }
     lines.push("This installs third-party software that runs on your machine:");
     for (const d of disclosures) {
       const who = [d.label, d.vendor].filter(Boolean).join(" - ");
@@ -4958,6 +5026,9 @@ export class TycoonPanel {
         const existing = this._readMcpConfig(mcpPath);
         if (packUseLocal ? this._localMcpOps().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
+        } else if ((entry as { providedBy?: string }).providedBy) {
+          // Owned by a separately installed product: the pack never installs it (Enable MCP does, after a confirm).
+          results.mcp = "external";
         } else {
           const platformConfig = resolveConfigForPlatform(entry, process.platform);
           const resolvedConfig = platformConfig.ok ? this._resolveConfigTokens(platformConfig.config) : undefined;

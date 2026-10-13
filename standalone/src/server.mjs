@@ -483,6 +483,11 @@ function claudeLocalMcpModule() {
   if (!_claudeLocalMcpModule) _claudeLocalMcpModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_JS, 'claudeLocalMcp');
   return _claudeLocalMcpModule;
 }
+let _providedMcpModule;
+function providedMcpModule() {
+  if (!_providedMcpModule) _providedMcpModule = requireCompiledOrThrow(path.join(REPO_ROOT, 'out', 'src', 'core', 'providedMcp.js'), 'providedMcp');
+  return _providedMcpModule;
+}
 let _claudeLocalMcpSyncModule;
 function claudeLocalMcpSyncModule() {
   if (!_claudeLocalMcpSyncModule) _claudeLocalMcpSyncModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_SYNC_JS, 'claudeLocalMcpSync');
@@ -2196,7 +2201,8 @@ function buildPacksPayload() {
     const disclosures = [];
     if (pack && pack.mcp) {
       const m = mcpCatalog.find((x) => x.id === pack.mcp);
-      if (m && m.thirdParty) {
+      // A server owned by a separately installed product is not installed by the pack: nothing to disclose.
+      if (m && m.thirdParty && !m.providedBy) {
         disclosures.push({ label: m.name, vendor: m.vendor, package: m.package, homepage: m.homepage, network: m.network, dataNote: m.dataNote });
       }
     }
@@ -2230,6 +2236,7 @@ function buildPacksPayload() {
       agents: packAgents.map((a) => ({ id: a.id, name: a.name })),
       mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
       ...(pack.mcp ? { mcpId: pack.mcp, mcpState } : {}),
+      ...(mcpEntry && mcpEntry.providedBy ? { mcpProvidedBy: { name: mcpEntry.vendor ?? mcpEntry.name, url: mcpEntry.homepage ?? '', label: mcpEntry.providedBy === 'power-tools' ? "Trashbyrd's Power Tools" : (mcpEntry.vendor ?? mcpEntry.name) } } : {}),
       thirdParty: disclosures.length > 0,
       disclosures,
       ...(pack.picker === 'bridges' && root
@@ -2549,6 +2556,9 @@ async function handleInstallPack(payload) {
       }
       if (packUseLocal ? localMcpOpsStandalone().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
         results.mcp = 'exists';
+      } else if (entry.providedBy) {
+        // Owned by a separately installed product: the pack never installs it (Enable MCP does, after a confirm).
+        results.mcp = 'external';
       } else {
         const platformConfig = resolveConfigForPlatform(entry, process.platform);
         const resolvedConfig = platformConfig.ok ? resolveConfigTokensStandalone(platformConfig.config) : undefined;
@@ -2847,6 +2857,17 @@ async function handleInstallMcpStandalone(msg) {
       listed = !!(cfg && cfg.mcpServers && Object.prototype.hasOwnProperty.call(cfg.mcpServers, id));
     } catch {
       listed = false;
+    }
+    if (entry.providedBy) {
+      // Owned by a separately installed product (uefn-bridge): never our catalog config. Registering the
+      // product's own .mcp.json entry needs a confirm showing its exact command, which only the VS Code panel has.
+      if (localMcpOpsStandalone().has(root, id)) return reply({ ok: true, alreadyExisted: true });
+      return reply({
+        ok: false,
+        error: listed
+          ? `Enable ${id} from the VS Code panel, which shows the exact command from your .mcp.json entry before registering it.`
+          : providedMcpModule().POWER_TOOLS_MCP_MISSING,
+      });
     }
     if (entry.thirdParty && !listed) {
       return reply({ ok: false, error: 'Install third-party servers from the VS Code panel, which asks for confirmation first.' });
