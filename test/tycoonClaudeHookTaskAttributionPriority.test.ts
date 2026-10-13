@@ -8,9 +8,8 @@
 // briefed as "<agent-id>: <keywords> check" (the shape CLAUDE.md's
 // delegation table produces) were mis-routed by keyword scoring because the
 // prompt/description shared a keyword with a DIFFERENT agent
-// (uefn-auditor's "verse-audit"/"verse-lint" tokenize, after the hook's
-// non-alnum-strip, into bare "verse" — the same word verse-expert's pattern
-// matches; "claude-worker"/"codex-reviewer"/"gemini-reviewer"/
+// (verse-expert and uefn-auditor once both matched bare "verse" after the
+// hook's non-alnum-strip; "claude-worker"/"codex-reviewer"/"gemini-reviewer"/
 // "kimi-reviewer" Task prompts routinely contain "test" from phrases like
 // "Ready test rerun", which scored as a strong match for
 // testing-specialist).
@@ -104,7 +103,7 @@ function setupProject(): string {
       "search-retrieval": { pattern: "search|find|look|where|locate|explore|grep|glob|file|pattern|reference|documentation|example|retrieval" },
       "testing-specialist": { pattern: "test|spec|vitest|jest|mocha|assert|mock|stub|testing|qa|verify|validate|e2e|fixture|coverage|unit" },
       "verse-expert": { pattern: "verse|uefn|fortnite|device|island|creative|digest" },
-      "uefn-auditor": { pattern: "verse|uefn|fortnite|verse-audit|verse-review|verse-lint" },
+      "uefn-auditor": { pattern: "auditor|lint|deprecation|deprecated|compliance" },
       "codex-reviewer": { pattern: "codex|foreign-review|cross-vendor|second-opinion|adversarial-review" },
       "gemini-reviewer": { pattern: "gemini|foreign-review|cross-vendor|second-opinion|adversarial-review" },
       "kimi-reviewer": { pattern: "kimi|qwen|local-review|openai-compatible|foreign-review|cross-vendor|second-opinion|adversarial-review" },

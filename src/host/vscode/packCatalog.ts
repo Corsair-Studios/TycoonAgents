@@ -349,6 +349,36 @@ const LEGACY_DEFAULT_MODELS: Record<string, string[]> = {
   "grok-reviewer": ["sonnet"],
 };
 
+/**
+ * Known-prior default keyword patterns TycoonAgents used to ship, keyed by
+ * agent id, for ids whose current default has since changed. Used to migrate
+ * agent-keywords.json entries and agent-file `## Keywords` bodies forward when
+ * (and only when) they exactly equal a prior default, and by
+ * {@link workerAgentFingerprintMatches} so un-migrated files still count as ours.
+ */
+export const SUPERSEDED_DEFAULT_KEYWORDS: Record<string, string[]> = {
+  "quality-lead": ["quality|verify|test plan|acceptance|audit"],
+  reviewer: ["review|verify|approve|correctness|quality|regression"],
+  "uefn-auditor": ["verse|uefn|fortnite|verse-audit|verse-review|verse-lint"],
+};
+
+/**
+ * If the `## Keywords (for task routing)` body line of `content` exactly
+ * equals a superseded default for `agentId` (and differs from `current`),
+ * return the content with just that line replaced by `current`, preserving
+ * line endings. Otherwise null.
+ */
+export function refreshSupersededKeywordsBody(content: string, agentId: string, current: string): string | null {
+  const prior = SUPERSEDED_DEFAULT_KEYWORDS[agentId];
+  if (!prior || current === undefined || current.trim() === "") return null;
+  const m = /## Keywords \(for task routing\)(\r?\n)([^\r\n]*)/.exec(content);
+  if (!m) return null;
+  const line = m[2];
+  if (line.trim() === current || !prior.includes(line.trim())) return null;
+  const start = m.index + m[0].length - line.length;
+  return content.slice(0, start) + current + content.slice(start + line.length);
+}
+
 export function workerAgentFingerprintMatches(content: string, agent: PackAgent): boolean {
   const lines = content.split(/\r\n|\n/);
   if (lines.length === 0 || lines[0] !== "---") {
@@ -389,7 +419,8 @@ export function workerAgentFingerprintMatches(content: string, agent: PackAgent)
   const rest = content.slice(headingIdx + heading.length);
   const lineEnd = rest.indexOf("\n");
   const keywordsLine = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
-  return keywordsLine.trim() === agent.keywords;
+  const kw = keywordsLine.trim();
+  return kw === agent.keywords || (SUPERSEDED_DEFAULT_KEYWORDS[agent.id] ?? []).includes(kw);
 }
 
 /**

@@ -4,7 +4,9 @@
  * Attribution header - optional; end users may remove it.
  */
 
-import { REGULAR_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, FOREIGN_LLM_AGENTS, type PackAgent } from "./packCatalog";
+import * as fs from "fs";
+import * as path from "path";
+import { REGULAR_AGENTS, refreshSupersededKeywordsBody, SUPERSEDED_DEFAULT_KEYWORDS, LEAD_AGENTS, REVIEWER_AGENTS, FOREIGN_LLM_AGENTS, type PackAgent } from "./packCatalog";
 import { setKeywordPattern } from "./agentConfig";
 
 /** An agent id paired with its parsed body keywords (see {@link parseAgentKeywords}). */
@@ -45,7 +47,7 @@ export const DEFAULT_AGENT_KEYWORDS: Record<string, string> = {
   ...toKeywordMap(REVIEWER_AGENTS),
   ...toKeywordMap(FOREIGN_LLM_AGENTS),
   "verse-expert": "verse|uefn|fortnite|device|island|creative|digest",
-  "uefn-auditor": "verse|uefn|fortnite|verse-audit|verse-review|verse-lint",
+  "uefn-auditor": "auditor|lint|deprecation|deprecated|compliance",
   "web-qa": "playwright|browser|ui|qa|screenshot|accessibility|e2e|web",
   godot: "godot|gdscript|scene|node|signal|tscn|gdextension",
   unity: "unity|csharp|monobehaviour|prefab|gameobject|scene",
@@ -250,14 +252,15 @@ export function reconcileAgentKeywords(
  *   (`"review|approve|correctness|regression"`, see `REVIEWER_AGENTS` in
  *   `./packCatalog`).
  *
+ * - `uefn-auditor`: prior `"verse|uefn|fortnite|verse-audit|verse-review|verse-lint"`
+ *   (shared verse/uefn/fortnite with `verse-expert`, and the hyphenated
+ *   segments can never match a single word) -> current
+ *   `DEFAULT_AGENT_KEYWORDS["uefn-auditor"]`.
+ *
  * Add a new entry here whenever a shipped default pattern changes, so an
  * existing installed project can migrate forward instead of staying pinned
  * to the value it happened to be seeded with.
  */
-const SUPERSEDED_DEFAULT_KEYWORDS: Record<string, string[]> = {
-  "quality-lead": ["quality|verify|test plan|acceptance|audit"],
-  reviewer: ["review|verify|approve|correctness|quality|regression"],
-};
 
 /**
  * Bump ONLY provably-stale default keyword patterns forward to the current
@@ -314,4 +317,41 @@ export function migrateSupersededKeywords(
   }
 
   return { config: { ...safeConfig, agents: nextAgents }, changed: true };
+}
+
+/**
+ * Rewrite only the `## Keywords (for task routing)` body line of each
+ * `<agentsDir>/*.md` whose line exactly equals a superseded default for that
+ * agent id (see {@link SUPERSEDED_DEFAULT_KEYWORDS}) to the current default.
+ * Edited bodies, symlinks and unknown ids are untouched; line endings are
+ * preserved. Returns the ids rewritten.
+ */
+export function migrateSupersededAgentBodies(
+  agentsDir: string,
+  defaults: Record<string, string> = DEFAULT_AGENT_KEYWORDS
+): string[] {
+  const written: string[] = [];
+  let names: string[];
+  try {
+    names = fs.readdirSync(agentsDir);
+  } catch {
+    return written;
+  }
+  for (const file of names) {
+    if (!file.endsWith(".md")) continue;
+    const id = file.replace(/\.md$/, "");
+    if (!SUPERSEDED_DEFAULT_KEYWORDS[id] || defaults[id] === undefined) continue;
+    try {
+      const filePath = path.join(agentsDir, file);
+      if (fs.lstatSync(filePath).isSymbolicLink()) continue;
+      const content = fs.readFileSync(filePath, "utf8");
+      const next = refreshSupersededKeywordsBody(content, id, defaults[id]);
+      if (next === null) continue;
+      fs.writeFileSync(filePath, next, "utf8");
+      written.push(id);
+    } catch {
+      // best-effort
+    }
+  }
+  return written;
 }

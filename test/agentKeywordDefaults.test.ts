@@ -5,13 +5,19 @@
  */
 
 import { test } from "node:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { workerAgentFingerprintMatches } from "../src/host/vscode/packCatalog";
 import assert from "node:assert/strict";
+import { matchAgentFromKeywords } from "../src/core/delegationEnforcement";
 import {
   DEFAULT_AGENT_KEYWORDS,
   seedMissingAgentKeywords,
   parseAgentKeywords,
   reconcileAgentKeywords,
   migrateSupersededKeywords,
+  migrateSupersededAgentBodies,
   type ReconcileAgentInput,
 } from "../src/host/vscode/agentKeywordDefaults";
 
@@ -397,4 +403,83 @@ test("migrateSupersededKeywords ignores an id absent from the config and does no
   const { changed } = migrateSupersededKeywords(config);
   assert.equal(changed, false);
   assert.deepEqual(config, clonedBefore, "input must not be mutated");
+});
+
+// ---------------------------------------------------------------------------
+// uefn-auditor vs verse-expert default keywords
+// ---------------------------------------------------------------------------
+
+test("uefn-auditor and verse-expert default keywords share no token", () => {
+  const split = (p: string) => p.split("|").map((t) => t.trim());
+  const expert = split(DEFAULT_AGENT_KEYWORDS["verse-expert"]);
+  const auditor = split(DEFAULT_AGENT_KEYWORDS["uefn-auditor"]);
+  assert.deepEqual(auditor.filter((t) => expert.includes(t)), []);
+  for (const t of auditor) assert.match(t, /^[a-z0-9]+$/, `"${t}" is not a single matchable word`);
+});
+
+test("uefn-auditor defaults route lint/deprecation work to the auditor and authoring to verse-expert", () => {
+  const cfg = {
+    agents: {
+      "verse-expert": { pattern: DEFAULT_AGENT_KEYWORDS["verse-expert"] },
+      "uefn-auditor": { pattern: DEFAULT_AGENT_KEYWORDS["uefn-auditor"] },
+    },
+  };
+  assert.equal(
+    matchAgentFromKeywords("lint this verse device for deprecation and compliance issues", cfg)?.agentId,
+    "uefn-auditor"
+  );
+  assert.equal(
+    matchAgentFromKeywords("add a verse device that spawns items", cfg)?.agentId,
+    "verse-expert"
+  );
+});
+
+test("migrateSupersededKeywords moves the exact old uefn-auditor default to the new one", () => {
+  const old = "verse|uefn|fortnite|verse-audit|verse-review|verse-lint";
+  const { config: out, changed } = migrateSupersededKeywords({ agents: { "uefn-auditor": { pattern: old } } });
+  assert.equal(changed, true);
+  assert.equal(out.agents["uefn-auditor"].pattern, DEFAULT_AGENT_KEYWORDS["uefn-auditor"]);
+});
+
+test("migrateSupersededKeywords leaves an edited uefn-auditor pattern untouched", () => {
+  const config = { agents: { "uefn-auditor": { pattern: "verse|uefn|fortnite|verse-audit|verse-review|verse-lint|mine" } } };
+  const { config: out, changed } = migrateSupersededKeywords(config);
+  assert.equal(changed, false);
+  assert.equal(out, config);
+});
+
+// ---------------------------------------------------------------------------
+// Agent file Keywords body refresh
+// ---------------------------------------------------------------------------
+
+function mkAgentsDir(files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-kwbody-"));
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content, "utf8");
+  return dir;
+}
+
+const OLD_AUDITOR_KW = "verse|uefn|fortnite|verse-audit|verse-review|verse-lint";
+
+test("migrateSupersededAgentBodies rewrites only the exact old Keywords line and keeps CRLF", () => {
+  const body = (kw: string, eol: string) =>
+    ["---", "name: uefn-auditor", "model: sonnet", "---", "# A", "", "## Role", "r", "", "## Keywords (for task routing)", kw, "", "## Other", "x", ""].join(eol);
+  const dir = mkAgentsDir({ "uefn-auditor.md": body(OLD_AUDITOR_KW, "\r\n") });
+  assert.deepEqual(migrateSupersededAgentBodies(dir), ["uefn-auditor"]);
+  const after = fs.readFileSync(path.join(dir, "uefn-auditor.md"), "utf8");
+  assert.equal(after, body(DEFAULT_AGENT_KEYWORDS["uefn-auditor"], "\r\n"));
+  assert.deepEqual(migrateSupersededAgentBodies(dir), []);
+});
+
+test("migrateSupersededAgentBodies leaves an edited Keywords line untouched", () => {
+  const edited = "## Keywords (for task routing)\n" + OLD_AUDITOR_KW + "|mine\n";
+  const dir = mkAgentsDir({ "uefn-auditor.md": edited });
+  assert.deepEqual(migrateSupersededAgentBodies(dir), []);
+  assert.equal(fs.readFileSync(path.join(dir, "uefn-auditor.md"), "utf8"), edited);
+});
+
+test("workerAgentFingerprintMatches accepts a superseded uefn-auditor Keywords line", () => {
+  const agent = { id: "uefn-auditor", model: "sonnet", keywords: DEFAULT_AGENT_KEYWORDS["uefn-auditor"] } as any;
+  const md = (kw: string) => `---\nmodel: sonnet\n---\n## Keywords (for task routing)\n${kw}\n`;
+  assert.equal(workerAgentFingerprintMatches(md(OLD_AUDITOR_KW), agent), true);
+  assert.equal(workerAgentFingerprintMatches(md("something|else"), agent), false);
 });

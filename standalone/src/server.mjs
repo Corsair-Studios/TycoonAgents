@@ -3165,6 +3165,31 @@ function hooksInstalledForRootStandalone(root) {
 }
 
 /**
+ * Migrate exact superseded default keywords for one project root: the
+ * agent-keywords.json entry and the agent file's Keywords body line. Exported
+ * for tests. Returns { configChanged, bodies }.
+ */
+export function migrateSupersededKeywordsForRootStandalone(root) {
+  const { migrateSupersededKeywords, migrateSupersededAgentBodies } = agentKeywordDefaultsModule();
+  const bodies = migrateSupersededAgentBodies(path.join(root, '.claude', 'agents'));
+  const keywordsPath = path.join(root, '.claude', 'tycoon', 'agent-keywords.json');
+  let configChanged = false;
+  let cfg;
+  try {
+    cfg = JSON.parse(fs.readFileSync(keywordsPath, 'utf8'));
+  } catch {
+    return { configChanged, bodies };
+  }
+  const { config, changed } = migrateSupersededKeywords(cfg);
+  if (changed) {
+    fs.writeFileSync(keywordsPath, JSON.stringify(config, null, 2));
+    configChanged = true;
+  }
+  return { configChanged, bodies };
+}
+
+
+/**
  * Standalone analog of panel.ts's `_buildClaudeMdDoctrine` (~line 5664-
  * 5684): full managed CLAUDE.md doctrine (delegation section + code-rules
  * section), splicing into `existingContent`.
@@ -5405,6 +5430,19 @@ export async function startServer({
       }
     } catch (err) {
       console.error(`[tycoonagents-standalone] core skill auto-heal failed for ${root}:`, err);
+    }
+  }
+
+  // Superseded default keywords (analog of panel.ts's _ensureAgentKeywordsSeeded
+  // migration): for every root with hooks installed, bump an agent-keywords.json
+  // entry and an agent file's Keywords body line forward ONLY when it exactly
+  // equals a known-prior shipped default. User-edited values are never touched.
+  for (const { root } of roots) {
+    try {
+      if (!hooksInstalledForRootStandalone(root)) continue;
+      migrateSupersededKeywordsForRootStandalone(root);
+    } catch (err) {
+      console.error(`[tycoonagents-standalone] superseded keyword migration failed for ${root}:`, err);
     }
   }
 

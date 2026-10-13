@@ -53,6 +53,7 @@ import {
   parseAgentKeywords,
   reconcileAgentKeywords,
   migrateSupersededKeywords,
+  migrateSupersededAgentBodies,
 } from "./agentKeywordDefaults";
 import { computeKeywordHealth, normalizeAgentKeywords, computeWildcardStats } from "../../core/keywordHealth";
 import {
@@ -6581,6 +6582,9 @@ export class TycoonPanel {
       if (!this._hooksInstalledForRoot(root)) return;
 
       const agentsDir = path.join(root, ".claude", "agents");
+      // Rewrite only an exact superseded-default Keywords body line (trusted
+      // workspaces only; edited bodies are never touched).
+      if (vscode.workspace.isTrusted) migrateSupersededAgentBodies(agentsDir);
       let files: string[];
       try {
         files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
