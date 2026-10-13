@@ -29,6 +29,9 @@ exports.startReviewGate = startReviewGate;
 exports.advanceReviewGate = advanceReviewGate;
 exports.isReviewGateTerminal = isReviewGateTerminal;
 exports.decideToolCall = decideToolCall;
+function isBadKeywordSegment(seg) {
+    return seg.includes("**") || seg.length > 80 || seg.split(/\s+/).filter(Boolean).length > 6;
+}
 function matchAgentFromKeywords(searchText, keywordsConfig) {
     if (!keywordsConfig || !keywordsConfig.agents)
         return null;
@@ -41,12 +44,17 @@ function matchAgentFromKeywords(searchText, keywordsConfig) {
     let bestScore = 0;
     let bestKeyword = "";
     for (const [agentId, cfg] of Object.entries(keywordsConfig.agents)) {
-        if (!cfg.pattern)
+        if (!cfg || typeof cfg.pattern !== "string" || !cfg.pattern)
+            continue;
+        if (cfg.pattern.trim() === "")
             continue;
         let score = 0;
         let firstMatch = "";
         for (const kw of cfg.pattern.split("|")) {
-            if (words.has(kw.toLowerCase().trim())) {
+            const norm = kw.toLowerCase().trim();
+            if (!norm || isBadKeywordSegment(norm))
+                continue;
+            if (words.has(norm)) {
                 score++;
                 if (!firstMatch)
                     firstMatch = kw;
