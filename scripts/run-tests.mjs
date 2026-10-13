@@ -7,7 +7,8 @@
 // explicit file list to `node --test`, so behavior is identical on
 // Node 20, 22, and 24 and on any shell (bash, PowerShell, cmd).
 import { spawnSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,9 +62,16 @@ const hardeningArgs = [
   ...(hasForceExitFlag ? [] : ['--test-force-exit']),
 ];
 
+// Claude Code local-scope MCP registration edits the user's Claude config file.
+// No test may ever touch the real ~/.claude.json: point it at a throwaway
+// directory and skip the real `claude` binary for every test process.
+const claudeSandbox = mkdtempSync(path.join(os.tmpdir(), 'tycoon-test-claude-'));
+
 const result = spawnSync(process.execPath, ['--test', ...hardeningArgs, ...extraArgs, ...files], {
   stdio: 'inherit',
+  env: { ...process.env, CLAUDE_CONFIG_DIR: claudeSandbox, TYCOON_CLAUDE_BIN: 'none' },
 });
+try { rmSync(claudeSandbox, { recursive: true, force: true }); } catch { /* best effort */ }
 
 if (result.error) {
   console.error(`Failed to launch the test runner: ${result.error.message}`);

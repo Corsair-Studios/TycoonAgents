@@ -1658,11 +1658,16 @@
         info.harness === "codex"
           ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
           : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+      // The approval note applies only while a server is genuinely pending approval;
+      // servers installed at Claude local scope load without it.
+      const pendingApproval = lastSettings && lastSettings.mcpApproval && Array.isArray(lastSettings.mcpApproval.pending) && lastSettings.mcpApproval.pending.length > 0;
       if (info.harness !== "codex") {
-        const approvalNote = document.createElement("div");
-        approvalNote.className = "mcp-approval-note";
-        approvalNote.textContent = MCP_APPROVAL_NOTE;
-        setupStatusEl.appendChild(approvalNote);
+        if (pendingApproval) {
+          const approvalNote = document.createElement("div");
+          approvalNote.className = "mcp-approval-note";
+          approvalNote.textContent = MCP_APPROVAL_NOTE;
+          setupStatusEl.appendChild(approvalNote);
+        }
         const setupApprovalBlock = buildMcpApprovalBlock();
         if (setupApprovalBlock) setupStatusEl.appendChild(setupApprovalBlock);
       }

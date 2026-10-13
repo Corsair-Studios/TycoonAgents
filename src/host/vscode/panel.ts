@@ -82,7 +82,10 @@ import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../c
 import { tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
-import { withHookWrite } from "../../core/hookWriteGate";
+import { createLocalMcpOps, localizeMcpConfig, readLocalMcpServers, withLocalMcpServers } from "../../core/claudeLocalMcp";
+import type { LocalMcpOps } from "../../core/claudeLocalMcp";
+import { repointLocalMcpEntries } from "../../core/claudeLocalMcpSync";
+import { withHookWrite, withHookWriteAsync } from "../../core/hookWriteGate";
 import { ensureTycoonGitignore } from "../../core/tycoonGitignore";
 import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
 import { runVendorKeyTest, runCustomEndpointTest, cancelAllVendorKeyTests, type VendorKeyTestResult } from "../../core/vendorKeyTest";
@@ -1203,6 +1206,11 @@ export class TycoonPanel {
     // we installed those entries before.
     this._ensureCodexInstallsCurrent();
 
+    // Claude Code harness: servers installed from this panel live at Claude
+    // local scope; repoint entries the user already registered after an
+    // extension update (see _ensureLocalMcpCurrent).
+    void this._ensureLocalMcpCurrent();
+
     this._update();
 
     // Subscribe to runtime state changes
@@ -1664,7 +1672,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.INSTALL_BRIDGE_SERVER) {
           const parsedBridgeServer = MSG_SCHEMAS.INSTALL_BRIDGE_SERVER.safeParse(message);
           if (parsedBridgeServer.success) {
-            this._handleInstallBridgeServer(parsedBridgeServer.data.id);
+            await this._handleInstallBridgeServer(parsedBridgeServer.data.id);
           } else {
             console.error("TycoonAgents: installBridgeServer payload rejected:", parsedBridgeServer.error.message);
           }
@@ -4139,15 +4147,23 @@ export class TycoonPanel {
 
     const root = this._projectRoot();
     const parsed =
-      root === "" ? {} : this._readMcpConfig(path.join(root, ".mcp.json"));
+      root === "" ? {} : this._effectiveMcpConfig(root);
 
+    // Claude Code harness: a server only listed in the project's .mcp.json is NOT
+    // loaded (Claude Code holds it pending approval), so it is offered as "Enable"
+    // (pending) rather than shown as installed. Enabling is the user's click.
+    const useLocal = root !== "" && this._useLocalMcp(root);
+    const localServers = useLocal ? readLocalMcpServers(root) : {};
+    const fileConfig = useLocal ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
+    const isInstalled = (id: string): boolean => (useLocal ? Object.prototype.hasOwnProperty.call(localServers, id) : hasMcpServer(parsed, id));
     const servers = catalog.map((e) => ({
       id: e.id,
       name: e.name,
       description: e.description,
       summary: catalogSummary(e),
-      installed: hasMcpServer(parsed, e.id),
-      unpinned: hasMcpServer(parsed, e.id) && isUnpinnedMcpConfig((parsed as any).mcpServers?.[e.id]),
+      installed: isInstalled(e.id),
+      pending: useLocal && !isInstalled(e.id) && hasMcpServer(fileConfig, e.id),
+      unpinned: isInstalled(e.id) && isUnpinnedMcpConfig((parsed as any).mcpServers?.[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
       docsUrl: e.docsUrl,
@@ -4248,9 +4264,10 @@ export class TycoonPanel {
       }
 
       const mcpPath = path.join(root, ".mcp.json");
+      const useLocal = this._useLocalMcp(root);
       const existing = this._readMcpConfig(mcpPath);
 
-      if (hasMcpServer(existing, id)) {
+      if (useLocal ? this._localMcpOps().has(root, id) : hasMcpServer(existing, id)) {
         void this._panel.webview.postMessage({
           type: MSG.MCP_INSTALLED,
           id,
@@ -4284,16 +4301,26 @@ export class TycoonPanel {
       }
 
       const finalConfig = withDispatcherProjectDir(id, this._resolveCodexBinaryForInstall(id, resolvedConfig), root);
-      const merged = mergeMcpServer(existing, id, finalConfig);
-      fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
-      this._copyBridgeHooksForMcp(root, finalConfig);
-      // Approval is deliberately NOT written: Claude Code asks the user to
-      // approve a new .mcp.json server the first time it is used.
+      if (useLocal) {
+        // The user's install click is the consent: register at Claude local scope
+        // (what `claude mcp add` does by default). No approval list is written.
+        const registered = await this._registerLocalMcpConfig(root, id, finalConfig);
+        if (registered !== undefined) {
+          void this._panel.webview.postMessage({ type: MSG.MCP_INSTALLED, id, ok: false, error: registered });
+          return;
+        }
+      } else {
+        const merged = mergeMcpServer(existing, id, finalConfig);
+        fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+        this._copyBridgeHooksForMcp(root, finalConfig);
+      }
       void this._panel.webview.postMessage({
         type: MSG.MCP_INSTALLED,
         id,
         ok: true,
         alreadyExisted: false,
+        // Local-scope servers load when a chat starts; the webview shows the toast.
+        ...(useLocal ? { newChatHint: true } : {}),
       });
     } catch (e) {
       void this._panel.webview.postMessage({
@@ -4337,7 +4364,7 @@ export class TycoonPanel {
 
       const answer = await vscode.window.showWarningMessage(
         `Remove the '${entry.name}' MCP server?`,
-        { modal: true, detail: `This removes "${id}" from .mcp.json in your project.` },
+        { modal: true, detail: `This removes "${id}" from your project (and from .mcp.json if it is listed there).` },
         "Remove"
       );
       if (answer !== "Remove") {
@@ -4346,9 +4373,18 @@ export class TycoonPanel {
       }
 
       const mcpPath = path.join(root, ".mcp.json");
+      if (this._useLocalMcp(root)) {
+        const gone = await this._removeLocalMcpConfig(root, id);
+        if (gone !== undefined) {
+          void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: false, error: gone });
+          return;
+        }
+      }
       const existing = this._readMcpConfig(mcpPath);
-      const updated = removeMcpServer(existing, id);
-      fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+      if (hasMcpServer(existing, id)) {
+        const updated = removeMcpServer(existing, id);
+        fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+      }
       void this._panel.webview.postMessage({ type: MSG.MCP_REMOVED, id, ok: true });
       this._handleGetMcp();
     } catch (e) {
@@ -4389,7 +4425,7 @@ export class TycoonPanel {
         }
       } catch { skillNames = {}; }
       const root = this._projectRoot();
-      const mcpConfig = root === "" ? {} : this._readMcpConfig(path.join(root, ".mcp.json"));
+      const mcpConfig = root === "" ? {} : this._effectiveMcpConfig(root);
       const skillInstalled = (id: string): boolean =>
         root !== "" && fs.existsSync(path.join(root, ".claude", "skills", id));
       const result = packs.map((pack: any) => {
@@ -4445,7 +4481,7 @@ export class TycoonPanel {
   }
 
   /** Shared MCP-entry installer for the bridge picker and the "Needs setup" action (no approval key is written). */
-  private _installMcpEntryForBridge(root: string, mcpId: string): McpInstallOutcome {
+  private _installMcpEntryForBridge(root: string, mcpId: string): Promise<McpInstallOutcome> {
     let catalog: any[] = [];
     try { catalog = this._loadMcpCatalog(); } catch { catalog = []; }
     return installMcpEntry(root, mcpId, catalog, {
@@ -4453,6 +4489,63 @@ export class TycoonPanel {
       resolveTokens: (c) => this._resolveConfigTokens(c),
       finalize: (id, c, r) => withDispatcherProjectDir(id, this._resolveCodexBinaryForInstall(id, c), r),
       afterWrite: (r, c) => this._copyBridgeHooksForMcp(r, c),
+      ...(this._useLocalMcp(root) ? { local: this._localMcpOps() } : {}),
+    });
+  }
+
+  /** True on the Claude Code harness: user-installed servers are registered at Claude local scope. */
+  private _useLocalMcp(root: string): boolean {
+    return root !== "" && harnessUsesMcpJson(this._resolveEffectiveHarness(root));
+  }
+
+  /** Local-scope operations bound to the INSTALLED extension's hooks directory (bridge scripts run from there). */
+  private _localMcpOps(): LocalMcpOps {
+    return createLocalMcpOps(path.join(this._extensionUri.fsPath, "hooks"));
+  }
+
+  /** The project's .mcp.json servers plus this user's local-scope registrations (Claude Code harness only). */
+  private _effectiveMcpConfig(root: string): Record<string, unknown> {
+    const base = this._readMcpConfig(path.join(root, ".mcp.json"));
+    return this._useLocalMcp(root) ? withLocalMcpServers(base, root) : base;
+  }
+
+  /** Register a finalised catalog config at local scope; returns an error message, or undefined on success. */
+  private async _registerLocalMcpConfig(root: string, id: string, config: unknown): Promise<string | undefined> {
+    const ops = this._localMcpOps();
+    const localized = localizeMcpConfig(config, ops.hooksDir);
+    if (!localized.ok) return localized.error;
+    const r = await ops.set(root, id, localized.config);
+    return r.ok ? undefined : (r.error ?? `Could not register ${id}.`);
+  }
+
+  /** Remove a local-scope registration. */
+  private async _removeLocalMcpConfig(root: string, id: string): Promise<string | undefined> {
+    const r = await this._localMcpOps().remove(root, id);
+    if (!r.ok) return r.error ?? `Could not remove ${id}.`;
+    return undefined;
+  }
+
+  /**
+   * Panel open, Claude Code harness only: repoint local-scope entries the user
+   * already registered at this extension version (never downgrading). Nothing is
+   * ever registered from what the project contains. Deferred and best effort.
+   */
+  private _ensureLocalMcpCurrent(): Promise<void> {
+    // Not awaited by the caller: the panel's first render never waits on the Claude CLI.
+    return Promise.resolve().then(async () => {
+      try {
+        const root = this._projectRoot();
+        if (!this._useLocalMcp(root)) return;
+        const ops = this._localMcpOps();
+        const repointed = await repointLocalMcpEntries(root, ops.hooksDir, Object.keys(this._tycoonServerDefs()));
+        for (const e of repointed.errors) console.warn(`TycoonAgents: local MCP sync: ${e}`);
+        if (repointed.repointed.length > 0) {
+          log(`panel: local-scope MCP repointed ${repointed.repointed.join(",")}`);
+          this._handleGetSettings();
+        }
+      } catch (err) {
+        console.warn("TycoonAgents: local MCP sync failed:", err);
+      }
     });
   }
 
@@ -4461,11 +4554,11 @@ export class TycoonPanel {
   }
 
   /** Multi-LLM picker install: selected agents + the servers they need (shared openai-compatible server once). */
-  private _installBridgePicker(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): void {
-    withHookWrite(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => void>)._installBridgePickerUngated.call(this, pack, root, selection));
+  private async _installBridgePicker(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): Promise<void> {
+    await withHookWriteAsync(() => (TycoonPanel.prototype as unknown as Record<string, (...a: unknown[]) => Promise<void>>)._installBridgePickerUngated.call(this, pack, root, selection));
   }
 
-  private _installBridgePickerUngated(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): void {
+  private async _installBridgePickerUngated(pack: any, root: string, selection?: { agents?: string[]; others?: OtherAgentSpec[] }): Promise<void> {
     try {
       if (!selection || ((selection.agents?.length ?? 0) === 0 && (selection.others?.length ?? 0) === 0)) {
         this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id: pack.id, ok: false, error: "Choose at least one model to install." });
@@ -4473,7 +4566,7 @@ export class TycoonPanel {
       }
       const packAgents: PackAgent[] = Array.isArray(pack.agents) ? pack.agents : [];
       const ctx = this._bridgeSetupContext(root);
-      const res = installBridgeSelection({
+      const res = await installBridgeSelection({
         root,
         packAgents,
         selectedAgentIds: selection.agents ?? [],
@@ -4481,6 +4574,7 @@ export class TycoonPanel {
         harness: ctx.harness,
         claudeSubscriptionOptIn: readClaudeSubscriptionOptIn(),
         installMcp: (mcpId) => this._installMcpEntryForBridge(root, mcpId),
+        removeMcp: async (mcpId) => { await this._removeLocalMcpConfig(root, mcpId); },
         storeLocalValue: (name, value) => { setLocalEnvValue(name, value, process.env); },
         getLocalValue: (name) => getLocalEnvValue(name),
       });
@@ -4495,12 +4589,13 @@ export class TycoonPanel {
         fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
         this._rosterModelCache = undefined;
       }
+      const newChatHint = Object.values(res.mcp).includes("installed") && this._useLocalMcp(root);
       this._panel.webview.postMessage({
         type: MSG.PACK_INSTALLED,
         id: pack.id,
         ok: res.ok && res.errors.length === 0,
         ...(res.errors.length > 0 ? { error: res.errors.join(" ") } : {}),
-        results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost },
+        results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost, ...(newChatHint ? { newChatHint: true } : {}) },
       });
       this._handleGetSettings();
     } catch (e) {
@@ -4509,19 +4604,21 @@ export class TycoonPanel {
   }
 
   /** "Needs setup" action: add the MCP server an installed bridge agent depends on. */
-  private _handleInstallBridgeServer(agentId: string): void {
+  private async _handleInstallBridgeServer(agentId: string): Promise<void> {
     const root = this._projectRoot();
     let error: string | undefined;
     let outcome: McpInstallOutcome | undefined;
+    let newChatHint = false;
     const server = root === "" ? null : serverForInstalledAgent(root, agentId);
     if (root === "") error = "No workspace folder open";
     else if (server === null) error = "This agent does not use an MCP server.";
     else if (!harnessUsesMcpJson(this._resolveEffectiveHarness(root))) error = "On this harness bridges run through the TycoonAgents dispatcher; nothing is added to .mcp.json.";
     else {
-      try { outcome = this._installMcpEntryForBridge(root, server); } catch (e) { error = String(e); }
+      try { outcome = await this._installMcpEntryForBridge(root, server); } catch (e) { error = String(e); }
       if (typeof outcome === "object") error = outcome.error;
+      else if (outcome === "installed" && this._useLocalMcp(root)) newChatHint = true;
     }
-    void this._panel.webview.postMessage({ type: MSG.BRIDGE_SERVER_INSTALLED, id: agentId, ok: error === undefined, ...(error ? { error } : {}) });
+    void this._panel.webview.postMessage({ type: MSG.BRIDGE_SERVER_INSTALLED, id: agentId, ok: error === undefined, ...(error ? { error } : {}), ...(newChatHint ? { newChatHint: true } : {}) });
     this._handleGetSettings();
     this._handleGetPacks();
   }
@@ -4700,7 +4797,7 @@ export class TycoonPanel {
       // Picker pack (Multi-LLM): install only the models the user ticked, each
       // with the MCP server it needs. Never installs "everything" implicitly.
       if (pack.picker === "bridges") {
-        this._installBridgePicker(pack, root, selection);
+        await this._installBridgePicker(pack, root, selection);
         return;
       }
 
@@ -4821,8 +4918,9 @@ export class TycoonPanel {
           throw new Error(`MCP catalog entry not found for id: ${pack.mcp}`);
         }
         const mcpPath = path.join(root, ".mcp.json");
+        const packUseLocal = this._useLocalMcp(root);
         const existing = this._readMcpConfig(mcpPath);
-        if (hasMcpServer(existing, pack.mcp)) {
+        if (packUseLocal ? this._localMcpOps().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
           results.mcp = "exists";
         } else {
           const platformConfig = resolveConfigForPlatform(entry, process.platform);
@@ -4838,11 +4936,20 @@ export class TycoonPanel {
             };
           } else {
             const finalConfig = withDispatcherProjectDir(pack.mcp, this._resolveCodexBinaryForInstall(pack.mcp, resolvedConfig), root);
-            const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
-            fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
-            this._copyBridgeHooksForMcp(root, finalConfig);
-            // No approval written; Claude Code asks the user on first use.
-            results.mcp = "installed";
+            if (packUseLocal) {
+              const registered = await this._registerLocalMcpConfig(root, pack.mcp, finalConfig);
+              if (registered !== undefined) {
+                results.mcp = { status: "skipped", error: registered };
+              } else {
+                results.mcp = "installed";
+                results.newChatHint = true;
+              }
+            } else {
+              const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
+              fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+              this._copyBridgeHooksForMcp(root, finalConfig);
+              results.mcp = "installed";
+            }
           }
         }
       }
@@ -4987,7 +5094,7 @@ export class TycoonPanel {
         fs.existsSync(path.join(root, ".claude", "commands", `${cid}.md`));
       const agentOnDisk = (aid: string): boolean =>
         fs.existsSync(path.join(root, ".claude", "agents", `${aid}.md`));
-      const mcpConfigNow = (): Record<string, unknown> => this._readMcpConfig(path.join(root, ".mcp.json"));
+      const mcpConfigNow = (): Record<string, unknown> => this._effectiveMcpConfig(root);
       const packStillInstalled = (p: any): boolean => {
         const sk: string[] = Array.isArray(p.skills) ? p.skills : [];
         const cm: string[] = Array.isArray(p.commands) ? p.commands : [];
@@ -5044,13 +5151,19 @@ export class TycoonPanel {
       if (packMcp) {
         const mcpPath = path.join(root, ".mcp.json");
         const existing = this._readMcpConfig(mcpPath);
-        if (!hasMcpServer(existing, packMcp)) {
+        if (!hasMcpServer(this._effectiveMcpConfig(root), packMcp)) {
           results.mcp = "absent";
         } else if (sharedByOtherPack((p) => p.mcp === packMcp)) {
           results.mcp = "kept-shared";
         } else {
-          const updated = removeMcpServer(existing, packMcp);
-          fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+          if (this._useLocalMcp(root)) {
+            const gone = await this._removeLocalMcpConfig(root, packMcp);
+            if (gone !== undefined) throw new Error(gone);
+          }
+          if (hasMcpServer(existing, packMcp)) {
+            const updated = removeMcpServer(existing, packMcp);
+            fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
+          }
           results.mcp = "removed";
         }
       }
@@ -5766,7 +5879,7 @@ export class TycoonPanel {
     // the MCP server is registered (see media/main.js's installState
     // handler / the uefnDetected trigger, and renderSetupOptionals's UEFN
     // section).
-    const mcpConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
+    const mcpConfig = root !== "" ? this._effectiveMcpConfig(root) : {};
     const uefnBridgeSetUp = root !== "" && Boolean(this._uefnBridgeEntry(mcpConfig));
     // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
     // over from a prior setup, or a currently-installed other tool's own
@@ -10210,7 +10323,7 @@ export class TycoonPanel {
       });
 
       // ---- engines / UEFN / MCP servers --------------------------------------
-      const mcpConfig = this._readMcpConfig(path.join(root, ".mcp.json"));
+      const mcpConfig = this._effectiveMcpConfig(root);
       const engineChips = computeEngineChips(root, mcpConfig, (engineId) => this._engineProbeCache.get(engineId));
       const uefn = detectUefnProject(root);
       const bridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
@@ -10504,7 +10617,7 @@ export class TycoonPanel {
       // Recognizes both key names this product has written for the UEFN MCP
       // server over time so the node/PATH note below only
       // appears when there's actually an entry it could be relevant to.
-      const mcpConfigForDiagnostic = this._readMcpConfig(path.join(root, ".mcp.json"));
+      const mcpConfigForDiagnostic = this._effectiveMcpConfig(root);
       const mcpUefnEntryConfigured =
         hasMcpServer(mcpConfigForDiagnostic, "uefn-bridge") || hasMcpServer(mcpConfigForDiagnostic, "uefn");
       const text = buildPathDiagnosticText(report, verseState, {

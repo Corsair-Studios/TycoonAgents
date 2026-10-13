@@ -38,6 +38,12 @@ const require = createRequire(import.meta.url);
 // standalone/test -> standalone -> repo root (same derivation server.mjs uses).
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+// Installing a server registers it in the user's Claude config (local scope); keep these
+// tests off the real ~/.claude.json and off the real `claude` binary.
+const CLAUDE_TEST_CFG = fs.mkdtempSync(path.join(os.tmpdir(), 'tycoon-claude-cfg-'));
+process.env.CLAUDE_CONFIG_DIR = CLAUDE_TEST_CFG;
+process.env.TYCOON_CLAUDE_BIN = 'none';
+
 /** Reads SSE chunks off `reader` until it sees a `message` event whose JSON
  * `data.type` equals `matchType`, then returns that parsed data. Bounded by
  * `maxChunks` so a missing broadcast fails the test instead of hanging
@@ -505,9 +511,12 @@ test('POST /message {type: "installPack", id: "multi-llm", selection} installs o
     assert.equal(installed.ok, true, `install must succeed: ${installed.error}`);
     const agentsDir = path.join(projectRoot, '.claude', 'agents');
     assert.deepEqual(fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md')).sort(), ['grok-reviewer.md', 'kimi-reviewer.md', 'local-llama.md']);
-    const mcp = JSON.parse(fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8'));
-    assert.deepEqual(Object.keys(mcp.mcpServers), ['openai-compatible']);
-    assert.ok(!('enabledMcpjsonServers' in mcp), 'no approval key may be written');
+    assert.ok(!fs.existsSync(path.join(projectRoot, '.mcp.json')), 'the project .mcp.json must not be written');
+    const claudeJson = JSON.parse(fs.readFileSync(path.join(CLAUDE_TEST_CFG, '.claude.json'), 'utf8'));
+    const key = Object.keys(claudeJson.projects).find((k) => k.toLowerCase() === projectRoot.split(path.sep).join('/').toLowerCase());
+    assert.ok(key, 'a local-scope project entry must exist');
+    assert.deepEqual(Object.keys(claudeJson.projects[key].mcpServers), ['openai-compatible']);
+    assert.ok(!('enabledMcpjsonServers' in claudeJson.projects[key]), 'no approval key may be written');
   } finally {
     controller.abort();
     await runtime.close();

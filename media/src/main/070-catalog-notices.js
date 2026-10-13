@@ -517,6 +517,16 @@
         header.appendChild(setupBadge);
       }
 
+      // Listed in the project's .mcp.json but not loaded by Claude Code: offer
+      // an explicit "Enable" (registers our pinned catalog config; never automatic).
+      const pendingEnable = !server.installed && server.pending === true;
+      if (pendingEnable) {
+        const pendingBadge = document.createElement("span");
+        pendingBadge.className = "mcp-setup-badge";
+        pendingBadge.textContent = "not enabled";
+        header.appendChild(pendingBadge);
+      }
+
       const btn = document.createElement("button");
       if (server.installed) {
         btn.className = "skill-btn skill-btn--remove";
@@ -524,7 +534,8 @@
         btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
         btn.className = "skill-btn";
-        btn.textContent = "Install";
+        btn.textContent = pendingEnable ? "Enable" : "Install";
+        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable");
         btn.setAttribute("data-mcp-id", server.id);
       }
       header.appendChild(btn);
@@ -590,15 +601,16 @@
    * @param {string|undefined} error
    * @param {boolean|undefined} cancelled
    */
-  function handleMcpInstalled(id, ok, alreadyExisted, error, cancelled) {
+  function handleMcpInstalled(id, ok, alreadyExisted, error, cancelled, newChatHint) {
     if (!mcpListEl) return;
     const btn = /** @type {HTMLElement|null} */ (
       mcpListEl.querySelector(`[data-mcp-id="${CSS.escape(id)}"]`)
     );
     if (!btn) return;
     // User dismissed the host confirmation modal — silently restore the button.
+    const idleLabel = btn.getAttribute("data-mcp-label") || "Install";
     if (cancelled) {
-      btn.textContent = "Install";
+      btn.textContent = idleLabel;
       btn.removeAttribute("disabled");
       return;
     }
@@ -607,10 +619,12 @@
       btn.classList.add("skill-btn--installed");
       btn.setAttribute("disabled", "");
       btn.removeAttribute("data-mcp-id");
+      if (newChatHint) showToast(NEW_CHAT_HINT, "info");
       const okRow = btn.closest(".skill-row");
       const harnessInfo = lastSettings && lastSettings.harness;
       const onCodex = harnessInfo && harnessInfo.effective === "codex";
-      if (okRow && !onCodex && !okRow.querySelector(".mcp-approval-note")) {
+      const approvalPending = !!(lastSettings && lastSettings.mcpApproval && Array.isArray(lastSettings.mcpApproval.pending) && lastSettings.mcpApproval.pending.length > 0);
+      if (okRow && !onCodex && !newChatHint && approvalPending && !okRow.querySelector(".mcp-approval-note")) {
         const note = document.createElement("span");
         note.className = "mcp-approval-note";
         note.textContent = MCP_APPROVAL_NOTE;
@@ -619,7 +633,7 @@
         if (rowBlock) okRow.appendChild(rowBlock);
       }
     } else {
-      btn.textContent = "Install";
+      btn.textContent = idleLabel;
       btn.removeAttribute("disabled");
       const row = btn.closest(".skill-row");
       if (row) {

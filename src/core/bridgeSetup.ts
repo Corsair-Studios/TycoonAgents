@@ -17,7 +17,9 @@
 //   - installs a user-chosen subset of the pack's agents together with the
 //     servers they need (the shared openai-compatible server exactly once),
 //   - validates and builds "Other (OpenAI-compatible endpoint)" agents.
-// No MCP approval key is ever written; Claude Code asks once on first use.
+// On the Claude Code harness a server the user installs is registered at Claude
+// local scope (see claudeLocalMcp.ts), so it loads without the project-file
+// approval prompt. No MCP approval key is ever written.
 // ---------------------------------------------------------------------------
 
 import * as fs from "fs";
@@ -38,7 +40,9 @@ import { isSafeAgentId } from "../host/vscode/agentConfig";
 import { hasMcpServer, mergeMcpServer, resolveConfigForPlatform, isUnpinnedMcpConfig } from "../host/vscode/mcpCatalog";
 import { buildAgentMarkdown, agentMarkdownHasTycoonMarker } from "../host/vscode/packCatalog";
 import type { PackAgent } from "../host/vscode/packCatalog";
-import { withHookWrite } from "./hookWriteGate";
+import { withHookWriteAsync } from "./hookWriteGate";
+import { localizeMcpConfig, withLocalMcpServers } from "./claudeLocalMcp";
+import type { LocalMcpOps } from "./claudeLocalMcp";
 
 /** Pack id of the picker pack in media/packs/catalog.json. */
 export const BRIDGE_PACK_ID = "multi-llm";
@@ -110,14 +114,20 @@ export function readProjectMcpConfigStrict(root: string): { config: Record<strin
   return { config: {}, unreadable: true };
 }
 
-export function readProjectMcpConfig(root: string): Record<string, unknown> {
+/**
+ * The servers a project can load: its .mcp.json plus, on the Claude Code harness
+ * ONLY, this user's Claude local-scope registrations for it. Other harnesses
+ * never read ~/.claude.json.
+ */
+export function readProjectMcpConfig(root: string, harness: string): Record<string, unknown> {
+  let base: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
-    if (parsed !== null && typeof parsed === "object") return parsed as Record<string, unknown>;
+    if (parsed !== null && typeof parsed === "object") base = parsed as Record<string, unknown>;
   } catch {
     /* missing / invalid => {} */
   }
-  return {};
+  return harnessUsesMcpJson(harness) ? withLocalMcpServers(base, root) : base;
 }
 
 /** The MCP server a backend needs, or null. openai-compatible transport always means the shared server. */
@@ -159,10 +169,10 @@ export function describeBackendSetup(backend: Backend | null | undefined, ctx: B
 
   let serverState: BridgeServerState;
   if (!harnessUsesMcpJson(ctx.harness)) serverState = "dispatcher";
-  else serverState = hasMcpServer(ctx.mcpConfig ?? readProjectMcpConfig(ctx.root), server) ? "installed" : "missing";
+  else serverState = hasMcpServer(ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness), server) ? "installed" : "missing";
 
   const reasons: string[] = [];
-  if (serverState === "missing") reasons.push(`MCP server "${server}" is not in .mcp.json`);
+  if (serverState === "missing") reasons.push(`MCP server "${server}" is not installed for this project`);
   for (const m of missingRequired) reasons.push(`${m.name} is not set`);
   return {
     server,
@@ -185,7 +195,7 @@ export function describeBridgeSetup(ctx: BridgeSetupContext): Record<string, Bri
   } catch {
     return out;
   }
-  const withMcp: BridgeSetupContext = { ...ctx, mcpConfig: ctx.mcpConfig ?? readProjectMcpConfig(ctx.root) };
+  const withMcp: BridgeSetupContext = { ...ctx, mcpConfig: ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness) };
   for (const f of files) {
     try {
       const fm = readAgentFrontmatter(fs.readFileSync(path.join(agentsDir, f), "utf8"));
@@ -229,7 +239,7 @@ export interface BridgePickerPayload {
 }
 
 export function buildBridgePicker(packAgents: PackAgent[], ctx: BridgeSetupContext): BridgePickerPayload {
-  const mcp = ctx.mcpConfig ?? readProjectMcpConfig(ctx.root);
+  const mcp = ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness);
   const c: BridgeSetupContext = { ...ctx, mcpConfig: mcp };
   const byId = new Map(packAgents.map((a) => [a.id, a] as const));
   const agentExists = (id: string): boolean => fs.existsSync(path.join(ctx.root, ".claude", "agents", `${id}.md`));
@@ -411,19 +421,26 @@ export interface McpEntryDeps {
   resolveTokens: (config: unknown) => unknown;
   /** Host finalisation (dispatcher project dir, pinned Codex binary). */
   finalize: (mcpId: string, config: unknown, root: string) => unknown;
-  /** Host side effect after the write (copy bridge launchers into .claude/hooks). */
+  /** Host side effect after the write (copy bridge launchers into .claude/hooks). Not called for a local-scope install. */
   afterWrite: (root: string, finalConfig: unknown) => void;
+  /**
+   * Claude Code harness: register at Claude local scope (running the installed bridge
+   * scripts) instead of writing the project's .mcp.json. Omit for the legacy file write.
+   */
+  local?: LocalMcpOps;
   /** Test seam for the atomic write; defaults to node:fs. */
   fsOps?: { writeFileSync: typeof fs.writeFileSync; renameSync: typeof fs.renameSync; unlinkSync: typeof fs.unlinkSync };
 }
 
 /**
- * Add one MCP catalog entry to <root>/.mcp.json. Idempotent ("exists"), refuses
- * unpinned npx/uvx entries, never writes an approval key (Claude Code asks once).
+ * Install one MCP catalog entry. With `deps.local` it is registered at Claude local
+ * scope for this project; otherwise it is added to <root>/.mcp.json. Idempotent
+ * ("exists"), refuses unpinned npx/uvx entries, never writes an approval key.
  */
-export function installMcpEntry(root: string, mcpId: string, catalog: any[], deps: McpEntryDeps): McpInstallOutcome {
+export async function installMcpEntry(root: string, mcpId: string, catalog: any[], deps: McpEntryDeps): Promise<McpInstallOutcome> {
   const entry = catalog.find((x: any) => x && x.id === mcpId);
   if (entry === undefined) return { status: "skipped", error: `MCP catalog entry not found for id: ${mcpId}` };
+  if (deps.local) return await installMcpEntryLocal(root, mcpId, entry, deps, deps.local);
   const mcpPath = path.join(root, ".mcp.json");
   const read = readProjectMcpConfigStrict(root);
   if (read.unreadable) {
@@ -458,6 +475,25 @@ export function installMcpEntry(root: string, mcpId: string, catalog: any[], dep
   return "installed";
 }
 
+async function installMcpEntryLocal(root: string, mcpId: string, entry: any, deps: McpEntryDeps, local: LocalMcpOps): Promise<McpInstallOutcome> {
+  if (local.has(root, mcpId)) return "exists";
+  const platformConfig = resolveConfigForPlatform(entry, deps.platform);
+  if (!platformConfig.ok) return { status: "skipped", error: platformConfig.error };
+  const resolved = deps.resolveTokens(platformConfig.config);
+  if (/<[^<>]*>/.test(JSON.stringify(resolved))) {
+    return { status: "skipped", error: `${mcpId} needs manual configuration; see .mcp.json.example.` };
+  }
+  const finalConfig = deps.finalize(mcpId, resolved, root);
+  if (isUnpinnedMcpConfig(finalConfig)) {
+    return { status: "skipped", error: `${mcpId} is not version-pinned and was not installed.` };
+  }
+  const localized = localizeMcpConfig(finalConfig, local.hooksDir);
+  if (!localized.ok) return { status: "skipped", error: localized.error };
+  const written = await local.set(root, mcpId, localized.config);
+  if (!written.ok) return { status: "skipped", error: written.error ?? `Could not register ${mcpId}.` };
+  return "installed";
+}
+
 // ---------------------------------------------------------------------------
 // Picker install.
 // ---------------------------------------------------------------------------
@@ -472,7 +508,12 @@ export interface BridgeInstallArgs {
   others: OtherAgentSpec[];
   harness: string;
   claudeSubscriptionOptIn: boolean;
-  installMcp: (mcpId: string) => McpInstallOutcome;
+  installMcp: (mcpId: string) => McpInstallOutcome | Promise<McpInstallOutcome>;
+  /**
+   * Remove a server's Claude local-scope registration (Claude Code harness). Called for
+   * servers that only unticked picker models needed; the agent files are left in place.
+   */
+  removeMcp?: (mcpId: string) => void | Promise<void>;
   /** Persist a validated base URL VALUE into the per-user store (never a project file). */
   storeLocalValue?: (name: string, value: string) => void;
   /** Read the per-user store's current value for a name (host seam); used to refuse a silent overwrite. */
@@ -520,11 +561,11 @@ export function listAgentIds(root: string): string[] {
   }
 }
 
-export function installBridgeSelection(args: BridgeInstallArgs): BridgeInstallResult {
-  return withHookWrite(() => installBridgeSelectionUngated(args));
+export async function installBridgeSelection(args: BridgeInstallArgs): Promise<BridgeInstallResult> {
+  return withHookWriteAsync(() => installBridgeSelectionUngated(args));
 }
 
-function installBridgeSelectionUngated(args: BridgeInstallArgs): BridgeInstallResult {
+async function installBridgeSelectionUngated(args: BridgeInstallArgs): Promise<BridgeInstallResult> {
   const result: BridgeInstallResult = { ok: true, installed: [], agents: [], mcp: {}, errors: [], dispatcherHost: !harnessUsesMcpJson(args.harness) };
   const existingIds = listAgentIds(args.root);
   const packIds = args.packAgents.map((a) => a.id);
@@ -587,9 +628,32 @@ function installBridgeSelectionUngated(args: BridgeInstallArgs): BridgeInstallRe
     for (const s of servers) {
       if (!needed.has(s)) continue;
       try {
-        result.mcp[s] = args.installMcp(s);
+        result.mcp[s] = await args.installMcp(s);
       } catch (e) {
         result.mcp[s] = { status: "skipped", error: String(e) };
+      }
+    }
+  }
+  if (!result.dispatcherHost && args.removeMcp) {
+    // Unticking a model removes the servers nothing else installed still needs.
+    const unticked = args.packAgents.filter((a) => !wanted.has(a.id) && fs.existsSync(path.join(args.root, ".claude", "agents", `${a.id}.md`)));
+    if (unticked.length > 0) {
+      const untickedIds = new Set(unticked.map((a) => a.id));
+      const stillNeeded = new Set<string>();
+      for (const id of listAgentIds(args.root)) {
+        if (untickedIds.has(id)) continue;
+        const s = serverForInstalledAgent(args.root, id);
+        if (s !== null) stillNeeded.add(s);
+      }
+      for (const a of unticked) {
+        const s = bridgeServerFor(a.backend);
+        if (s === null || stillNeeded.has(s)) continue;
+        try {
+          await args.removeMcp(s);
+        } catch {
+          /* leave the registration; the badge stays truthful */
+        }
+        stillNeeded.add(s);
       }
     }
   }

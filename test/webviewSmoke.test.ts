@@ -7028,7 +7028,7 @@ test('media/main.js Theme Service disclosure names Corsair Theme Service and is 
 
 test('MCP install tells Claude Code users about the one-time approval prompt, and not Codex users', async () => {
   const NOTE = 'Claude Code will ask you once to approve the TycoonAgents servers';
-  for (const [effective, expectNote] of [['claude-code', true], ['codex', false]] as const) {
+  for (const [effective, expectNote] of [['claude-code', false], ['codex', false]] as const) {
     const h = await bootObjScaleHarness();
     try {
       if (!h.win.CSS) h.win.CSS = { escape: (v: string) => v };
@@ -7062,8 +7062,8 @@ test('MCP install tells Claude Code users about the one-time approval prompt, an
   }
 });
 
-test('first-run setup status carries the approval note on Claude Code only', async () => {
-  for (const [harness, expectNote] of [['claude-code', true], ['codex', false]] as const) {
+test('first-run setup status omits the approval note unless a server is pending', async () => {
+  for (const [harness, expectNote] of [['claude-code', false], ['codex', false]] as const) {
     const h = await bootObjScaleHarness();
     try {
       h.dispatch({ type: 'installState', installed: false, harness });

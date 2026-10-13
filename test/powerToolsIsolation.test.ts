@@ -194,6 +194,7 @@ test("_handleInstallMcp refuses the uefn-bridge catalog entry (unresolved <POWER
     const fakeThis = {
       _loadMcpCatalog: (TycoonPanel.prototype as any)._loadMcpCatalog,
       _readMcpConfig: (TycoonPanel.prototype as any)._readMcpConfig,
+      _useLocalMcp: () => false,
       _resolveConfigTokens: (TycoonPanel.prototype as any)._resolveConfigTokens,
       _buildMcpConfirmMessage: (TycoonPanel.prototype as any)._buildMcpConfirmMessage,
       _projectRoot: () => root,

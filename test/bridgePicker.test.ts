@@ -4,6 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// Never let a test reach the real Claude config (~/.claude.json) or the real `claude` binary.
+process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-claude-cfg-"));
+process.env.TYCOON_CLAUDE_BIN = "none";
+
 import {
   BRIDGE_PACK_ID,
   buildBridgePicker,
@@ -52,10 +56,10 @@ function mcpServers(root: string): string[] {
 }
 
 /** Real catalog install with a spy so the number of installs per server id is observable. */
-function spyInstaller(root: string, calls: string[]): (id: string) => McpInstallOutcome {
-  return (id) => {
+function spyInstaller(root: string, calls: string[]): (id: string) => Promise<McpInstallOutcome> {
+  return async (id) => {
     calls.push(id);
-    return installMcpEntry(root, id, MCP_CATALOG, {
+    return await installMcpEntry(root, id, MCP_CATALOG, {
       platform: process.platform,
       resolveTokens: (c) => JSON.parse(JSON.stringify(c).split("${EXTENSION_DIR}").join("/ext")),
       finalize: (_id, c) => c,
@@ -85,11 +89,11 @@ test("the multi-llm catalog entry is a picker pack and no longer claims a single
   assert.equal(PACK_AGENTS.length, 6);
 });
 
-test("picker installs only the selected agents", () => {
+test("picker installs only the selected agents", async () => {
   const root = tmpProject();
   try {
     const calls: string[] = [];
-    const res = installBridgeSelection(baseArgs(root, calls, { selectedAgentIds: ["codex-reviewer", "gemini-reviewer"] }));
+    const res = await installBridgeSelection(baseArgs(root, calls, { selectedAgentIds: ["codex-reviewer", "gemini-reviewer"] }));
     assert.equal(res.ok, true, res.errors.join(";"));
     assert.deepEqual(agentFiles(root), ["codex-reviewer.md", "gemini-reviewer.md"]);
     assert.deepEqual(res.installed.map((i) => i.agent.id).sort(), ["codex-reviewer", "gemini-reviewer"]);
@@ -98,10 +102,10 @@ test("picker installs only the selected agents", () => {
   }
 });
 
-test("an empty selection installs nothing", () => {
+test("an empty selection installs nothing", async () => {
   const root = tmpProject();
   try {
-    const res = installBridgeSelection(baseArgs(root, []));
+    const res = await installBridgeSelection(baseArgs(root, []));
     assert.equal(res.ok, false);
     assert.deepEqual(agentFiles(root), []);
     assert.equal(fs.existsSync(path.join(root, ".mcp.json")), false);
@@ -110,11 +114,11 @@ test("an empty selection installs nothing", () => {
   }
 });
 
-test("each selected agent gets the server it needs in .mcp.json", () => {
+test("each selected agent gets the server it needs in .mcp.json", async () => {
   const root = tmpProject();
   try {
     const calls: string[] = [];
-    const res = installBridgeSelection(
+    const res = await installBridgeSelection(
       baseArgs(root, calls, { selectedAgentIds: ["codex-reviewer", "gemini-reviewer", "claude-worker", "grok-reviewer"] }),
     );
     assert.equal(res.ok, true, res.errors.join(";"));
@@ -125,21 +129,21 @@ test("each selected agent gets the server it needs in .mcp.json", () => {
   }
 });
 
-test("a deselected model's server is not installed", () => {
+test("a deselected model's server is not installed", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"] }));
+    await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"] }));
     assert.deepEqual(mcpServers(root), ["codex"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("grok, kimi, mistral and an Other endpoint share the openai-compatible server, installed once", () => {
+test("grok, kimi, mistral and an Other endpoint share the openai-compatible server, installed once", async () => {
   const root = tmpProject();
   try {
     const calls: string[] = [];
-    const res = installBridgeSelection(
+    const res = await installBridgeSelection(
       baseArgs(root, calls, { selectedAgentIds: ["grok-reviewer", "kimi-reviewer", "mistral-reviewer"], others: [LOCAL] }),
     );
     assert.equal(res.ok, true, res.errors.join(";"));
@@ -151,10 +155,10 @@ test("grok, kimi, mistral and an Other endpoint share the openai-compatible serv
   }
 });
 
-test("no MCP approval key is written anywhere in the project", () => {
+test("no MCP approval key is written anywhere in the project", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { selectedAgentIds: PACK_AGENTS.map((a) => a.id), others: [LOCAL] }));
+    await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: PACK_AGENTS.map((a) => a.id), others: [LOCAL] }));
     const mcp = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
     assert.deepEqual(Object.keys(mcp), ["mcpServers"]);
     assert.equal(fs.existsSync(path.join(root, ".claude", "settings.json")), false);
@@ -179,17 +183,17 @@ test("catalog entries for all bridge servers resolve to pinned launchers (no @la
   }
 });
 
-test("needs-setup badge data: an installed bridge agent with no server in .mcp.json needs setup, and clears once the server is added", () => {
+test("needs-setup badge data: an installed bridge agent with no server in .mcp.json needs setup, and clears once the server is added", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"], harness: "codex" }));
+    await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"], harness: "codex" }));
     assert.equal(fs.existsSync(path.join(root, ".mcp.json")), false);
     const ctx = { root, harness: "claude-code", env: {} as NodeJS.ProcessEnv, probe: () => ({}) };
     const before = describeBridgeSetup(ctx);
     assert.equal(before["codex-reviewer"].serverState, "missing");
     assert.equal(before["codex-reviewer"].needsSetup, true);
     assert.match(before["codex-reviewer"].reasons.join(" "), /codex/);
-    installMcpEntry(root, "codex", MCP_CATALOG, {
+    await installMcpEntry(root, "codex", MCP_CATALOG, {
       platform: process.platform,
       resolveTokens: (c) => c,
       finalize: (_i, c) => c,
@@ -204,10 +208,10 @@ test("needs-setup badge data: an installed bridge agent with no server in .mcp.j
   }
 });
 
-test("needs-setup also fires when a required key is missing, naming the variable only", () => {
+test("needs-setup also fires when a required key is missing, naming the variable only", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["grok-reviewer"] }));
+    await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["grok-reviewer"] }));
     const missing = describeBridgeSetup({ root, harness: "claude-code", env: {}, probe: () => ({}) })["grok-reviewer"];
     assert.equal(missing.serverState, "installed");
     assert.equal(missing.keyState, "missing");
@@ -223,11 +227,11 @@ test("needs-setup also fires when a required key is missing, naming the variable
   }
 });
 
-test("Codex harness: agent files are installed but .mcp.json is never written and no server install is attempted", () => {
+test("Codex harness: agent files are installed but .mcp.json is never written and no server install is attempted", async () => {
   const root = tmpProject();
   try {
     const calls: string[] = [];
-    const res = installBridgeSelection(
+    const res = await installBridgeSelection(
       baseArgs(root, calls, { harness: "codex", selectedAgentIds: ["codex-reviewer", "grok-reviewer"], others: [LOCAL] }),
     );
     assert.equal(res.ok, true, res.errors.join(";"));
@@ -244,10 +248,10 @@ test("Codex harness: agent files are installed but .mcp.json is never written an
   }
 });
 
-test("picker payload: nothing pre-checked beyond what is installed; per-model status; dispatcher flag", () => {
+test("picker payload: nothing pre-checked beyond what is installed; per-model status; dispatcher flag", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["gemini-reviewer"] }));
+    await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["gemini-reviewer"] }));
     const p = buildBridgePicker(PACK_AGENTS, { root, harness: "claude-code", env: {}, probe: () => ({}) });
     assert.deepEqual(p.models.map((m) => m.label), ["Codex", "Gemini", "Grok", "Kimi", "Mistral", "Claude worker (subscription)"]);
     assert.deepEqual(p.models.filter((m) => m.installed).map((m) => m.agentId), ["gemini-reviewer"]);
@@ -271,20 +275,20 @@ test("Other: slug validation", () => {
   assert.deepEqual(validateOtherSpec(LOCAL, []), []);
 });
 
-test("Other: refuses a name that collides with an existing agent or a pack agent, case-insensitively", () => {
+test("Other: refuses a name that collides with an existing agent or a pack agent, case-insensitively", async () => {
   assert.match(validateOtherSpec(LOCAL, ["local-llama"]).join(" "), /already exists/);
   assert.match(validateOtherSpec({ ...LOCAL, agentId: "grok-reviewer" }, ["grok-reviewer"]).join(" "), /already exists/);
   const root = tmpProject();
   try {
     fs.mkdirSync(path.join(root, ".claude", "agents"), { recursive: true });
     fs.writeFileSync(path.join(root, ".claude", "agents", "local-llama.md"), "---\nname: local-llama\n---\nmine\n");
-    const res = installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"], others: [LOCAL] }));
+    const res = await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["codex-reviewer"], others: [LOCAL] }));
     assert.equal(res.ok, false);
     assert.match(res.errors.join(" "), /already exists/);
     assert.equal(fs.readFileSync(path.join(root, ".claude", "agents", "local-llama.md"), "utf8"), "---\nname: local-llama\n---\nmine\n", "the colliding agent is untouched");
     assert.equal(fs.existsSync(path.join(root, ".claude", "agents", "codex-reviewer.md")), false, "a bad Other installs nothing");
     // Two Others with the same name in one request also collide.
-    const dup = installBridgeSelection(baseArgs(tmpProject(), [], { others: [{ ...LOCAL, agentId: "dup-one" }, { ...LOCAL, agentId: "dup-one" }] }));
+    const dup = await installBridgeSelection(baseArgs(tmpProject(), [], { others: [{ ...LOCAL, agentId: "dup-one" }, { ...LOCAL, agentId: "dup-one" }] }));
     assert.equal(dup.ok, false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -306,12 +310,12 @@ test("Other: env var names and base URL follow the custom-endpoint rules", () =>
   assert.ok(validateOtherSpec({ ...LOCAL, model: "bad model;rm" }, []).length > 0);
 });
 
-test("Other: the agent file carries env var NAMES only and round-trips as a custom openai-compatible backend", () => {
+test("Other: the agent file carries env var NAMES only and round-trips as a custom openai-compatible backend", async () => {
   const root = tmpProject();
   try {
     const secretUrl = "http://localhost:11434/v1";
     const stored: Array<[string, string]> = [];
-    const res = installBridgeSelection(
+    const res = await installBridgeSelection(
       baseArgs(root, [], { others: [{ ...LOCAL, baseUrl: secretUrl }], storeLocalValue: (n, v) => stored.push([n, v]) }),
     );
     assert.equal(res.ok, true, res.errors.join(";"));
@@ -334,11 +338,11 @@ test("Other: the agent file carries env var NAMES only and round-trips as a cust
   }
 });
 
-test("Other: more than one Other agent can be added, with a single shared server", () => {
+test("Other: more than one Other agent can be added, with a single shared server", async () => {
   const root = tmpProject();
   try {
     const calls: string[] = [];
-    const res = installBridgeSelection(
+    const res = await installBridgeSelection(
       baseArgs(root, calls, {
         others: [LOCAL, { agentId: "lm-studio", label: "LM Studio", model: "qwen2.5-coder", endpointEnv: "LMSTUDIO_BASE_URL", keywords: "lmstudio, local" }],
       }),
@@ -354,10 +358,10 @@ test("Other: more than one Other agent can be added, with a single shared server
   }
 });
 
-test("Other: shows in the picker with the same status badge data", () => {
+test("Other: shows in the picker with the same status badge data", async () => {
   const root = tmpProject();
   try {
-    installBridgeSelection(baseArgs(root, [], { others: [LOCAL] }));
+    await installBridgeSelection(baseArgs(root, [], { others: [LOCAL] }));
     const probe = () => ({});
     const p = buildBridgePicker(PACK_AGENTS, { root, harness: "claude-code", env: {}, probe });
     assert.equal(p.others.length, 1);
@@ -390,29 +394,29 @@ const PLAIN_DEPS = {
   afterWrite: () => undefined,
 };
 
-test("an unparseable .mcp.json is never overwritten: install is skipped with a clear message", () => {
+test("an unparseable .mcp.json is never overwritten: install is skipped with a clear message", async () => {
   const root = tmpProject();
   try {
     const bad = "{ not json";
     fs.writeFileSync(path.join(root, ".mcp.json"), bad);
-    const out = installMcpEntry(root, "codex", MCP_CATALOG, PLAIN_DEPS);
+    const out = await installMcpEntry(root, "codex", MCP_CATALOG, PLAIN_DEPS);
     assert.ok(typeof out === "object" && out.status === "skipped");
     assert.match((out as { error: string }).error, /Couldn't read \.mcp\.json/);
     assert.equal(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"), bad);
     // A JSON array / scalar is also not a usable config.
     fs.writeFileSync(path.join(root, ".mcp.json"), "[]");
-    assert.ok(typeof installMcpEntry(root, "codex", MCP_CATALOG, PLAIN_DEPS) === "object");
+    assert.ok(typeof await installMcpEntry(root, "codex", MCP_CATALOG, PLAIN_DEPS) === "object");
     assert.equal(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"), "[]");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("installMcpEntry writes atomically (temp + rename) and cleans the temp file when the write fails", () => {
+test("installMcpEntry writes atomically (temp + rename) and cleans the temp file when the write fails", async () => {
   const root = tmpProject();
   try {
     const seen: string[] = [];
-    const ok = installMcpEntry(root, "codex", MCP_CATALOG, {
+    const ok = await installMcpEntry(root, "codex", MCP_CATALOG, {
       ...PLAIN_DEPS,
       fsOps: {
         writeFileSync: ((p: any, d: any) => { seen.push("write:" + path.basename(String(p))); fs.writeFileSync(p, d); }) as typeof fs.writeFileSync,
@@ -429,7 +433,7 @@ test("installMcpEntry writes atomically (temp + rename) and cleans the temp file
     const root2 = tmpProject();
     try {
       fs.writeFileSync(path.join(root2, ".mcp.json"), JSON.stringify({ mcpServers: { keep: { command: "x" } } }));
-      const failed = installMcpEntry(root2, "codex", MCP_CATALOG, {
+      const failed = await installMcpEntry(root2, "codex", MCP_CATALOG, {
         ...PLAIN_DEPS,
         fsOps: {
           writeFileSync: ((p: any, d: any) => { fs.writeFileSync(p, d); }) as typeof fs.writeFileSync,
@@ -457,23 +461,23 @@ test("Other: Windows reserved device names are rejected, case-insensitively", ()
   assert.deepEqual(validateOtherSpec({ ...LOCAL, agentId: "console" }, []), []);
 });
 
-test("Other: a different value already stored for the base URL variable is not overwritten silently", () => {
+test("Other: a different value already stored for the base URL variable is not overwritten silently", async () => {
   const root = tmpProject();
   try {
     const stored: Array<[string, string]> = [];
     const spec = { ...LOCAL, baseUrl: "http://localhost:11434/v1" };
-    const conflict = installBridgeSelection(
+    const conflict = await installBridgeSelection(
       baseArgs(root, [], { others: [spec], storeLocalValue: (n, v) => stored.push([n, v]), getLocalValue: () => "https://other.example.com/v1" }),
     );
     assert.equal(conflict.ok, false);
     assert.match(conflict.errors.join(" "), /different base URL variable name/);
     assert.equal(stored.length, 0);
     assert.equal(agentFiles(root).length, 0, "nothing installed on a conflict");
-    const same = installBridgeSelection(
+    const same = await installBridgeSelection(
       baseArgs(root, [], { others: [spec], storeLocalValue: (n, v) => stored.push([n, v]), getLocalValue: () => "http://localhost:11434/v1" }),
     );
     assert.equal(same.ok, true, same.errors.join(";"));
-    const fresh = installBridgeSelection(
+    const fresh = await installBridgeSelection(
       baseArgs(root, [], { others: [{ ...spec, agentId: "another-one" }], storeLocalValue: (n, v) => stored.push([n, v]), getLocalValue: () => undefined }),
     );
     assert.equal(fresh.ok, true, fresh.errors.join(";"));

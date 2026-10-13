@@ -2573,7 +2573,7 @@
       // See the "skills" branch above — same install-based gate refresh.
       renderSettings();
     } else if (msg && msg.type === "mcpInstalled") {
-      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled);
+      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled, msg.newChatHint);
     } else if (msg && msg.type === "mcpRemoved") {
       handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
@@ -2582,10 +2582,12 @@
       renderSettings();
     } else if (msg && msg.type === "packInstalled") {
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
+      if (msg.ok && msg.results && msg.results.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "tycoonMcpApprovalResult") {
       handleMcpApprovalResult(msg);
     } else if (msg && msg.type === "bridgeServerInstalled") {
       handleBridgeServerInstalled(msg.id, msg.ok, msg.error);
+      if (msg.ok && msg.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "packRemoved") {
       handlePackRemoved(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "agentRemoved") {

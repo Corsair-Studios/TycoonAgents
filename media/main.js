@@ -995,6 +995,8 @@
   const tabSkillsBtn = /** @type {HTMLElement} */ (document.getElementById("tab-skills"));
   const tabMcpBtn    = /** @type {HTMLElement} */ (document.getElementById("tab-mcp"));
   const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
+  // Same one-liner the VS Code host shows as a toast after a local-scope install.
+  const NEW_CHAT_HINT = "Start a new Claude chat to load the newly installed MCP servers.";
   const MCP_APPROVAL_NOTE =
     "Claude Code will ask you once to approve the TycoonAgents servers (tycoon, codex, claude-worker, gemini). Choose Approve so delegation can use them.";
 
@@ -3520,11 +3522,16 @@ if (typeof module !== "undefined" && module.exports) {
         info.harness === "codex"
           ? "The TycoonAgents Codex hook isn't installed yet. Install it to start visualizing agent activity."
           : "The TycoonAgents hook isn't installed yet. Install it to start visualizing agent activity.";
+      // The approval note applies only while a server is genuinely pending approval;
+      // servers installed at Claude local scope load without it.
+      const pendingApproval = lastSettings && lastSettings.mcpApproval && Array.isArray(lastSettings.mcpApproval.pending) && lastSettings.mcpApproval.pending.length > 0;
       if (info.harness !== "codex") {
-        const approvalNote = document.createElement("div");
-        approvalNote.className = "mcp-approval-note";
-        approvalNote.textContent = MCP_APPROVAL_NOTE;
-        setupStatusEl.appendChild(approvalNote);
+        if (pendingApproval) {
+          const approvalNote = document.createElement("div");
+          approvalNote.className = "mcp-approval-note";
+          approvalNote.textContent = MCP_APPROVAL_NOTE;
+          setupStatusEl.appendChild(approvalNote);
+        }
         const setupApprovalBlock = buildMcpApprovalBlock();
         if (setupApprovalBlock) setupStatusEl.appendChild(setupApprovalBlock);
       }
@@ -16274,7 +16281,7 @@ if (typeof module !== "undefined" && module.exports) {
       // See the "skills" branch above — same install-based gate refresh.
       renderSettings();
     } else if (msg && msg.type === "mcpInstalled") {
-      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled);
+      handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled, msg.newChatHint);
     } else if (msg && msg.type === "mcpRemoved") {
       handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
@@ -16283,10 +16290,12 @@ if (typeof module !== "undefined" && module.exports) {
       renderSettings();
     } else if (msg && msg.type === "packInstalled") {
       handlePackInstalled(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
+      if (msg.ok && msg.results && msg.results.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "tycoonMcpApprovalResult") {
       handleMcpApprovalResult(msg);
     } else if (msg && msg.type === "bridgeServerInstalled") {
       handleBridgeServerInstalled(msg.id, msg.ok, msg.error);
+      if (msg.ok && msg.newChatHint) showToast(NEW_CHAT_HINT, "info");
     } else if (msg && msg.type === "packRemoved") {
       handlePackRemoved(msg.id, msg.ok, msg.results, msg.error, msg.cancelled);
     } else if (msg && msg.type === "agentRemoved") {
@@ -17712,6 +17721,16 @@ function themeAnimPreviewDraw(player) {
         header.appendChild(setupBadge);
       }
 
+      // Listed in the project's .mcp.json but not loaded by Claude Code: offer
+      // an explicit "Enable" (registers our pinned catalog config; never automatic).
+      const pendingEnable = !server.installed && server.pending === true;
+      if (pendingEnable) {
+        const pendingBadge = document.createElement("span");
+        pendingBadge.className = "mcp-setup-badge";
+        pendingBadge.textContent = "not enabled";
+        header.appendChild(pendingBadge);
+      }
+
       const btn = document.createElement("button");
       if (server.installed) {
         btn.className = "skill-btn skill-btn--remove";
@@ -17719,7 +17738,8 @@ function themeAnimPreviewDraw(player) {
         btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
         btn.className = "skill-btn";
-        btn.textContent = "Install";
+        btn.textContent = pendingEnable ? "Enable" : "Install";
+        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable");
         btn.setAttribute("data-mcp-id", server.id);
       }
       header.appendChild(btn);
@@ -17785,15 +17805,16 @@ function themeAnimPreviewDraw(player) {
    * @param {string|undefined} error
    * @param {boolean|undefined} cancelled
    */
-  function handleMcpInstalled(id, ok, alreadyExisted, error, cancelled) {
+  function handleMcpInstalled(id, ok, alreadyExisted, error, cancelled, newChatHint) {
     if (!mcpListEl) return;
     const btn = /** @type {HTMLElement|null} */ (
       mcpListEl.querySelector(`[data-mcp-id="${CSS.escape(id)}"]`)
     );
     if (!btn) return;
     // User dismissed the host confirmation modal — silently restore the button.
+    const idleLabel = btn.getAttribute("data-mcp-label") || "Install";
     if (cancelled) {
-      btn.textContent = "Install";
+      btn.textContent = idleLabel;
       btn.removeAttribute("disabled");
       return;
     }
@@ -17802,10 +17823,12 @@ function themeAnimPreviewDraw(player) {
       btn.classList.add("skill-btn--installed");
       btn.setAttribute("disabled", "");
       btn.removeAttribute("data-mcp-id");
+      if (newChatHint) showToast(NEW_CHAT_HINT, "info");
       const okRow = btn.closest(".skill-row");
       const harnessInfo = lastSettings && lastSettings.harness;
       const onCodex = harnessInfo && harnessInfo.effective === "codex";
-      if (okRow && !onCodex && !okRow.querySelector(".mcp-approval-note")) {
+      const approvalPending = !!(lastSettings && lastSettings.mcpApproval && Array.isArray(lastSettings.mcpApproval.pending) && lastSettings.mcpApproval.pending.length > 0);
+      if (okRow && !onCodex && !newChatHint && approvalPending && !okRow.querySelector(".mcp-approval-note")) {
         const note = document.createElement("span");
         note.className = "mcp-approval-note";
         note.textContent = MCP_APPROVAL_NOTE;
@@ -17814,7 +17837,7 @@ function themeAnimPreviewDraw(player) {
         if (rowBlock) okRow.appendChild(rowBlock);
       }
     } else {
-      btn.textContent = "Install";
+      btn.textContent = idleLabel;
       btn.removeAttribute("disabled");
       const row = btn.closest(".skill-row");
       if (row) {

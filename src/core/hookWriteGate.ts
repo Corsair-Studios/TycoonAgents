@@ -49,3 +49,13 @@ export function withHookWrite<T>(fn: () => T): T {
     endHookWrite();
   }
 }
+
+/** Async twin of withHookWrite: the gate stays held until the promise settles. */
+export async function withHookWriteAsync<T>(fn: () => Promise<T>): Promise<T> {
+  beginHookWrite();
+  try {
+    return await fn();
+  } finally {
+    endHookWrite();
+  }
+}

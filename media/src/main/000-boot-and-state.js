@@ -994,6 +994,8 @@
   const tabSkillsBtn = /** @type {HTMLElement} */ (document.getElementById("tab-skills"));
   const tabMcpBtn    = /** @type {HTMLElement} */ (document.getElementById("tab-mcp"));
   const tabPacksBtn  = /** @type {HTMLElement} */ (document.getElementById("tab-packs"));
+  // Same one-liner the VS Code host shows as a toast after a local-scope install.
+  const NEW_CHAT_HINT = "Start a new Claude chat to load the newly installed MCP servers.";
   const MCP_APPROVAL_NOTE =
     "Claude Code will ask you once to approve the TycoonAgents servers (tycoon, codex, claude-worker, gemini). Choose Approve so delegation can use them.";
 

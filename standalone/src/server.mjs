@@ -469,6 +469,71 @@ function bridgeSetupModule() {
   if (!_bridgeSetupModule) _bridgeSetupModule = requireCompiledOrThrow(BRIDGE_SETUP_JS, 'bridgeSetup');
   return _bridgeSetupModule;
 }
+const CLAUDE_LOCAL_MCP_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'claudeLocalMcp.js');
+const CLAUDE_LOCAL_MCP_SYNC_JS = path.join(REPO_ROOT, 'out', 'src', 'core', 'claudeLocalMcpSync.js');
+let _claudeLocalMcpModule;
+function claudeLocalMcpModule() {
+  if (!_claudeLocalMcpModule) _claudeLocalMcpModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_JS, 'claudeLocalMcp');
+  return _claudeLocalMcpModule;
+}
+let _claudeLocalMcpSyncModule;
+function claudeLocalMcpSyncModule() {
+  if (!_claudeLocalMcpSyncModule) _claudeLocalMcpSyncModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_SYNC_JS, 'claudeLocalMcpSync');
+  return _claudeLocalMcpSyncModule;
+}
+
+/** True on the Claude Code harness: servers the user installs are registered at Claude local scope. */
+function useLocalMcpStandalone(root) {
+  return !!root && bridgeSetupModule().harnessUsesMcpJson(resolveEffectiveHarness(root));
+}
+
+/** Local-scope operations; bridge scripts run from this install's hooks/ folder, never from the project. */
+function localMcpOpsStandalone() {
+  return claudeLocalMcpModule().createLocalMcpOps(path.join(REPO_ROOT, 'hooks'));
+}
+
+/** The project's .mcp.json object with this user's local-scope servers merged in (Claude Code harness only). */
+function withLocalMcpStandalone(root, config) {
+  try {
+    return useLocalMcpStandalone(root) ? claudeLocalMcpModule().withLocalMcpServers(config, root) : config;
+  } catch {
+    return config;
+  }
+}
+
+/** Register a finalised catalog config at local scope; returns an error message or undefined. */
+async function registerLocalMcpStandalone(root, id, config) {
+  const ops = localMcpOpsStandalone();
+  const localized = claudeLocalMcpModule().localizeMcpConfig(config, ops.hooksDir);
+  if (!localized.ok) return localized.error;
+  const r = await ops.set(root, id, localized.config);
+  return r.ok ? undefined : (r.error || `Could not register ${id}.`);
+}
+
+/** Remove a local-scope registration. */
+async function removeLocalMcpStandalone(root, id) {
+  const r = await localMcpOpsStandalone().remove(root, id);
+  if (!r.ok) return r.error || `Could not remove ${id}.`;
+  return undefined;
+}
+
+/** Standalone has no toast surface: log it and flag the result messages with newChatHint. */
+const NEW_CHAT_HINT = 'Start a new Claude chat to load the newly installed MCP servers.';
+
+/** Startup: repoint local-scope entries the user already registered at this install. Never registers anything from the project. */
+async function ensureLocalMcpCurrentStandalone(root) {
+  try {
+    if (!useLocalMcpStandalone(root)) return;
+    const ops = localMcpOpsStandalone();
+    const defs = mcpApprovalModule().tycoonServerDefsFromMedia(MEDIA_DIR);
+    const sync = claudeLocalMcpSyncModule();
+    const repointed = await sync.repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs));
+    for (const e of repointed.errors) console.warn(`[tycoonagents-standalone] local MCP sync: ${e}`);
+  } catch (err) {
+    console.warn('[tycoonagents-standalone] local MCP sync failed:', err);
+  }
+}
+
 function bridgeSetupContextStandalone(root) {
   return { root, harness: resolveEffectiveHarness(root), env: process.env };
 }
@@ -971,7 +1036,9 @@ function handleBrowserMessage(msg) {
       break;
     case 'installBridgeServer':
       // Standalone analog of panel.ts's _handleInstallBridgeServer ("Needs setup" action).
-      handleInstallBridgeServerStandalone(msg);
+      handleInstallBridgeServerStandalone(msg).catch((err) => {
+        console.error('[tycoonagents-standalone] installBridgeServer failed:', err);
+      });
       break;
     case 'approveTycoonMcp':
       handleTycoonMcpApprovalStandalone('approve', msg);
@@ -988,7 +1055,15 @@ function handleBrowserMessage(msg) {
     case 'installPack':
       // Standalone analog of panel.ts's _handleInstallPack (~line 3768-
       // 3982) — see handleInstallPack() below for what is/isn't replicated.
-      handleInstallPack(msg);
+      handleInstallPack(msg).catch((err) => {
+        console.error('[tycoonagents-standalone] installPack failed:', err);
+      });
+      break;
+    case 'installMcp':
+      // Enable/Install for a catalog MCP server: registers the pinned catalog config at Claude local scope.
+      handleInstallMcpStandalone(msg).catch((err) => {
+        console.error('[tycoonagents-standalone] installMcp failed:', err);
+      });
       break;
     case 'getRouting':
       // Standalone analog of panel.ts's _handleGetRouting.
@@ -2002,9 +2077,27 @@ function buildMcpPayload() {
       /* missing/invalid => default {} — mirrors panel.ts's _readMcpConfig */
     }
   }
+  mcpConfig = primaryProjectRoot ? withLocalMcpStandalone(primaryProjectRoot, mcpConfig) : mcpConfig;
   const servers = mcpConfig.mcpServers;
-  const hasMcpServer = (id) =>
-    servers !== null && typeof servers === 'object' && Object.prototype.hasOwnProperty.call(servers, id);
+  const hasIn = (obj, id) => obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, id);
+  // Claude Code harness: a server listed only in the project's .mcp.json is not loaded
+  // (Claude holds it pending approval), so the UI offers "Enable" instead of "Installed".
+  let useLocal = false;
+  let localServers = {};
+  let fileServers = {};
+  if (primaryProjectRoot) {
+    try {
+      useLocal = useLocalMcpStandalone(primaryProjectRoot);
+      if (useLocal) {
+        localServers = claudeLocalMcpModule().readLocalMcpServers(primaryProjectRoot) || {};
+        const fileCfg = JSON.parse(fs.readFileSync(path.join(primaryProjectRoot, '.mcp.json'), 'utf8'));
+        if (fileCfg && typeof fileCfg === 'object' && fileCfg.mcpServers) fileServers = fileCfg.mcpServers;
+      }
+    } catch {
+      /* no .mcp.json / unreadable: nothing pending */
+    }
+  }
+  const hasMcpServer = (id) => (useLocal ? hasIn(localServers, id) : hasIn(servers, id));
   const { catalogSummary } = catalogSummaryModule();
   const { isUnpinnedMcpConfig } = mcpCatalogModule();
 
@@ -2016,6 +2109,7 @@ function buildMcpPayload() {
       description: e.description,
       summary: catalogSummary(e),
       installed: hasMcpServer(e.id),
+      pending: useLocal && !hasMcpServer(e.id) && hasIn(fileServers, e.id),
       unpinned: hasMcpServer(e.id) && isUnpinnedMcpConfig(servers[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
@@ -2071,6 +2165,7 @@ function buildPacksPayload() {
     } catch {
       /* missing/invalid => default {} */
     }
+    mcpConfig = withLocalMcpStandalone(root, mcpConfig);
   }
   const { hasMcpServer } = mcpCatalogModule();
   const skillInstalled = (id) => !!root && fs.existsSync(path.join(root, '.claude', 'skills', id));
@@ -2360,7 +2455,7 @@ function resolveConfigTokensStandalone(config) {
  *     (uefnConflictIds / conflictingUefnAgents) — left for a future task if
  *     the standalone ever ships the UEFN pack's conflict UX.
  */
-function handleInstallPack(payload) {
+async function handleInstallPack(payload) {
   const id = payload && payload.id;
   try {
     const packsPath = path.join(MEDIA_DIR, 'packs', 'catalog.json');
@@ -2377,7 +2472,7 @@ function handleInstallPack(payload) {
     }
 
     if (pack.picker === 'bridges') {
-      installBridgePickerStandalone(pack, root, payload && payload.selection);
+      await installBridgePickerStandalone(pack, root, payload && payload.selection);
       return;
     }
 
@@ -2414,6 +2509,7 @@ function handleInstallPack(payload) {
         throw new Error(`MCP catalog entry not found for id: ${pack.mcp}`);
       }
       const mcpPath = path.join(root, '.mcp.json');
+      const packUseLocal = useLocalMcpStandalone(root);
       let existing = {};
       try {
         const parsed = JSON.parse(fs.readFileSync(mcpPath, 'utf8'));
@@ -2421,7 +2517,7 @@ function handleInstallPack(payload) {
       } catch {
         existing = {};
       }
-      if (hasMcpServer(existing, pack.mcp)) {
+      if (packUseLocal ? localMcpOpsStandalone().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
         results.mcp = 'exists';
       } else {
         const platformConfig = resolveConfigForPlatform(entry, process.platform);
@@ -2437,14 +2533,25 @@ function handleInstallPack(payload) {
           };
         } else {
           const finalConfig = withDispatcherProjectDir(pack.mcp, resolveCodexBinaryForInstallStandalone(pack.mcp, resolvedConfig), primaryProjectRoot);
-          const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
-          fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
-          try {
-            installMcpBridgeHooksForConfig(primaryProjectRoot, finalConfig);
-          } catch (err) {
-            console.error('[tycoonagents-standalone] bridge hook copy failed:', err);
+          if (packUseLocal) {
+            const registered = await registerLocalMcpStandalone(root, pack.mcp, finalConfig);
+            if (registered !== undefined) {
+              results.mcp = { status: 'skipped', error: registered };
+            } else {
+              console.log(`[tycoonagents-standalone] ${NEW_CHAT_HINT}`);
+              results.newChatHint = true;
+              results.mcp = 'installed';
+            }
+          } else {
+            const merged = mergeMcpServer(existing, pack.mcp, finalConfig);
+            fs.writeFileSync(mcpPath, JSON.stringify(merged, null, 2));
+            try {
+              installMcpBridgeHooksForConfig(primaryProjectRoot, finalConfig);
+            } catch (err) {
+              console.error('[tycoonagents-standalone] bridge hook copy failed:', err);
+            }
+            results.mcp = 'installed';
           }
-          results.mcp = 'installed';
         }
       }
     }
@@ -2505,7 +2612,7 @@ function handleInstallPack(payload) {
 }
 
 /** Standalone MCP-entry installer for the bridge picker and the "Needs setup" action (no approval key is written). */
-function installMcpEntryForBridgeStandalone(root, mcpId) {
+async function installMcpEntryForBridgeStandalone(root, mcpId) {
   const { installMcpEntry } = bridgeSetupModule();
   const { withDispatcherProjectDir } = mcpCatalogModule();
   let catalog = [];
@@ -2514,7 +2621,7 @@ function installMcpEntryForBridgeStandalone(root, mcpId) {
   } catch {
     catalog = [];
   }
-  return installMcpEntry(root, mcpId, catalog, {
+  return await installMcpEntry(root, mcpId, catalog, {
     platform: process.platform,
     resolveTokens: (c) => resolveConfigTokensStandalone(c),
     finalize: (id, c, r) => withDispatcherProjectDir(id, resolveCodexBinaryForInstallStandalone(id, c), r),
@@ -2525,11 +2632,12 @@ function installMcpEntryForBridgeStandalone(root, mcpId) {
         console.error('[tycoonagents-standalone] bridge hook copy failed:', err);
       }
     },
+    ...(useLocalMcpStandalone(root) ? { local: localMcpOpsStandalone() } : {}),
   });
 }
 
 /** Standalone analog of panel.ts's _installBridgePicker (Multi-LLM picker install). */
-function installBridgePickerStandalone(pack, root, selection) {
+async function installBridgePickerStandalone(pack, root, selection) {
   const id = pack.id;
   try {
     const sel = selection && typeof selection === 'object' ? selection : {};
@@ -2543,7 +2651,7 @@ function installBridgePickerStandalone(pack, root, selection) {
     const { setKeywordPattern } = agentConfigModule();
     const { setLocalEnvValue } = routingHostOpsModule();
     const harness = resolveEffectiveHarness(root);
-    const res = installBridgeSelection({
+    const res = await installBridgeSelection({
       root,
       packAgents: Array.isArray(pack.agents) ? pack.agents : [],
       selectedAgentIds: agentsSel,
@@ -2551,6 +2659,7 @@ function installBridgePickerStandalone(pack, root, selection) {
       harness,
       claudeSubscriptionOptIn: claudeSubscriptionModule().readClaudeSubscriptionOptIn(),
       installMcp: (mcpId) => installMcpEntryForBridgeStandalone(root, mcpId),
+      removeMcp: async (mcpId) => { await removeLocalMcpStandalone(root, mcpId); },
       storeLocalValue: (name, value) => {
         setLocalEnvValue(name, value, process.env);
       },
@@ -2563,12 +2672,14 @@ function installBridgePickerStandalone(pack, root, selection) {
       fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
     }
+    const newChatHint = useLocalMcpStandalone(root) && Object.values(res.mcp).includes('installed');
+    if (newChatHint) console.log(`[tycoonagents-standalone] ${NEW_CHAT_HINT}`);
     broadcast('message', {
       type: 'packInstalled',
       id,
       ok: res.ok && res.errors.length === 0,
       ...(res.errors.length > 0 ? { error: res.errors.join(' ') } : {}),
-      results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost },
+      results: { agents: res.agents, mcp: res.mcp, dispatcherHost: res.dispatcherHost, ...(newChatHint ? { newChatHint: true } : {}) },
     });
     broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
   } catch (e) {
@@ -2639,11 +2750,68 @@ function handleTycoonMcpApprovalStandalone(action, msg) {
   broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
 }
 
+/**
+ * Standalone Enable/Install for one MCP catalog entry (Claude Code harness): registers the
+ * PINNED catalog config at Claude local scope, never the repository's .mcp.json command.
+ * There is no confirm channel here, so a third-party server is only accepted when it is
+ * already listed in the project's .mcp.json (the Enable case); otherwise it must be
+ * installed from the VS Code panel, which asks first.
+ */
+async function handleInstallMcpStandalone(msg) {
+  const id = msg && typeof msg.id === 'string' ? msg.id : '';
+  const reply = (extra) => broadcast('message', { type: 'mcpInstalled', id, ...extra });
+  const root = primaryProjectRoot;
+  try {
+    let catalog = [];
+    try {
+      catalog = JSON.parse(fs.readFileSync(path.join(MEDIA_DIR, 'mcp', 'catalog.json'), 'utf8'));
+    } catch {
+      catalog = [];
+    }
+    const entry = catalog.find((x) => x && x.id === id);
+    if (!entry) return reply({ ok: false, error: `MCP catalog entry not found for id: ${id}` });
+    if (!root) return reply({ ok: false, error: 'No project root resolved' });
+    if (!useLocalMcpStandalone(root)) {
+      return reply({ ok: false, error: 'Installing MCP servers from here is only supported on the Claude Code harness.' });
+    }
+    let listed = false;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
+      listed = !!(cfg && cfg.mcpServers && Object.prototype.hasOwnProperty.call(cfg.mcpServers, id));
+    } catch {
+      listed = false;
+    }
+    if (entry.thirdParty && !listed) {
+      return reply({ ok: false, error: 'Install third-party servers from the VS Code panel, which asks for confirmation first.' });
+    }
+    const ops = localMcpOpsStandalone();
+    if (ops.has(root, id)) return reply({ ok: true, alreadyExisted: true });
+    const { resolveConfigForPlatform, isUnpinnedMcpConfig, withDispatcherProjectDir } = mcpCatalogModule();
+    const platformConfig = resolveConfigForPlatform(entry, process.platform);
+    if (!platformConfig.ok) return reply({ ok: false, error: platformConfig.error });
+    const resolved = resolveConfigTokensStandalone(platformConfig.config);
+    if (/<[^<>]*>/.test(JSON.stringify(resolved))) {
+      return reply({ ok: false, error: `${id} needs manual configuration; see .mcp.json.example.` });
+    }
+    const finalConfig = withDispatcherProjectDir(id, resolveCodexBinaryForInstallStandalone(id, resolved), root);
+    if (isUnpinnedMcpConfig(finalConfig)) return reply({ ok: false, error: `${id} is not version-pinned and was not installed.` });
+    const failure = await registerLocalMcpStandalone(root, id, finalConfig);
+    if (failure !== undefined) return reply({ ok: false, error: failure });
+    console.log(`[tycoonagents-standalone] ${NEW_CHAT_HINT}`);
+    reply({ ok: true, alreadyExisted: false, newChatHint: true });
+  } catch (e) {
+    reply({ ok: false, error: String(e) });
+  } finally {
+    broadcast('message', buildMcpPayload());
+  }
+}
+
 /** Standalone analog of panel.ts's _handleInstallBridgeServer. */
-function handleInstallBridgeServerStandalone(msg) {
+async function handleInstallBridgeServerStandalone(msg) {
   const agentId = msg && typeof msg.id === 'string' ? msg.id : '';
   const root = primaryProjectRoot;
   let error;
+  let newChatHint = false;
   try {
     const { serverForInstalledAgent, harnessUsesMcpJson } = bridgeSetupModule();
     const server = root && agentId ? serverForInstalledAgent(root, agentId) : null;
@@ -2652,13 +2820,17 @@ function handleInstallBridgeServerStandalone(msg) {
     else if (!harnessUsesMcpJson(resolveEffectiveHarness(root))) {
       error = 'On this harness bridges run through the TycoonAgents dispatcher; nothing is added to .mcp.json.';
     } else {
-      const outcome = installMcpEntryForBridgeStandalone(root, server);
+      const outcome = await installMcpEntryForBridgeStandalone(root, server);
       if (outcome && typeof outcome === 'object') error = outcome.error;
+      else if (outcome === 'installed' && useLocalMcpStandalone(root)) {
+        newChatHint = true;
+        console.log(`[tycoonagents-standalone] ${NEW_CHAT_HINT}`);
+      }
     }
   } catch (e) {
     error = String(e);
   }
-  broadcast('message', { type: 'bridgeServerInstalled', id: agentId, ok: error === undefined, ...(error ? { error } : {}) });
+  broadcast('message', { type: 'bridgeServerInstalled', id: agentId, ok: error === undefined, ...(error ? { error } : {}), ...(newChatHint ? { newChatHint: true } : {}) });
   broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
   broadcast('message', buildPacksPayload());
 }
@@ -5108,6 +5280,11 @@ export async function startServer({
       console.error(`[tycoonagents-standalone] hook copy heal failed for ${root}:`, err);
     }
   }
+
+  // Claude Code harness: servers installed from this UI live at Claude local
+  // scope. Migrate earlier .mcp.json installs and repoint our entries at this
+  // install (best effort, never blocks startup).
+  for (const { root } of roots) void ensureLocalMcpCurrentStandalone(root);
 
   // Auto-heal the always-on core skills (tycoon-ready-test, tycoon-diagnose)
   // for every resolved root that already has TycoonAgents hooks installed —
