@@ -35,6 +35,10 @@ export interface KeywordMatch {
   matchedKeyword: string;
 }
 
+function isBadKeywordSegment(seg: string): boolean {
+  return seg.includes("**") || seg.length > 80 || seg.split(/\s+/).filter(Boolean).length > 6;
+}
+
 export function matchAgentFromKeywords(
   searchText: string,
   keywordsConfig: AgentKeywordsConfig | null | undefined
@@ -51,11 +55,14 @@ export function matchAgentFromKeywords(
   let bestScore = 0;
   let bestKeyword = "";
   for (const [agentId, cfg] of Object.entries(keywordsConfig.agents)) {
-    if (!cfg.pattern) continue;
+    if (!cfg || typeof cfg.pattern !== "string" || !cfg.pattern) continue;
+    if (cfg.pattern.trim() === "") continue;
     let score = 0;
     let firstMatch = "";
     for (const kw of cfg.pattern.split("|")) {
-      if (words.has(kw.toLowerCase().trim())) {
+      const norm = kw.toLowerCase().trim();
+      if (!norm || isBadKeywordSegment(norm)) continue;
+      if (words.has(norm)) {
         score++;
         if (!firstMatch) firstMatch = kw;
       }

@@ -1377,6 +1377,29 @@ function wordSetOf(text) {
 // among descriptions with equal (including zero) description-side score, but
 // can never overturn a description match by themselves.
 const DESCRIPTION_WEIGHT = 1000;
+// A routing pattern is a pipe list of single words. A non-string or empty
+// pattern is skipped for that agent; within a pattern, markdown (`**`) and
+// prose segments (over 6 words or 80 chars) are skipped and the rest kept.
+// Reported once per agent, never allowed to break routing.
+const warnedInvalidPatterns = new Set();
+function isBadKeywordSegment(seg) {
+  return seg.includes("**") || seg.length > 80 || seg.split(/\s+/).filter(Boolean).length > 6;
+}
+function isUsablePattern(agentId, pattern) {
+  let problem = "";
+  if (typeof pattern !== "string") problem = "pattern is not a string";
+  else if (pattern.trim() === "") problem = "pattern is empty";
+  else if (pattern.split("|").some(isBadKeywordSegment)) problem = "pattern has markdown or prose segments (ignored)";
+  if (problem === "") return true;
+  if (!warnedInvalidPatterns.has(agentId)) {
+    warnedInvalidPatterns.add(agentId);
+    try {
+      process.stderr.write(`[tycoonagents] routing pattern for "${agentId}": ${problem}
+`);
+    } catch { /* logging must never break routing */ }
+  }
+  return typeof pattern === "string" && pattern.trim() !== "";
+}
 function matchAgentFromKeywords(searchTextOrDescription, keywordsConfig, promptText) {
   if (!keywordsConfig || !keywordsConfig.agents) return null;
   const hasSplit = typeof promptText === "string";
@@ -1385,11 +1408,12 @@ function matchAgentFromKeywords(searchTextOrDescription, keywordsConfig, promptT
 
   let bestAgent = null, bestScore = 0, bestKeyword = "";
   for (const [agentId, cfg] of Object.entries(keywordsConfig.agents)) {
-    if (!cfg.pattern) continue;
+    if (!cfg || !cfg.pattern) continue;
+    if (!isUsablePattern(agentId, cfg.pattern)) continue;
     let descScore = 0, promptScore = 0, firstMatch = "";
     for (const kw of cfg.pattern.split("|")) {
       const norm = kw.toLowerCase().trim();
-      if (!norm) continue;
+      if (!norm || isBadKeywordSegment(norm)) continue;
       if (descWords.has(norm)) {
         descScore++;
         if (!firstMatch) firstMatch = kw;

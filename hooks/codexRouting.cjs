@@ -57,6 +57,10 @@ function wordSetOf(text) {
  * prompt-body words score 1 each, so a keyword only in the (truncated)
  * prompt body can never outrank one actually named in the description.
  */
+function isBadKeywordSegment(seg) {
+  return seg.includes("**") || seg.length > 80 || seg.split(/\s+/).filter(Boolean).length > 6;
+}
+
 function matchAgentFromKeywords(description, keywordsConfig, promptText) {
   if (!keywordsConfig || !keywordsConfig.agents) return null;
   const hasSplit = typeof promptText === "string";
@@ -67,13 +71,14 @@ function matchAgentFromKeywords(description, keywordsConfig, promptText) {
   let bestScore = 0;
   let bestKeyword = "";
   for (const [agentId, cfg] of Object.entries(keywordsConfig.agents)) {
-    if (!cfg.pattern) continue;
+    if (!cfg || typeof cfg.pattern !== "string" || !cfg.pattern) continue;
+    if (cfg.pattern.trim() === "") continue;
     let descScore = 0;
     let promptScore = 0;
     let firstMatch = "";
     for (const kw of cfg.pattern.split("|")) {
       const norm = kw.toLowerCase().trim();
-      if (!norm) continue;
+      if (!norm || isBadKeywordSegment(norm)) continue;
       if (descWords.has(norm)) {
         descScore++;
         if (!firstMatch) firstMatch = kw;

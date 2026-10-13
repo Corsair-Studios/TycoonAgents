@@ -29,6 +29,7 @@ export type KeywordFindingKind =
   | "pending_reconcile"
   | "multi_word_segment"
   | "prose_pattern"
+  | "invalid_pattern"
   | "duplicate_keyword"
   | "wildcard_first";
 
@@ -66,6 +67,12 @@ const WILDCARD_ID = "primary-agent";
  * Never treated as a real routing token by the duplicate scan below.
  */
 const WILDCARD_PLACEHOLDER_TOKEN = "fallback";
+
+function invalidPatternReason(pattern: string): string {
+  if (pattern.trim() === "") return "is empty";
+  if (pattern.split("|").some((seg) => seg.includes("**"))) return "contains markdown (**) segments";
+  return "";
+}
 
 function splitPattern(pattern: string): string[] {
   return pattern
@@ -134,6 +141,17 @@ export function computeKeywordHealth(
     const entry = existingAgents[id];
     const pattern = typeof entry?.pattern === "string" ? entry.pattern : "";
     if (pattern.trim() === "") continue;
+
+    const invalidReason = invalidPatternReason(pattern);
+    if (invalidReason !== "") {
+      findings.push({
+        agentId: id,
+        kind: "invalid_pattern",
+        severity: "warning",
+        detail: `"${id}"'s pattern ${invalidReason}, so hooks ignore those segments. Use a plain pipe list of single words like "word|word".`,
+        fix: { kind: "drop_segment" },
+      });
+    }
 
     if (pattern.length > PROSE_CHAR_LIMIT) {
       findings.push({

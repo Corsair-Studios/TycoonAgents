@@ -138,6 +138,15 @@ that restates, verbatim, content explained in full later in the same file).
 - **`.claude/tycoon/agent-keywords.json`** — valid JSON? Do its keys map 1:1
   onto the agent files from Step 2 (no keys for agents that don't exist, no
   agents missing a key)?
+  **Every `pattern` must be a pipe-separated list of single words (`word|word`).
+  Markdown (`**Primary:**`) and prose segments are ignored by hooks, and multi-word
+  segments never match.** Report any pattern that is empty, not a string, or
+  contains markdown/prose as a CRITICAL routing issue.
+- **Deliberate wording, do not flag:** the "Fallback Agent" wording in the managed
+  delegation block is intentional and maps to `fallback_agent` in
+  `agent-keywords.json` (displayed as Wildcard Agent). The "Coding standards by
+  path" rows are documented starting defaults, not context-fit problems; at most
+  mention once that they can be tuned. Never trim delegation language.
 - **`.mcp.json`** (workspace root) — list configured servers. If a
   `powertools`, `uefn-bridge` (or `uefn`) entry exists, check for a stray `env` block (a
   known legacy misconfiguration pointed servers at a directory the Python
