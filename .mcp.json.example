@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "uefn-bridge": {
+    "powertools": {
       "command": "node",
       "args": [
         "<POWER_TOOLS_DIR>/uefn-server.mjs"

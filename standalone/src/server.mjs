@@ -483,6 +483,13 @@ function claudeLocalMcpModule() {
   if (!_claudeLocalMcpModule) _claudeLocalMcpModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_JS, 'claudeLocalMcp');
   return _claudeLocalMcpModule;
 }
+// The accepted key under which the product's own server is registered at local scope (an unrelated entry of the same name does not count).
+function providedLocalKeyStandalone(root, id) {
+  const ops = localMcpOpsStandalone();
+  const pm = providedMcpModule();
+  return pm.providedMcpKeys(id).find((k) => ops.has(root, k) && (typeof ops.get !== 'function' || pm.providedMcpEntryIsOurs(id, ops.get(root, k))));
+}
+
 let _providedMcpModule;
 function providedMcpModule() {
   if (!_providedMcpModule) _providedMcpModule = requireCompiledOrThrow(path.join(REPO_ROOT, 'out', 'src', 'core', 'providedMcp.js'), 'providedMcp');
@@ -2554,7 +2561,8 @@ async function handleInstallPack(payload) {
       } catch {
         existing = {};
       }
-      if (packUseLocal ? localMcpOpsStandalone().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
+      const packMcpKeys = providedMcpModule().providedMcpKeys(pack.mcp);
+      if (packUseLocal ? providedLocalKeyStandalone(root, pack.mcp) !== undefined : packMcpKeys.some((k) => hasMcpServer(existing, k))) {
         results.mcp = 'exists';
       } else if (entry.providedBy) {
         // Owned by a separately installed product: the pack never installs it (Enable MCP does, after a confirm).
@@ -2854,19 +2862,24 @@ async function handleInstallMcpStandalone(msg) {
     let listed = false;
     try {
       const cfg = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
-      listed = !!(cfg && cfg.mcpServers && Object.prototype.hasOwnProperty.call(cfg.mcpServers, id));
+      listed = !!(cfg && cfg.mcpServers && providedMcpModule().findProvidedMcpKey(cfg, id) !== undefined);
     } catch {
       listed = false;
     }
     if (entry.providedBy) {
       // Owned by a separately installed product (uefn-bridge): never our catalog config. Registering the
       // product's own .mcp.json entry needs a confirm showing its exact command, which only the VS Code panel has.
-      if (localMcpOpsStandalone().has(root, id)) return reply({ ok: true, alreadyExisted: true });
+      const pm = providedMcpModule();
+      if (providedLocalKeyStandalone(root, id) !== undefined) return reply({ ok: true, alreadyExisted: true });
+      // Discovery is read-only; the registration itself happens in the VS Code panel, which has the confirm dialog.
+      const found = listed ? undefined : pm.discoverPowerTools({ root, workspaceFolders: [root], env: process.env });
       return reply({
         ok: false,
         error: listed
           ? `Enable ${id} from the VS Code panel, which shows the exact command from your .mcp.json entry before registering it.`
-          : providedMcpModule().POWER_TOOLS_MCP_MISSING,
+          : found && found.ok
+            ? `Power Tools was found at ${found.dir}. Enable ${id} from the VS Code panel, which shows the exact command before registering it.`
+            : (found && found.error) || pm.POWER_TOOLS_MCP_MISSING,
       });
     }
     if (entry.thirdParty && !listed) {

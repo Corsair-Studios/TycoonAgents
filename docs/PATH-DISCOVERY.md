@@ -114,6 +114,7 @@ Reuse these; do not invent a competing name for the same concept.
 | `VERSE_LSP_PATH` | The Verse language server binary. |
 | `UEFN_VERSE_PROJECT_DIR` | UEFN's `VerseProject` data root — where digests and `.vproject` files live. |
 | `UEFN_BRIDGE_DIR` | The bridge IPC directory. |
+| `TYCOON_POWER_TOOLS_DIR` | The Trashbyrd's Power Tools folder (the one holding `uefn-server.mjs`); the `tycoonagents.powerTools.dir` setting is the same override and wins. |
 | `UEFN_INSTALL_DIR` | The `UnrealEditorFortnite` editor-install folder itself (skips `LOCALAPPDATA`/`AppData\Local` derivation in `uefnDetect.ts`). |
 | `FORTNITE_INSTALL_DIR` | The Fortnite game install root (parent of `FortniteGame\Content\...`), used by `panel.ts`'s Python-bridge staging discovery. |
 | `CODEX_BINARY_PATH` (alias: `CODEX_CLI_PATH`) | The Codex CLI binary itself. |

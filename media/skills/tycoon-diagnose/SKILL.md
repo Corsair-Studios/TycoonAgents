@@ -139,7 +139,7 @@ that restates, verbatim, content explained in full later in the same file).
   onto the agent files from Step 2 (no keys for agents that don't exist, no
   agents missing a key)?
 - **`.mcp.json`** (workspace root) — list configured servers. If a
-  `uefn-bridge` (or `uefn`) entry exists, check for a stray `env` block (a
+  `powertools`, `uefn-bridge` (or `uefn`) entry exists, check for a stray `env` block (a
   known legacy misconfiguration pointed servers at a directory the Python
   bridge never wrote to — see the `uefn-bridge` skill's install notes).
   Report server names only; never print token/secret values found in this

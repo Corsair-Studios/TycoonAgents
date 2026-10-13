@@ -814,7 +814,7 @@
       // silently return false). We pass thirdParty so the host can prompt.
       const server = lastMcpServers.find((s) => s && s.id === id);
 
-      btn.textContent = "Installing…";
+      btn.textContent = server && server.providedBy ? "Enabling…" : "Installing…";
       btn.setAttribute("disabled", "");
       vscode.postMessage({
         type: "installMcp",

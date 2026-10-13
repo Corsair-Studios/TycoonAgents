@@ -183,7 +183,7 @@
       "VERSE_LSP_PATH",
       "VERSE_LSP_CHECK_SCRIPT"
     ],
-    "note": "Provided by Trashbyrd's Power Tools, which TycoonAgents never installs or modifies. Install Power Tools (download the release from GitHub Releases below and follow its INSTALL.md), then click Enable MCP here: TycoonAgents shows the exact command from the uefn-bridge entry Power Tools wrote and registers that same entry once you confirm. Env vars per Power Tools' INSTALL.md: UEFN_BRIDGE_DIR is the bridge IPC directory shared by the MCP server and the in-UEFN Python bridge, set for both sides or neither; UEFN_VERSE_PROJECT_DIR points at UEFN's VerseProject data root; VERSE_LSP_PATH and VERSE_LSP_CHECK_SCRIPT are only needed for uefn_verse_check.",
+    "note": "Provided by Trashbyrd's Power Tools, which TycoonAgents never installs or modifies. Install Power Tools (download the release from GitHub Releases below and follow its INSTALL.md), then click Enable MCP here: TycoonAgents finds your Power Tools folder (or uses the tycoonagents.powerTools.dir setting or the TYCOON_POWER_TOOLS_DIR environment variable), shows the exact command, and registers it as powertools once you confirm. If your .mcp.json already lists a powertools or uefn-bridge entry, that entry is shown and registered instead. Env vars per Power Tools' INSTALL.md: UEFN_BRIDGE_DIR is the bridge IPC directory shared by the MCP server and the in-UEFN Python bridge, set for both sides or neither; UEFN_VERSE_PROJECT_DIR points at UEFN's VerseProject data root; VERSE_LSP_PATH and VERSE_LSP_CHECK_SCRIPT are only needed for uefn_verse_check.",
     "providedBy": "power-tools",
     "thirdParty": true,
     "vendor": "Trashbyrd (Corsair Studios)",

@@ -4,6 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
+import { providedMcpKeys } from "../../core/providedMcp";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -55,7 +56,7 @@ function listDir(dir: string): string[] {
 
 /** Well-known `.mcp.json` server keys per engine, matching media/mcp/catalog.json ids. */
 const KNOWN_MCP_SERVER_NAMES: Record<string, string[]> = {
-  uefn: ["uefn-bridge"],
+  uefn: providedMcpKeys("uefn-bridge"),
   roblox: ["roblox-studio"],
   blender: ["blender"],
   unreal: ["unreal-engine-mcp"],

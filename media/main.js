@@ -2678,7 +2678,7 @@ if (typeof module !== "undefined" && module.exports) {
       // silently return false). We pass thirdParty so the host can prompt.
       const server = lastMcpServers.find((s) => s && s.id === id);
 
-      btn.textContent = "Installing…";
+      btn.textContent = server && server.providedBy ? "Enabling…" : "Installing…";
       btn.setAttribute("disabled", "");
       vscode.postMessage({
         type: "installMcp",
@@ -17764,8 +17764,10 @@ function themeAnimPreviewDraw(player) {
         btn.setAttribute("data-remove-mcp-id", server.id);
       } else {
         btn.className = "skill-btn";
-        btn.textContent = pendingEnable ? "Enable MCP" : "Install";
-        if (pendingEnable) btn.setAttribute("data-mcp-label", "Enable MCP");
+        // A server owned by another product (Power Tools) is never installed from here: its action is always "Enable MCP".
+        const enableLabel = pendingEnable || !!server.providedBy;
+        btn.textContent = enableLabel ? "Enable MCP" : "Install";
+        if (enableLabel) btn.setAttribute("data-mcp-label", "Enable MCP");
         btn.setAttribute("data-mcp-id", server.id);
       }
       header.appendChild(btn);
@@ -17939,6 +17941,16 @@ function themeAnimPreviewDraw(player) {
   }
 
   /**
+   * True when the pack's MCP server can be enabled from here: listed only in .mcp.json (pending), or owned by
+   * another product (Power Tools) and not registered yet. The host finds the entry or the product folder.
+   * @param {{mcpId?:string, mcpState?:string, mcpProvidedBy?:object}} pack
+   * @returns {boolean}
+   */
+  function packMcpEnableable(pack) {
+    return packMcpPending(pack) || (packMcpExternal(pack) && typeof pack.mcpId === "string" && pack.mcpState !== "installed");
+  }
+
+  /**
    * True when every part the pack `has`, other than its MCP server, is `installed`.
    * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
    * @returns {boolean}
@@ -17993,7 +18005,7 @@ function themeAnimPreviewDraw(player) {
     for (const [key, label] of PACK_PARTS) {
       if (!has[key]) continue;
       const done = !!installed[key];
-      const notEnabled = key === "mcp" && !done && packMcpPending(pack);
+      const notEnabled = key === "mcp" && !done && packMcpEnableable(pack);
       const chip = document.createElement("span");
       chip.className = "pack-chip" + (done ? " pack-chip--done" : "");
       if (key === "mcp" && packMcpExternal(pack)) {
@@ -18081,12 +18093,12 @@ function themeAnimPreviewDraw(player) {
       }
       // Skill and agent are installed and only the MCP is pending: Install has nothing
       // left to do, so show just "Enable MCP" and "Remove".
-      const onlyMcpPending = !fully && packMcpPending(pack) && packOthersInstalled(pack);
+      const onlyMcpPending = !fully && packMcpEnableable(pack) && packOthersInstalled(pack);
       if (!onlyMcpPending) header.appendChild(btn);
 
       // MCP server only in .mcp.json: Claude Code has not loaded it. Offer the same
       // explicit Enable as the MCP tab (registers the pinned config at local scope).
-      if (packMcpPending(pack)) {
+      if (packMcpEnableable(pack)) {
         const enableBtn = document.createElement("button");
         enableBtn.className = "skill-btn";
         enableBtn.textContent = "Enable MCP";

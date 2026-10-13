@@ -38,6 +38,17 @@ root for the exact `mcpServers` entry shape, or Power Tools' own INSTALL.md
 (https://github.com/Corsair-Studios/trashbyrds-uefn-power-tools/blob/main/INSTALL.md)
 for full setup steps.
 
+### Server key and tool names
+
+Power Tools' INSTALL.md registers the server under the key `powertools`; the
+catalog id (and the key older setups used) is `uefn-bridge`. Either works.
+Claude names each tool `mcp__<key>__<tool>` (for example
+`mcp__powertools__uefn_status`), so this skill and the UEFN agents use the bare
+`uefn_*` names and match them by suffix. In the TycoonAgents MCP tab, **Enable
+MCP** finds the Power Tools folder (or uses the `tycoonagents.powerTools.dir`
+setting / `TYCOON_POWER_TOOLS_DIR`), shows the exact command, and registers it
+as `powertools`.
+
 ### Check if it's already connected
 
 Run `uefn_status`. If it succeeds, the bridge is installed and connected. If

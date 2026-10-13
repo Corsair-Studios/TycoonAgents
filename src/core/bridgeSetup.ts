@@ -41,7 +41,8 @@ import { hasMcpServer, mergeMcpServer, resolveConfigForPlatform, isUnpinnedMcpCo
 import { buildAgentMarkdown, agentMarkdownHasTycoonMarker } from "../host/vscode/packCatalog";
 import type { PackAgent } from "../host/vscode/packCatalog";
 import { withHookWriteAsync } from "./hookWriteGate";
-import { hasLocalMcpServer, localizeMcpConfig, withLocalMcpServers } from "./claudeLocalMcp";
+import { hasLocalMcpServer, localizeMcpConfig, readLocalMcpServers, withLocalMcpServers } from "./claudeLocalMcp";
+import { providedMcpEntryIsOurs, providedMcpKeys } from "./providedMcp";
 import type { LocalMcpOps } from "./claudeLocalMcp";
 
 /** Pack id of the picker pack in media/packs/catalog.json. */
@@ -154,9 +155,12 @@ export function readProjectFileMcpConfig(root: string): Record<string, unknown> 
  */
 export function mcpServerState(root: string, harness: string, id: string, fileConfig?: Record<string, unknown>): McpServerState {
   const file = fileConfig ?? readProjectFileMcpConfig(root);
-  const inFile = hasMcpServer(file, id);
+  // A server owned by another product may be registered under more than one key (providedMcpKeys).
+  const keys = providedMcpKeys(id);
+  const fileServers = (file as { mcpServers?: unknown }).mcpServers;
+  const inFile = keys.some((k) => hasMcpServer(file, k) && providedMcpEntryIsOurs(id, (fileServers as Record<string, unknown>)[k]));
   if (!harnessUsesMcpJson(harness)) return inFile ? "installed" : "absent";
-  if (hasLocalMcpServer(root, id)) return "installed";
+  if (keys.length === 1 ? hasLocalMcpServer(root, id) : (() => { const local = readLocalMcpServers(root); return keys.some((k) => Object.prototype.hasOwnProperty.call(local, k) && providedMcpEntryIsOurs(id, local[k])); })()) return "installed";
   return inFile ? "pending" : "absent";
 }
 

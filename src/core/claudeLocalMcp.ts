@@ -545,6 +545,8 @@ export interface LocalMcpOps {
   /** The installed extension's (or standalone install's) hooks directory. */
   hooksDir: string;
   has(root: string, id: string): boolean;
+  /** The registered config for `id`, or undefined (used to tell a product's own entry from an unrelated one of the same name). */
+  get?(root: string, id: string): unknown;
   set(root: string, id: string, config: unknown): Promise<LocalMcpWriteResult>;
   remove(root: string, id: string): Promise<LocalMcpWriteResult>;
 }
@@ -553,6 +555,7 @@ export function createLocalMcpOps(hooksDir: string, o: LocalMcpOptions = {}): Lo
   return {
     hooksDir,
     has: (root, id) => hasLocalMcpServer(root, id, o),
+    get: (root, id) => readLocalMcpServers(root, o)[id],
     set: (root, id, config) => registerLocalMcpServer(root, id, config, o),
     remove: (root, id) => removeLocalMcpServer(root, id, o),
   };

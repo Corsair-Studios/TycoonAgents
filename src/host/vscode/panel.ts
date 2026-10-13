@@ -44,7 +44,7 @@ import {
   CODEX_NOTIFY_STALE_MESSAGE,
   type CodexNotifyState,
 } from "../../providers/codex/installCodexHooks";
-import { resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
+import { isBareNodeCommand, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
 import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
@@ -85,7 +85,19 @@ import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
 import { createLocalMcpOps, localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
 import type { LocalMcpOps } from "../../core/claudeLocalMcp";
-import { POWER_TOOLS_MCP_MISSING, providedMcpConfirmDetail, sanitizeProvidedMcpEntry } from "../../core/providedMcp";
+import {
+  POWER_TOOLS_DIR_SETTING,
+  POWER_TOOLS_SERVER_KEY,
+  POWER_TOOLS_MCP_MISSING,
+  buildPowerToolsConfig,
+  describePowerToolsChoice,
+  discoverPowerTools,
+  findProvidedMcpKey,
+  providedMcpConfirmDetail,
+  providedMcpEntryIsOurs,
+  providedMcpKeys,
+  sanitizeProvidedMcpEntry,
+} from "../../core/providedMcp";
 import { repointLocalMcpEntries } from "../../core/claudeLocalMcpSync";
 import { withHookWrite, withHookWriteAsync } from "../../core/hookWriteGate";
 import { ensureTycoonGitignore } from "../../core/tycoonGitignore";
@@ -4128,7 +4140,7 @@ export class TycoonPanel {
   }
 
   /**
-   * Resolve the `uefn-bridge` server entry from a parsed `.mcp.json` config
+   * Resolve the Power Tools UEFN server entry (either accepted key, see providedMcpKeys) from a parsed `.mcp.json` config
    * (top-level or nested under `mcpServers`) — the single source of truth
    * both `_computeEngineStatus` (live engine ladder) and `_handleCheckInstall`
    * (setup wizard's `uefnBridgeSetUp` flag) key off of, so the two paths can
@@ -4136,7 +4148,9 @@ export class TycoonPanel {
    */
   private _uefnBridgeEntry(mcpConfig: Record<string, unknown>): Record<string, unknown> | undefined {
     const servers = (mcpConfig["mcpServers"] ?? mcpConfig) as Record<string, unknown>;
-    return servers["uefn-bridge"] as Record<string, unknown> | undefined;
+    // Power Tools' own docs use their own key; the catalog id is also accepted (providedMcpKeys).
+    const key = findProvidedMcpKey(servers, "uefn-bridge");
+    return key === undefined ? undefined : (servers[key] as Record<string, unknown> | undefined);
   }
 
   /** Post the MCP server catalog with per-entry installed status. */
@@ -4181,6 +4195,7 @@ export class TycoonPanel {
       network: e.network,
       dataNote: e.dataNote,
       needsSetup: e.needsSetup,
+      ...(e.providedBy ? { providedBy: e.providedBy } : {}),
     }));
     void this._panel.webview.postMessage({ type: MSG.MCP, servers });
   }
@@ -4214,41 +4229,78 @@ export class TycoonPanel {
   /** Merge a catalog MCP server's config into the project's .mcp.json. */
   /**
    * Servers owned by a separately installed product (catalog `providedBy`, uefn-bridge only): we never
-   * install our own catalog config. When the product's own installer already wrote an entry to the
-   * project's .mcp.json, the user may Enable it: a modal shows the EXACT command and args, and on
-   * confirm that same entry is registered at Claude local scope. Every outcome posts a reply.
+   * install our own catalog config and never write .mcp.json or any file of the product. Enable registers a
+   * stdio entry at Claude local scope after a modal shows the EXACT JSON:
+   *  - when the project's .mcp.json already lists the server under either accepted key, that sanitized entry,
+   *    registered under its original key;
+   *  - otherwise a `node <abs path>/uefn-server.mjs` entry for a Power Tools folder found by
+   *    discoverPowerTools (setting / env override first), registered under POWER_TOOLS_SERVER_KEY.
+   * Every outcome posts a reply.
    */
+  /** The accepted key under which the product's own server is registered at local scope for `id`, or undefined. */
+  private _providedLocalKey(root: string, id: string): string | undefined {
+    const ops = this._localMcpOps();
+    return providedMcpKeys(id).find((k) => ops.has(root, k) && (typeof ops.get !== "function" || providedMcpEntryIsOurs(id, ops.get(root, k))));
+  }
+
   private async _enableProvidedMcp(root: string, id: string, entry: { name: string; providedBy?: string; homepage?: string }): Promise<void> {
     const reply = (extra: Record<string, unknown>): void => {
       void this._panel.webview.postMessage({ type: MSG.MCP_INSTALLED, id, ok: false, ...extra });
     };
     const useLocal = this._useLocalMcp(root);
-    if (useLocal && this._localMcpOps().has(root, id)) {
+    if (useLocal && this._providedLocalKey(root, id) !== undefined) {
       reply({ ok: true, alreadyExisted: true });
       return;
     }
-    const fileEntry = (this._readMcpConfig(path.join(root, ".mcp.json")) as { mcpServers?: Record<string, unknown> }).mcpServers?.[id];
+    const fileKey = findProvidedMcpKey(this._readMcpConfig(path.join(root, ".mcp.json")), id);
     if (!useLocal) {
-      if (fileEntry !== undefined) reply({ ok: true, alreadyExisted: true });
+      if (fileKey !== undefined) reply({ ok: true, alreadyExisted: true });
       else reply({ error: POWER_TOOLS_MCP_MISSING });
       return;
     }
-    if (fileEntry === undefined || fileEntry === null || typeof fileEntry !== "object" || Array.isArray(fileEntry)) {
-      reply({ error: POWER_TOOLS_MCP_MISSING });
-      return;
+    let regKey: string;
+    let toRegister: { command: string; args?: string[]; env?: Record<string, string> };
+    let intro: string | undefined;
+    if (fileKey !== undefined) {
+      const fileServers = (this._readMcpConfig(path.join(root, ".mcp.json")) as { mcpServers?: Record<string, unknown> }).mcpServers ?? {};
+      const fileEntry = fileServers[fileKey];
+      const sane = sanitizeProvidedMcpEntry(fileKey, fileEntry);
+      if (!sane.ok) {
+        reply({ error: sane.error });
+        return;
+      }
+      regKey = fileKey;
+      toRegister = sane.config;
+    } else {
+      const found = discoverPowerTools({
+        root,
+        workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+        settingDir: vscode.workspace.getConfiguration("tycoonagents").get<string>(POWER_TOOLS_DIR_SETTING) ?? undefined,
+        env: process.env,
+      });
+      if (!found.ok) {
+        reply({ error: found.error });
+        return;
+      }
+      const nodeCmd = resolveNodeBinary();
+      const sane = sanitizeProvidedMcpEntry(POWER_TOOLS_SERVER_KEY, buildPowerToolsConfig(found.serverPath, nodeCmd));
+      if (!sane.ok) {
+        reply({ error: sane.error });
+        return;
+      }
+      regKey = POWER_TOOLS_SERVER_KEY;
+      toRegister = sane.config;
+      intro = describePowerToolsChoice(found);
+      if (isBareNodeCommand(nodeCmd)) {
+        intro += "\nNo absolute path to node was found, so the command below is plain 'node', which Claude Code resolves from its own PATH when it starts the server. Set TYCOON_NODE_PATH to the full path of node to register an absolute one.";
+      }
     }
-    const sane = sanitizeProvidedMcpEntry(id, fileEntry);
-    if (!sane.ok) {
-      reply({ error: sane.error });
-      return;
-    }
-    const toRegister = sane.config;
     // Cancel is first (the default button, so Enter cancels) and the close affordance (Escape).
     const cancelItem: vscode.MessageItem = { title: "Cancel", isCloseAffordance: true };
     const enableItem: vscode.MessageItem = { title: "Enable" };
     const answer = await vscode.window.showWarningMessage(
       `Enable ${entry.name || id}?`,
-      { modal: true, detail: providedMcpConfirmDetail(id, toRegister, entry.homepage) },
+      { modal: true, detail: providedMcpConfirmDetail(regKey, toRegister, entry.homepage, intro) },
       cancelItem,
       enableItem
     );
@@ -4257,9 +4309,9 @@ export class TycoonPanel {
       return;
     }
     // Exactly the object the dialog showed.
-    const r = await this._localMcpOps().set(root, id, toRegister);
+    const r = await this._localMcpOps().set(root, regKey, toRegister);
     if (!r.ok) {
-      reply({ error: r.error ?? `Could not register ${id}.` });
+      reply({ error: r.error ?? `Could not register ${regKey}.` });
       return;
     }
     reply({ ok: true, alreadyExisted: false, newChatHint: true });
@@ -4429,7 +4481,7 @@ export class TycoonPanel {
 
       const answer = await vscode.window.showWarningMessage(
         `Remove the '${entry.name}' MCP server?`,
-        { modal: true, detail: `This removes "${id}" from your project (and from .mcp.json if it is listed there).` },
+        { modal: true, detail: `${entry.providedBy ? `This removes the "${id}" server from Claude Code's local scope for this project. Your .mcp.json and the Power Tools files are not touched.` : `This removes "${id}" from your project (and from .mcp.json if it is listed there).`}` },
         "Remove"
       );
       if (answer !== "Remove") {
@@ -4446,7 +4498,8 @@ export class TycoonPanel {
         }
       }
       const existing = this._readMcpConfig(mcpPath);
-      if (hasMcpServer(existing, id)) {
+      // A server owned by another product: its .mcp.json entry is theirs, so only our registration is removed.
+      if (!entry.providedBy && hasMcpServer(existing, id)) {
         const updated = removeMcpServer(existing, id);
         fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
       }
@@ -4617,9 +4670,20 @@ export class TycoonPanel {
 
   /** Remove a local-scope registration. */
   private async _removeLocalMcpConfig(root: string, id: string): Promise<string | undefined> {
-    const r = await this._localMcpOps().remove(root, id);
-    if (!r.ok) return r.error ?? `Could not remove ${id}.`;
-    return undefined;
+    const ops = this._localMcpOps();
+    const keys = providedMcpKeys(id);
+    const failures: string[] = [];
+    for (const key of keys) {
+      // A server owned by another product may be registered under any accepted key, but an entry that is not the
+      // product's own (it does not launch uefn-server.mjs) is somebody else's server and is left alone.
+      if (keys.length > 1) {
+        if (!ops.has(root, key)) continue;
+        if (typeof ops.get === "function" && !providedMcpEntryIsOurs(id, ops.get(root, key))) continue;
+      }
+      const r = await ops.remove(root, key);
+      if (!r.ok) failures.push(r.error ?? `Could not remove ${key}.`);
+    }
+    return failures.length > 0 ? failures.join(" ") : undefined;
   }
 
   /**
@@ -5024,7 +5088,7 @@ export class TycoonPanel {
         const mcpPath = path.join(root, ".mcp.json");
         const packUseLocal = this._useLocalMcp(root);
         const existing = this._readMcpConfig(mcpPath);
-        if (packUseLocal ? this._localMcpOps().has(root, pack.mcp) : hasMcpServer(existing, pack.mcp)) {
+        if (packUseLocal ? this._providedLocalKey(root, pack.mcp) !== undefined : providedMcpKeys(pack.mcp).some((k) => hasMcpServer(existing, k))) {
           results.mcp = "exists";
         } else if ((entry as { providedBy?: string }).providedBy) {
           // Owned by a separately installed product: the pack never installs it (Enable MCP does, after a confirm).
@@ -5270,7 +5334,8 @@ export class TycoonPanel {
           // Claude Code: only drop a .mcp.json entry that is exactly what TycoonAgents itself
           // writes; a team's own repo-authored entry is never deleted.
           const ours = !this._useLocalMcp(root) || mcpEntryMatchesOurs(root, packMcp, (existing as any).mcpServers?.[packMcp], this._tycoonServerDefs()[packMcp]);
-          if (hasMcpServer(existing, packMcp) && ours) {
+          const packMcpProvided = !!this._loadMcpCatalog().find((x) => x.id === packMcp)?.providedBy;
+          if (!packMcpProvided && hasMcpServer(existing, packMcp) && ours) {
             const updated = removeMcpServer(existing, packMcp);
             fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
           }
