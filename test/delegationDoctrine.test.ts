@@ -286,20 +286,15 @@ test("Review pass section names uefn-auditor via the explicit reviewAgentId argu
   assert.ok(/the user is the final reviewer/i.test(out), "the human 'final reviewer' phrase must survive untouched");
 });
 
-test("Review pass section falls back to the generic phrase (not uefn-auditor) when uefn-auditor is installed but the project is NOT detected as UEFN (uefn defaults to false)", () => {
+test("Review pass section names uefn-auditor when installed even if the project is NOT detected as UEFN", () => {
   const uefnRoster: DoctrineRosterAgent[] = [
     { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
     { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
   ];
   const out = renderDelegationDoctrine("flat", true, uefnRoster);
   assert.ok(
-    out.includes("the review agent"),
-    "must fall back to the generic phrase on a non-UEFN project even when uefn-auditor is installed"
-  );
-  assert.equal(
-    out.includes("`uefn-auditor`"),
-    false,
-    "must not name uefn-auditor as the review agent on a non-UEFN project"
+    out.includes("the `uefn-auditor` agent"),
+    "uefn-auditor is the review agent whenever installed and no reviewer exists"
   );
 });
 
@@ -487,7 +482,7 @@ test("renderDelegationDoctrine names verse-expert (not coding-specialist, not ge
     { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
     { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
   ];
-  const out = renderDelegationDoctrine("flat", false, custom).replace(/\s+/g, " ");
+  const out = renderDelegationDoctrine("flat", false, custom, undefined, 3, false, true).replace(/\s+/g, " ");
   assert.ok(
     /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to verse-expert\.\*\*/i.test(out),
     "NEVER-edit mandate must name verse-expert on a UEFN roster"
@@ -510,7 +505,7 @@ test("renderDelegationDoctrine('team_leads') names verse-expert (not coding-spec
     { id: "uefn-auditor", taskTypes: "Verse audit, lint" },
     { id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" },
   ];
-  const out = renderDelegationDoctrine("team_leads", false, custom).replace(/\s+/g, " ");
+  const out = renderDelegationDoctrine("team_leads", false, custom, undefined, 3, false, true).replace(/\s+/g, " ");
   assert.ok(
     /\*\*build-lead\*\* owns the verse-expert, ux-ui-designer, and vscode-integration workers\./i.test(out),
     "build-lead line must name verse-expert on a UEFN roster"
@@ -526,12 +521,12 @@ test("renderDelegationDoctrine('team_leads') still names coding-specialist in th
   );
 });
 
-test("renderDelegationDoctrine falls back to the generic edit-target phrase when neither coding-specialist nor verse-expert is present", () => {
+test("renderDelegationDoctrine names the Fallback Agent as edit target when neither coding-specialist nor (UEFN) verse-expert is present", () => {
   const custom: DoctrineRosterAgent[] = [{ id: "search-retrieval", taskTypes: "File searching, code lookup, grep/glob" }];
   const out = renderDelegationDoctrine("flat", false, custom).replace(/\s+/g, " ");
   assert.ok(
-    /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to the appropriate specialist \(see the roster below\)\.\*\*/i.test(out),
-    "must fall back to the generic edit-target phrase when neither implementer id is present"
+    /\*\*NEVER Edit or Write files directly.*ALWAYS delegate to the appropriate specialist \(see the roster below\), or the Fallback Agent if none fits\.\*\*/i.test(out),
+    "must name the Fallback Agent when neither implementer id applies"
   );
   assert.equal(out.includes("coding-specialist"), false);
   assert.equal(out.includes("verse-expert"), false);

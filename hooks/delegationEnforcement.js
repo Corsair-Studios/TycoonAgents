@@ -23,6 +23,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LEAF_WORKER_DENY_MESSAGE = void 0;
 exports.matchAgentFromKeywords = matchAgentFromKeywords;
+exports.resolveEditTargetAgent = resolveEditTargetAgent;
 exports.decideDirectToolCall = decideDirectToolCall;
 exports.decideSpawn = decideSpawn;
 exports.startReviewGate = startReviewGate;
@@ -69,6 +70,19 @@ function matchAgentFromKeywords(searchText, keywordsConfig) {
     return bestScore > 0 && bestAgent ? { agentId: bestAgent, matchedKeyword: bestKeyword } : null;
 }
 /**
+ * Which specialist the "File changes belong to a specialist" nudge names:
+ * coding-specialist when installed; else verse-expert in a Verse/UEFN project
+ * that has it; else the project's `fallback_agent` (default primary-agent).
+ * The Claude hook mirrors this ladder (computeComplianceNudge).
+ */
+function resolveEditTargetAgent(inputs) {
+    if (inputs.agentIds.includes("coding-specialist"))
+        return "coding-specialist";
+    if (inputs.hasVerseProject && inputs.agentIds.includes("verse-expert"))
+        return "verse-expert";
+    return inputs.fallbackAgent || "primary-agent";
+}
+/**
  * Decide what should happen when a DIRECT (non-delegated) tool call is made
  * by the orchestrator itself (never called for a spawned worker — workers
  * are leaves and are supposed to call these tools directly).
@@ -81,7 +95,7 @@ function matchAgentFromKeywords(searchText, keywordsConfig) {
  * block; a host that wants to enforce harder can escalate "nudge" to "deny"
  * itself.
  */
-function decideDirectToolCall(toolName, readCountSoFar) {
+function decideDirectToolCall(toolName, readCountSoFar, editTarget = "coding-specialist") {
     if (toolName === "Grep" || toolName === "Glob") {
         return {
             action: "nudge",
@@ -91,7 +105,7 @@ function decideDirectToolCall(toolName, readCountSoFar) {
     if (toolName === "Edit" || toolName === "Write") {
         return {
             action: "nudge",
-            message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (coding-specialist) — the orchestrator coordinates, it does not implement.`,
+            message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${editTarget}) — the orchestrator coordinates, it does not implement.`,
         };
     }
     if (toolName === "Read") {

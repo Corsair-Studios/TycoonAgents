@@ -80,5 +80,5 @@ Report ALL agents discovered. Keep each response cell to a few words:
 
 If an agent fails to appear in the visualization:
 - Check that `subagent_type` equals the agent name and the task description starts with `<agent-id>:`
-- Verify the hooks in the repo-root `hooks/` directory are properly configured
+- Verify the hooks in the project's `.claude/hooks/` and `.claude/tycoon/` directories are properly configured
 - Ensure the TycoonAgents extension is running and the webview is visible

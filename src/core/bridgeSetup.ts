@@ -450,8 +450,8 @@ function otherBody(spec: OtherAgentSpec, role: string, keywords: string): string
     "<!-- wrapper-class: relay - forwards the brief to a user-defined OpenAI-compatible endpoint via the dispatcher and reformats the returned envelope into the verdict shape; no independent verification -->\n\n" +
     "## Role\n" +
     `${role} This agent reviews; it does not author, edit, or fix. It must never review a change it authored itself. Treat every review as a single pass — it does not loop, re-review, or iterate; the orchestrator owns any retry policy.\n\n` +
-    "## Calling through the dispatcher (preferred)\n" +
-    "When the `mcp__tycoon__delegate` tool is available in this session, make exactly ONE call to it instead of calling the vendor tool directly. Arguments:\n" +
+    "## Calling through the dispatcher (when available)\n" +
+    "The `tycoon` dispatcher is optional and is not registered on every host (it is usually absent on Claude Code). If the `mcp__tycoon__delegate` tool is in this session's tool list, make exactly ONE call to it instead of calling the vendor tool directly; if it is not in the tool list, call the vendor tool directly. Arguments:\n" +
     `- \`specialist: "${spec.agentId}"\` — this agent's own id, so the dispatcher resolves this agent's backend and routing chain.\n` +
     "- `task`: the complete, self-contained request. The delegated provider sees only this text, never this conversation.\n" +
     "- `description`: optional short label. Never set `_tycoon` — the hook injects it.\n\n" +

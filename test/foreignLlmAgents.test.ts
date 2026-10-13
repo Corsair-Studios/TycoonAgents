@@ -116,7 +116,7 @@ for (const id of REVIEWER_IDS) {
   test(`${id} body calls mcp__tycoon__delegate with a documented fallback and keeps its verdict/failure sections`, () => {
     const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === id)!;
     const md = buildAgentMarkdown(agent, "multi-llm");
-    assert.ok(md.includes("## Calling through the dispatcher (preferred)"));
+    assert.ok(md.includes("## Calling through the dispatcher (when available)"));
     assert.ok(md.includes("`mcp__tycoon__delegate`"));
     assert.ok(md.includes(`\`specialist: "${id}"\``), "must pass its own id as specialist");
     assert.ok(md.includes("`task`"), "must carry the review request in task");

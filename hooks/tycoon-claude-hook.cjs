@@ -2040,12 +2040,35 @@ function resetOrchestratorTurnReads(tycoonDir) {
 
 // Returns a warning message string, or undefined when no nudge should fire.
 // Only ever called when workerId === "orchestrator".
-function computeComplianceNudge(toolName, tycoonDir) {
+// Same signals as detectUefnProject (src/host/vscode/uefnDetect.ts): *.verse in
+// the root or root/src, a *.uproject/*.uefnproject in the root, or Content/Verse.
+function projectHasVerse(projectRoot) {
+  const hasSuffix = (dir, suffixes) => {
+    try { return fs.readdirSync(dir).some((f) => suffixes.some((x) => f.endsWith(x))); } catch { return false; }
+  };
+  if (hasSuffix(projectRoot, [".verse"]) || hasSuffix(path.join(projectRoot, "src"), [".verse"])) return true;
+  if (hasSuffix(projectRoot, [".uproject", ".uefnproject"])) return true;
+  try { return fs.statSync(path.join(projectRoot, "Content", "Verse")).isDirectory(); } catch { return false; }
+}
+
+// Mirrors resolveEditTargetAgent in src/core/delegationEnforcement.ts.
+function resolveEditTargetAgent(projectRoot) {
+  let ids = [];
+  try {
+    ids = fs.readdirSync(path.join(projectRoot, ".claude", "agents")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3));
+  } catch { /* no agents dir: fall through to the fallback agent */ }
+  if (ids.includes("coding-specialist")) return "coding-specialist";
+  if (ids.includes("verse-expert") && projectHasVerse(projectRoot)) return "verse-expert";
+  const cfg = readJsonSafe(path.join(projectRoot, ".claude", "tycoon", "agent-keywords.json"));
+  return (cfg && cfg.fallback_agent) || "primary-agent";
+}
+
+function computeComplianceNudge(toolName, tycoonDir, projectRoot) {
   if (toolName === "Grep" || toolName === "Glob") {
     return `${toolName} ran directly on the orchestrator. Searches belong to search-retrieval (Haiku) — cheaper, and the work stays visible in the delegation view.`;
   }
   if (toolName === "Edit" || toolName === "Write") {
-    return `${toolName} ran directly on the orchestrator. File changes belong to a specialist (coding-specialist) — the orchestrator coordinates, it does not implement.`;
+    return `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${resolveEditTargetAgent(projectRoot || path.dirname(path.dirname(tycoonDir)))}) — the orchestrator coordinates, it does not implement.`;
   }
   if (toolName === "Read") {
     const nextCount = readOrchestratorTurnReads(tycoonDir) + 1;
@@ -2815,7 +2838,7 @@ function main(raw) {
       // never nag them.
       let nudge;
       if (workerId === "orchestrator") {
-        nudge = computeComplianceNudge(toolName, tycoonDir);
+        nudge = computeComplianceNudge(toolName, tycoonDir, projectRoot);
       }
 
       /** @type {Record<string, unknown>} */

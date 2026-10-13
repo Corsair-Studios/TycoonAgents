@@ -1525,6 +1525,7 @@ function handleBrowserMessage(msg) {
         fs.mkdirSync(path.dirname(keywordsPath), { recursive: true });
         fs.writeFileSync(keywordsPath, JSON.stringify(updated, null, 2));
         broadcast('message', { type: 'agentRemoved', id, ok: true });
+        healKeywordsThenDoctrineStandalone(root);
       } catch (err) {
         broadcast('message', { type: 'agentRemoved', id, ok: false, error: String(err) });
         break;
@@ -2136,7 +2137,8 @@ function buildMcpPayload() {
 
   return {
     type: 'mcp',
-    servers: catalog.map((e) => ({
+    // Hidden entries (bridge servers owned by the Agents screen) stay in the catalog but are not listed in the MCP tab.
+    servers: catalog.filter((e) => e && e.hidden !== true).map((e) => ({
       id: e.id,
       name: e.name,
       description: e.description,
@@ -2654,6 +2656,7 @@ async function handleInstallPack(payload) {
     fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
 
     broadcast('message', { type: 'packInstalled', id, ok: true, results });
+    healKeywordsThenDoctrineStandalone(root);
   } catch (e) {
     broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
   }
@@ -2767,6 +2770,7 @@ async function installBridgePickerStandalone(pack, root, selection) {
     broadcast('message', { type: 'settings', payload: buildStandaloneSettingsPayload() });
     broadcast('message', buildProviderAgentsPayload());
     broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
+    healKeywordsThenDoctrineStandalone(root);
   } catch (e) {
     broadcast('message', { type: 'packInstalled', id, ok: false, error: String(e) });
   }
@@ -3018,10 +3022,8 @@ function resolveReviewAgentIdStandalone(root) {
   const rosterFiles = loadAgentRoster(agentsDir);
   const hasId = (id) => rosterFiles.some((a) => a.id === id);
   if (hasId('reviewer')) return 'reviewer';
-  if (hasId('uefn-auditor')) {
-    const { detectUefnProject } = uefnDetectModule();
-    if (detectUefnProject(root).detected) return 'uefn-auditor';
-  }
+  if (hasId('uefn-auditor')) return 'uefn-auditor';
+  if (hasId('testing-specialist')) return 'testing-specialist';
   return undefined;
 }
 
@@ -3204,9 +3206,41 @@ function buildClaudeMdDoctrineStandalone(existingContent, mode, reviewEnabled, r
   const projectPlanEnabled = readProjectPlanEnabledStandalone(root);
   const withDelegation = upsertDelegationSection(
     existingContent,
-    renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled),
+    renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled, isUefn),
   );
   return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
+}
+
+/**
+ * Standalone analog of panel.ts's `_healKeywordsThenDoctrine`: after a pack
+ * install/remove or agent removal changes .claude/agents, re-render the
+ * managed CLAUDE.md block so the Specialist roster is current without a
+ * restart. Keeps the hooks-installed gate; never throws.
+ */
+function healKeywordsThenDoctrineStandalone(root) {
+  try {
+    if (!root || !hooksInstalledForRootStandalone(root)) return;
+    migrateSupersededKeywordsForRootStandalone(root);
+    const { readExecutionConfig } = delegationDoctrineModule();
+    const { delegation_mode, reviewEnabled, sessionJournalEntries } = readExecutionConfig(path.join(root, '.claude'));
+    const claudeMdPath = path.join(root, 'CLAUDE.md');
+    let existingClaudeMd = null;
+    try {
+      existingClaudeMd = fs.readFileSync(claudeMdPath, 'utf8');
+    } catch {
+      existingClaudeMd = null;
+    }
+    const updated = buildClaudeMdDoctrineStandalone(
+      existingClaudeMd,
+      delegation_mode,
+      reviewEnabled ?? true,
+      root,
+      sessionJournalEntries ?? 3,
+    );
+    if (existingClaudeMd === null || updated !== existingClaudeMd) fs.writeFileSync(claudeMdPath, updated);
+  } catch (err) {
+    console.error('[tycoonagents-standalone] doctrine refresh failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 /**
@@ -3238,6 +3272,7 @@ function refreshDelegationSectionStandalone(root, mode, reviewEnabled, sessionJo
         resolveReviewAgentIdStandalone(root),
         sessionJournalEntries,
         readProjectPlanEnabledStandalone(root),
+        uefnDetectModule().detectUefnProject(root).detected,
       ),
     );
     fs.writeFileSync(claudeMdPath, updated);

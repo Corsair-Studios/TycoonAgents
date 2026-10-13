@@ -93,6 +93,25 @@ export interface ToolCallDecision {
   nextReadCount?: number;
 }
 
+/** Inputs for {@link resolveEditTargetAgent}: the project's installed agent ids, whether it is a Verse/UEFN project, and its configured fallback agent. */
+export interface EditTargetInputs {
+  agentIds: readonly string[];
+  hasVerseProject: boolean;
+  fallbackAgent?: string;
+}
+
+/**
+ * Which specialist the "File changes belong to a specialist" nudge names:
+ * coding-specialist when installed; else verse-expert in a Verse/UEFN project
+ * that has it; else the project's `fallback_agent` (default primary-agent).
+ * The Claude hook mirrors this ladder (computeComplianceNudge).
+ */
+export function resolveEditTargetAgent(inputs: EditTargetInputs): string {
+  if (inputs.agentIds.includes("coding-specialist")) return "coding-specialist";
+  if (inputs.hasVerseProject && inputs.agentIds.includes("verse-expert")) return "verse-expert";
+  return inputs.fallbackAgent || "primary-agent";
+}
+
 /**
  * Decide what should happen when a DIRECT (non-delegated) tool call is made
  * by the orchestrator itself (never called for a spawned worker — workers
@@ -106,7 +125,7 @@ export interface ToolCallDecision {
  * block; a host that wants to enforce harder can escalate "nudge" to "deny"
  * itself.
  */
-export function decideDirectToolCall(toolName: string, readCountSoFar: number): ToolCallDecision {
+export function decideDirectToolCall(toolName: string, readCountSoFar: number, editTarget: string = "coding-specialist"): ToolCallDecision {
   if (toolName === "Grep" || toolName === "Glob") {
     return {
       action: "nudge",
@@ -116,7 +135,7 @@ export function decideDirectToolCall(toolName: string, readCountSoFar: number): 
   if (toolName === "Edit" || toolName === "Write") {
     return {
       action: "nudge",
-      message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (coding-specialist) — the orchestrator coordinates, it does not implement.`,
+      message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${editTarget}) — the orchestrator coordinates, it does not implement.`,
     };
   }
   if (toolName === "Read") {

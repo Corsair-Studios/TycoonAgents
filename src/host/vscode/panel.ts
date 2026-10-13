@@ -4118,6 +4118,8 @@ export class TycoonPanel {
     needsSetup?: boolean;
     /** Server owned by a separately installed product ("power-tools"): never installed from our catalog config. */
     providedBy?: string;
+    /** Bridge server owned by the Agents screen: installable from the catalog, never listed in the MCP tab. */
+    hidden?: boolean;
     config: unknown;
     platforms?: McpPlatformsEntry["platforms"];
   }> {
@@ -4181,7 +4183,7 @@ export class TycoonPanel {
     const fileConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
     const stateOf = (id: string) => mcpServerState(root, this._resolveEffectiveHarness(root), id, fileConfig);
     const isInstalled = (id: string): boolean => (root === "" ? false : stateOf(id) === "installed");
-    const servers = catalog.map((e) => ({
+    const servers = catalog.filter((e) => e.hidden !== true).map((e) => ({
       id: e.id,
       name: e.name,
       description: e.description,
@@ -4970,6 +4972,8 @@ export class TycoonPanel {
       // with the MCP server it needs. Never installs "everything" implicitly.
       if (pack.picker === "bridges") {
         await this._installBridgePicker(pack, root, selection);
+        // New provider agent files: re-render the managed CLAUDE.md roster now, not on next panel open.
+        this._healKeywordsThenDoctrine(true);
         return;
       }
 
@@ -5214,6 +5218,8 @@ export class TycoonPanel {
       fs.writeFileSync(keywordsPath, JSON.stringify(cfg, null, 2));
 
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: true, results });
+      // Agent files changed: re-render the managed CLAUDE.md roster without a panel reopen.
+      this._healKeywordsThenDoctrine(true);
       return;
     } catch (e) {
       this._panel.webview.postMessage({ type: MSG.PACK_INSTALLED, id, ok: false, error: String(e) });
@@ -5383,6 +5389,7 @@ export class TycoonPanel {
       }
 
       this._panel.webview.postMessage({ type: MSG.PACK_REMOVED, id, ok: true, results });
+      this._healKeywordsThenDoctrine(true);
       // Refresh installed state the same way install paths do.
       this._handleGetPacks();
       this._handleGetSkills();
@@ -6347,7 +6354,7 @@ export class TycoonPanel {
    * Wrapped in try/catch so a failure here can never break panel
    * construction/rendering.
    */
-  private _ensureDelegationDoctrineCurrent(): void {
+  private _ensureDelegationDoctrineCurrent(silent = false): void {
     // (see _healKeywordsThenDoctrine for why this must run after the keyword heals)
     try {
       const root = this._projectRoot();
@@ -6375,7 +6382,7 @@ export class TycoonPanel {
       if (existingClaudeMd !== null && updated === existingClaudeMd) return; // already current — no write, no notice
 
       fs.writeFileSync(claudeMdPath, updated);
-      vscode.window.showInformationMessage("Refreshed delegation instructions in CLAUDE.md for this version.");
+      if (!silent) vscode.window.showInformationMessage("Refreshed delegation instructions in CLAUDE.md for this version.");
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
@@ -6389,9 +6396,9 @@ export class TycoonPanel {
    * instead of one panel-open behind. Both keep their own gates (hooks
    * installed, workspace trusted).
    */
-  private _healKeywordsThenDoctrine(): void {
+  private _healKeywordsThenDoctrine(silent = false): void {
     this._ensureAgentKeywordsSeeded();
-    this._ensureDelegationDoctrineCurrent();
+    this._ensureDelegationDoctrineCurrent(silent);
   }
 
   /**
@@ -6514,7 +6521,8 @@ export class TycoonPanel {
   private _ensureWorkerAgentRoleTextCurrent(root: string): void {
     try {
       const isUefn = detectUefnProject(root).detected || this._isUefnPackInstalled(root);
-      const agents = workerAgentsForProject(isUefn);
+      // Installed reviewer files get the read-only discipline too (managed-gate below skips unmarked/edited ones).
+      const agents = [...workerAgentsForProject(isUefn), ...REVIEWER_AGENTS];
       const agentsDir = path.join(root, ".claude", "agents");
       for (const a of agents) {
         try {
@@ -7344,8 +7352,8 @@ export class TycoonPanel {
   /**
    * Resolve which agent actually covers the "Review pass" doctrine section:
    * `reviewer` when its `.md` file is installed, else `uefn-auditor` when
-   * installed AND this project is detected as UEFN (a UEFN project's Verse
-   * Auditor), else `undefined` when neither applies. MUST be computed from
+   * installed (regardless of project detection), else `testing-specialist`
+   * when installed, else `undefined` (the doctrine then names the Fallback Agent). MUST be computed from
    * the FULL installed agent set (via {@link loadAgentRoster}, same as
    * `_buildDoctrineRoster`) rather than from `_buildDoctrineRoster`'s own
    * `rows` output — that output has `tier: "reviewer"` agents deliberately
@@ -7363,7 +7371,8 @@ export class TycoonPanel {
     const rosterFiles = loadAgentRoster(agentsDir);
     const hasId = (id: string) => rosterFiles.some((a) => a.id === id);
     if (hasId("reviewer")) return "reviewer";
-    if (hasId("uefn-auditor") && detectUefnProject(root).detected) return "uefn-auditor";
+    if (hasId("uefn-auditor")) return "uefn-auditor";
+    if (hasId("testing-specialist")) return "testing-specialist";
     return undefined;
   }
 
@@ -7398,7 +7407,7 @@ export class TycoonPanel {
     const projectPlanEnabled = readProjectPlanEnabled(root);
     const withDelegation = upsertDelegationSection(
       existingContent,
-      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled)
+      renderDelegationDoctrine(mode, reviewEnabled, roster, reviewAgentId, sessionJournalEntries, projectPlanEnabled, isUefn)
     );
     return upsertCodeRulesSection(withDelegation, renderCodeRules(isUefn));
   }
@@ -7852,6 +7861,7 @@ export class TycoonPanel {
     } catch {
       /* best-effort: keywords file is non-critical for removal */
     }
+    this._healKeywordsThenDoctrine(true);
   }
 
   /**
@@ -8047,7 +8057,8 @@ export class TycoonPanel {
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
           sessionJournalEntries,
-          readProjectPlanEnabled(root)
+          readProjectPlanEnabled(root),
+          detectUefnProject(root).detected
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
@@ -8128,7 +8139,8 @@ export class TycoonPanel {
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
           sessionJournalEntries,
-          readProjectPlanEnabled(root)
+          readProjectPlanEnabled(root),
+          detectUefnProject(root).detected
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
@@ -8226,7 +8238,8 @@ export class TycoonPanel {
           this._buildDoctrineRoster(root),
           this._resolveReviewAgentId(root),
           clamped,
-          readProjectPlanEnabled(root)
+          readProjectPlanEnabled(root),
+          detectUefnProject(root).detected
         )
       );
       fs.writeFileSync(claudeMdPath, updated);
@@ -8724,6 +8737,7 @@ export class TycoonPanel {
     try { previous = root !== "" ? loadRoutingProfile(root).profile : null; } catch { previous = null; }
     const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath, effectiveHarness });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    if (result.ok) this._healKeywordsThenDoctrine(true);
     this._handleGetRouting();
     // Save is the user's consent to use a foreign vendor: register that vendor's bridge server
     // (Claude local scope) if it is not already, after the save reply and without blocking it.
@@ -9788,6 +9802,7 @@ export class TycoonPanel {
       }
 
       this._panel.webview.postMessage({ type: MSG.AGENT_REMOVED, id, ok: true });
+      this._healKeywordsThenDoctrine(true);
       // Refresh the settings/roster the same way setAgentModel-driven changes do.
       this._handleGetSettings();
     } catch (e) {

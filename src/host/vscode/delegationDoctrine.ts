@@ -190,9 +190,11 @@ function renderRosterTable(agents: DoctrineRosterAgent[] | undefined): string {
  * same agent (or fall back to the same generic phrasing) instead of one of
  * them independently hardcoding `coding-specialist`.
  */
-function resolveEditId(rows: DoctrineRosterAgent[]): string | undefined {
+function resolveEditId(rows: DoctrineRosterAgent[], uefn = false): string | undefined {
   const rowFor = (id: string) => rows.find((r) => r.id === id);
-  return (rowFor("coding-specialist") ?? rowFor("verse-expert"))?.id;
+  // verse-expert is a domain specialist: only the default editor on a project
+  // detected as UEFN/Verse. Otherwise undefined -> callers name the Fallback Agent.
+  return (rowFor("coding-specialist") ?? (uefn ? rowFor("verse-expert") : undefined))?.id;
 }
 
 /**
@@ -205,23 +207,24 @@ function resolveEditId(rows: DoctrineRosterAgent[]): string | undefined {
  * {@link renderReviewSection} never hardcodes `reviewer` regardless of what's
  * actually installed for this project.
  */
-function resolveReviewId(rows: DoctrineRosterAgent[], uefn = false): string | undefined {
+function resolveReviewId(rows: DoctrineRosterAgent[], _uefn = false): string | undefined {
   const rowFor = (id: string) => rows.find((r) => r.id === id);
-  return (rowFor("reviewer") ?? (uefn ? rowFor("uefn-auditor") : undefined))?.id;
+  // reviewer, else uefn-auditor (whenever installed), else testing-specialist.
+  return (rowFor("reviewer") ?? rowFor("uefn-auditor") ?? rowFor("testing-specialist"))?.id;
 }
 
-function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined): string {
+function renderPreamble(rosterAgents: DoctrineRosterAgent[] | undefined, uefn = false): string {
   const rows = resolveRosterRows(rosterAgents);
   const rowFor = (id: string) => rows.find((r) => r.id === id);
 
-  const editId = resolveEditId(rows);
-  const editTarget = editId ?? "the appropriate specialist (see the roster below)";
+  const editId = resolveEditId(rows, uefn);
+  const editTarget = editId ?? "the appropriate specialist (see the roster below), or the Fallback Agent if none fits";
 
   const checklist: string[] = [];
   checklist.push(
     editId
       ? `Any file edit or creation, including docs and markdown → ${editId}.`
-      : "Any file edit or creation, including docs and markdown → the appropriate specialist (see the roster below)."
+      : "Any file edit or creation, including docs and markdown → the appropriate specialist (see the roster below), or the Fallback Agent if none fits."
   );
   checklist.push("Any search, grep, glob, or multi-file/exploratory read → search-retrieval (Haiku).");
   for (const id of ["testing-specialist", "ux-ui-designer", "vscode-integration", "workspace-monitor"]) {
@@ -255,6 +258,10 @@ it to search-retrieval, which runs on Haiku, the cheapest model available.
 
 Reading three or more files to answer one question is a survey, not a
 lookup. Delegate it.
+
+The single allowed direct write: you may update the \`summary\` field of
+\`.claude/session-journal.json\` yourself (the Session Journal section below).
+Every other edit still goes to a specialist.
 
 You may also ANSWER A ONE-OFF QUESTION directly. When the user asks
 something you can settle in a sentence or two from one or two known files,
@@ -369,9 +376,9 @@ intermediate layer between the orchestrator and the worker doing the task.`;
  * {@link resolveEditId} resolution {@link renderPreamble} uses, instead of
  * hardcoding `coding-specialist` regardless of what's actually installed.
  */
-function renderTeamLeadsSection(rosterAgents: DoctrineRosterAgent[] | undefined): string {
-  const editId = resolveEditId(resolveRosterRows(rosterAgents));
-  const buildLeadTarget = editId ?? "appropriate specialist (see the roster below)";
+function renderTeamLeadsSection(rosterAgents: DoctrineRosterAgent[] | undefined, uefn = false): string {
+  const editId = resolveEditId(resolveRosterRows(rosterAgents), uefn);
+  const buildLeadTarget = editId ?? "appropriate specialist (see the roster below), or the Fallback Agent if none fits";
   return `## Team Leads delegation (current mode)
 
 Everything in Direct delegation still applies. Additionally, for large
@@ -437,6 +444,9 @@ If you are a spawned worker and NOT a designated team lead, you are a LEAF:
   do, and doing it is correct, not a violation.
 - Never end your turn reporting work as "running in the background" — finish
   it or report failure.
+- Never start tests, builds, or other long commands in the background. Run
+  them in the foreground with an explicit timeout (the Bash tool accepts up to
+  10 minutes), and split longer work into sequential foreground calls.
 - If the assigned work genuinely cannot finish inside one tool call, split
   it into bounded sequential calls run to completion in THIS SAME turn —
   using the harness's own chunking knobs (sample-size env vars, batch
@@ -481,6 +491,9 @@ If you are a spawned worker, you are a LEAF:
   do, and doing it is correct, not a violation.
 - Never end your turn reporting work as "running in the background" — finish
   it or report failure.
+- Never start tests, builds, or other long commands in the background. Run
+  them in the foreground with an explicit timeout (the Bash tool accepts up to
+  10 minutes), and split longer work into sequential foreground calls.
 - If the assigned work genuinely cannot finish inside one tool call, split
   it into bounded sequential calls run to completion in THIS SAME turn —
   using the harness's own chunking knobs (sample-size env vars, batch
@@ -540,7 +553,7 @@ function renderReviewSection(
   uefn = false
 ): string {
   const reviewId = reviewAgentId ?? resolveReviewId(resolveRosterRows(rosterAgents), uefn);
-  const reviewAgentPhrase = reviewId ? `the \`${reviewId}\` agent` : "the review agent";
+  const reviewAgentPhrase = reviewId ? `the \`${reviewId}\` agent` : "the review agent (the Fallback Agent when no reviewer is installed)";
   const reviewAgentPhraseCap = reviewId ? `The \`${reviewId}\` agent's` : "The review agent's";
   const reviewAgentPossessive = reviewId ? `the \`${reviewId}\` agent's` : "the review agent's";
 
@@ -708,9 +721,9 @@ export function renderDelegationDoctrine(
   projectPlanEnabled = false,
   uefn = false
 ): string {
-  const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents) : DIRECT_SECTION;
+  const modeSection = mode === "team_leads" ? renderTeamLeadsSection(rosterAgents, uefn) : DIRECT_SECTION;
   const parts = [
-    renderPreamble(rosterAgents),
+    renderPreamble(rosterAgents, uefn),
     renderRosterTable(rosterAgents),
     modeSection,
     renderWorkerLeafSection(mode),

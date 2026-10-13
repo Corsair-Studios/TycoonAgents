@@ -256,6 +256,9 @@ If you are a spawned worker, you are a LEAF:
   do, and doing it is correct, not a violation.
 - Never end your turn reporting work as "running in the background" — finish
   it or report failure.
+- Never start tests, builds, or other long commands in the background. Run
+  them in the foreground with an explicit timeout (the Bash tool accepts up to
+  10 minutes), and split longer work into sequential foreground calls.
 - If the assigned work genuinely cannot finish inside one tool call, split
   it into bounded sequential calls run to completion in THIS SAME turn —
   using the harness's own chunking knobs (sample-size env vars, batch
