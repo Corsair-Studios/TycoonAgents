@@ -551,7 +551,7 @@ async function ensureLocalMcpCurrentStandalone(root) {
     const ops = localMcpOpsStandalone();
     const defs = mcpApprovalModule().tycoonServerDefsFromMedia(MEDIA_DIR);
     const sync = claudeLocalMcpSyncModule();
-    const repointed = await sync.repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs));
+    const repointed = await sync.repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs), {}, defs);
     for (const e of repointed.errors) console.warn(`[tycoonagents-standalone] local MCP sync: ${e}`);
   } catch (err) {
     console.warn('[tycoonagents-standalone] local MCP sync failed:', err);

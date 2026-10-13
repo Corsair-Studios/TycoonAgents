@@ -41,7 +41,7 @@
       "id": "web-qa",
       "name": "Web QA",
       "model": "sonnet",
-      "keywords": "playwright|browser|ui|qa|screenshot|accessibility|e2e|web",
+      "keywords": "playwright|browser|qa|screenshot|accessibility|e2e|web",
       "role": "Drives a real browser to QA web UIs — screenshots, interaction checks, and accessibility. Uses the Playwright skill and the Playwright MCP server."
     }
   },

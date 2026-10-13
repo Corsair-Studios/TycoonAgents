@@ -236,3 +236,32 @@ test("repoint moves a standalone entry only once its old script is gone", async 
     fs.rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Superseded catalog args refresh
+// ---------------------------------------------------------------------------
+
+const CAT_TAIL = ["-c", 'model="gpt-6.1-sol"', "-c", 'model_reasoning_effort="low"'];
+const CAT_DEFS = { codex: { config: { command: "node", args: [".claude/hooks/codex-mcp-launcher.cjs", ...CAT_TAIL] } } };
+
+test("repoint refreshes args that exactly match a superseded catalog model, and leaves customised args alone", async () => {
+  const f = fx();
+  try {
+    const hooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const script = fwd(path.join(hooks, "codex-mcp-launcher.cjs"));
+    const old = ["-c", 'model="gpt-5.6-sol"', "-c", 'model_reasoning_effort="low"'];
+    await registerLocalMcpServer(f.root, "codex", { command: "node", args: [script, ...old], env: { KEEP: "1" } }, f.opts);
+    const r = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts, CAT_DEFS);
+    assert.deepEqual(r, { repointed: ["codex"], errors: [] });
+    assert.deepEqual(localServers(f)["codex"].args, [script, ...CAT_TAIL]);
+    assert.deepEqual(localServers(f)["codex"].env, { KEEP: "1" });
+    // User-customised args (different effort) are not touched.
+    const custom = ["-c", 'model="gpt-5.6-sol"', "-c", 'model_reasoning_effort="high"'];
+    await registerLocalMcpServer(f.root, "codex", { command: "node", args: [script, ...custom] }, f.opts);
+    const r2 = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts, CAT_DEFS);
+    assert.deepEqual(r2, { repointed: [], errors: [] });
+    assert.deepEqual(localServers(f)["codex"].args, [script, ...custom]);
+  } finally {
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});

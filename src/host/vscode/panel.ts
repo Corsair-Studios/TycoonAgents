@@ -4704,7 +4704,8 @@ export class TycoonPanel {
         const root = this._projectRoot();
         if (!this._useLocalMcp(root)) return;
         const ops = this._localMcpOps();
-        const repointed = await repointLocalMcpEntries(root, ops.hooksDir, Object.keys(this._tycoonServerDefs()));
+        const defs = this._tycoonServerDefs();
+        const repointed = await repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs), {}, defs);
         for (const e of repointed.errors) console.warn(`TycoonAgents: local MCP sync: ${e}`);
         if (repointed.repointed.length > 0) {
           log(`panel: local-scope MCP repointed ${repointed.repointed.join(",")}`);

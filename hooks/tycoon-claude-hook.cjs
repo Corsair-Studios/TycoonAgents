@@ -1307,6 +1307,28 @@ function readSessionJournalEntries(tycoonDir) {
 }
 
 // ---------------------------------------------------------------------------
+// Machine-generated prompt filter. Claude Code delivers subagent hand-backs,
+// task notifications and system reminders to the orchestrator as
+// UserPromptSubmit events; they are not something a person typed. Returns the
+// prompt with those blocks removed (trimmed); "" means the prompt was entirely
+// machine-generated. Real text, including pasted content, is kept.
+// ---------------------------------------------------------------------------
+function stripMachinePromptBlocks(text) {
+  if (typeof text !== "string") return "";
+  // Cap the scanned length so many unclosed openers cannot cause quadratic rescans;
+  // the journal truncates to 300 chars anyway.
+  const capped = text.length > 20000 ? text.slice(0, 20000) : text;
+  let out = capped.replace(/<(agent-message|task-notification|system-reminder|cross-session-message|local-command-[\w-]+)\b[^>]*>[\s\S]*?<\/\1\s*>/g, "");
+  out = out.replace(/^[ \t]*\[SYSTEM NOTIFICATION[^\n]*(\n|$)/gm, "");
+  out = out.trim();
+  // An unclosed opener at the start: drop only the tag itself and keep any following
+  // text (pasted content); a prompt that is nothing but openers is machine-only.
+  const OPENER = /^<(?:agent-message|task-notification|system-reminder|cross-session-message|local-command-[\w-]*)\b[^>]*>\s*/;
+  for (let i = 0; i < 20 && OPENER.test(out); i++) out = out.replace(OPENER, "");
+  return out.trim();
+}
+
+// ---------------------------------------------------------------------------
 // Session journal writer — appends the submitted prompt to
 // <projectRoot>/.claude/session-journal.json, trimmed to the last N entries
 // (N = readSessionJournalEntries, 0 = caller never invokes this). Only
@@ -3261,8 +3283,8 @@ function main(raw) {
     // binary's hook-payload schema: hook_event_name/prompt/session_title).
     const journalMax = readSessionJournalEntries(tycoonDir);
     if (journalMax > 0) {
-      const promptText = typeof payload.prompt === "string" ? payload.prompt : "";
-      appendSessionJournalEntry(projectRoot, promptText, journalMax, at);
+      const promptText = stripMachinePromptBlocks(payload.prompt);
+      if (promptText !== "") appendSessionJournalEntry(projectRoot, promptText, journalMax, at);
     }
 
     // Surface unseen plan-gate approvals/rejections (plan p29-t2).
@@ -3320,7 +3342,9 @@ function main(raw) {
   // Top-level prompt typed by a person (not a subagent session): lets the panel hint when the project harness is not Claude Code.
   // Known/accepted: a headless `claude -p` run counts as a person prompt; agent-team teammate sessions carry no
   // distinguishing UserPromptSubmit payload field, so they are not excluded here either.
-  if (hookEvent === "UserPromptSubmit" && !(typeof payload.agent_id === "string" && payload.agent_id !== "")) record.userPrompt = true;
+  // Machine-generated prompts (hand-backs, task notifications, reminders) are not a person's prompt.
+  if (hookEvent === "UserPromptSubmit" && !(typeof payload.agent_id === "string" && payload.agent_id !== "")
+    && !(typeof payload.prompt === "string" && payload.prompt !== "" && stripMachinePromptBlocks(payload.prompt) === "")) record.userPrompt = true;
 
   try {
     fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");

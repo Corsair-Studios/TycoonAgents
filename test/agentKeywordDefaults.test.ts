@@ -483,3 +483,13 @@ test("workerAgentFingerprintMatches accepts a superseded uefn-auditor Keywords l
   assert.equal(workerAgentFingerprintMatches(md(OLD_AUDITOR_KW), agent), true);
   assert.equal(workerAgentFingerprintMatches(md("something|else"), agent), false);
 });
+
+test("web-qa default has no `ui`; the exact old default migrates and an edited one does not", () => {
+  assert.ok(!DEFAULT_AGENT_KEYWORDS["web-qa"].split("|").includes("ui"));
+  const old = "playwright|browser|ui|qa|screenshot|accessibility|e2e|web";
+  const { config: out, changed } = migrateSupersededKeywords({ agents: { "web-qa": { pattern: old } } });
+  assert.equal(changed, true);
+  assert.equal(out.agents["web-qa"].pattern, DEFAULT_AGENT_KEYWORDS["web-qa"]);
+  const edited = { agents: { "web-qa": { pattern: old + "|mine" } } };
+  assert.equal(migrateSupersededKeywords(edited).changed, false);
+});

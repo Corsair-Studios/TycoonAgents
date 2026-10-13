@@ -888,3 +888,57 @@ test("extractSubagentTokens: sums ALL assistant lines in the subagent's own tran
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Session Journal: hand-back, task-notification and system-reminder prompts write no entry; a normal prompt does", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    submitPrompt(root, '<agent-message from="a1">\n[Subagent hand-back] The text below is the final report.\nDone.\n</agent-message>');
+    submitPrompt(root, "<task-notification>\n<task-id>x</task-id>\n</task-notification>");
+    submitPrompt(root, "<system-reminder>\nremember things\n</system-reminder>");
+    assert.equal(existsSync(journalPath(root)), false, "machine prompts must not create the journal");
+    submitPrompt(root, "real user prompt");
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.deepEqual(journal.entries.map((e) => e.prompt), ["real user prompt"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: a mixed prompt records only the user text", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    submitPrompt(root, "<system-reminder>\nnoise\n</system-reminder>\nfix the bug in foo.ts\n<task-notification>\nn\n</task-notification>");
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.deepEqual(journal.entries.map((e) => e.prompt), ["fix the bug in foo.ts"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: an unclosed machine opener keeps the following user text; opener-only is skipped", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    submitPrompt(root, "<system-reminder>");
+    assert.equal(existsSync(journalPath(root)), false);
+    submitPrompt(root, "<system-reminder>\nplease review my pasted notes");
+    const journal = JSON.parse(readFileSync(journalPath(root), "utf8")) as JournalFile;
+    assert.deepEqual(journal.entries.map((e) => e.prompt), ["please review my pasted notes"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Session Journal: a huge prompt of unclosed openers is bounded and still records", () => {
+  const root = setupProject();
+  try {
+    writeExecutionConfigFile(root, { delegation_mode: "flat", sessionJournalEntries: 3 });
+    const t0 = Date.now();
+    submitPrompt(root, "<task-notification>".repeat(200000) + "tail text");
+    assert.ok(Date.now() - t0 < 20000, "must not rescan quadratically");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -24,6 +24,7 @@ import {
   registerLocalMcpServer,
 } from "./claudeLocalMcp";
 import type { LocalMcpOptions } from "./claudeLocalMcp";
+import { CODEX_LEGACY_MODELS } from "./agentsUiMode";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -60,6 +61,26 @@ export function installKindOf(scriptPath: string): InstallKind {
   return "standalone";
 }
 
+/**
+ * The catalog args (after the script) a registered entry should carry now, or null
+ * to keep its args. Only args that EXACTLY equal the current catalog args with the
+ * `model="..."` value swapped for a superseded (legacy) model are refreshed;
+ * user-customised args are never touched.
+ */
+export function refreshedCatalogTail(have: unknown[], catalogArgs: unknown): string[] | null {
+  if (!Array.isArray(catalogArgs) || !catalogArgs.every((a) => typeof a === "string")) return null;
+  const cur = (catalogArgs as string[]).slice(1);
+  const mi = cur.findIndex((a) => /^model="[^"]*"$/.test(a));
+  if (mi < 0 || have.length !== cur.length) return null;
+  if (have.every((a, i) => a === cur[i])) return null;
+  for (const legacy of CODEX_LEGACY_MODELS) {
+    const old = cur.slice();
+    old[mi] = `model="${legacy}"`;
+    if (have.every((a, i) => a === old[i])) return cur;
+  }
+  return null;
+}
+
 export interface RepointResult {
   repointed: string[];
   errors: string[];
@@ -70,7 +91,7 @@ export interface RepointResult {
  * there, one that points at a NEWER extension version (another window owns it), and
  * anything not recognisably ours are left alone. Other args and env are preserved.
  */
-export async function repointLocalMcpEntries(root: string, hooksDir: string, ourIds: Iterable<string>, o: LocalMcpOptions = {}): Promise<RepointResult> {
+export async function repointLocalMcpEntries(root: string, hooksDir: string, ourIds: Iterable<string>, o: LocalMcpOptions = {}, defs: Record<string, { config?: unknown }> = {}): Promise<RepointResult> {
   const result: RepointResult = { repointed: [], errors: [] };
   const platform = o.platform ?? process.platform;
   const isFile = o.isFile ?? ((p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
@@ -100,8 +121,11 @@ export async function repointLocalMcpEntries(root: string, hooksDir: string, our
     let command = cfg.command as string;
     const abs = path.isAbsolute(command) || command.startsWith("/");
     if (abs && !isFile(command)) command = resolveHookInterpreter({ platform }).interpreter;
-    if (sameFile(oldScript, newScript, platform) && command === cfg.command) continue;
-    const next: Record<string, unknown> = { ...cfg, command, args: [newScript, ...args.slice(1)] };
+    // Args exactly equal to a superseded catalog default (`defs`) move to the current catalog args.
+    const catCfg = defs[id]?.config;
+    const freshTail = refreshedCatalogTail(args.slice(1), isPlainObject(catCfg) ? catCfg.args : undefined);
+    if (sameFile(oldScript, newScript, platform) && command === cfg.command && !freshTail) continue;
+    const next: Record<string, unknown> = { ...cfg, command, args: [newScript, ...(freshTail ?? args.slice(1))] };
     const r = await registerLocalMcpServer(root, id, next, o);
     if (r.ok) result.repointed.push(id);
     else result.errors.push(`${id}: ${r.error ?? "could not update"}`);

@@ -48,7 +48,7 @@ export const DEFAULT_AGENT_KEYWORDS: Record<string, string> = {
   ...toKeywordMap(FOREIGN_LLM_AGENTS),
   "verse-expert": "verse|uefn|fortnite|device|island|creative|digest",
   "uefn-auditor": "auditor|lint|deprecation|deprecated|compliance",
-  "web-qa": "playwright|browser|ui|qa|screenshot|accessibility|e2e|web",
+  "web-qa": "playwright|browser|qa|screenshot|accessibility|e2e|web",
   godot: "godot|gdscript|scene|node|signal|tscn|gdextension",
   unity: "unity|csharp|monobehaviour|prefab|gameobject|scene",
   roblox: "roblox|luau|studio|datamodel|instance|service|rojo",

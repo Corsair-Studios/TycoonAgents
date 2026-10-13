@@ -391,6 +391,7 @@ export const SUPERSEDED_DEFAULT_KEYWORDS: Record<string, string[]> = {
   "quality-lead": ["quality|verify|test plan|acceptance|audit"],
   reviewer: ["review|verify|approve|correctness|quality|regression"],
   "uefn-auditor": ["verse|uefn|fortnite|verse-audit|verse-review|verse-lint"],
+  "web-qa": ["playwright|browser|ui|qa|screenshot|accessibility|e2e|web"],
 };
 
 /**
