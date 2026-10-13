@@ -47,7 +47,7 @@ import {
 import { isBareNodeCommand, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, agentMarkdownHasLegacyOfficeAgentsMarker, healLegacyOfficeAgentsFrontmatter, healLegacyAgentFilesInDir, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -5180,6 +5180,15 @@ export class TycoonPanel {
               } else {
                 agentResults.push({ id: a.id, status: "unchanged" });
               }
+            } else if (agentMarkdownHasLegacyOfficeAgentsMarker(existingContent)) {
+              // Legacy product-name file: add only the missing name/description.
+              const healedLegacy = healLegacyOfficeAgentsFrontmatter(existingContent, a.id, a.role && a.role.trim() !== "" ? a.role : a.name);
+              if (healedLegacy !== null) {
+                fs.writeFileSync(agentPath, healedLegacy);
+                agentResults.push({ id: a.id, status: "refreshed" });
+              } else {
+                agentResults.push({ id: a.id, status: "unchanged" });
+              }
             } else {
               const backupPath = `${agentPath}.bak`;
               if (!fs.existsSync(backupPath)) {
@@ -6405,6 +6414,11 @@ export class TycoonPanel {
       this._installWorkerAgents(root);
       this._ensureWorkerAgentRoleTextCurrent(root);
       this._healForeignWrapperModels(root);
+      if (vscode.workspace.isTrusted) {
+        const known = new Map<string, string>();
+        for (const k of workerAgentsForProject(true)) known.set(k.id, k.role && k.role.trim() !== "" ? k.role : k.name);
+        healLegacyAgentFilesInDir(path.join(root, ".claude", "agents"), (id) => known.get(id));
+      }
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
@@ -6494,7 +6508,14 @@ export class TycoonPanel {
             continue; // not installed yet — _installWorkerAgents handles creation
           }
           const managed = agentMarkdownHasTycoonMarker(content) || workerAgentFingerprintMatches(content, a);
-          if (!managed) continue; // never touch a file we can't positively identify as ours
+          if (!managed) {
+            // Legacy product-name file: frontmatter name/description only, body untouched.
+            if (agentMarkdownHasLegacyOfficeAgentsMarker(content)) {
+              const healedLegacy = healLegacyOfficeAgentsFrontmatter(content, a.id, a.role && a.role.trim() !== "" ? a.role : a.name);
+              if (healedLegacy !== null) fs.writeFileSync(agentPath, healedLegacy);
+            }
+            continue; // never touch a file we can't positively identify as ours
+          }
           // Frontmatter repair: an install predating the `name`/`description`
           // fields Claude Code requires to register a custom subagent (or
           // carrying a vendor-prefixed `model:` id) never fixes itself, since
@@ -7747,6 +7768,11 @@ export class TycoonPanel {
             const repaired = resyncAgentFrontmatterFields(existing, a);
             if (repaired !== null) {
               fs.writeFileSync(agentPath, repaired);
+            }
+          } else if (agentMarkdownHasLegacyOfficeAgentsMarker(existing)) {
+            const healedLegacy = healLegacyOfficeAgentsFrontmatter(existing, a.id, a.role && a.role.trim() !== "" ? a.role : a.name);
+            if (healedLegacy !== null) {
+              fs.writeFileSync(agentPath, healedLegacy);
             }
           }
           // else: foreign/legacy same-named file — never overwritten.

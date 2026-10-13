@@ -16,6 +16,8 @@ import {
   WORKING_DISCIPLINE_BODY,
   resyncAgentDisciplineSection,
   resyncAgentFrontmatterFields,
+  healLegacyOfficeAgentsFrontmatter,
+  healLegacyAgentFilesInDir,
   healForeignWrapperModel,
   isClaudeTopLevelModel,
   workerAgentFingerprintMatches,
@@ -1049,4 +1051,57 @@ test("foreign-backend wrapper models in alias+suffix, quoted, and claude-* forms
 test("an unrelated nested vendor: key outside backend: does not mark the file foreign", () => {
   const content = "---\nname: x\ndescription: d\nmodel: openai/gpt-5\nmeta:\n  vendor: google\n---\nbody\n";
   assert.equal(healForeignWrapperModel(content), null);
+});
+
+test("legacy OfficeAgents file without name/description gets only those fields; body byte-identical", () => {
+  for (const marker of ["<!-- OfficeAgents Core Agent -->", "<!-- OfficeAgents Verification Agent -->"]) {
+    for (const eol of ["\n", "\r\n"]) {
+      const body = ["# Search", "", marker, "", "Role text  ", ""].join(eol);
+      const content = ["---", "model: claude-haiku-4-5-20251001", "---"].join(eol) + eol + body;
+      assert.ok(content.includes("claude-haiku-4-5"));
+      const out = healLegacyOfficeAgentsFrontmatter(content, "search-retrieval", "Finds things");
+      assert.equal(
+        out,
+        ["---", "name: search-retrieval", 'description: "Finds things"', "model: haiku", "---"].join(eol) + eol + body,
+      );
+      assert.equal(healLegacyOfficeAgentsFrontmatter(out as string, "search-retrieval", "x"), null);
+    }
+  }
+});
+
+test("legacy OfficeAgents heal keeps existing fields; unmarked files untouched", () => {
+  const partial = "---\nname: custom\nmodel: haiku\n---\n<!-- OfficeAgents Core Agent -->\nbody\n";
+  assert.equal(
+    healLegacyOfficeAgentsFrontmatter(partial, "x-agent", "Desc"),
+    '---\ndescription: "Desc"\nname: custom\nmodel: haiku\n---\n<!-- OfficeAgents Core Agent -->\nbody\n',
+  );
+  assert.equal(healLegacyOfficeAgentsFrontmatter("---\nmodel: haiku\n---\nbody\n", "x-agent", "Desc"), null);
+});
+
+test("legacy heal maps pinned sonnet id to alias; non-Claude and alias models stay", () => {
+  const mk = (m: string) => `---\nmodel: ${m}\n---\n<!-- OfficeAgents Verification Agent -->\nbody\n`;
+  assert.ok(healLegacyOfficeAgentsFrontmatter(mk("claude-sonnet-4-6"), "a", "d")!.includes("\nmodel: sonnet\n"));
+  assert.ok(healLegacyOfficeAgentsFrontmatter(mk("openai/gpt-x"), "a", "d")!.includes("\nmodel: openai/gpt-x\n"));
+  assert.ok(healLegacyOfficeAgentsFrontmatter(mk("opus"), "a", "d")!.includes("\nmodel: opus\n"));
+});
+
+test("healLegacyAgentFilesInDir heals unknown-id legacy files only, idempotently", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-heal-"));
+  try {
+    const legacy = "---\nmodel: claude-sonnet-4-6\n---\n# Verse Auditor\n\n<!-- OfficeAgents Verification Agent -->\nbody\n";
+    const plain = "---\nmodel: claude-sonnet-4-6\n---\n# Mine\nbody\n";
+    fs.writeFileSync(path.join(dir, "verse-auditor.md"), legacy);
+    fs.writeFileSync(path.join(dir, "mine.md"), plain);
+    fs.writeFileSync(path.join(dir, "verse-auditor.md.bak"), legacy);
+    assert.deepEqual(healLegacyAgentFilesInDir(dir), ["verse-auditor"]);
+    assert.equal(
+      fs.readFileSync(path.join(dir, "verse-auditor.md"), "utf8"),
+      '---\nname: verse-auditor\ndescription: "Verse Auditor agent"\nmodel: sonnet\n---\n# Verse Auditor\n\n<!-- OfficeAgents Verification Agent -->\nbody\n',
+    );
+    assert.equal(fs.readFileSync(path.join(dir, "mine.md"), "utf8"), plain);
+    assert.equal(fs.readFileSync(path.join(dir, "verse-auditor.md.bak"), "utf8"), legacy);
+    assert.deepEqual(healLegacyAgentFilesInDir(dir), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

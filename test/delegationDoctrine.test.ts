@@ -214,7 +214,7 @@ test("the Review pass section describes a single review gate, not an unbounded l
 
 test("the Review pass section includes the Review model tiering subsection", () => {
   const out = renderDelegationDoctrine("flat", true);
-  assert.ok(out.includes("### Review model tiering (added 2026-09-06)"), "tiering subsection heading must be present");
+  assert.ok(out.includes("### Review model tiering"), "tiering subsection heading must be present");
   assert.ok(/review agent on Sonnet/i.test(out), "must state the Sonnet tier for security-relevant changes");
   assert.ok(/review agent on Haiku/i.test(out), "must state the Haiku tier for CSS/labels/copy/docs/tests");
   assert.ok(/read-only Haiku pass \(Explore\)/i.test(out), "must state the re-check uses a read-only Haiku pass");
@@ -1065,5 +1065,15 @@ test("the new report-shape substrings do not reintroduce the word 'lead' into fl
     "widen into cleanup",
   ]) {
     assert.equal(/lead/i.test(fragment), false, `fragment ${JSON.stringify(fragment)} must not itself contain "lead"`);
+  }
+});
+
+test("doctrine output has no TycoonAgents-repo paths and keeps the tiering policy", () => {
+  for (const mode of ["flat", "team_leads"] as const) {
+    const out = renderDelegationDoctrine(mode, true);
+    for (const leak of ["panel.ts", "standalone/src/server.mjs", "src/core"]) {
+      assert.equal(out.includes(leak), false, `${leak} must not appear (mode=${mode})`);
+    }
+    assert.ok(/review agent on Sonnet/i.test(out) && /review agent on Haiku/i.test(out));
   }
 });

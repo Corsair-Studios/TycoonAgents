@@ -321,12 +321,12 @@ work. The user is the final reviewer — the orchestrator surfaces the
 reviewed change for the user to approve and never treats the review agent's
 pass as final acceptance.
 
-### Review model tiering (added 2026-09-06)
+### Review model tiering
 
 The review pass above is unchanged. This subsection only fixes which model the orchestrator uses for each review call:
 
-- First-pass review of a change that touches src/core, hosts (panel.ts, standalone/src/server.mjs), hooks/, scripts/, secrets or routing files, or anything security-relevant → the review agent on Sonnet.
-- First-pass review of a change limited to CSS, labels, copy, docs, or tests → the review agent on Haiku.
+- First-pass review of a change that touches core logic, hosts or entry points, hooks, build or release scripts, secrets, routing or config files, or anything security-relevant → the review agent on Sonnet.
+- First-pass review of a change limited to CSS, labels, copy, docs, or test-only changes → the review agent on Haiku.
 - The single re-check after the one permitted round of fixes → a read-only Haiku pass (Explore) verifying the specific findings landed; it does not re-review the whole change.
 - The orchestrator never skips the review pass because a change looks small; tiering changes the model, not whether the pass runs.
 
@@ -354,6 +354,11 @@ Resuming: if `.claude/tycoon/plan.json` already exists, re-read it and
 continue from its recorded position — do not re-decompose an existing plan
 unless the user explicitly asks to re-plan.
 <!-- /tycoon:delegation -->
+
+### Review tiering — paths in this repo
+
+For first-pass review, "core logic, hosts or entry points, hooks, build or release scripts" means `src/core`, `panel.ts`, `standalone/src/server.mjs`, `hooks/` and `scripts/` in this repository: changes there get the Sonnet review.
+
 
 <!-- tycoon:coderules -->
 

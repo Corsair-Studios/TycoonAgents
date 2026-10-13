@@ -4,6 +4,8 @@
  * Attribution header - optional; end users may remove it.
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import type { Backend } from "../../core/agentBackend";
 
 /** The agent definition embedded in a capability pack. */
@@ -207,6 +209,96 @@ export function agentMarkdownHasTycoonMarker(content: string): boolean {
     }
   }
   return false;
+}
+
+/** Provenance comment written by agent files from the product's old name,
+ * e.g. `<!-- OfficeAgents Core Agent -->` or `<!-- OfficeAgents Verification Agent -->`. */
+const LEGACY_OFFICEAGENTS_MARKER_RE = /<!--\s*OfficeAgents\s+(?:[\w-]+\s+)*Agent\s*-->/;
+
+/** True when the file carries a legacy OfficeAgents provenance comment. */
+export function agentMarkdownHasLegacyOfficeAgentsMarker(content: string): boolean {
+  return LEGACY_OFFICEAGENTS_MARKER_RE.test(content);
+}
+
+/**
+ * Heal a legacy OfficeAgents agent file that lacks the `name:` / `description:`
+ * frontmatter Claude Code requires for subagents. Adds ONLY the missing
+ * fields (`name` is the file's id, `description` the supplied text); no other
+ * line or line ending changes, and the only `model:` change is a pinned Claude id (haiku/sonnet/opus/fable) becoming its alias; body text is untouched. Returns `null` when the
+ * legacy marker is absent, nothing is missing, or the file's shape is not
+ * recognised.
+ */
+export function healLegacyOfficeAgentsFrontmatter(content: string, agentId: string, description: string): string | null {
+  if (!agentMarkdownHasLegacyOfficeAgentsMarker(content)) {
+    return null;
+  }
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
+  if (!fmMatch) {
+    if (/^\s*(<!--[\s\S]*?-->\s*)*---\r?\n/.test(content)) {
+      return null; // frontmatter preceded by other text: shape not recognised
+    }
+    const block = ["---", `name: ${agentId}`, `description: ${JSON.stringify(description)}`, "---"].join(eol) + eol;
+    return block + content;
+  }
+  const lines = fmMatch[1].split(/\r\n|\n/);
+  const add: string[] = [];
+  if (!lines.some((l) => /^name\s*:/.test(l))) {
+    add.push(`name: ${agentId}`);
+  }
+  if (!lines.some((l) => /^description\s*:/.test(l))) {
+    add.push(`description: ${JSON.stringify(description)}`);
+  }
+  // Legacy files only: a pinned Claude id becomes its always-latest alias.
+  let modelChanged = false;
+  const fmText = fmMatch[1].replace(/^(model\s*:\s*)["']?claude-(haiku|sonnet|opus|fable)-[^\s"']*["']?([ \t]*)$/m, (_m, pre: string, fam: string, tail: string) => {
+    modelChanged = true;
+    return `${pre}${fam}${tail}`;
+  });
+  if (add.length === 0 && !modelChanged) {
+    return null;
+  }
+  const open = fmMatch[0].startsWith("---\r\n") ? 5 : 4;
+  const rest = content.slice(open + fmMatch[1].length);
+  return "---" + eol + add.map((l) => l + eol).join("") + fmText + rest;
+}
+
+/**
+ * Heal every legacy-marked `*.md` directly inside `agentsDir` (including ids
+ * with no known template). `knownDescription(id)` supplies the template
+ * description; otherwise a generic one is derived from the first heading.
+ * Skips non-`.md` (so `.bak`), symlinks and anything resolving outside the
+ * directory. Idempotent. Returns the ids written.
+ */
+export function healLegacyAgentFilesInDir(agentsDir: string, knownDescription?: (id: string) => string | undefined): string[] {
+  const written: string[] = [];
+  let names: string[];
+  try {
+    names = fs.readdirSync(agentsDir);
+  } catch {
+    return written;
+  }
+  for (const file of names) {
+    if (!file.endsWith(".md")) continue;
+    try {
+      const filePath = path.join(agentsDir, file);
+      if (path.dirname(path.resolve(filePath)) !== path.resolve(agentsDir)) continue;
+      if (!fs.lstatSync(filePath).isFile()) continue;
+      const content = fs.readFileSync(filePath, "utf8");
+      if (!agentMarkdownHasLegacyOfficeAgentsMarker(content)) continue;
+      const id = file.slice(0, -3);
+      const heading = /^#\s+(.+?)\s*$/m.exec(content)?.[1];
+      const description = knownDescription?.(id) ?? (heading ? `${heading} agent` : `${id} agent`);
+      const healed = healLegacyOfficeAgentsFrontmatter(content, id, description);
+      if (healed !== null) {
+        fs.writeFileSync(filePath, healed);
+        written.push(id);
+      }
+    } catch {
+      /* best-effort per file */
+    }
+  }
+  return written;
 }
 
 /**
