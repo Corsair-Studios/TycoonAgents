@@ -41,7 +41,7 @@ import { hasMcpServer, mergeMcpServer, resolveConfigForPlatform, isUnpinnedMcpCo
 import { buildAgentMarkdown, agentMarkdownHasTycoonMarker } from "../host/vscode/packCatalog";
 import type { PackAgent } from "../host/vscode/packCatalog";
 import { withHookWriteAsync } from "./hookWriteGate";
-import { localizeMcpConfig, withLocalMcpServers } from "./claudeLocalMcp";
+import { hasLocalMcpServer, localizeMcpConfig, withLocalMcpServers } from "./claudeLocalMcp";
 import type { LocalMcpOps } from "./claudeLocalMcp";
 
 /** Pack id of the picker pack in media/packs/catalog.json. */
@@ -61,7 +61,8 @@ const PICKER_LABELS: Array<[string, string]> = [
   ["claude-worker", "Claude worker (subscription)"],
 ];
 
-export type BridgeServerState = "installed" | "missing" | "dispatcher" | "none";
+/** "pending" = listed only in the project .mcp.json, so Claude Code has not loaded it (Claude Code harness only). */
+export type BridgeServerState = "installed" | "pending" | "missing" | "dispatcher" | "none";
 export type BridgeKeyState = "ok" | "missing" | "signin" | "none";
 
 export interface BridgeEnvStatus {
@@ -130,6 +131,35 @@ export function readProjectMcpConfig(root: string, harness: string): Record<stri
   return harnessUsesMcpJson(harness) ? withLocalMcpServers(base, root) : base;
 }
 
+export type McpServerState = "installed" | "pending" | "absent";
+
+/** The project's .mcp.json alone (no local-scope merge). Never throws. */
+export function readProjectFileMcpConfig(root: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(root, ".mcp.json"), "utf8"));
+    if (parsed !== null && typeof parsed === "object") return parsed as Record<string, unknown>;
+  } catch {
+    /* missing / invalid => {} */
+  }
+  return {};
+}
+
+/**
+ * THE single rule for whether an MCP server counts as installed. Claude Code harness: only
+ * a Claude local-scope registration is "installed"; a server found only in the project's
+ * .mcp.json is "pending" (Claude Code holds it for approval, so it is not loaded). Other
+ * harnesses: .mcp.json membership is "installed" and "pending" never occurs. The MCP tab,
+ * Packs tab, Multi-LLM picker and the standalone payloads all call this.
+ * `fileConfig` is an optional pre-read project .mcp.json.
+ */
+export function mcpServerState(root: string, harness: string, id: string, fileConfig?: Record<string, unknown>): McpServerState {
+  const file = fileConfig ?? readProjectFileMcpConfig(root);
+  const inFile = hasMcpServer(file, id);
+  if (!harnessUsesMcpJson(harness)) return inFile ? "installed" : "absent";
+  if (hasLocalMcpServer(root, id)) return "installed";
+  return inFile ? "pending" : "absent";
+}
+
 /** The MCP server a backend needs, or null. openai-compatible transport always means the shared server. */
 export function bridgeServerFor(backend: Backend | null | undefined): string | null {
   if (!backend) return null;
@@ -173,10 +203,15 @@ export function describeBackendSetup(backend: Backend | null | undefined, ctx: B
 
   let serverState: BridgeServerState;
   if (!harnessUsesMcpJson(ctx.harness)) serverState = "dispatcher";
-  else serverState = hasMcpServer(ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness), server) ? "installed" : "missing";
+  else if (ctx.mcpConfig) serverState = hasMcpServer(ctx.mcpConfig, server) ? "installed" : "missing";
+  else {
+    const st = mcpServerState(ctx.root, ctx.harness, server);
+    serverState = st === "installed" ? "installed" : st === "pending" ? "pending" : "missing";
+  }
 
   const reasons: string[] = [];
   if (serverState === "missing") reasons.push(`MCP server "${server}" is not installed for this project`);
+  if (serverState === "pending") reasons.push(`MCP server "${server}" is in .mcp.json but not enabled in Claude Code`);
   for (const m of missingRequired) reasons.push(`${m.name} is not set`);
   return {
     server,
@@ -184,7 +219,7 @@ export function describeBackendSetup(backend: Backend | null | undefined, ctx: B
     keyState,
     ...(signIn !== undefined ? { signIn } : {}),
     env,
-    needsSetup: serverState === "missing" || keyState === "missing",
+    needsSetup: serverState === "missing" || serverState === "pending" || keyState === "missing",
     reasons,
   };
 }
@@ -199,7 +234,7 @@ export function describeBridgeSetup(ctx: BridgeSetupContext): Record<string, Bri
   } catch {
     return out;
   }
-  const withMcp: BridgeSetupContext = { ...ctx, mcpConfig: ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness) };
+  const withMcp: BridgeSetupContext = ctx;
   for (const f of files) {
     try {
       const fm = readAgentFrontmatter(fs.readFileSync(path.join(agentsDir, f), "utf8"));
@@ -243,8 +278,7 @@ export interface BridgePickerPayload {
 }
 
 export function buildBridgePicker(packAgents: PackAgent[], ctx: BridgeSetupContext): BridgePickerPayload {
-  const mcp = ctx.mcpConfig ?? readProjectMcpConfig(ctx.root, ctx.harness);
-  const c: BridgeSetupContext = { ...ctx, mcpConfig: mcp };
+  const c: BridgeSetupContext = ctx;
   const byId = new Map(packAgents.map((a) => [a.id, a] as const));
   const agentExists = (id: string): boolean => fs.existsSync(path.join(ctx.root, ".claude", "agents", `${id}.md`));
   const models: BridgePickerModel[] = [];

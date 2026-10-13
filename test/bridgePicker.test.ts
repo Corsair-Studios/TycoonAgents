@@ -35,6 +35,16 @@ const PACK = (JSON.parse(fs.readFileSync(path.join(REPO, "media", "packs", "cata
 const PACK_AGENTS: PackAgent[] = PACK.agents;
 const MCP_CATALOG: any[] = JSON.parse(fs.readFileSync(path.join(REPO, "media", "mcp", "catalog.json"), "utf8"));
 
+/** Register servers at Claude local scope for `root` in the temp CLAUDE_CONFIG_DIR (what a TycoonAgents install does). */
+function registerLocalScope(root: string, ids: string[]): void {
+  const file = path.join(process.env.CLAUDE_CONFIG_DIR as string, ".claude.json");
+  const cfg = { projects: { [root.split(String.fromCharCode(92)).join("/")]: { mcpServers: Object.fromEntries(ids.map((i) => [i, { command: "node", args: [] }])) } } };
+  fs.writeFileSync(file, JSON.stringify(cfg));
+}
+function clearLocalScope(): void {
+  fs.rmSync(path.join(process.env.CLAUDE_CONFIG_DIR as string, ".claude.json"), { force: true });
+}
+
 function tmpProject(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "bridge-picker-"));
 }
@@ -199,11 +209,17 @@ test("needs-setup badge data: an installed bridge agent with no server in .mcp.j
       finalize: (_i, c) => c,
       afterWrite: () => undefined,
     });
+    // Only in .mcp.json: Claude Code has not loaded it, so it is pending (not enabled), not installed.
+    const filed = describeBridgeSetup(ctx);
+    assert.equal(filed["codex-reviewer"].serverState, "pending");
+    assert.equal(filed["codex-reviewer"].needsSetup, true);
+    registerLocalScope(root, ["codex"]);
     const after = describeBridgeSetup(ctx);
     assert.equal(after["codex-reviewer"].serverState, "installed");
     assert.equal(after["codex-reviewer"].needsSetup, false);
     assert.equal(after["codex-reviewer"].keyState, "signin");
   } finally {
+    clearLocalScope();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -212,6 +228,7 @@ test("needs-setup also fires when a required key is missing, naming the variable
   const root = tmpProject();
   try {
     await installBridgeSelection(baseArgs(root, [], { selectedAgentIds: ["grok-reviewer"] }));
+    registerLocalScope(root, ["openai-compatible"]);
     const missing = describeBridgeSetup({ root, harness: "claude-code", env: {}, probe: () => ({}) })["grok-reviewer"];
     assert.equal(missing.serverState, "installed");
     assert.equal(missing.keyState, "missing");
@@ -223,6 +240,7 @@ test("needs-setup also fires when a required key is missing, naming the variable
     // Presence flags and names only: no value-shaped field exists.
     assert.deepEqual(Object.keys(present.env[0]).sort(), ["kind", "name", "present", "required"]);
   } finally {
+    clearLocalScope();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -368,9 +386,11 @@ test("Other: shows in the picker with the same status badge data", async () => {
     assert.equal(p.others[0].agentId, "local-llama");
     assert.equal(p.others[0].setup!.keyState, "missing", "base URL variable not set yet");
     assert.ok(p.others[0].setup!.env.some((e) => e.name === "OLLAMA_BASE_URL" && e.required && !e.present));
+    registerLocalScope(root, ["openai-compatible"]);
     const ok = describeBridgeSetup({ root, harness: "claude-code", env: {}, probe: (names) => Object.fromEntries(names.map((n) => [n, { env: false, stored: true }])) });
     assert.equal(ok["local-llama"].needsSetup, false);
   } finally {
+    clearLocalScope();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

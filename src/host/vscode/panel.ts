@@ -77,12 +77,12 @@ import {
   type ProviderSelectionDescription,
 } from "../../core/providerSelection";
 import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
-import { buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson } from "../../core/bridgeSetup";
+import { buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
 import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
-import { tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
+import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
-import { createLocalMcpOps, localizeMcpConfig, readLocalMcpServers, withLocalMcpServers } from "../../core/claudeLocalMcp";
+import { createLocalMcpOps, localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
 import type { LocalMcpOps } from "../../core/claudeLocalMcp";
 import { repointLocalMcpEntries } from "../../core/claudeLocalMcpSync";
 import { withHookWrite, withHookWriteAsync } from "../../core/hookWriteGate";
@@ -4152,17 +4152,16 @@ export class TycoonPanel {
     // Claude Code harness: a server only listed in the project's .mcp.json is NOT
     // loaded (Claude Code holds it pending approval), so it is offered as "Enable"
     // (pending) rather than shown as installed. Enabling is the user's click.
-    const useLocal = root !== "" && this._useLocalMcp(root);
-    const localServers = useLocal ? readLocalMcpServers(root) : {};
-    const fileConfig = useLocal ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
-    const isInstalled = (id: string): boolean => (useLocal ? Object.prototype.hasOwnProperty.call(localServers, id) : hasMcpServer(parsed, id));
+    const fileConfig = root !== "" ? this._readMcpConfig(path.join(root, ".mcp.json")) : {};
+    const stateOf = (id: string) => mcpServerState(root, this._resolveEffectiveHarness(root), id, fileConfig);
+    const isInstalled = (id: string): boolean => (root === "" ? false : stateOf(id) === "installed");
     const servers = catalog.map((e) => ({
       id: e.id,
       name: e.name,
       description: e.description,
       summary: catalogSummary(e),
       installed: isInstalled(e.id),
-      pending: useLocal && !isInstalled(e.id) && hasMcpServer(fileConfig, e.id),
+      pending: root !== "" && stateOf(e.id) === "pending",
       unpinned: isInstalled(e.id) && isUnpinnedMcpConfig((parsed as any).mcpServers?.[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
@@ -4425,7 +4424,8 @@ export class TycoonPanel {
         }
       } catch { skillNames = {}; }
       const root = this._projectRoot();
-      const mcpConfig = root === "" ? {} : this._effectiveMcpConfig(root);
+      const harness = root === "" ? "" : this._resolveEffectiveHarness(root);
+      const fileMcp = root === "" ? {} : this._readMcpConfig(path.join(root, ".mcp.json"));
       const skillInstalled = (id: string): boolean =>
         root !== "" && fs.existsSync(path.join(root, ".claude", "skills", id));
       const result = packs.map((pack: any) => {
@@ -4444,6 +4444,7 @@ export class TycoonPanel {
         // shows "MCP server: <name>" for bundled/local servers too (e.g.
         // uefn-bridge), so the transparency isn't limited to disclosed ones.
         const mcpEntry = pack.mcp ? mcpCatalog.find((x: any) => x.id === pack.mcp) : undefined;
+        const mcpState = pack.mcp && root !== "" ? mcpServerState(root, harness, pack.mcp, fileMcp) : "absent";
         return {
           id: pack.id,
           name: pack.name,
@@ -4452,7 +4453,7 @@ export class TycoonPanel {
           has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
           installed: {
             skill: packSkills.length > 0 && packSkills.every((id: string) => skillInstalled(id)),
-            mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
+            mcp: mcpState === "installed",
             agent: (() => {
               const onDisk = (a: any): boolean => fs.existsSync(path.join(root, ".claude", "agents", `${a.id}.md`));
               // Picker packs install a chosen subset, so any installed agent counts.
@@ -4467,6 +4468,7 @@ export class TycoonPanel {
           commands: packCommands,
           agents: packAgents.map((a: any) => ({ id: a.id, name: a.name })),
           mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
+          ...(pack.mcp ? { mcpId: pack.mcp, mcpState } : {}),
           thirdParty: disclosures.length > 0,
           disclosures,
           ...(pack.picker === "bridges" && root !== ""
@@ -4501,6 +4503,11 @@ export class TycoonPanel {
   /** Local-scope operations bound to the INSTALLED extension's hooks directory (bridge scripts run from there). */
   private _localMcpOps(): LocalMcpOps {
     return createLocalMcpOps(path.join(this._extensionUri.fsPath, "hooks"));
+  }
+
+  /** True when `id` counts as installed under the shared rule (Claude Code: local scope only). */
+  private _mcpInstalled(root: string, id: string): boolean {
+    return root !== "" && mcpServerState(root, this._resolveEffectiveHarness(root), id) === "installed";
   }
 
   /** The project's .mcp.json servers plus this user's local-scope registrations (Claude Code harness only). */
@@ -5094,14 +5101,13 @@ export class TycoonPanel {
         fs.existsSync(path.join(root, ".claude", "commands", `${cid}.md`));
       const agentOnDisk = (aid: string): boolean =>
         fs.existsSync(path.join(root, ".claude", "agents", `${aid}.md`));
-      const mcpConfigNow = (): Record<string, unknown> => this._effectiveMcpConfig(root);
       const packStillInstalled = (p: any): boolean => {
         const sk: string[] = Array.isArray(p.skills) ? p.skills : [];
         const cm: string[] = Array.isArray(p.commands) ? p.commands : [];
         const ag: any[] = Array.isArray(p.agents) ? p.agents : (p.agent ? [p.agent] : []);
         if (sk.some((s) => skillOnDisk(s))) return true;
         if (cm.some((c) => commandOnDisk(c))) return true;
-        if (p.mcp && hasMcpServer(mcpConfigNow(), p.mcp)) return true;
+        if (p.mcp && this._mcpInstalled(root, p.mcp)) return true;
         if (ag.some((a) => agentOnDisk(a.id))) return true;
         return false;
       };
@@ -5151,7 +5157,8 @@ export class TycoonPanel {
       if (packMcp) {
         const mcpPath = path.join(root, ".mcp.json");
         const existing = this._readMcpConfig(mcpPath);
-        if (!hasMcpServer(this._effectiveMcpConfig(root), packMcp)) {
+        const stateNow = mcpServerState(root, this._resolveEffectiveHarness(root), packMcp, existing);
+        if (stateNow === "absent") {
           results.mcp = "absent";
         } else if (sharedByOtherPack((p) => p.mcp === packMcp)) {
           results.mcp = "kept-shared";
@@ -5160,7 +5167,10 @@ export class TycoonPanel {
             const gone = await this._removeLocalMcpConfig(root, packMcp);
             if (gone !== undefined) throw new Error(gone);
           }
-          if (hasMcpServer(existing, packMcp)) {
+          // Claude Code: only drop a .mcp.json entry that is exactly what TycoonAgents itself
+          // writes; a team's own repo-authored entry is never deleted.
+          const ours = !this._useLocalMcp(root) || mcpEntryMatchesOurs(root, packMcp, (existing as any).mcpServers?.[packMcp], this._tycoonServerDefs()[packMcp]);
+          if (hasMcpServer(existing, packMcp) && ours) {
             const updated = removeMcpServer(existing, packMcp);
             fs.writeFileSync(mcpPath, JSON.stringify(updated, null, 2));
           }
@@ -5879,8 +5889,8 @@ export class TycoonPanel {
     // the MCP server is registered (see media/main.js's installState
     // handler / the uefnDetected trigger, and renderSetupOptionals's UEFN
     // section).
-    const mcpConfig = root !== "" ? this._effectiveMcpConfig(root) : {};
-    const uefnBridgeSetUp = root !== "" && Boolean(this._uefnBridgeEntry(mcpConfig));
+    // Status only: on Claude Code a .mcp.json-only entry is pending, i.e. not set up.
+    const uefnBridgeSetUp = root !== "" && this._mcpInstalled(root, "uefn-bridge");
     // Detect any non-tycoon managed CLAUDE.md block — legacy config carried
     // over from a prior setup, or a currently-installed other tool's own
     // block (see legacyDoctrine.ts detectForeignManagedBlocks). Every entry
@@ -10336,7 +10346,7 @@ export class TycoonPanel {
       const mcpConfig = this._effectiveMcpConfig(root);
       const engineChips = computeEngineChips(root, mcpConfig, (engineId) => this._engineProbeCache.get(engineId));
       const uefn = detectUefnProject(root);
-      const bridgeSetUp = Boolean(this._uefnBridgeEntry(mcpConfig));
+      const bridgeSetUp = this._mcpInstalled(root, "uefn-bridge");
       const servers = (mcpConfig as any)?.mcpServers ?? mcpConfig;
       const mcpServerIds = servers && typeof servers === "object" ? Object.keys(servers) : [];
 
@@ -10627,9 +10637,8 @@ export class TycoonPanel {
       // Recognizes both key names this product has written for the UEFN MCP
       // server over time so the node/PATH note below only
       // appears when there's actually an entry it could be relevant to.
-      const mcpConfigForDiagnostic = this._effectiveMcpConfig(root);
       const mcpUefnEntryConfigured =
-        hasMcpServer(mcpConfigForDiagnostic, "uefn-bridge") || hasMcpServer(mcpConfigForDiagnostic, "uefn");
+        this._mcpInstalled(root, "uefn-bridge") || this._mcpInstalled(root, "uefn");
       const text = buildPathDiagnosticText(report, verseState, {
         platform: process.platform,
         mcpUefnEntryConfigured,

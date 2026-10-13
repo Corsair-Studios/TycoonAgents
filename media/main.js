@@ -2706,6 +2706,24 @@ if (typeof module !== "undefined" && module.exports) {
         return;
       }
 
+      const enableBtn = /** @type {HTMLElement|null} */ (
+        target.closest("[data-pack-enable-mcp]")
+      );
+      if (enableBtn && !enableBtn.hasAttribute("disabled")) {
+        const mid = enableBtn.getAttribute("data-pack-enable-mcp");
+        const mcpServer = lastMcpServers.find((s) => s && s.id === mid);
+        const owner = lastPacks.find((p) => p && p.mcpId === mid);
+        // Same message as the MCP tab's Enable; the host confirms third-party servers itself.
+        enableBtn.textContent = "Enabling…";
+        enableBtn.setAttribute("disabled", "");
+        vscode.postMessage({
+          type: "installMcp",
+          id: mid,
+          thirdParty: !!((mcpServer && mcpServer.thirdParty) || (owner && owner.thirdParty)),
+        });
+        return;
+      }
+
       const btn = /** @type {HTMLElement|null} */ (
         target.closest("[data-pack-id]")
       );
@@ -16282,6 +16300,8 @@ if (typeof module !== "undefined" && module.exports) {
       renderSettings();
     } else if (msg && msg.type === "mcpInstalled") {
       handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled, msg.newChatHint);
+      handlePackMcpEnabled(msg.id, msg.ok, msg.error, msg.cancelled, msg.newChatHint);
+      if (msg.ok) { vscode.postMessage({ type: "getPacks" }); vscode.postMessage({ type: "getMcp" }); }
     } else if (msg && msg.type === "mcpRemoved") {
       handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {
@@ -17903,6 +17923,16 @@ function themeAnimPreviewDraw(player) {
   ];
 
   /**
+   * True when the pack's MCP server is listed only in the project's .mcp.json
+   * (Claude Code harness): present but not enabled, so the host reports it not installed.
+   * @param {{mcpId?:string, mcpState?:string}} pack
+   * @returns {boolean}
+   */
+  function packMcpPending(pack) {
+    return !!pack && pack.mcpState === "pending" && typeof pack.mcpId === "string";
+  }
+
+  /**
    * True when every part the pack `has` is also `installed`.
    * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
    * @returns {boolean}
@@ -17936,9 +17966,10 @@ function themeAnimPreviewDraw(player) {
     for (const [key, label] of PACK_PARTS) {
       if (!has[key]) continue;
       const done = !!installed[key];
+      const notEnabled = key === "mcp" && !done && packMcpPending(pack);
       const chip = document.createElement("span");
       chip.className = "pack-chip" + (done ? " pack-chip--done" : "");
-      chip.textContent = done ? `${label} ✓` : label;
+      chip.textContent = done ? `${label} ✓` : notEnabled ? `${label} · not enabled` : label;
       container.appendChild(chip);
     }
   }
@@ -18026,6 +18057,16 @@ function themeAnimPreviewDraw(player) {
       }
       header.appendChild(btn);
 
+      // MCP server only in .mcp.json: Claude Code has not loaded it. Offer the same
+      // explicit Enable as the MCP tab (registers the pinned config at local scope).
+      if (!pack.picker && packMcpPending(pack)) {
+        const enableBtn = document.createElement("button");
+        enableBtn.className = "skill-btn";
+        enableBtn.textContent = "Enable";
+        enableBtn.setAttribute("data-pack-enable-mcp", pack.mcpId);
+        header.appendChild(enableBtn);
+      }
+
       // Show a Remove button whenever any component is installed (fully or
       // partially). It sits alongside the Install/Installed button.
       if (anyInstalled) {
@@ -18091,6 +18132,31 @@ function themeAnimPreviewDraw(player) {
       row.appendChild(textBlock);
       packsListEl.appendChild(row);
     }
+  }
+
+  /**
+   * Result of a pack-row / picker "Enable" click (same installMcp round trip as the
+   * MCP tab). Restores idle buttons on failure or cancel; the packs list is
+   * re-fetched on success by the message dispatcher.
+   * @param {string} id MCP server id
+   * @param {boolean} ok
+   * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
+   * @param {boolean|undefined} newChatHint
+   */
+  function handlePackMcpEnabled(id, ok, error, cancelled, newChatHint) {
+    if (!packsListEl) return;
+    const btns = packsListEl.querySelectorAll(`[data-pack-enable-mcp="${CSS.escape(id)}"]`);
+    if (btns.length === 0) return;
+    if (ok) {
+      if (newChatHint) showToast(NEW_CHAT_HINT, "info");
+      return;
+    }
+    for (const b of btns) {
+      b.textContent = "Enable";
+      b.removeAttribute("disabled");
+    }
+    if (!cancelled && error) showToast(error, "error");
   }
 
   /**
@@ -18191,6 +18257,7 @@ function themeAnimPreviewDraw(player) {
     if (!setup) return { text: "No setup needed", warn: false };
     const bits = [];
     if (setup.serverState === "missing") bits.push("Server not installed");
+    else if (setup.serverState === "pending") bits.push("Server not enabled");
     else if (setup.serverState === "installed") bits.push("Server ready");
     else if (setup.serverState === "dispatcher") bits.push("Runs through the dispatcher");
     const env = Array.isArray(setup.env) ? setup.env : [];
@@ -18274,7 +18341,7 @@ function themeAnimPreviewDraw(player) {
     intro.className = "bridge-picker-note";
     intro.textContent = picker.dispatcherHost
       ? "Tick the models you use. This project runs bridges through the TycoonAgents dispatcher, so only the agent files are added; nothing is written to .mcp.json."
-      : "Tick the models you use. Each one is installed with the MCP server it needs; Claude Code asks you to approve a new server the first time it is used.";
+      : "Tick the models you use. Each one is installed with the MCP server it needs; start a new Claude chat to load a newly added server.";
     panel.appendChild(intro);
 
     const list = document.createElement("ul");
@@ -18294,7 +18361,8 @@ function themeAnimPreviewDraw(player) {
       lab.appendChild(cb);
       const nm = document.createElement("span");
       nm.className = "bridge-picker-name";
-      nm.textContent = m.label + (m.installed ? " (installed)" : "");
+      const notEnabled = !!(m.setup && m.setup.serverState === "pending");
+      nm.textContent = m.label + (m.installed ? (notEnabled ? " (not enabled)" : " (installed)") : "");
       lab.appendChild(nm);
       li.appendChild(lab);
       const status = bridgeStatusSummary(m.setup);
@@ -18302,6 +18370,14 @@ function themeAnimPreviewDraw(player) {
       stEl.className = "bridge-status" + (status.warn ? " bridge-status--warn" : " bridge-status--ok");
       stEl.textContent = status.text;
       li.appendChild(stEl);
+      if (notEnabled && m.setup.server) {
+        const enableBtn = document.createElement("button");
+        enableBtn.type = "button";
+        enableBtn.className = "link-button bridge-enable-server";
+        enableBtn.textContent = "Enable";
+        enableBtn.setAttribute("data-pack-enable-mcp", m.setup.server);
+        li.appendChild(enableBtn);
+      }
       if (m.setup && Array.isArray(m.setup.env) && m.setup.env.some(function (e) { return e.required && !e.present; })) {
         const keyLink = document.createElement("button");
         keyLink.type = "button";
@@ -18516,7 +18592,8 @@ function themeAnimPreviewDraw(player) {
     if (setup.needsSetup) {
       const badge = document.createElement("span");
       badge.className = "agent-needs-setup-badge";
-      badge.textContent = "Needs setup";
+      const onlyNotEnabled = setup.serverState === "pending" && !(setup.env || []).some(function (e) { return e.required && !e.present; });
+      badge.textContent = onlyNotEnabled ? "Not enabled" : "Needs setup";
       badge.title = (setup.reasons || []).join("; ");
       wrap.appendChild(badge);
     }
@@ -18524,11 +18601,11 @@ function themeAnimPreviewDraw(player) {
     txt.className = "bridge-status" + (setup.needsSetup ? " bridge-status--warn" : " bridge-status--ok");
     txt.textContent = status.text;
     wrap.appendChild(txt);
-    if (setup.serverState === "missing") {
+    if (setup.serverState === "missing" || setup.serverState === "pending") {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "link-button bridge-install-server";
-      btn.textContent = "Install " + setup.server + " server";
+      btn.textContent = (setup.serverState === "pending" ? "Enable " : "Install ") + setup.server + " server";
       btn.addEventListener("click", function () {
         btn.disabled = true;
         btn.textContent = "Installing…";

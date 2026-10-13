@@ -594,6 +594,7 @@ function makeCheckInstallFake(root: string, hookPath: string, posted: any[]): an
     _readMcpConfig: proto._readMcpConfig,
     _effectiveMcpConfig: () => ({}),
     _uefnBridgeEntry: proto._uefnBridgeEntry,
+    _mcpInstalled: () => false,
     _handleInstallCodexHooks: proto._handleInstallCodexHooks,
     _panel: { webview: { postMessage: (m: unknown) => { posted.push(m); return Promise.resolve(true); } } },
   });

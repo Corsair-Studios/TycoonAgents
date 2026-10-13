@@ -2574,6 +2574,8 @@
       renderSettings();
     } else if (msg && msg.type === "mcpInstalled") {
       handleMcpInstalled(msg.id, msg.ok, msg.alreadyExisted, msg.error, msg.cancelled, msg.newChatHint);
+      handlePackMcpEnabled(msg.id, msg.ok, msg.error, msg.cancelled, msg.newChatHint);
+      if (msg.ok) { vscode.postMessage({ type: "getPacks" }); vscode.postMessage({ type: "getMcp" }); }
     } else if (msg && msg.type === "mcpRemoved") {
       handleMcpRemoved(msg.id, msg.ok, msg.error, msg.cancelled);
     } else if (msg && msg.type === "packs") {

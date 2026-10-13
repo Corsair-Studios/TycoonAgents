@@ -23,6 +23,7 @@
     if (!setup) return { text: "No setup needed", warn: false };
     const bits = [];
     if (setup.serverState === "missing") bits.push("Server not installed");
+    else if (setup.serverState === "pending") bits.push("Server not enabled");
     else if (setup.serverState === "installed") bits.push("Server ready");
     else if (setup.serverState === "dispatcher") bits.push("Runs through the dispatcher");
     const env = Array.isArray(setup.env) ? setup.env : [];
@@ -106,7 +107,7 @@
     intro.className = "bridge-picker-note";
     intro.textContent = picker.dispatcherHost
       ? "Tick the models you use. This project runs bridges through the TycoonAgents dispatcher, so only the agent files are added; nothing is written to .mcp.json."
-      : "Tick the models you use. Each one is installed with the MCP server it needs; Claude Code asks you to approve a new server the first time it is used.";
+      : "Tick the models you use. Each one is installed with the MCP server it needs; start a new Claude chat to load a newly added server.";
     panel.appendChild(intro);
 
     const list = document.createElement("ul");
@@ -126,7 +127,8 @@
       lab.appendChild(cb);
       const nm = document.createElement("span");
       nm.className = "bridge-picker-name";
-      nm.textContent = m.label + (m.installed ? " (installed)" : "");
+      const notEnabled = !!(m.setup && m.setup.serverState === "pending");
+      nm.textContent = m.label + (m.installed ? (notEnabled ? " (not enabled)" : " (installed)") : "");
       lab.appendChild(nm);
       li.appendChild(lab);
       const status = bridgeStatusSummary(m.setup);
@@ -134,6 +136,14 @@
       stEl.className = "bridge-status" + (status.warn ? " bridge-status--warn" : " bridge-status--ok");
       stEl.textContent = status.text;
       li.appendChild(stEl);
+      if (notEnabled && m.setup.server) {
+        const enableBtn = document.createElement("button");
+        enableBtn.type = "button";
+        enableBtn.className = "link-button bridge-enable-server";
+        enableBtn.textContent = "Enable";
+        enableBtn.setAttribute("data-pack-enable-mcp", m.setup.server);
+        li.appendChild(enableBtn);
+      }
       if (m.setup && Array.isArray(m.setup.env) && m.setup.env.some(function (e) { return e.required && !e.present; })) {
         const keyLink = document.createElement("button");
         keyLink.type = "button";
@@ -348,7 +358,8 @@
     if (setup.needsSetup) {
       const badge = document.createElement("span");
       badge.className = "agent-needs-setup-badge";
-      badge.textContent = "Needs setup";
+      const onlyNotEnabled = setup.serverState === "pending" && !(setup.env || []).some(function (e) { return e.required && !e.present; });
+      badge.textContent = onlyNotEnabled ? "Not enabled" : "Needs setup";
       badge.title = (setup.reasons || []).join("; ");
       wrap.appendChild(badge);
     }
@@ -356,11 +367,11 @@
     txt.className = "bridge-status" + (setup.needsSetup ? " bridge-status--warn" : " bridge-status--ok");
     txt.textContent = status.text;
     wrap.appendChild(txt);
-    if (setup.serverState === "missing") {
+    if (setup.serverState === "missing" || setup.serverState === "pending") {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "link-button bridge-install-server";
-      btn.textContent = "Install " + setup.server + " server";
+      btn.textContent = (setup.serverState === "pending" ? "Enable " : "Install ") + setup.server + " server";
       btn.addEventListener("click", function () {
         btn.disabled = true;
         btn.textContent = "Installing…";

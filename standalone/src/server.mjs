@@ -2077,27 +2077,22 @@ function buildMcpPayload() {
       /* missing/invalid => default {} — mirrors panel.ts's _readMcpConfig */
     }
   }
+  const mcpFileConfig = mcpConfig;
   mcpConfig = primaryProjectRoot ? withLocalMcpStandalone(primaryProjectRoot, mcpConfig) : mcpConfig;
   const servers = mcpConfig.mcpServers;
   const hasIn = (obj, id) => obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, id);
   // Claude Code harness: a server listed only in the project's .mcp.json is not loaded
   // (Claude holds it pending approval), so the UI offers "Enable" instead of "Installed".
-  let useLocal = false;
-  let localServers = {};
-  let fileServers = {};
-  if (primaryProjectRoot) {
+  // One shared rule (bridgeSetup.mcpServerState) for the MCP tab, Packs tab and picker.
+  const stateOf = (id) => {
+    if (!primaryProjectRoot) return 'absent';
     try {
-      useLocal = useLocalMcpStandalone(primaryProjectRoot);
-      if (useLocal) {
-        localServers = claudeLocalMcpModule().readLocalMcpServers(primaryProjectRoot) || {};
-        const fileCfg = JSON.parse(fs.readFileSync(path.join(primaryProjectRoot, '.mcp.json'), 'utf8'));
-        if (fileCfg && typeof fileCfg === 'object' && fileCfg.mcpServers) fileServers = fileCfg.mcpServers;
-      }
+      return bridgeSetupModule().mcpServerState(primaryProjectRoot, resolveEffectiveHarness(primaryProjectRoot), id, mcpFileConfig);
     } catch {
-      /* no .mcp.json / unreadable: nothing pending */
+      return hasIn(mcpFileConfig.mcpServers, id) ? (useLocalMcpStandalone(primaryProjectRoot) ? 'pending' : 'installed') : 'absent';
     }
-  }
-  const hasMcpServer = (id) => (useLocal ? hasIn(localServers, id) : hasIn(servers, id));
+  };
+  const hasMcpServer = (id) => stateOf(id) === 'installed';
   const { catalogSummary } = catalogSummaryModule();
   const { isUnpinnedMcpConfig } = mcpCatalogModule();
 
@@ -2109,7 +2104,7 @@ function buildMcpPayload() {
       description: e.description,
       summary: catalogSummary(e),
       installed: hasMcpServer(e.id),
-      pending: useLocal && !hasMcpServer(e.id) && hasIn(fileServers, e.id),
+      pending: stateOf(e.id) === 'pending',
       unpinned: hasMcpServer(e.id) && isUnpinnedMcpConfig(servers[e.id]),
       requiresEnv: e.requiresEnv,
       note: e.note,
@@ -2157,15 +2152,14 @@ function buildPacksPayload() {
     /* skillNames stays {} */
   }
   const root = primaryProjectRoot || '';
-  let mcpConfig = {};
+  let fileMcp = {};
   if (root) {
     try {
       const parsed = JSON.parse(fs.readFileSync(path.join(root, '.mcp.json'), 'utf8'));
-      if (parsed !== null && typeof parsed === 'object') mcpConfig = parsed;
+      if (parsed !== null && typeof parsed === 'object') fileMcp = parsed;
     } catch {
       /* missing/invalid => default {} */
     }
-    mcpConfig = withLocalMcpStandalone(root, mcpConfig);
   }
   const { hasMcpServer } = mcpCatalogModule();
   const skillInstalled = (id) => !!root && fs.existsSync(path.join(root, '.claude', 'skills', id));
@@ -2184,6 +2178,14 @@ function buildPacksPayload() {
     const packAgents = Array.isArray(pack.agents) ? pack.agents : (pack.agent ? [pack.agent] : []);
     const skills = packSkills.map((id) => ({ id, name: skillNames[id] ?? id, installed: skillInstalled(id) }));
     const mcpEntry = pack.mcp ? mcpCatalog.find((x) => x.id === pack.mcp) : undefined;
+    let mcpState = 'absent';
+    if (pack.mcp && root) {
+      try {
+        mcpState = bridgeSetupModule().mcpServerState(root, resolveEffectiveHarness(root), pack.mcp, fileMcp);
+      } catch {
+        mcpState = hasMcpServer(fileMcp, pack.mcp) ? (useLocalMcpStandalone(root) ? 'pending' : 'installed') : 'absent';
+      }
+    }
     return {
       id: pack.id,
       name: pack.name,
@@ -2192,7 +2194,7 @@ function buildPacksPayload() {
       has: { skill: packSkills.length > 0, mcp: !!pack.mcp, agent: true },
       installed: {
         skill: packSkills.length > 0 && packSkills.every((id) => skillInstalled(id)),
-        mcp: pack.mcp ? hasMcpServer(mcpConfig, pack.mcp) : false,
+        mcp: mcpState === 'installed',
         // Picker packs install a chosen subset, so any installed agent counts.
         agent: root !== '' && packAgents.length > 0 && (pack.picker === 'bridges' ? packAgents.some((a) => agentInstalled(a.id)) : packAgents.every((a) => agentInstalled(a.id))),
       },
@@ -2200,6 +2202,7 @@ function buildPacksPayload() {
       commands: packCommands,
       agents: packAgents.map((a) => ({ id: a.id, name: a.name })),
       mcpName: mcpEntry ? (mcpEntry.name ?? pack.mcp) : undefined,
+      ...(pack.mcp ? { mcpId: pack.mcp, mcpState } : {}),
       thirdParty: disclosures.length > 0,
       disclosures,
       ...(pack.picker === 'bridges' && root

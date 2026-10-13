@@ -699,6 +699,16 @@
   ];
 
   /**
+   * True when the pack's MCP server is listed only in the project's .mcp.json
+   * (Claude Code harness): present but not enabled, so the host reports it not installed.
+   * @param {{mcpId?:string, mcpState?:string}} pack
+   * @returns {boolean}
+   */
+  function packMcpPending(pack) {
+    return !!pack && pack.mcpState === "pending" && typeof pack.mcpId === "string";
+  }
+
+  /**
    * True when every part the pack `has` is also `installed`.
    * @param {{has:Record<string,boolean>, installed:Record<string,boolean>}} pack
    * @returns {boolean}
@@ -732,9 +742,10 @@
     for (const [key, label] of PACK_PARTS) {
       if (!has[key]) continue;
       const done = !!installed[key];
+      const notEnabled = key === "mcp" && !done && packMcpPending(pack);
       const chip = document.createElement("span");
       chip.className = "pack-chip" + (done ? " pack-chip--done" : "");
-      chip.textContent = done ? `${label} ✓` : label;
+      chip.textContent = done ? `${label} ✓` : notEnabled ? `${label} · not enabled` : label;
       container.appendChild(chip);
     }
   }
@@ -822,6 +833,16 @@
       }
       header.appendChild(btn);
 
+      // MCP server only in .mcp.json: Claude Code has not loaded it. Offer the same
+      // explicit Enable as the MCP tab (registers the pinned config at local scope).
+      if (!pack.picker && packMcpPending(pack)) {
+        const enableBtn = document.createElement("button");
+        enableBtn.className = "skill-btn";
+        enableBtn.textContent = "Enable";
+        enableBtn.setAttribute("data-pack-enable-mcp", pack.mcpId);
+        header.appendChild(enableBtn);
+      }
+
       // Show a Remove button whenever any component is installed (fully or
       // partially). It sits alongside the Install/Installed button.
       if (anyInstalled) {
@@ -887,6 +908,31 @@
       row.appendChild(textBlock);
       packsListEl.appendChild(row);
     }
+  }
+
+  /**
+   * Result of a pack-row / picker "Enable" click (same installMcp round trip as the
+   * MCP tab). Restores idle buttons on failure or cancel; the packs list is
+   * re-fetched on success by the message dispatcher.
+   * @param {string} id MCP server id
+   * @param {boolean} ok
+   * @param {string|undefined} error
+   * @param {boolean|undefined} cancelled
+   * @param {boolean|undefined} newChatHint
+   */
+  function handlePackMcpEnabled(id, ok, error, cancelled, newChatHint) {
+    if (!packsListEl) return;
+    const btns = packsListEl.querySelectorAll(`[data-pack-enable-mcp="${CSS.escape(id)}"]`);
+    if (btns.length === 0) return;
+    if (ok) {
+      if (newChatHint) showToast(NEW_CHAT_HINT, "info");
+      return;
+    }
+    for (const b of btns) {
+      b.textContent = "Enable";
+      b.removeAttribute("disabled");
+    }
+    if (!cancelled && error) showToast(error, "error");
   }
 
   /**

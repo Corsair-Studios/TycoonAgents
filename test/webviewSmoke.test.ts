@@ -7076,3 +7076,36 @@ test('first-run setup status omits the approval note unless a server is pending'
     }
   }
 });
+
+test('Packs tab: a pack whose MCP server is pending shows "not enabled" and an Enable button, never "Installed"', async () => {
+  const h = await bootObjScaleHarness();
+  try {
+    const mk = (over: Record<string, unknown>) => ({
+      id: 'playwright-qa', name: 'Playwright QA', description: 'd', summary: 's',
+      has: { skill: false, mcp: true, agent: true },
+      installed: { skill: false, mcp: false, agent: true },
+      skills: [], commands: [], agents: [{ id: 'qa', name: 'QA' }], disclosures: [], thirdParty: false,
+      mcpId: 'playwright', mcpState: 'pending',
+      ...over,
+    });
+    h.dispatch({ type: 'packs', packs: [mk({})] });
+    await h.flush();
+    const list = h.doc.getElementById('packs-list');
+    const text = list?.textContent || '';
+    assert.ok(text.includes('not enabled'), 'pending MCP chip reads not enabled: ' + text);
+    assert.ok(!text.includes('Installed'), 'no Installed label while pending');
+    const enable = list?.querySelector('[data-pack-enable-mcp="playwright"]');
+    assert.ok(enable, 'Enable button present');
+    assert.equal((enable!.textContent || '').trim(), 'Enable');
+
+    // Truly installed (state installed, every part present): Installed label, no Enable, no "not enabled".
+    h.dispatch({ type: 'packs', packs: [mk({ installed: { skill: false, mcp: true, agent: true }, mcpState: 'installed' })] });
+    await h.flush();
+    const text2 = h.doc.getElementById('packs-list')?.textContent || '';
+    assert.ok(text2.includes('Installed'));
+    assert.ok(!text2.includes('not enabled'));
+    assert.equal(h.doc.querySelector('#packs-list [data-pack-enable-mcp]'), null);
+  } finally {
+    h.win.close();
+  }
+});

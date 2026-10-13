@@ -842,6 +842,24 @@
         return;
       }
 
+      const enableBtn = /** @type {HTMLElement|null} */ (
+        target.closest("[data-pack-enable-mcp]")
+      );
+      if (enableBtn && !enableBtn.hasAttribute("disabled")) {
+        const mid = enableBtn.getAttribute("data-pack-enable-mcp");
+        const mcpServer = lastMcpServers.find((s) => s && s.id === mid);
+        const owner = lastPacks.find((p) => p && p.mcpId === mid);
+        // Same message as the MCP tab's Enable; the host confirms third-party servers itself.
+        enableBtn.textContent = "Enabling…";
+        enableBtn.setAttribute("disabled", "");
+        vscode.postMessage({
+          type: "installMcp",
+          id: mid,
+          thirdParty: !!((mcpServer && mcpServer.thirdParty) || (owner && owner.thirdParty)),
+        });
+        return;
+      }
+
       const btn = /** @type {HTMLElement|null} */ (
         target.closest("[data-pack-id]")
       );
