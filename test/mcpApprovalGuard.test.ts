@@ -40,7 +40,7 @@ function projectWithApprovedClaudeCli(): string {
   return root;
 }
 
-test("guard revokes a modified approved server and posts the warning", () => {
+test("guard revokes a modified approved server and reports it to the log sink", () => {
   const root = projectWithApprovedClaudeCli();
   try {
     const seen: string[] = [];
@@ -50,7 +50,8 @@ test("guard revokes a modified approved server and posts the warning", () => {
     fs.appendFileSync(path.join(root, ".claude", "hooks", "claudePermissionMode.cjs"), "\n//x\n");
     assert.deepEqual(runApprovalGuard(root, MEDIA, ENV, push), ["claude-cli"]);
     assert.deepEqual(seen, [revocationMessage("claude-cli")]);
-    assert.equal(seen[0], "TycoonAgents removed approval for claude-cli: its files changed since approval. Reinstall hooks from TycoonAgents, then approve again in Claude Code.");
+    assert.match(seen[0], /removed legacy approval for claude-cli/);
+    assert.doesNotMatch(seen[0], /Reinstall hooks|approve again in Claude Code/, "no stale advice: the VS Code extension never shows the approval prompt");
     assert.deepEqual(runApprovalGuard(root, MEDIA, ENV, push), []);
     assert.equal(seen.length, 1, "no repeat notification once revoked");
   } finally {
@@ -159,5 +160,28 @@ test("deferred guard revokes a change that persists, and skips while a hook writ
     assert.deepEqual(seen, [revocationMessage("claude-cli")]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("copies identical to another installed extension's hooks are ours; a forged stamp file changes nothing", () => {
+  const root = projectWithApprovedClaudeCli();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "guard-other-ext-"));
+  try {
+    fs.mkdirSync(path.join(other, "hooks"));
+    const target = path.join(root, ".claude", "hooks", "claudePermissionMode.cjs");
+    fs.appendFileSync(target, "\n//newer build\n");
+    fs.writeFileSync(path.join(root, ".claude", "tycoon-forged.json"), JSON.stringify({ version: "99.0.0" }));
+    fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude", "tycoon", "hook-copy-version.json"), JSON.stringify({ version: "99.0.0" }));
+    const seen: string[] = [];
+    // Not identical to any installed extension: revoked despite the forged stamp.
+    assert.deepEqual(runApprovalGuard(root, MEDIA, ENV, (m) => seen.push(m)), ["claude-cli"]);
+    fs.writeFileSync(path.join(root, ".claude", "settings.local.json"), JSON.stringify({ enabledMcpjsonServers: ["claude-cli"] }));
+    fs.copyFileSync(target, path.join(other, "hooks", "claudePermissionMode.cjs"));
+    const env2: ApprovalEnv = { ...ENV, altSrcs: (f) => (fs.existsSync(path.join(other, "hooks", f)) ? [path.join(other, "hooks", f)] : []) };
+    assert.deepEqual(runApprovalGuard(root, MEDIA, env2, (m) => seen.push(m)), [], "identical to a real installed extension's copy");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
   }
 });

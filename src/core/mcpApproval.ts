@@ -186,6 +186,8 @@ export interface McpApprovalState {
 export interface ApprovalEnv {
   /** Locates the shipped copy of a hook file in the INSTALLED extension (the installer's own source). */
   resolveSrc: (fileName: string) => string | undefined;
+  /** Same file in OTHER real installed TycoonAgents extensions on disk (outside the project); a copy identical to any of them is ours. */
+  altSrcs?: (fileName: string) => string[];
   /** Home directory holding ~/.claude.json (defaults to os.homedir()). */
   homeDir?: string;
   /** process.platform override. */
@@ -332,7 +334,11 @@ export function hookClosureMatchesInstalled(root: string, id: string, def: Tycoo
     if (!src) return false;
     const want = sha256(src);
     const have = sha256(dest);
-    if (want === null || have === null || want !== have) return false;
+    if (want === null || have === null) return false;
+    if (want !== have) {
+      const alt = (env.altSrcs?.(f) ?? []).map(sha256);
+      if (!alt.includes(have)) return false;
+    }
   }
   return true;
 }

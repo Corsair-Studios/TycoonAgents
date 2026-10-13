@@ -8,7 +8,7 @@
 // Automatic "changed since approval" safety. Always on (independent of the
 // tycoonagents.mcp.approveButton flag): when a TycoonAgents MCP server that is
 // approved in <root>/.claude/settings.local.json has since been modified,
-// replaced, or shadowed, its approval is removed and the user is told.
+// replaced, or shadowed, its approval is removed and the revocation is logged (no popup).
 // Only our own ids and only settings.local.json are ever touched. No vscode
 // import here so it is unit-testable; the host injects the watcher + notifier.
 // ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ export const GUARD_RECHECK_MS = 2000;
 export const GUARD_WATCH_GLOBS: ReadonlyArray<string> = [".claude/hooks/**", ".mcp.json"];
 
 export function revocationMessage(id: string): string {
-  return `TycoonAgents removed approval for ${id}: its files changed since approval. Reinstall hooks from TycoonAgents, then approve again in Claude Code.`;
+  return `mcp approval guard: removed legacy approval for ${id} because its files changed since approval (the MCP tab shows it as not enabled).`;
 }
 
 /** One check: auto-revoke and notify per revoked id. Never throws. Returns the revoked ids. */

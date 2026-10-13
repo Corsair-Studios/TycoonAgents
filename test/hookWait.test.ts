@@ -6,7 +6,6 @@ import * as path from "path";
 import {
   HOOK_WAIT_GRACE_MS,
   isWaitingForFirstHookEvent,
-  noteRunVersion,
   readHooksChangedAt,
   readLastHookEventAt,
   recordHooksChanged,
@@ -31,16 +30,6 @@ function touchActivity(root: string, at: number): void {
 function waitingNow(root: string, changedAt: number, now: number): boolean {
   return isWaitingForFirstHookEvent({ installed: true, changedAt, lastEventAt: readLastHookEventAt(root), now });
 }
-function memento() {
-  const m = new Map<string, unknown>();
-  return {
-    get: <T>(k: string) => m.get(k) as T | undefined,
-    update: (k: string, v: unknown) => {
-      m.set(k, v);
-    },
-  };
-}
-
 test("banner is shown after an install with no events once the grace period passed", () => {
   const root = tmpRoot();
   const t0 = 1_000_000;
@@ -48,7 +37,7 @@ test("banner is shown after an install with no events once the grace period pass
   const args = { installed: true, changedAt: readHooksChangedAt(root), lastEventAt: readLastHookEventAt(root) };
   assert.equal(args.changedAt, t0);
   assert.equal(args.lastEventAt, null);
-  assert.equal(isWaitingForFirstHookEvent({ ...args, now: t0 + HOOK_WAIT_GRACE_MS - 1 }), false, "inside the ~10 s grace");
+  assert.equal(isWaitingForFirstHookEvent({ ...args, now: t0 + HOOK_WAIT_GRACE_MS - 1 }), false, "inside the 2 min grace");
   assert.equal(isWaitingForFirstHookEvent({ ...args, now: t0 + HOOK_WAIT_GRACE_MS }), true);
 });
 
@@ -56,7 +45,7 @@ test("banner clears on the first event after the change", () => {
   const root = tmpRoot();
   const t0 = 2_000_000;
   recordHooksChanged(root, t0);
-  const now = t0 + 60_000;
+  const now = t0 + 130_000;
   const scan = { offset: undefined as number | undefined };
   scanHookEvents(root, scan, now);
   assert.equal(waitingNow(root, t0, now), true);
@@ -77,14 +66,14 @@ test("older event than the change keeps waiting; never shown when not installed 
   assert.equal(isWaitingForFirstHookEvent({ installed: true, changedAt: null, lastEventAt: null, now: 999_999 }), false);
 });
 
-test("an extension version change is a hooks-change trigger (once per version, per project)", () => {
-  const store = memento();
-  assert.equal(noteRunVersion(store, "/p", "0.0.724"), false, "missing stored version only records it");
-  assert.equal(store.get("tycoonagents.lastRunVersion:/p"), "0.0.724");
-  assert.equal(noteRunVersion(store, "/p", "0.0.724"), false);
-  assert.equal(noteRunVersion(store, "/p", "0.0.725"), true, "a real difference stamps");
-  assert.equal(noteRunVersion(store, "/other", "0.0.725"), false, "tracked per project; first sighting is not a change");
-  assert.equal(noteRunVersion(store, "/p", null), false);
+test("the banner never shows right on load: grace also counts from the panel opening", () => {
+  const t0 = 1_000;
+  const args = { installed: true, changedAt: t0, lastEventAt: null };
+  const opened = t0 + 5_000_000; // stale change stamp, panel just opened
+  assert.equal(isWaitingForFirstHookEvent({ ...args, now: opened + 1_000, observedSince: opened }), false);
+  assert.equal(isWaitingForFirstHookEvent({ ...args, now: opened + HOOK_WAIT_GRACE_MS - 1, observedSince: opened }), false);
+  assert.equal(isWaitingForFirstHookEvent({ ...args, now: opened + HOOK_WAIT_GRACE_MS, observedSince: opened }), true);
+  assert.equal(HOOK_WAIT_GRACE_MS, 120_000);
 });
 
 test("metrics reset during waiting does not clear the banner", () => {
@@ -94,10 +83,10 @@ test("metrics reset during waiting does not clear the banner", () => {
   writeActivity(root, [{ event: "PreToolUse", at: t0 - 50_000 }]); // old event from before the change
   const scan = { offset: undefined as number | undefined };
   scanHookEvents(root, scan, t0 + 1);
-  assert.equal(waitingNow(root, t0, t0 + 60_000), true);
+  assert.equal(waitingNow(root, t0, t0 + 130_000), true);
   fs.writeFileSync(path.join(root, ".claude", "tycoon", "activity.jsonl"), ""); // panel metrics reset: mtime = now
   scanHookEvents(root, scan, t0 + 59_000);
-  assert.equal(waitingNow(root, t0, t0 + 60_000), true, "reset must not look like a hook event");
+  assert.equal(waitingNow(root, t0, t0 + 130_000), true, "reset must not look like a hook event");
 });
 
 test("metrics reset when healthy does not show the banner", () => {
@@ -107,10 +96,10 @@ test("metrics reset when healthy does not show the banner", () => {
   writeActivity(root, [{ event: "PreToolUse", at: t0 + 2_000 }]);
   const scan = { offset: undefined as number | undefined };
   scanHookEvents(root, scan, t0 + 3_000);
-  assert.equal(waitingNow(root, t0, t0 + 60_000), false);
+  assert.equal(waitingNow(root, t0, t0 + 130_000), false);
   fs.writeFileSync(path.join(root, ".claude", "tycoon", "activity.jsonl"), "");
   scanHookEvents(root, scan, t0 + 59_000);
-  assert.equal(waitingNow(root, t0, t0 + 60_000), false, "persisted marker survives the reset");
+  assert.equal(waitingNow(root, t0, t0 + 130_000), false, "persisted marker survives the reset");
 });
 
 test("a real event after a reset clears the banner; the marker never moves backwards", () => {
@@ -124,7 +113,7 @@ test("a real event after a reset clears the banner; the marker never moves backw
   scanHookEvents(root, scan, t0 + 100);
   writeActivity(root, [{ event: "SubagentStop", at: t0 + 30_000 }], "a");
   scanHookEvents(root, scan, t0 + 31_000);
-  assert.equal(waitingNow(root, t0, t0 + 60_000), false);
+  assert.equal(waitingNow(root, t0, t0 + 130_000), false);
   recordHookEventSeen(root, 1);
   assert.equal(readLastHookEventAt(root), t0 + 30_000);
 });
@@ -142,6 +131,6 @@ test("panel wires the reload message and stamps every hooks write site", () => {
   assert.equal(MSG.HOOK_WAIT, "hookWait");
   const src = fs.readFileSync(path.join(process.cwd(), "src", "host", "vscode", "panel.ts"), "utf8");
   assert.match(src, /MSG\.RELOAD_WINDOW\)\s*\{\s*void vscode\.commands\.executeCommand\("workbench\.action\.reloadWindow"\)/);
-  assert.ok((src.match(/recordHooksChanged\(root\)/g) ?? []).length >= 7, "install, fix, silent repair, matcher heal, absolute heal, version change, codex install");
+  assert.ok((src.match(/recordHooksChanged\(root\)/g) ?? []).length >= 7, "install, fix, silent repair, matcher heal, absolute heal, hook-copy refresh, codex install");
   assert.match(src, /\(hookHealth as \{ waiting\?: boolean \}\)\.waiting = true/);
 });

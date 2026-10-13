@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 
-/** Grace period after a hooks change before an absent hook event counts as "waiting". */
-export const HOOK_WAIT_GRACE_MS = 10_000;
+/** Quiet period after a real hooks change (and after the panel opened) before an absent hook event counts as "waiting". */
+export const HOOK_WAIT_GRACE_MS = 120_000;
 
 /** Subset of fs the marker helpers use; injectable for tests. */
 export type HookWaitFs = Pick<typeof fs, "readFileSync" | "writeFileSync" | "renameSync" | "mkdirSync" | "statSync" | "openSync" | "readSync" | "closeSync">;
@@ -131,8 +131,10 @@ export function scanHookEvents(
 
 /**
  * True when hooks are installed, were changed at least `graceMs` ago, and no
- * hook event has arrived since. Self-clearing: the first event after the
- * change makes it false. Never true without a recorded change.
+ * hook event has arrived since. The grace also counts from `observedSince`
+ * (when the panel opened), so a stale change stamp never shows the banner
+ * right on load. Self-clearing: the first event after the change makes it
+ * false. Never true without a recorded change.
  */
 export function isWaitingForFirstHookEvent(args: {
   installed: boolean;
@@ -140,33 +142,11 @@ export function isWaitingForFirstHookEvent(args: {
   lastEventAt: number | null;
   now: number;
   graceMs?: number;
+  observedSince?: number;
 }): boolean {
-  const { installed, changedAt, lastEventAt, now, graceMs = HOOK_WAIT_GRACE_MS } = args;
+  const { installed, changedAt, lastEventAt, now, graceMs = HOOK_WAIT_GRACE_MS, observedSince } = args;
   if (!installed || changedAt === null) return false;
   if (lastEventAt !== null && lastEventAt >= changedAt) return false;
-  return now - changedAt >= graceMs;
-}
-
-/** globalState key holding the extension version that last ran against `root`. */
-export function lastRunVersionKey(root: string): string {
-  return `tycoonagents.lastRunVersion:${root}`;
-}
-
-/**
- * Version-change detector: returns true (and stores the new version) when the
- * stored version for this project differs from `current`. A missing stored
- * value only records the version and returns false. Memento-shaped so tests can pass a Map-backed stub.
- */
-export function noteRunVersion(
-  store: { get<T>(key: string): T | undefined; update(key: string, value: unknown): PromiseLike<void> | void },
-  root: string,
-  current: string | null
-): boolean {
-  if (current === null) return false;
-  const key = lastRunVersionKey(root);
-  const prev = store.get<string>(key);
-  if (prev === current) return false;
-  void store.update(key, current);
-  // First sighting only records the version; just a real difference is a change.
-  return prev !== undefined;
+  const since = observedSince === undefined ? changedAt : Math.max(changedAt, observedSince);
+  return now - since >= graceMs;
 }
