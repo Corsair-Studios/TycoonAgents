@@ -1141,10 +1141,9 @@ export class TycoonPanel {
     // of this panel.
     configureThemeFileStore(createVscodeThemeFileStore(globalStorageUri));
 
-    // Auto-heal the CLAUDE.md delegation doctrine once per panel open (see
-    // _ensureDelegationDoctrineCurrent doc comment) — fixes 0% delegation on
-    // projects upgraded from a version that predates the doctrine.
-    this._ensureDelegationDoctrineCurrent();
+    // (The CLAUDE.md delegation doctrine refresh runs AFTER the keyword
+    // heals below — see _healKeywordsThenDoctrine — because its roster table
+    // renders agent-keywords.json.)
 
     // Auto-heal a missing project-appropriate worker roster once per panel
     // open (see _ensureWorkerAgentsInstalled doc comment) — fixes
@@ -1160,7 +1159,11 @@ export class TycoonPanel {
     // open (see _ensureAgentKeywordsSeeded doc comment) — fixes inert
     // `kw1|kw2|kw3` placeholders on projects whose roster was never
     // registered for keyword routing.
-    this._ensureAgentKeywordsSeeded();
+    // Then re-render the CLAUDE.md delegation doctrine (fixes 0% delegation
+    // on projects upgraded from a version that predates the doctrine). Must
+    // follow the worker install + keyword heals so the roster is current in
+    // this same pass.
+    this._healKeywordsThenDoctrine();
 
     // Auto-heal a stale on-disk hook script once per panel open (see
     // _ensureHookScriptFresh doc comment) — fixes a project's
@@ -6345,6 +6348,7 @@ export class TycoonPanel {
    * construction/rendering.
    */
   private _ensureDelegationDoctrineCurrent(): void {
+    // (see _healKeywordsThenDoctrine for why this must run after the keyword heals)
     try {
       const root = this._projectRoot();
       if (root === "") return;
@@ -6375,6 +6379,19 @@ export class TycoonPanel {
     } catch {
       // Best-effort auto-heal — a failure here must never break the panel.
     }
+  }
+
+  /**
+   * Panel-open ordering: every keyword heal (reconcile, seed, superseded
+   * migration, legacy body migration — all inside `_ensureAgentKeywordsSeeded`)
+   * runs first, then the doctrine refresh, so the CLAUDE.md "Specialist
+   * roster" (rendered from agent-keywords.json) is current in the SAME pass
+   * instead of one panel-open behind. Both keep their own gates (hooks
+   * installed, workspace trusted).
+   */
+  private _healKeywordsThenDoctrine(): void {
+    this._ensureAgentKeywordsSeeded();
+    this._ensureDelegationDoctrineCurrent();
   }
 
   /**
