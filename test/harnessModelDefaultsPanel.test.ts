@@ -27,19 +27,19 @@ const cjs = require("../../hooks/harnessModelDefaults.cjs");
 
 test("tier table matches the user-approved Codex defaults", () => {
   assert.deepEqual(CODEX_TIER_MODELS, {
-    haiku: { model: "gpt-5.6-sol", effort: "low" },
-    sonnet: { model: "gpt-5.6-sol" },
+    haiku: { model: "gpt-6-luna" },
+    sonnet: { model: "gpt-6.1-sol" },
     opus: { model: "gpt-6-astra" },
     fable: { model: "gpt-6-astra" },
   });
 });
 
 test("codex: Claude tier aliases and ids map to openai tier models", () => {
-  assert.deepEqual(resolveHarnessDefault("codex", { frontmatterModel: "haiku" }), { vendor: "openai", model: "gpt-5.6-sol", effort: "low", source: "harness-default" });
-  assert.deepEqual(resolveHarnessDefault("codex", { frontmatterModel: "sonnet" }), { vendor: "openai", model: "gpt-5.6-sol", source: "harness-default" });
+  assert.deepEqual(resolveHarnessDefault("codex", { frontmatterModel: "haiku" }), { vendor: "openai", model: "gpt-6-luna", source: "harness-default" });
+  assert.deepEqual(resolveHarnessDefault("codex", { frontmatterModel: "sonnet" }), { vendor: "openai", model: "gpt-6.1-sol", source: "harness-default" });
   assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "claude-opus-5" }).model, "gpt-6-astra");
   assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "fable" }).model, "gpt-6-astra");
-  assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "inherit" }).model, "gpt-5.6-sol");
+  assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "inherit" }).model, "gpt-6.1-sol");
   assert.equal(resolveHarnessDefault("codex", {}).source, "harness-default");
 });
 
@@ -47,7 +47,7 @@ test("codex: explicit slot, foreign vendor and claude-cli backend are kept", () 
   assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "sonnet", routingSlot: { model: "openai/gpt-6-astra" } }).source, "explicit");
   assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "haiku", backendVendor: "google" }).source, "agent-vendor");
   assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "sonnet", backendMcpServer: "claude-cli" }).source, "agent-vendor");
-  assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "gpt-5.6-sol" }).model, "gpt-5.6-sol");
+  assert.equal(resolveHarnessDefault("codex", { frontmatterModel: "gpt-6.1-sol" }).model, "gpt-6.1-sol");
 });
 
 test("non-codex harness is unchanged", () => {
@@ -58,17 +58,18 @@ test("non-codex harness is unchanged", () => {
 });
 
 test("labels", () => {
-  assert.equal(harnessModelLabel("gpt-5.6-sol"), "Sol");
-  assert.equal(harnessModelLabel("gpt-5.6-sol", "low"), "Sol low");
+  assert.equal(harnessModelLabel("gpt-6.1-sol"), "Sol");
+  assert.equal(harnessModelLabel("gpt-6.1-sol", "low"), "Sol low");
+  assert.equal(harnessModelLabel("gpt-6-luna"), "Luna");
   assert.equal(harnessModelLabel("gpt-6-astra"), "Astra");
-  assert.equal(describeHarnessDefault("codex", { frontmatterModel: "haiku" })?.label, "Sol low");
+  assert.equal(describeHarnessDefault("codex", { frontmatterModel: "haiku" })?.label, "Luna");
 });
 
 test("parity with hooks/harnessModelDefaults.cjs", () => {
   assert.deepEqual(CODEX_TIER_MODELS, cjs.CODEX_TIER_MODELS);
   const agents: any[] = [
     {}, { frontmatterModel: "haiku" }, { frontmatterModel: "sonnet" }, { frontmatterModel: "opus" }, { frontmatterModel: "fable" },
-    { frontmatterModel: "claude-haiku-4-5" }, { frontmatterModel: "inherit" }, { frontmatterModel: "gpt-5.6-sol" }, { frontmatterModel: "openai/gpt-6-astra" },
+    { frontmatterModel: "claude-haiku-4-5" }, { frontmatterModel: "inherit" }, { frontmatterModel: "gpt-6.1-sol" }, { frontmatterModel: "openai/gpt-6-astra" },
     { frontmatterModel: "sonnet", backendVendor: "google" }, { frontmatterModel: "sonnet", backendVendor: "anthropic" },
     { frontmatterModel: "sonnet", backendMcpServer: "claude-cli" }, { frontmatterModel: "sonnet", backendMcpServer: "codex" },
     { frontmatterModel: "sonnet", routingSlot: { vendor: "xai", model: "grok-4.7" } }, { frontmatterModel: "haiku", routingSlot: { model: "openai/gpt-6-astra" } },
@@ -95,10 +96,10 @@ test("describeAgentRoutes: codex harness surfaces defaults, never for explicit c
     fs.writeFileSync(path.join(dir, "worker-b.md"), "---\nname: worker-b\ndescription: b\nmodel: opus\n---\nbody\n");
     fs.mkdirSync(path.join(root, ".claude", "tycoon"), { recursive: true });
     const routingPath = path.join(root, ".claude", "tycoon", "routing.json");
-    const routingText = JSON.stringify({ version: 1, agents: { "worker-b": { vendor: "openai", model: "openai/gpt-5.6-sol" } } });
+    const routingText = JSON.stringify({ version: 1, agents: { "worker-b": { vendor: "openai", model: "openai/gpt-6.1-sol" } } });
     fs.writeFileSync(routingPath, routingText);
     const codex = describeAgentRoutes(root, { harness: "codex" });
-    assert.equal(codex["worker-a"].harnessDefault?.label, "Sol low");
+    assert.equal(codex["worker-a"].harnessDefault?.label, "Luna");
     assert.equal(codex["worker-a"].vendor, "openai");
     assert.equal(codex["worker-a"].costModelClass, "subscription");
     assert.equal(codex["worker-b"].harnessDefault, null);

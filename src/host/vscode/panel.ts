@@ -79,7 +79,7 @@ import {
 } from "../../core/providerSelection";
 import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
 import { loadRoutingProfile } from "../../core/routingProfile";
-import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, buildBridgePicker, describeBridgeSetup, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
+import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, buildBridgePicker, describeBridgeSetup, describeVendorBridgeSetups, isRegistrableBridgeServer, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
 import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
 import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
@@ -1694,7 +1694,7 @@ export class TycoonPanel {
         } else if (message.type === MSG.INSTALL_BRIDGE_SERVER) {
           const parsedBridgeServer = MSG_SCHEMAS.INSTALL_BRIDGE_SERVER.safeParse(message);
           if (parsedBridgeServer.success) {
-            await this._handleInstallBridgeServer(parsedBridgeServer.data.id);
+            await this._handleInstallBridgeServer(parsedBridgeServer.data.id, (parsedBridgeServer.data as { server?: unknown }).server);
           } else {
             console.error("TycoonAgents: installBridgeServer payload rejected:", parsedBridgeServer.error.message);
           }
@@ -4773,12 +4773,13 @@ export class TycoonPanel {
   }
 
   /** "Needs setup" action: add the MCP server an installed bridge agent depends on. */
-  private async _handleInstallBridgeServer(agentId: string): Promise<void> {
+  private async _handleInstallBridgeServer(agentId: string, requestedServer?: unknown): Promise<void> {
     const root = this._projectRoot();
     let error: string | undefined;
     let outcome: McpInstallOutcome | undefined;
     let newChatHint = false;
-    const server = root === "" ? null : serverForInstalledAgent(root, agentId);
+    // The slot card names the server directly (the agent file may carry no backend yet).
+    const server = root === "" ? null : (isRegistrableBridgeServer(requestedServer) ? requestedServer : serverForInstalledAgent(root, agentId));
     if (root === "") error = "No workspace folder open";
     else if (server === null) error = "This agent does not use an MCP server.";
     else if (!harnessUsesMcpJson(this._resolveEffectiveHarness(root))) error = "On this harness bridges run through the TycoonAgents dispatcher; nothing is added to .mcp.json.";
@@ -8700,6 +8701,9 @@ export class TycoonPanel {
       harness,
       multiProviderSetting,
       multiProviderCheckboxVisible: harness.toLowerCase() !== "opencode",
+      vendorSetup: (() => {
+        try { return describeVendorBridgeSetups({ root, harness, env: process.env }); } catch { return { servers: {}, vendors: {} }; }
+      })(),
     };
     if (uiMode === "single") {
       payload.singleProvider = singleProviderTiers(harness);

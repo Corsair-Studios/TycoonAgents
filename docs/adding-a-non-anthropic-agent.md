@@ -21,7 +21,7 @@ found:
   "command": "node",
   "args": [
     ".claude/hooks/codex-mcp-launcher.cjs",
-    "-c", "model=\"gpt-5.6-sol\"",
+    "-c", "model=\"gpt-6.1-sol\"",
     "-c", "model_reasoning_effort=\"low\"",
     "-c", "approval_policy=\"never\"",
     "-c", "sandbox_mode=\"read-only\""
@@ -50,7 +50,7 @@ backend:
   transport: mcp
   mcpServer: codex
   tools: [codex, codex-reply]
-  model: openai/gpt-5.6-sol
+  model: openai/gpt-6.1-sol
   costModelClass: subscription
 ---
 ```
@@ -146,7 +146,7 @@ codex debug models
 ```
 
 or inspect `~/.codex/models_cache.json` directly. See `docs/codex-host.md` for the current default
-(`gpt-5.6-sol`) and the higher-tier option (`gpt-6-astra`, efforts `low`/`medium`/`high`/`xhigh`/`max`/`ultra`).
+(`gpt-6.1-sol`) and the higher-tier option (`gpt-6-astra`, efforts `low`/`medium`/`high`/`xhigh`/`max`/`ultra`).
 
 ## 6. Keyword routing
 

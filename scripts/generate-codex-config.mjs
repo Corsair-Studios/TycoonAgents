@@ -218,7 +218,7 @@ function loadRoster({ projectDir, rosterDir, routingPath }) {
   return roster;
 }
 
-/** Human label for the model a specialist runs on under the Codex harness, e.g. "gpt-5.6-sol (low effort)". */
+/** Human label for the model a specialist runs on under the Codex harness, e.g. "gpt-6.1-sol". */
 function effectiveModelLabel(spec) {
   const e = spec.effective;
   if (!e || !e.model) return "";

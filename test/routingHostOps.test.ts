@@ -588,10 +588,10 @@ test("buildRoutingView: presets are MODEL entries (id/label = model id), not FOR
   assert.equal(claudeWorker?.label, "anthropic/sonnet");
   assert.equal(claudeWorker?.vendor, "anthropic");
 
-  const codex = byId.get("openai/gpt-5.6-sol");
-  assert.ok(codex, "openai/gpt-5.6-sol preset should be present");
+  const codex = byId.get("openai/gpt-6.1-sol");
+  assert.ok(codex, "openai/gpt-6.1-sol preset should be present");
   // p101-t4: Codex-accepted models carry a friendly tier name ahead of the id.
-  assert.equal(codex?.label, "Sol (openai/gpt-5.6-sol)");
+  assert.equal(codex?.label, "Sol — Near-Astra at lower cost (openai/gpt-6.1-sol)");
 
   for (const m of view.presets.models) {
     assert.ok(

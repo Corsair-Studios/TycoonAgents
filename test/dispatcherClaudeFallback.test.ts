@@ -827,9 +827,11 @@ test("modelArgFor: legacy/non-OpenAI codex values and non-gemini gemini values a
 
 test("dispatcher codex model lists mirror src/core/agentsUiMode", () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const chain = require("../../hooks/dispatcherClaudeChain.cjs") as { CODEX_ACCEPTED_BARE: string[]; CODEX_REJECTED_BARE: string[] };
+  const chain = require("../../hooks/dispatcherClaudeChain.cjs") as { CODEX_ACCEPTED_BARE: string[]; CODEX_REJECTED_BARE: string[]; CODEX_LEGACY_BARE: string[]; modelArgFor: (s: Record<string, unknown>) => string | undefined };
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const ui = require("../src/core/agentsUiMode") as { CODEX_ACCEPTED_MODELS: { model: string }[]; CODEX_REJECTED_MODELS: string[] };
+  const ui = require("../src/core/agentsUiMode") as { CODEX_ACCEPTED_MODELS: { model: string }[]; CODEX_REJECTED_MODELS: string[]; CODEX_LEGACY_MODELS: string[] };
   assert.deepEqual(chain.CODEX_ACCEPTED_BARE, ui.CODEX_ACCEPTED_MODELS.map((t) => t.model.replace(/^openai\//, "")));
   assert.deepEqual(chain.CODEX_REJECTED_BARE, [...ui.CODEX_REJECTED_MODELS]);
+  assert.deepEqual(chain.CODEX_LEGACY_BARE, [...ui.CODEX_LEGACY_MODELS]);
+  assert.equal(chain.modelArgFor({ mcpServer: "codex", model: "gpt-5.6-sol" }), "gpt-5.6-sol", "a saved bare legacy id is still dispatched");
 });

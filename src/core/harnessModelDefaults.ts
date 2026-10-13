@@ -22,8 +22,8 @@ export interface HarnessTierModel {
 }
 
 export const CODEX_TIER_MODELS: Readonly<Record<ClaudeTierName, HarnessTierModel>> = {
-  haiku: { model: "gpt-5.6-sol", effort: "low" },
-  sonnet: { model: "gpt-5.6-sol" },
+  haiku: { model: "gpt-6-luna" },
+  sonnet: { model: "gpt-6.1-sol" },
   opus: { model: "gpt-6-astra" },
   fable: { model: "gpt-6-astra" },
 };
@@ -110,6 +110,7 @@ export function harnessModelLabel(model: string, effort?: string): string {
   let base = model;
   if (s.includes("sol")) base = "Sol";
   else if (s.includes("astra")) base = "Astra";
+  else if (s.includes("luna")) base = "Luna";
   return effort ? `${base} ${effort}` : base;
 }
 

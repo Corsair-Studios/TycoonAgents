@@ -13,7 +13,7 @@ import { readAgentFrontmatter, parseAgentBackend } from "../src/core/agentBacken
 import { DEFAULT_AGENT_KEYWORDS } from "../src/host/vscode/agentKeywordDefaults";
 
 const EXPECTED_BACKEND: Record<string, { vendor: string; transport: string; model: string; costModelClass: string }> = {
-  "codex-reviewer": { vendor: "openai", transport: "mcp", model: "openai/gpt-5.6-sol", costModelClass: "subscription" },
+  "codex-reviewer": { vendor: "openai", transport: "mcp", model: "openai/gpt-6.1-sol", costModelClass: "subscription" },
   "gemini-reviewer": { vendor: "google", transport: "mcp", model: "google/gemini-2.5-pro", costModelClass: "metered" },
   "kimi-reviewer": { vendor: "moonshot", transport: "openai-compatible", model: "moonshot/kimi-k2.6", costModelClass: "metered" },
   "grok-reviewer": { vendor: "xai", transport: "openai-compatible", model: "xai/grok-build-0.1", costModelClass: "metered" },

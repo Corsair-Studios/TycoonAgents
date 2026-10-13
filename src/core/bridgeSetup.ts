@@ -176,6 +176,11 @@ export function bridgeServerFor(backend: Backend | null | undefined): string | n
 /** Bridge MCP servers TycoonAgents may register on the user's behalf from the Agents screen. */
 const REGISTRABLE_BRIDGE_SERVERS = new Set(["codex", "gemini", OPENAI_COMPAT_SERVER, "claude-cli"]);
 
+/** True for a bridge server TycoonAgents may register on the user's behalf (the slot card's Enable MCP). */
+export function isRegistrableBridgeServer(name: unknown): name is string {
+  return typeof name === "string" && REGISTRABLE_BRIDGE_SERVERS.has(name);
+}
+
 /** Slot vendor -> bridge server, for slots that do not name one. Anthropic is native: no server. */
 const VENDOR_BRIDGE_SERVER: Record<string, string> = {
   openai: "codex",
@@ -273,6 +278,39 @@ export function describeBackendSetup(backend: Backend | null | undefined, ctx: B
     needsSetup: serverState === "missing" || serverState === "pending" || keyState === "missing",
     reasons,
   };
+}
+
+/**
+ * Slot editor payload (Claude Code harness): per-vendor bridge setup plus the install state of every
+ * registrable bridge server, so the card can say whether Save will set the server up. Names only.
+ */
+export interface VendorBridgeSetups {
+  servers: Record<string, McpServerState>;
+  vendors: Record<string, BridgeSetupInfo>;
+}
+
+export function describeVendorBridgeSetups(ctx: BridgeSetupContext): VendorBridgeSetups {
+  const servers: Record<string, McpServerState> = {};
+  const vendors: Record<string, BridgeSetupInfo> = {};
+  if (!ctx.root || !harnessUsesMcpJson(ctx.harness)) return { servers, vendors };
+  const fileConfig = ctx.mcpConfig ?? readProjectFileMcpConfig(ctx.root);
+  for (const server of REGISTRABLE_BRIDGE_SERVERS) servers[server] = mcpServerState(ctx.root, ctx.harness, server, fileConfig);
+  for (const [vendor, server] of Object.entries(VENDOR_BRIDGE_SERVER)) {
+    const backend: Backend = {
+      vendor,
+      transport: server === OPENAI_COMPAT_SERVER ? "openai-compatible" : "mcp",
+      mcpServer: server,
+      model: "",
+      costModelClass: "metered",
+    };
+    try {
+      const info = describeBackendSetup(backend, { ...ctx, mcpConfig: undefined });
+      if (info) vendors[vendor] = info;
+    } catch {
+      /* no entry for this vendor */
+    }
+  }
+  return { servers, vendors };
 }
 
 /** Setup info for every installed agent file that declares a bridge backend, keyed by agent id. */

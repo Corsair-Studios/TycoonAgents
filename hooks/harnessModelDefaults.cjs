@@ -8,8 +8,8 @@
  */
 
 const CODEX_TIER_MODELS = {
-  haiku: { model: "gpt-5.6-sol", effort: "low" },
-  sonnet: { model: "gpt-5.6-sol" },
+  haiku: { model: "gpt-6-luna" },
+  sonnet: { model: "gpt-6.1-sol" },
   opus: { model: "gpt-6-astra" },
   fable: { model: "gpt-6-astra" },
 };

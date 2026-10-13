@@ -15,7 +15,7 @@
       "args": [
         ".claude/hooks/codex-mcp-launcher.cjs",
         "-c",
-        "model=\"gpt-5.6-sol\"",
+        "model=\"gpt-6.1-sol\"",
         "-c",
         "model_reasoning_effort=\"low\"",
         "-c",

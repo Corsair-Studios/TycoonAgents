@@ -22,8 +22,8 @@ this reason. The fallback shim is Experimental.
 
 ## Reviewer model and MCP approval (Experimental)
 
-The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login
-accepts; `gpt-6-astra` is available as a higher tier for deeper reviews, with reasoning efforts
+The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost);
+`gpt-6-astra` is the most capable tier for deeper reviews, `gpt-6-luna` the cheapest, with reasoning efforts
 `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` (default `low`). Accepted model slugs and
 their supported efforts are account- and time-dependent — ChatGPT-account Codex auth has rejected
 several plausible-looking slugs historically (see

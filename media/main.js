@@ -18716,6 +18716,8 @@ function themeAnimPreviewDraw(player) {
   }
 
   function handleBridgeServerInstalled(id, ok, error) {
+    // The slot card's status line reads the routing payload: refresh it so "Enable MCP" resolves.
+    if (ok && typeof ROUTING_MSG !== "undefined") vscode.postMessage({ type: ROUTING_MSG.GET });
     const wrap = document.querySelector('[data-bridge-setup-agent="' + CSS.escape(id) + '"]');
     if (wrap && !ok) {
       let err = wrap.querySelector(".bridge-setup-error");
@@ -19071,9 +19073,11 @@ function themeAnimPreviewDraw(player) {
     "openai/gpt-5": { perMtok: 8, weight: 12 },
     "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
     // seed, unverified — codex-reviewer's current model (2026-09-15); refresh via update-pricing
-    "openai/gpt-5.6-sol": { perMtok: 1, weight: 0.7 },
-    // seed, unverified — higher-tier option, costlier than gpt-5.6-sol; refresh via update-pricing
+    "openai/gpt-6.1-sol": { perMtok: 1, weight: 0.7 },
+    // seed, unverified — higher-tier option, costlier than gpt-6.1-sol; refresh via update-pricing
     "openai/gpt-6-astra": { perMtok: 1.5, weight: 1 },
+    // seed, unverified — cheapest tier; refresh via update-pricing
+    "openai/gpt-6-luna": { perMtok: 0.5, weight: 0.4 },
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
@@ -19639,7 +19643,7 @@ function themeAnimPreviewDraw(player) {
 
   /**
    * The routed backend's model id for an agent (e.g. "grok-4.7",
-   * "gpt-5.6-sol"), from the last routing payload. Null when routing has not
+   * "gpt-6.1-sol"), from the last routing payload. Null when routing has not
    * loaded or the agent has no routed backend model.
    * @param {{id?:string}} agent
    * @returns {string|null}
@@ -23121,10 +23125,12 @@ function themeAnimPreviewDraw(player) {
   }
 
   /** Warning text when a slot bridges via an MCP server that is not in .mcp.json, else "". */
-  function missingMcpServerWarning(slot) {
+  function missingMcpServerWarning(slot, claudeAgentBridge) {
     var bridge = routingBridgeInfo();
     if (routingOnCodexHost()) return "";
     if (!bridge || !slot || slot.transport !== "mcp" || !slot.mcpServer) return "";
+    // Claude Code agent slots: Save registers our bridge servers, and the status line says so.
+    if (claudeAgentBridge && CLAUDE_REGISTRABLE_BRIDGE_SERVERS[slot.mcpServer]) return "";
     var names = bridge.mcpServers || [];
     if (names.indexOf(slot.mcpServer) !== -1) return "";
     return 'MCP server "' + slot.mcpServer + '" is not in .mcp.json, so this route cannot run until it is installed or the name is fixed.';
@@ -23139,10 +23145,15 @@ function themeAnimPreviewDraw(player) {
   }
 
   /** Derived, read-only connection line for the Claude Code and Codex hosts (transport follows vendor + mcpServer). */
-  function connectionLineText(slot) {
+  function connectionLineText(slot, claudeAgentBridge) {
     var vendor = String(slot.vendor || "").toLowerCase();
     if (routingOnCodexHost() && ((slot.transport === "mcp" && slot.mcpServer) || (vendor && vendor !== "openai" && vendor !== "anthropic"))) {
       return "Connection: TycoonAgents dispatcher";
+    }
+    if (claudeAgentBridge && vendor !== "anthropic") {
+      var claudeServer = effectiveClaudeBridgeServer(slot);
+      if (claudeServer && claudeServer !== "openai-compatible" && CLAUDE_REGISTRABLE_BRIDGE_SERVERS[claudeServer]) return "Connection: via " + claudeBridgeLabel(claudeServer) + " MCP";
+      if (claudeServer === "openai-compatible") return "Connection: OpenAI-compatible endpoint";
     }
     if (slot.transport === "mcp" && slot.mcpServer) return "Connection: via " + slot.mcpServer + " bridge";
     if (slot.transport === "openai-compatible") return "Connection: OpenAI-compatible endpoint";
@@ -23304,6 +23315,125 @@ function themeAnimPreviewDraw(player) {
       : null;
   }
 
+  // Claude Code harness: a foreign vendor on an agent always runs through that
+  // vendor's bridge. Mirrors VENDOR_BRIDGE_SERVER in src/core/bridgeSetup.ts
+  // (the host registers the server at Save). Native is not an option for these.
+  var CLAUDE_BRIDGE_SERVER_BY_VENDOR = { openai: "codex", google: "gemini", xai: "openai-compatible", mistral: "openai-compatible", moonshot: "openai-compatible" };
+  var CLAUDE_BRIDGE_LABELS = { codex: "Codex", gemini: "Gemini", "openai-compatible": "OpenAI-compatible", "claude-cli": "Claude" };
+  // Servers the host registers at Save / Enable MCP (REGISTRABLE_BRIDGE_SERVERS in bridgeSetup.ts).
+  var CLAUDE_REGISTRABLE_BRIDGE_SERVERS = { codex: true, gemini: true, "openai-compatible": true, "claude-cli": true };
+  var CLAUDE_BRIDGE_NON_AGENT_IDS = { orchestrator: true, defaults: true, defaultFallback: true };
+
+  function claudeBridgeServerForVendor(vendor) {
+    var v = String(vendor || "").toLowerCase();
+    return Object.prototype.hasOwnProperty.call(CLAUDE_BRIDGE_SERVER_BY_VENDOR, v) ? CLAUDE_BRIDGE_SERVER_BY_VENDOR[v] : null;
+  }
+
+  /** The bridge server a slot uses on Claude Code: an explicit name, else the vendor's own; null when native. */
+  function effectiveClaudeBridgeServer(slot) {
+    if (!slot) return null;
+    if (String(slot.vendor || "").toLowerCase() === "anthropic") return slot.transport === "mcp" && slot.mcpServer ? slot.mcpServer : null;
+    if (slot.transport === "mcp" && slot.mcpServer) return slot.mcpServer;
+    if (slot.transport === "openai-compatible") return "openai-compatible";
+    return claudeBridgeServerForVendor(slot.vendor);
+  }
+
+  function claudeBridgeLabel(server) {
+    return Object.prototype.hasOwnProperty.call(CLAUDE_BRIDGE_LABELS, server) ? CLAUDE_BRIDGE_LABELS[server] : String(server || "");
+  }
+
+  /** True for a top-level agent slot (not orchestrator/defaults/fallback entries) on the Claude Code harness. */
+  function isClaudeAgentBridgeSlot(harness, agentInfo, keyPrefix) {
+    return harness === "claude-code" && !!(agentInfo && agentInfo.id) && !CLAUDE_BRIDGE_NON_AGENT_IDS[agentInfo.id] && String(keyPrefix || "").indexOf(".fallback[") === -1;
+  }
+
+  /** The vendor's default catalog model (first preset for that vendor; an alias, never a pinned id), or null. */
+  /** Claude tier named in a model/alias string (fable|opus|sonnet|haiku), else "". */
+  function claudeTierOf(text) {
+    var m = /(fable|opus|sonnet|haiku)/.exec(String(text || "").toLowerCase());
+    return m ? m[1] : "";
+  }
+
+  function defaultModelPresetForVendor(presets, vendor, tier) {
+    var v = String(vendor || "").toLowerCase();
+    var models = ((presets && presets.models) || []).filter(function (m) { return String(m.vendor || "").toLowerCase() === v; });
+    if (v === "anthropic") {
+      var sonnet = models.filter(function (m) { return m.id === "anthropic/sonnet"; })[0];
+      if (sonnet) return sonnet;
+    }
+    if (!models.length) return null;
+    // Catalog order is most to least capable: opus/fable take the top, haiku the cheapest, anything else the mid model.
+    var idx = tier === "opus" || tier === "fable" ? 0 : tier === "haiku" ? models.length - 1 : Math.floor((models.length - 1) / 2);
+    return models[idx];
+  }
+
+  /**
+   * Claude Code vendor pick: set the vendor's bridge, its default catalog model and billing. Foreign vendors
+   * never keep the native route; anthropic restores native with an Anthropic alias.
+   */
+  function applyClaudeVendorBridge(slot, vendor, presets, tier) {
+    var v = String(vendor || "").toLowerCase();
+    var server = claudeBridgeServerForVendor(v);
+    if (v !== "anthropic" && server === null) return false;
+    delete slot.endpointEnv;
+    delete slot.credentialEnv;
+    delete slot._modelCustomEdit;
+    if (v === "anthropic") {
+      slot.transport = "claude-native";
+      delete slot.mcpServer;
+    } else if (server === "openai-compatible") {
+      slot.transport = "openai-compatible";
+      delete slot.mcpServer;
+    } else {
+      slot.transport = "mcp";
+      slot.mcpServer = server;
+    }
+    var preset = defaultModelPresetForVendor(presets, v, tier);
+    slot.model = preset ? preset.id : (v === "anthropic" ? "anthropic/sonnet" : "");
+    if (preset && preset.costModelClass) slot.costModelClass = preset.costModelClass;
+    else delete slot.costModelClass;
+    return true;
+  }
+
+  /**
+   * Save-time only (never on load): a saved profile that has a foreign vendor on the native route on Claude Code
+   * gets that vendor's bridge, so Save registers the server.
+   */
+  function normalizeClaudeBridgeSlots(draft, harness) {
+    if (harness !== "claude-code" || !draft || !draft.agents) return;
+    Object.keys(draft.agents).forEach(function (id) {
+      var slot = draft.agents[id];
+      if (!slot || !slot.vendor || String(slot.vendor).toLowerCase() === "anthropic") return;
+      if (slot.transport === "mcp" && slot.mcpServer) return;
+      var server = claudeBridgeServerForVendor(slot.vendor);
+      if (server === null) return;
+      if (server === "openai-compatible") {
+        slot.transport = "openai-compatible";
+      } else {
+        slot.transport = "mcp";
+        slot.mcpServer = server;
+      }
+    });
+  }
+
+  /** The Claude Code bridge status for a slot: { text, warn, pendingServer } from the host's vendorSetup payload. */
+  function claudeBridgeStatus(slot) {
+    var server = effectiveClaudeBridgeServer(slot);
+    var label = claudeBridgeLabel(server);
+    var setup = (lastRoutingPayload && lastRoutingPayload.vendorSetup) || null;
+    var state = setup && setup.servers ? setup.servers[server] : undefined;
+    var vendorInfo = setup && setup.vendors ? setup.vendors[String(slot.vendor || "").toLowerCase()] : undefined;
+    var missing = [];
+    if (vendorInfo && vendorInfo.server === server) {
+      missing = (vendorInfo.env || []).filter(function (e) { return e.required && !e.present; }).map(function (e) { return e.name; });
+    }
+    var needs = missing.length ? "Needs setup: " + missing.join(", ") : "";
+    if (state === "pending") return { text: "Server not enabled" + (needs ? " · " + needs : ""), warn: true, pendingServer: server };
+    if (state === "installed") return { text: needs || (label + " server installed"), warn: !!needs, pendingServer: null };
+    // Absent, or unknown to an older host: Save sets it up.
+    return { text: label + " server will be set up when you click Save" + (needs ? " · " + needs : ""), warn: !!needs, pendingServer: null };
+  }
+
   /**
    * p27-t3: the always-visible slot identity line — "<vendor> . <model> .
    * <route> . <billing> . <n> fallback(s)" — built from fields already on
@@ -23355,7 +23485,13 @@ function themeAnimPreviewDraw(player) {
     var model = s.model || info.resolvedModel || "unknown model";
     var isNativeVendor = !!nativeVendor && vendor.toLowerCase() === nativeVendor;
     var route;
-    if (s.transport === "mcp") {
+    var claudeBridgeRoute = !isFallbackEntry && isClaudeAgentBridgeSlot(harness, info, "") && !routingOnCodexHost() && vendor.toLowerCase() !== "anthropic" && s.transport !== "openai-compatible"
+      ? effectiveClaudeBridgeServer({ vendor: vendor, transport: s.transport, mcpServer: s.mcpServer })
+      : null;
+    if (claudeBridgeRoute && claudeBridgeRoute !== "openai-compatible" && CLAUDE_REGISTRABLE_BRIDGE_SERVERS[claudeBridgeRoute]) {
+      // Claude Code: a foreign vendor always runs through its bridge (a saved native route is shown as the bridge it gets on Save).
+      route = "via " + claudeBridgeLabel(claudeBridgeRoute) + " MCP";
+    } else if (s.transport === "mcp") {
       route = routingOnCodexHost() ? "TycoonAgents dispatcher" : "bridged via MCP " + (s.mcpServer ? s.mcpServer : "(not installed)");
     } else if (s.transport === "openai-compatible") {
       route = "OpenAI-compatible endpoint";
@@ -23444,7 +23580,7 @@ function themeAnimPreviewDraw(player) {
    * @param {object} slot
    * @param {{id:string,name:string,handWrittenBackend?:boolean}|undefined} agentInfo
    */
-  function buildSubscriptionMcpNotice(slot, agentInfo) {
+  function buildSubscriptionMcpNotice(slot, agentInfo, claudeAgentBridge) {
     var wrap = document.createElement("div");
     wrap.className = "routing-subscription-notice";
     wrap.hidden = true;
@@ -23495,6 +23631,21 @@ function themeAnimPreviewDraw(player) {
       }
     });
     statusRow.appendChild(copyBtn);
+
+    // Claude Code: server held for approval (.mcp.json only) -> one-click enable (registers it at Claude local scope).
+    var enableBtn = document.createElement("button");
+    enableBtn.type = "button";
+    enableBtn.className = "link-button bridge-install-server routing-bridge-enable-btn";
+    enableBtn.textContent = "Enable MCP";
+    enableBtn.hidden = true;
+    enableBtn.addEventListener("click", function () {
+      var pending = claudeBridgeStatus(slot).pendingServer;
+      if (!pending) return;
+      enableBtn.disabled = true;
+      enableBtn.textContent = "Enabling…";
+      vscode.postMessage({ type: "installBridgeServer", id: (agentInfo && agentInfo.id) || "agent", server: pending });
+    });
+    statusRow.appendChild(enableBtn);
 
     // "Show request" expander (bridged-missing only) — the same generated
     // prompt text, kept out of the default layout per section 5's "no
@@ -23604,8 +23755,35 @@ function themeAnimPreviewDraw(player) {
         wrap.hidden = true;
         copyBtn.hidden = true;
         requestDetails.hidden = true;
+        enableBtn.hidden = true;
         return;
       }
+      var harnessNow = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+      if (harnessNow === "claude-code") {
+        // Claude Code sets the bridge up automatically on Save: no manual request to copy.
+        copyBtn.hidden = true;
+        requestDetails.hidden = true;
+        var slotVendorNow = String(slot.vendor || "").toLowerCase();
+        if (claudeAgentBridge && ((lastRoutingPayload && lastRoutingPayload.vendorSetup) || !(agentInfo && agentInfo.handWrittenBackend)) && slotVendorNow && slotVendorNow !== "anthropic" && CLAUDE_REGISTRABLE_BRIDGE_SERVERS[effectiveClaudeBridgeServer(slot)]) {
+          var st = claudeBridgeStatus(slot);
+          wrap.hidden = false;
+          statusLine.textContent = st.text;
+          statusLine.className = "routing-subscription-bridge-status delegation-mode-footnote" + (st.warn ? " theme-review-retry-warning" : "");
+          enableBtn.hidden = !st.pendingServer;
+          if (st.pendingServer && !enableBtn.disabled) enableBtn.textContent = "Enable MCP";
+          return;
+        }
+        enableBtn.hidden = true;
+        var connectedNow = needsBridge() && bridgeIsSetUp();
+        wrap.hidden = !connectedNow;
+        if (connectedNow) {
+          var installedNow = mcpServerInstallState();
+          statusLine.textContent = "Bridged via " + subscriptionNoticeCliName(slot.vendor) + " MCP - " + (installedNow === false ? "MCP server not installed." : "connected.");
+          statusLine.className = "routing-subscription-bridge-status delegation-mode-footnote" + (installedNow === false ? " theme-review-retry-warning" : "");
+        }
+        return;
+      }
+      enableBtn.hidden = true;
       var missing = shouldShow();
       var connected = needsBridge() && bridgeIsSetUp();
       wrap.hidden = !(missing || connected);
@@ -23684,8 +23862,21 @@ function themeAnimPreviewDraw(player) {
     customOpt.textContent = "Custom endpoint…";
     if (isCustom) customOpt.selected = true;
     vendorSel.appendChild(customOpt);
+    var claudeAgentBridge = isClaudeAgentBridgeSlot(slotHarnessEff, agentInfo, keyPrefix);
     vendorSel.addEventListener("change", function () {
       slot.vendor = vendorSel.value;
+      var modelBeforeVendorPick = slot.model;
+      if (claudeAgentBridge && applyClaudeVendorBridge(slot, vendorSel.value, presets, (agentInfo && agentInfo.claudeTier) || claudeTierOf(modelBeforeVendorPick))) {
+        // Claude Code: bridge, default catalog model and billing follow the vendor (anthropic restores native).
+        if (String(vendorSel.value).toLowerCase() === "anthropic" && isTopLevelAgentSlot) {
+          routingExpandedAgents[agentInfo.id] = false;
+          // Keep an Anthropic model/tier the user already had; otherwise the catalog's Anthropic alias.
+          var keepModel = /^(anthropic\/)?(fable|opus|sonnet|haiku|claude-)/.test(String(modelBeforeVendorPick || "")) ? modelBeforeVendorPick : slot.model;
+          routingDraft.agents[agentInfo.id] = keepModel ? { model: keepModel } : {};
+        }
+        onStructural();
+        return;
+      }
       if (vendorSel.value === ROUTING_VENDOR_CUSTOM) {
         slot.transport = "openai-compatible";
       } else if (!(slot.transport === "mcp" && slot.mcpServer)) {
@@ -23811,6 +24002,13 @@ function themeAnimPreviewDraw(player) {
       modelInput.value = displayModel;
       modelInput.addEventListener("input", function () { slot.model = modelInput.value; });
       modelRow.appendChild(modelInput);
+      if (!isCustom && slot.model && !matchesPreset) {
+        // A pinned id the catalog no longer offers (user choice, kept as saved): shown as custom, never broken.
+        var customTag = document.createElement("span");
+        customTag.className = "routing-model-custom-tag delegation-mode-footnote";
+        customTag.textContent = "(custom)";
+        modelRow.appendChild(customTag);
+      }
       if (!isCustom) {
         var backToPreset = document.createElement("button");
         backToPreset.type = "button";
@@ -23865,7 +24063,7 @@ function themeAnimPreviewDraw(player) {
       connectionLineEl = document.createElement("div");
       connectionLineEl.className = "routing-connection-line";
       connectionLineEl.setAttribute("data-field-key", keyPrefix + ".connection");
-      connectionLineEl.textContent = connectionLineText(slot);
+      connectionLineEl.textContent = connectionLineText(slot, claudeAgentBridge);
       frag.appendChild(connectionLineEl);
     } else if (!isNativeVendorSlot) {
       var transportRow = document.createElement("div");
@@ -23916,6 +24114,7 @@ function themeAnimPreviewDraw(player) {
     var costHint = document.createElement("div");
     costHint.className = "routing-env-note routing-billing-hint";
     costHint.textContent = "Informational; on OpenCode it also controls the Claude subscription lock";
+    costHint.hidden = slotHarnessEff === "claude-code"; // the hint only concerns OpenCode
     costRow.appendChild(costHint);
     frag.appendChild(costRow);
 
@@ -23936,7 +24135,7 @@ function themeAnimPreviewDraw(player) {
       frag.addEventListener("change", refreshClaudeSubNote);
       frag.appendChild(claudeSubNote);
     }
-    var subNotice = buildSubscriptionMcpNotice(slot, agentInfo);
+    var subNotice = buildSubscriptionMcpNotice(slot, agentInfo, claudeAgentBridge);
     frag.appendChild(subNotice.el);
     frag._refreshSubscriptionNotice = subNotice.refresh;
     frag.addEventListener("input", subNotice.refresh);
@@ -24013,7 +24212,7 @@ function themeAnimPreviewDraw(player) {
       var refreshMcpWarn = function () {
         mcpWarnHolder.textContent = "";
         if (keyPrefix.indexOf(".fallback[") !== -1) return; // the fallback list shows its own warning
-        var w = buildMcpServerWarning(missingMcpServerWarning(slot));
+        var w = buildMcpServerWarning(missingMcpServerWarning(slot, claudeAgentBridge));
         if (w) mcpWarnHolder.appendChild(w);
       };
       if (transportDerived && !isCustom) {
@@ -24026,15 +24225,25 @@ function themeAnimPreviewDraw(player) {
           mcpList.appendChild(o);
         });
         mcpInput.setAttribute("list", mcpList.id);
-        mcpInput.placeholder = "(none: native route)";
+        // Claude Code agents never run a foreign vendor natively: empty means the vendor's own bridge.
+        var vendorBridgeDefault = claudeAgentBridge ? claudeBridgeServerForVendor(slot.vendor) : null;
+        mcpInput.placeholder = vendorBridgeDefault ? "(default: " + vendorBridgeDefault + ")" : "(none: native route)";
         mcpRow.appendChild(mcpList);
       }
       mcpInput.addEventListener("input", function () {
         slot.mcpServer = mcpInput.value;
         if (transportDerived && !isCustom) {
-          slot.transport = mcpInput.value.trim() ? "mcp" : storedBaseTransport;
-          if (!mcpInput.value.trim()) delete slot.mcpServer;
-          if (connectionLineEl) connectionLineEl.textContent = connectionLineText(slot);
+          var emptyBridgeDefault = claudeAgentBridge ? claudeBridgeServerForVendor(slot.vendor) : null;
+          if (mcpInput.value.trim()) {
+            slot.transport = "mcp";
+          } else if (emptyBridgeDefault && emptyBridgeDefault !== "openai-compatible") {
+            slot.transport = "mcp";
+            slot.mcpServer = emptyBridgeDefault;
+          } else {
+            slot.transport = emptyBridgeDefault ? "openai-compatible" : storedBaseTransport;
+            delete slot.mcpServer;
+          }
+          if (connectionLineEl) connectionLineEl.textContent = connectionLineText(slot, claudeAgentBridge);
         }
         refreshMcpWarn();
       });
@@ -24069,7 +24278,7 @@ function themeAnimPreviewDraw(player) {
         connDetails.appendChild(frag.firstChild);
       }
       var slotDispatchCheck = isFallbackTargetDispatchableWebview(slot, routingCurrentHarness, routingCurrentGeminiKeyPresent);
-      var openConnection = (subNotice.needsBridge() && !subNotice.bridgeIsSetUp()) || slotDispatchCheck.ok === false || !!missingMcpServerWarning(slot);
+      var openConnection = (subNotice.needsBridge() && !subNotice.bridgeIsSetUp()) || slotDispatchCheck.ok === false || !!missingMcpServerWarning(slot, claudeAgentBridge);
       if (openConnection) connDetails.open = true;
       frag.appendChild(connDetails);
     }
@@ -24869,10 +25078,13 @@ function themeAnimPreviewDraw(player) {
       stats.appendChild(chip("vendor", vendorLabelFor(cardVendor)));
     }
     const cardCostClass = a.costModelClass || (m && m.costModelClass) || null;
+    // Same words as the slot's billing label and summary line.
     if (cardCostClass === "subscription") {
-      stats.appendChild(chip("billing", "quota"));
+      stats.appendChild(chip("billing", "subscription"));
     } else if (cardCostClass === "local") {
       stats.appendChild(chip("billing", "local"));
+    } else if (cardCostClass === "metered" && cardVendor && cardVendor !== "anthropic") {
+      stats.appendChild(chip("billing", "metered"));
     }
     return stats;
   }
@@ -25265,7 +25477,10 @@ function themeAnimPreviewDraw(player) {
       head.appendChild(hdChip);
       head.appendChild(buildUseClaudeDisclosure());
     } else if (a.claudeTier) {
-      head.appendChild(buildModelRadioGroup());
+      // Claude tiers are meaningless while a foreign vendor is chosen on Claude Code: hide them until anthropic/unticked.
+      const tierDraft = routingDraft && routingDraft.agents && routingDraft.agents[a.id];
+      const foreignChosen = cardHarness === "claude-code" && density !== "full" && !!(tierDraft && tierDraft.vendor && String(tierDraft.vendor).toLowerCase() !== "anthropic" && routingExpandedAgents[a.id] !== false);
+      if (!foreignChosen) head.appendChild(buildModelRadioGroup());
     } else {
 
       if (a.handWrittenBackend) {
@@ -25358,7 +25573,12 @@ function themeAnimPreviewDraw(player) {
     row.appendChild(head);
 
     // Stats
-    row.appendChild(buildAgentStatsRow(a, m));
+    // Vendor/billing chips follow the editable slot (the draft), so they match the summary line and billing label.
+    const chipDraftSlot = routingDraft && routingDraft.agents && routingDraft.agents[a.id];
+    const chipAgent = chipDraftSlot && chipDraftSlot.vendor && String(chipDraftSlot.vendor).toLowerCase() !== "anthropic" && density !== "full"
+      ? { ...a, vendor: chipDraftSlot.vendor, costModelClass: chipDraftSlot.costModelClass || "metered" }
+      : a;
+    row.appendChild(buildAgentStatsRow(chipAgent, m));
 
     // Recommendation badge
     const suppressRecFor = justSetAgentModelId;
@@ -25575,7 +25795,7 @@ function themeAnimPreviewDraw(player) {
           resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
           resolvedModel: a.resolvedModel || a.model,
         }));
-    var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend });
+    var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier });
         editorWrap.appendChild(slotFieldsEl);
         editorWrap.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
         if (slotFieldsEl._refreshSubscriptionNotice) {
@@ -25684,7 +25904,7 @@ function themeAnimPreviewDraw(player) {
       resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
       resolvedModel: a.resolvedModel || a.model,
     }));
-    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend });
+    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier });
     slotTd.appendChild(fullSlotFieldsEl);
     routingRow.appendChild(slotTd);
 
@@ -26217,6 +26437,8 @@ function themeAnimPreviewDraw(player) {
     }
     var profile;
     try {
+      // Claude Code: a foreign vendor saved on the native route (older profile) gets its bridge now, so Save registers the server.
+      normalizeClaudeBridgeSlots(routingDraft, (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code");
       profile = assembleRoutingProfile();
     } catch (err) {
       // Assembling from routingDraft threw (e.g. a malformed custom-vendor

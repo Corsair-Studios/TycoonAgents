@@ -428,8 +428,13 @@ function runCodexConfigGeneratorStandalone(root) {
 function buildRoutingPayload(root) {
   const { buildRoutingView } = routingHostOpsModule();
   const view = buildRoutingView({ root, env: process.env });
+  let vendorSetup = { servers: {}, vendors: {} };
+  try {
+    vendorSetup = bridgeSetupModule().describeVendorBridgeSetups(bridgeSetupContextStandalone(root));
+  } catch { /* the card falls back to a generic status */ }
   return {
     ...view,
+    vendorSetup,
     uiMode: 'multi',
     harness: 'standalone',
     multiProviderSetting: true,
@@ -2918,8 +2923,9 @@ async function handleInstallBridgeServerStandalone(msg) {
   let error;
   let newChatHint = false;
   try {
-    const { serverForInstalledAgent, harnessUsesMcpJson } = bridgeSetupModule();
-    const server = root && agentId ? serverForInstalledAgent(root, agentId) : null;
+    const { serverForInstalledAgent, harnessUsesMcpJson, isRegistrableBridgeServer } = bridgeSetupModule();
+    // The slot card names the server directly (the agent file may carry no backend yet).
+    const server = !root ? null : (isRegistrableBridgeServer(msg && msg.server) ? msg.server : (agentId ? serverForInstalledAgent(root, agentId) : null));
     if (!root) error = 'No project root resolved';
     else if (server === null) error = 'This agent does not use an MCP server.';
     else if (!harnessUsesMcpJson(resolveEffectiveHarness(root))) {

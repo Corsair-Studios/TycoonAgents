@@ -200,7 +200,7 @@ TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/c
 
 Any recent Codex CLI works: a runtime launcher discovers the Codex binary and picks the connection method automatically (`mcp-server` or an `app-server`-based adapter); set `TYCOON_CODEX_BACKEND` to `mcp-server` or `app-server` to override. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
-The `codex-reviewer` agent defaults to `gpt-5.6-sol`, the cheapest model a ChatGPT-account login accepts; `gpt-6-astra` is available as a higher tier. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
+The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost); `gpt-6-astra` is the most capable tier and `gpt-6-luna` the cheapest. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
 
 Adding a Codex agent from the Agents screen installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
 

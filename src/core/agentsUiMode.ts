@@ -45,6 +45,8 @@ export interface SingleProviderTier {
   id: string;
   label: string;
   model: string;
+  /** One-line description shown beside the model in the catalog picker. */
+  description?: string;
 }
 
 export interface SingleProviderTiers {
@@ -54,11 +56,13 @@ export interface SingleProviderTiers {
 
 /**
  * Single source of truth for the Codex models accepted under ChatGPT sign-in
- * (Sol, then the higher-tier Astra). Import from "src/core/agentsUiMode".
+ * (Astra, Sol, Luna: most to least capable, matching Claude opus/sonnet/haiku). Ids read from
+ * `codex debug models` (2026-10-13). Import from "src/core/agentsUiMode".
  */
 export const CODEX_ACCEPTED_MODELS: readonly SingleProviderTier[] = [
-  { id: "sol", label: "Sol", model: "openai/gpt-5.6-sol" },
-  { id: "astra", label: "Astra", model: "openai/gpt-6-astra" },
+  { id: "astra", label: "Astra", model: "openai/gpt-6-astra", description: "Most capable; frontier work" },
+  { id: "sol", label: "Sol", model: "openai/gpt-6.1-sol", description: "Near-Astra at lower cost" },
+  { id: "luna", label: "Luna", model: "openai/gpt-6-luna", description: "Cheap, high-volume work" },
 ];
 
 /**
@@ -68,6 +72,9 @@ export const CODEX_ACCEPTED_MODELS: readonly SingleProviderTier[] = [
  */
 export const CODEX_REJECTED_MODELS: readonly string[] = ["gpt-5", "gpt-6"];
 
+/** Older bare ids still listed by `codex debug models`: dispatch accepts a saved one, the UI never offers them (mirrored in hooks/dispatcherClaudeChain.cjs). */
+export const CODEX_LEGACY_MODELS: readonly string[] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-5.5"];
+
 /**
  * Model tier lists for the single-provider Agents view, keyed by harness.
  * Claude reuses the SAME alias strings the existing model dropdown writes
@@ -75,7 +82,7 @@ export const CODEX_REJECTED_MODELS: readonly string[] = ["gpt-5", "gpt-6"];
  * are the model ids actually accepted by ChatGPT-account Codex auth as
  * documented at media/mcp/catalog.json's `codex` entry and
  * src/host/vscode/packCatalog.ts's codex-reviewer template (backend.model
- * "openai/gpt-5.6-sol", with "openai/gpt-6-astra" as the higher-tier
+ * "openai/gpt-6.1-sol", with "openai/gpt-6-astra" as the higher-tier
  * option) — never invented slugs. An unrecognized harness returns an empty
  * tier list, and callers should fall back to "multi" in that case.
  */

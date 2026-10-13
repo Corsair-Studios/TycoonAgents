@@ -221,7 +221,7 @@ defeating the point of the system either way. When in doubt, delegate.
 | Specialist | Task types | Vendor / model |
 | --- | --- | --- |
 | claude-worker | claude-cli, subscription-worker | Anthropic · anthropic/sonnet (subscription) |
-| codex-reviewer | codex, foreign-review, cross-vendor, second-opinion, adversarial-review | OpenAI · openai/gpt-5.6-sol (subscription) |
+| codex-reviewer | codex, foreign-review, cross-vendor, second-opinion, adversarial-review | OpenAI · openai/gpt-6.1-sol (subscription) |
 | coding-specialist | implement, code, fix, bug, refactor, create, add, update, function, class, method, logic, algorithm, typescript, key, phase, accuracy, copy, backup, fixes, dispatcher, follow-up, handlers, hardening, json, p23-t1, p37, p43 | Anthropic · anthropic/sonnet |
 | gemini-reviewer | gemini, foreign-review, cross-vendor, second-opinion, adversarial-review | Google · google/gemini-2.5-pro |
 | kimi-reviewer | kimi, qwen, local-review, openai-compatible, foreign-review, cross-vendor, second-opinion, adversarial-review | Moonshot · moonshot/kimi-k2 (local) |
@@ -432,7 +432,7 @@ never edit, grep, or explore the codebase directly.
 | id | role | keywords | vendor |
 | --- | --- | --- | --- |
 | claude-worker | Runs delegated implementation and review work through the user's OWN `claude` CLI login (a Claude Max/Pro subscription) via the `claude-cli` MCP server, instead of the orchestrator's metered API key. | claude-cli|subscription-worker | anthropic (delegate) |
-| codex-reviewer | <!-- NOTE: gpt-5.6-sol is the cheapest model accepted by ChatGPT-account Codex auth (probed 2026-09-15); gpt-6-astra remains available as an explicit higher-tier option. --> | codex|foreign-review|cross-vendor|second-opinion|adversarial-review | openai (native) |
+| codex-reviewer | <!-- NOTE: gpt-6.1-sol is near-Astra at lower cost (ids per `codex debug models`, 2026-10-13); gpt-6-astra is the explicit higher tier, gpt-6-luna the cheapest. --> | codex|foreign-review|cross-vendor|second-opinion|adversarial-review | openai (native) |
 | coding-specialist | You handle code implementation — writing, editing, refactoring, and fixing bugs. You produce clean, focused, tested changes. | implement|code|fix|bug|refactor|create|add|update|function|class|method|logic|algorithm|typescript | anthropic (delegate) |
 | gemini-reviewer | Runs an adversarial, cross-vendor review of a completed change by calling Google's Gemini through the `gemini` MCP server, then returns a structured, machine-parseable verdict — never free-form | gemini|foreign-review|cross-vendor|second-opinion|adversarial-review | google (delegate) |
 | kimi-reviewer | Runs an adversarial, cross-vendor review of a completed change by calling Moonshot's Kimi K2 (or another OpenAI-compatible endpoint, e.g. Qwen, or a local model on a VM) through the | kimi|qwen|local-review|openai-compatible|foreign-review|cross-vendor|second-opinion|adversarial-review | moonshot (delegate) |

@@ -132,9 +132,11 @@
     "openai/gpt-5": { perMtok: 8, weight: 12 },
     "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
     // seed, unverified — codex-reviewer's current model (2026-09-15); refresh via update-pricing
-    "openai/gpt-5.6-sol": { perMtok: 1, weight: 0.7 },
-    // seed, unverified — higher-tier option, costlier than gpt-5.6-sol; refresh via update-pricing
+    "openai/gpt-6.1-sol": { perMtok: 1, weight: 0.7 },
+    // seed, unverified — higher-tier option, costlier than gpt-6.1-sol; refresh via update-pricing
     "openai/gpt-6-astra": { perMtok: 1.5, weight: 1 },
+    // seed, unverified — cheapest tier; refresh via update-pricing
+    "openai/gpt-6-luna": { perMtok: 0.5, weight: 0.4 },
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
@@ -700,7 +702,7 @@
 
   /**
    * The routed backend's model id for an agent (e.g. "grok-4.7",
-   * "gpt-5.6-sol"), from the last routing payload. Null when routing has not
+   * "gpt-6.1-sol"), from the last routing payload. Null when routing has not
    * loaded or the agent has no routed backend model.
    * @param {{id?:string}} agent
    * @returns {string|null}

@@ -35,22 +35,22 @@ const codexRollout = require("../../hooks/codexRollout.cjs") as {
 
 const dynamicImport = new Function("specifier", "return import(specifier);") as (s: string) => Promise<any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-test("tier mapping: haiku -> sol low, sonnet -> sol, opus/fable -> astra", () => {
+test("tier mapping: haiku -> luna, sonnet -> sol, opus/fable -> astra", () => {
   assert.deepEqual(defaults.CODEX_TIER_MODELS, {
-    haiku: { model: "gpt-5.6-sol", effort: "low" },
-    sonnet: { model: "gpt-5.6-sol" },
+    haiku: { model: "gpt-6-luna" },
+    sonnet: { model: "gpt-6.1-sol" },
     opus: { model: "gpt-6-astra" },
     fable: { model: "gpt-6-astra" },
   });
   const r = (m?: string) => defaults.resolveHarnessDefault("codex", { frontmatterModel: m });
-  assert.deepEqual(r("haiku"), { vendor: "openai", model: "gpt-5.6-sol", effort: "low", source: "harness-default" });
-  assert.deepEqual(r("sonnet"), { vendor: "openai", model: "gpt-5.6-sol", source: "harness-default" });
+  assert.deepEqual(r("haiku"), { vendor: "openai", model: "gpt-6-luna", source: "harness-default" });
+  assert.deepEqual(r("sonnet"), { vendor: "openai", model: "gpt-6.1-sol", source: "harness-default" });
   assert.equal(r("opus").model, "gpt-6-astra");
   assert.equal(r("fable").model, "gpt-6-astra");
   assert.equal(r("claude-opus-4-7").model, "gpt-6-astra");
-  assert.equal(r("anthropic/haiku").effort, "low");
-  assert.equal(r("inherit").model, "gpt-5.6-sol");
-  assert.equal(r(undefined).model, "gpt-5.6-sol");
+  assert.equal(r("anthropic/haiku").model, "gpt-6-luna");
+  assert.equal(r("inherit").model, "gpt-6.1-sol");
+  assert.equal(r(undefined).model, "gpt-6.1-sol");
 });
 
 test("explicit routing slot, foreign vendor, claude-worker and gpt-* frontmatter are kept", () => {
@@ -117,7 +117,7 @@ test("dispatcher on the Codex harness records the effective openai model (execut
   const dir = makeProject(AGENTS, { "execution.json": { provider: "codex" } });
   try {
     const sonnet = await delegate(dir, "coding-specialist", {});
-    assert.deepEqual([sonnet.pre.vendor, sonnet.pre.model], ["openai", "gpt-5.6-sol"]);
+    assert.deepEqual([sonnet.pre.vendor, sonnet.pre.model], ["openai", "gpt-6.1-sol"]);
     assert.equal(sonnet.res.content[0].text.startsWith("stub:openai:"), true);
     const mod = require("../../hooks/tycoon-dispatcher-mcp.cjs") as { resolveActivityFile: () => string };
     const prevDir = process.env.TYCOON_PROJECT_DIR;
@@ -126,7 +126,7 @@ test("dispatcher on the Codex harness records the effective openai model (execut
     if (prevDir === undefined) delete process.env.TYCOON_PROJECT_DIR; else process.env.TYCOON_PROJECT_DIR = prevDir;
     assert.ok(okStops.length >= 1 && okStops.every((x) => x.ok === true));
     const haiku = await delegate(dir, "search-retrieval", {});
-    assert.deepEqual([haiku.pre.vendor, haiku.pre.model], ["openai", "gpt-5.6-sol"]);
+    assert.deepEqual([haiku.pre.vendor, haiku.pre.model], ["openai", "gpt-6-luna"]);
     const kimi = await delegate(dir, "kimi-reviewer", {});
     assert.deepEqual([kimi.pre.vendor, kimi.pre.model], ["moonshot", "kimi-k2"]);
     const cw = await delegate(dir, "claude-worker", {});
@@ -202,13 +202,13 @@ async function runCodexAdapter(workerId: string, projectDir: string, model: stri
 test("codex exec adapter: builder gets workspace-write, project cwd, model, effort, leaf preamble, bridge-child env", async () => {
   const dir = makeProject({ "coding-specialist": "---\nmodel: sonnet\n---\nbody" });
   try {
-    const { res, rec } = await runCodexAdapter("coding-specialist", dir, "gpt-5.6-sol", "low");
+    const { res, rec } = await runCodexAdapter("coding-specialist", dir, "gpt-6.1-sol", "low");
     assert.equal(res.text, "fake codex done");
     assert.ok(rec, "fake codex ran");
     const argv: string[] = rec.argv;
     assert.equal(argv[0], "exec");
     assert.equal(argv[argv.indexOf("-s") + 1], "workspace-write");
-    assert.equal(argv[argv.indexOf("-m") + 1], "gpt-5.6-sol");
+    assert.equal(argv[argv.indexOf("-m") + 1], "gpt-6.1-sol");
     assert.ok(argv.includes("model_reasoning_effort=low"));
     assert.ok(argv.includes("approval_policy=never"));
     assert.ok(argv.includes("mcp_servers.tycoon.enabled=false"));
@@ -227,7 +227,7 @@ test("codex exec adapter: reviewer is read-only, not in the project cwd, no bypa
   const dir = makeProject({ "code-reviewer": "---\nmodel: haiku\n---\nbody" });
   try {
     assert.equal(adapters.isReadOnlyAgent({ workerId: "code-reviewer", projectDir: dir }), true);
-    const { rec } = await runCodexAdapter("code-reviewer", dir, "gpt-5.6-sol");
+    const { rec } = await runCodexAdapter("code-reviewer", dir, "gpt-6.1-sol");
     assert.ok(rec);
     const argv: string[] = rec.argv;
     assert.equal(argv[argv.indexOf("-s") + 1], "read-only");
@@ -249,7 +249,7 @@ test("codex exec adapter: sandbox failure output becomes kind sandbox_unavailabl
   const prev = process.env.CODEX_BINARY_PATH;
   process.env.CODEX_BINARY_PATH = fake.bin;
   try {
-    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-5.6-sol", workerId: "coding-specialist", projectDir: dir })) as { error?: string; kind?: string };
+    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-6.1-sol", workerId: "coding-specialist", projectDir: dir })) as { error?: string; kind?: string };
     assert.equal(res.kind, "sandbox_unavailable");
     assert.equal(res.error, SANDBOX_MESSAGE);
   } finally {
@@ -267,7 +267,7 @@ test("codex exec adapter: a successful answer quoting the sandbox strings is not
   const prev = process.env.CODEX_BINARY_PATH;
   process.env.CODEX_BINARY_PATH = fake.bin;
   try {
-    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-5.6-sol", workerId: "coding-specialist", projectDir: dir })) as { text?: string; error?: string; kind?: string };
+    const res = (await adapters.openaiAdapter("t", { harness: "codex", vendor: "openai", model: "gpt-6.1-sol", workerId: "coding-specialist", projectDir: dir })) as { text?: string; error?: string; kind?: string };
     assert.equal(res.kind, undefined);
     assert.equal(res.error, undefined);
     assert.match(res.text as string, /setup refresh had errors/);
@@ -332,8 +332,8 @@ test("generator states each specialist's effective Codex model", async () => {
   try {
     const gen = await dynamicImport(pathToFileURL(path.join(process.cwd(), "scripts", "generate-codex-config.mjs")).href);
     const { agentsMdBlock, agentsToml } = gen.generateCodexConfig({ projectDir: dir });
-    assert.match(agentsMdBlock, /coding-specialist[^\n]*runs on gpt-5\.6-sol \|/);
-    assert.match(agentsMdBlock, /search-retrieval[^\n]*runs on gpt-5\.6-sol \(low effort\)/);
+    assert.match(agentsMdBlock, /coding-specialist[^\n]*runs on gpt-6\.1-sol \|/);
+    assert.match(agentsMdBlock, /search-retrieval[^\n]*runs on gpt-6-luna/);
     assert.match(agentsMdBlock, /planner[^\n]*runs on gpt-6-astra/);
     assert.match(agentsMdBlock, /`delegate` tool/);
     assert.match(agentsToml, /# effective Codex model: gpt-6-astra/);

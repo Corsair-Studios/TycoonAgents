@@ -425,6 +425,8 @@
   }
 
   function handleBridgeServerInstalled(id, ok, error) {
+    // The slot card's status line reads the routing payload: refresh it so "Enable MCP" resolves.
+    if (ok && typeof ROUTING_MSG !== "undefined") vscode.postMessage({ type: ROUTING_MSG.GET });
     const wrap = document.querySelector('[data-bridge-setup-agent="' + CSS.escape(id) + '"]');
     if (wrap && !ok) {
       let err = wrap.querySelector(".bridge-setup-error");

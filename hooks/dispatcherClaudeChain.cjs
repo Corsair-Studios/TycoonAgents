@@ -127,8 +127,10 @@ function findSpawnContext(activityFile, workerId, hinted) {
 }
 
 // Mirrors CODEX_ACCEPTED_MODELS / CODEX_REJECTED_MODELS in src/core/agentsUiMode.ts (a test asserts they match).
-const CODEX_ACCEPTED_BARE = ["gpt-5.6-sol", "gpt-6-astra"];
+const CODEX_ACCEPTED_BARE = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"];
 const CODEX_REJECTED_BARE = ["gpt-5", "gpt-6"];
+// Older ids still in `codex debug models`: dispatch keeps accepting a saved bare id; the UI never offers them (mirrors CODEX_LEGACY_MODELS).
+const CODEX_LEGACY_BARE = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-5.5"];
 
 /** Accepted ids and any other explicit openai/* id are forwarded; known-rejected legacy ids and non-OpenAI values (sonnet, inherit, ...) fall back to the .mcp.json default. */
 function codexModelArg(model) {
@@ -136,7 +138,7 @@ function codexModelArg(model) {
   const prefixed = /^openai\//i.test(m);
   const bare = m.replace(/^openai\//i, "");
   if (!bare || CODEX_REJECTED_BARE.includes(bare.toLowerCase())) return undefined;
-  if (CODEX_ACCEPTED_BARE.includes(bare)) return bare;
+  if (CODEX_ACCEPTED_BARE.includes(bare) || CODEX_LEGACY_BARE.includes(bare)) return bare;
   return prefixed ? bare : undefined;
 }
 
@@ -481,6 +483,7 @@ module.exports = {
   modelArgFor,
   customEndpointNames,
   CODEX_ACCEPTED_BARE,
+  CODEX_LEGACY_BARE,
   CODEX_REJECTED_BARE,
   describeAttempts,
 };

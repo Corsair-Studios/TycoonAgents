@@ -316,7 +316,8 @@ function buildPresets(): RoutingPresets {
   // CODEX_ACCEPTED_MODELS); API-key users pick "Custom…" in the webview.
   for (const m of CODEX_ACCEPTED_MODELS) {
     vendors.add("openai");
-    modelsById.set(m.model, { id: m.model, vendor: "openai", costModelClass: "subscription", label: `${m.label} (${m.model})` });
+    modelsById.delete(m.model); // keep catalog order (most to least capable) even if an agent already added it
+    modelsById.set(m.model, { id: m.model, vendor: "openai", costModelClass: "subscription", label: `${m.label} — ${m.description ?? ""} (${m.model})` });
   }
 
   // OpenCode's Zen provider — the standalone's default orchestrator model

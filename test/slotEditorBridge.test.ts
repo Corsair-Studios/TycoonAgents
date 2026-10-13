@@ -221,8 +221,9 @@ function payload(agents: any[], harness: string, br: any = bridge()) {
       vendors: ['anthropic', 'openai', 'google'],
       models: [
         { id: 'google/gemini-2.5-pro', vendor: 'google', costModelClass: 'metered', label: 'google/gemini-2.5-pro' },
-        { id: 'openai/gpt-5.6-sol', vendor: 'openai', costModelClass: 'subscription', label: 'Sol (openai/gpt-5.6-sol)' },
         { id: 'openai/gpt-6-astra', vendor: 'openai', costModelClass: 'subscription', label: 'Astra (openai/gpt-6-astra)' },
+        { id: 'openai/gpt-6.1-sol', vendor: 'openai', costModelClass: 'subscription', label: 'Sol (openai/gpt-6.1-sol)' },
+        { id: 'openai/gpt-6-luna', vendor: 'openai', costModelClass: 'subscription', label: 'Luna (openai/gpt-6-luna)' },
       ],
       vendorKeys: [
         { id: 'google', label: 'Google', vendors: ['google'], auth: 'signin', signIn: 'Antigravity', test: null,
@@ -311,7 +312,7 @@ for (const harness of ['claude-code', 'codex']) {
     try {
       const card = cardOf(doc, 'gem');
       assert.equal(card.querySelector('[data-field-key$=".transport"]'), null, 'no Transport select');
-      assert.equal(card.querySelector('.routing-connection-line').textContent, harness === 'codex' ? 'Connection: TycoonAgents dispatcher' : 'Connection: via gemini bridge');
+      assert.equal(card.querySelector('.routing-connection-line').textContent, harness === 'codex' ? 'Connection: TycoonAgents dispatcher' : 'Connection: via Gemini MCP');
       const labels = Array.from(card.querySelectorAll('.routing-field-row label')).map((l: any) => l.textContent);
       assert.ok(labels.includes('Billing label'));
       assert.ok(!labels.includes('Cost class'));
@@ -328,17 +329,17 @@ test('typing an MCP server name derives the connection line and transport; clear
   const { win, doc, flush } = await render('claude-code', [plain]);
   try {
     const line = () => (cardOf(doc, 'plain').querySelector('.routing-connection-line') as any).textContent;
-    assert.equal(line(), 'Connection: native xai (no bridge)');
+    assert.equal(line(), 'Connection: OpenAI-compatible endpoint');
     const input = cardOf(doc, 'plain').querySelector('[data-field-key$=".mcpServer"]') as any;
     assert.ok(input, 'MCP server field is editable on this host');
     input.value = 'codex';
     input.dispatchEvent(new win.Event('input', { bubbles: true }));
     await flush();
-    assert.equal(line(), 'Connection: via codex bridge');
+    assert.equal(line(), 'Connection: via Codex MCP');
     input.value = '';
     input.dispatchEvent(new win.Event('input', { bubbles: true }));
     await flush();
-    assert.equal(line(), 'Connection: native xai (no bridge)');
+    assert.equal(line(), 'Connection: OpenAI-compatible endpoint');
   } finally {
     win.close();
   }
@@ -355,12 +356,12 @@ test('opencode keeps the editable Transport select', async () => {
 });
 
 test('codex model picker offers Sol and Astra plus Custom...', async () => {
-  const cx = agent('cx', { vendor: 'openai', transport: 'claude-native', model: 'openai/gpt-5.6-sol', costModelClass: 'subscription' });
+  const cx = agent('cx', { vendor: 'openai', transport: 'claude-native', model: 'openai/gpt-6.1-sol', costModelClass: 'subscription' });
   const { win, doc } = await render('claude-code', [cx]);
   try {
     const picker = cardOf(doc, 'cx').querySelector('.routing-model-select') as any;
     const values = Array.from(picker.options).map((o: any) => o.value);
-    assert.ok(values.includes('openai/gpt-5.6-sol') && values.includes('openai/gpt-6-astra') && values.includes('__custom__'), values.join(','));
+    assert.ok(values.includes('openai/gpt-6.1-sol') && values.includes('openai/gpt-6-astra') && values.includes('openai/gpt-6-luna') && values.includes('__custom__'), values.join(','));
   } finally {
     win.close();
   }
@@ -464,5 +465,162 @@ test('a fallback whose mcpServer is missing from .mcp.json shows a warning namin
     assert.equal(ok.doc.querySelector('.routing-mcp-server-warning'), null, 'present server: no warning');
   } finally {
     ok.win.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Claude Code: choosing a foreign vendor on an agent wires that vendor's bridge
+// (no native route, no manual "Copy request"); Save registers the server.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { bridgeServersForRoutingProfile } = require('../src/core/bridgeSetup');
+
+const CS_AGENT = agent('cs', { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'metered' });
+
+function vendorSetup(codex: string, over: any = {}) {
+  return {
+    servers: { codex, gemini: 'absent', 'openai-compatible': 'absent', 'claude-cli': 'absent' },
+    vendors: {
+      openai: { server: 'codex', serverState: codex === 'absent' ? 'missing' : codex, keyState: 'signin', signIn: 'Codex', env: [], needsSetup: false, reasons: [] },
+      ...over,
+    },
+  };
+}
+
+async function renderClaude(agents: any[], setup: any) {
+  const ctx = await bootMain();
+  (ctx.doc.getElementById('menu-routing') as any).click();
+  await ctx.flush();
+  ctx.dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' } } });
+  await ctx.flush();
+  const p: any = payload(agents, 'claude-code');
+  p.presets.models.unshift({ id: 'anthropic/sonnet', vendor: 'anthropic', costModelClass: 'metered', label: 'anthropic/sonnet' });
+  p.vendorSetup = setup;
+  ctx.dispatch({ type: 'routing', payload: p });
+  await ctx.flush();
+  ctx.assertNoErrors('routing render');
+  return ctx;
+}
+
+function statusOf(card: any): string {
+  const row = card.querySelector('.routing-subscription-notice');
+  return row && !row.hidden ? row.querySelector('.routing-subscription-bridge-status').textContent : '';
+}
+
+test('claude-code: picking openai sets the Codex bridge, the catalog default model and billing; Save registers codex', async () => {
+  const { win, doc, posted, flush } = await renderClaude([CS_AGENT], vendorSetup('absent'));
+  try {
+    let card = cardOf(doc, 'cs');
+    const vendorSel = card.querySelector('.routing-vendor-select') as any;
+    vendorSel.value = 'openai';
+    vendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await flush();
+    card = cardOf(doc, 'cs');
+    assert.equal(card.querySelector('.routing-connection-line').textContent, 'Connection: via Codex MCP');
+    const modelSel = card.querySelector('.routing-model-select') as any;
+    assert.equal(modelSel.value, 'openai/gpt-6.1-sol', 'default catalog alias for the vendor');
+    const modelOptions = Array.from(modelSel.options).map((o: any) => o.value).filter((v) => v && v !== '__custom__');
+    assert.deepEqual(modelOptions, ['openai/gpt-6-astra', 'openai/gpt-6.1-sol', 'openai/gpt-6-luna'], 'picker lists only the vendor models');
+    assert.equal((card.querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex');
+    assert.equal((card.querySelector('[data-field-key$=".costModelClass"]') as any).value, 'subscription');
+    const summary = card.querySelector('.routing-slot-summary-line').textContent;
+    assert.match(summary, /^openai · openai\/gpt-6\.1-sol · via Codex MCP · subscription · 0 fallbacks/);
+    assert.match(card.querySelector('.agent-stats').textContent, /billing subscription/);
+    assert.equal(statusOf(card), 'Codex server will be set up when you click Save');
+    // The obsolete manual flow is gone on Claude Code.
+    assert.equal(card.querySelector('.routing-subscription-notice-copy').hidden, true, 'no Copy request');
+    assert.equal(card.querySelector('.routing-subscription-request-details').hidden, true, 'no Show request');
+
+    (card.querySelector('.agent-card-save-btn') as any).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await flush();
+    const saveMsg = [...posted].reverse().find((m: any) => m.type === 'saveRouting');
+    assert.ok(saveMsg, 'saveRouting posted');
+    const slot = saveMsg.profile.agents.cs;
+    assert.equal(slot.vendor, 'openai');
+    assert.equal(slot.transport, 'mcp');
+    assert.equal(slot.mcpServer, 'codex');
+    assert.equal(slot.model, 'openai/gpt-6.1-sol');
+    assert.deepEqual(bridgeServersForRoutingProfile(saveMsg.profile, { version: 1, agents: { cs: { vendor: 'anthropic' } } }), ['codex']);
+  } finally {
+    win.close();
+  }
+});
+
+test('claude-code: bridge status line covers absent, installed, pending (Enable MCP) and missing key', async () => {
+  const cases: Array<[any, string, boolean]> = [
+    [vendorSetup('absent'), 'Codex server will be set up when you click Save', false],
+    [vendorSetup('installed'), 'Codex server installed', false],
+    [vendorSetup('pending'), 'Server not enabled', true],
+    [vendorSetup('installed', { openai: { server: 'codex', serverState: 'installed', keyState: 'missing', env: [{ name: 'OPENAI_API_KEY', present: false, required: true, kind: 'credential' }], needsSetup: true, reasons: [] } }), 'Needs setup: OPENAI_API_KEY', false],
+  ];
+  for (const [setup, expected, enable] of cases) {
+    const ctx = await renderClaude([agent('cs', { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'openai/gpt-6.1-sol', costModelClass: 'subscription' })], setup);
+    try {
+      const card = cardOf(ctx.doc, 'cs');
+      assert.equal(statusOf(card), expected);
+      const btn = card.querySelector('.routing-bridge-enable-btn') as any;
+      assert.equal(btn.hidden, !enable, 'Enable MCP only while pending');
+      if (enable) {
+        btn.click();
+        const msg = ctx.posted.find((m: any) => m.type === 'installBridgeServer');
+        assert.deepEqual({ id: msg.id, server: msg.server }, { id: 'cs', server: 'codex' });
+      }
+      assert.equal(card.querySelector('.routing-subscription-notice-copy').hidden, true);
+    } finally {
+      ctx.win.close();
+    }
+  }
+});
+
+test('claude-code: a saved openai profile on the native route shows the bridge status, is not rewritten on load, and gets codex on Save', async () => {
+  const stale = agent('cs', { vendor: 'openai', transport: 'claude-native', model: 'openai/gpt-6.1-sol', costModelClass: 'subscription' });
+  const { win, doc, posted, flush } = await renderClaude([stale], vendorSetup('absent'));
+  try {
+    const card = cardOf(doc, 'cs');
+    assert.equal(statusOf(card), 'Codex server will be set up when you click Save');
+    assert.equal(card.querySelector('.routing-connection-line').textContent, 'Connection: via Codex MCP');
+    assert.equal(posted.some((m: any) => m.type === 'saveRouting'), false, 'nothing is saved on load');
+    (card.querySelector('.agent-card-save-btn') as any).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await flush();
+    const saveMsg = [...posted].reverse().find((m: any) => m.type === 'saveRouting');
+    const slot = saveMsg.profile.agents.cs;
+    assert.equal(slot.transport, 'mcp');
+    assert.equal(slot.mcpServer, 'codex');
+    const previous = { version: 1, agents: { cs: { vendor: 'openai', transport: 'claude-native', model: 'openai/gpt-6.1-sol' } } };
+    assert.deepEqual(bridgeServersForRoutingProfile(saveMsg.profile, previous), ['codex']);
+  } finally {
+    win.close();
+  }
+});
+
+test('claude-code: switching to openai picks the model matching the agent Claude tier; unknown tier takes the mid model', async () => {
+  const expected: Array<[string | undefined, string]> = [['opus', 'openai/gpt-6-astra'], ['fable', 'openai/gpt-6-astra'], ['sonnet', 'openai/gpt-6.1-sol'], ['haiku', 'openai/gpt-6-luna'], [undefined, 'openai/gpt-6.1-sol']];
+  for (const [tier, model] of expected) {
+    const a: any = agent('cs', { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/' + (tier || 'sonnet'), costModelClass: 'metered' });
+    if (!tier) a.backend.model = 'anthropic/default';
+    const { win, doc, flush } = await renderClaude([a], vendorSetup('absent'));
+    try {
+      const vendorSel = cardOf(doc, 'cs').querySelector('.routing-vendor-select') as any;
+      vendorSel.value = 'openai';
+      vendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
+      await flush();
+      assert.equal((cardOf(doc, 'cs').querySelector('.routing-model-select') as any).value, model, 'tier ' + tier);
+    } finally {
+      win.close();
+    }
+  }
+});
+
+test('claude-code: a pinned id the catalog no longer offers is kept and shown as (custom)', async () => {
+  const old = agent('cs', { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'openai/gpt-5.6-sol', costModelClass: 'subscription' });
+  const { win, doc } = await renderClaude([old], vendorSetup('installed'));
+  try {
+    const card = cardOf(doc, 'cs');
+    assert.equal((card.querySelector('.routing-model-input') as any).value, 'gpt-5.6-sol', 'pinned id is shown as saved');
+    assert.equal(card.querySelector('.routing-model-custom-tag').textContent, '(custom)');
+    assert.equal(card.querySelector('.routing-model-select'), null, 'no silent swap to a catalog model');
+  } finally {
+    win.close();
   }
 });

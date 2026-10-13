@@ -5734,8 +5734,9 @@ test('p26-t1 fix: switching an agent slot to the native vendor preserves a previ
     const saveMsg = [...h.posted].reverse().find((m: any) => m.type === 'saveRouting');
     assert.ok(saveMsg, 'a saveRouting message should have been posted');
     const savedSlot = saveMsg.profile && saveMsg.profile.agents && saveMsg.profile.agents['kimi-reviewer'];
-    assert.ok(savedSlot, 'the previously-picked model must still be saved (a sparse {model} entry), not dropped entirely');
-    assert.equal(savedSlot.model, 'kimi-k2', 'the tier/model picked before switching to the native vendor must be preserved');
+    assert.ok(savedSlot, 'a sparse {model} entry must still be saved, not dropped entirely');
+    // Claude Code: switching back restores native with an Anthropic alias (a foreign model id is not carried over).
+    assert.equal(savedSlot.model, 'anthropic/sonnet', 'switching to the native vendor restores an Anthropic alias');
     assert.ok(!savedSlot.vendor, 'no vendor/backend-block fields should be posted for the native route');
   } finally {
     h.win.close();
@@ -6306,7 +6307,7 @@ test('p27-t5: compact fallback chain rows — one-line entries, details closed/o
 });
 
 test('p27-t1: bridge notice only when the bridge is missing', async () => {
-  async function buildCard(agentOverrides: Record<string, unknown>, mcpServers?: Array<{ id: string; installed: boolean }>) {
+  async function buildCard(agentOverrides: Record<string, unknown>, mcpServers?: Array<{ id: string; installed: boolean }>, harness = 'claude-code') {
     const h = await bootObjScaleHarness();
     h.dispatch({
       type: 'settings',
@@ -6317,7 +6318,7 @@ test('p27-t1: bridge notice only when the bridge is missing', async () => {
         delegationHealth: {},
         hookHealth: { healthy: true, issueCount: 0 },
         contextBudget: null,
-        harness: { effective: 'claude-code', source: 'execution', fileValue: 'claude-code', running: 'claude-code', mismatch: false, options: [], requiresRestart: false },
+        harness: { effective: harness, source: 'execution', fileValue: harness, running: harness, mismatch: false, options: [], requiresRestart: false },
       },
     });
     if (mcpServers) {
@@ -6389,12 +6390,29 @@ test('p27-t1: bridge notice only when the bridge is missing', async () => {
     }
   }
 
-  // (b) foreign subscription slot with no backend block -> bridged-missing: status row + one Copy request button, no textarea rendered by default.
+  // (b-0) Claude Code sets the bridge up on Save: the same slot shows a status line and never a Copy request / Show request.
   {
     const { h, card } = await buildCard({
       handWrittenBackend: false,
       backend: { vendor: 'openai', transport: 'mcp', model: 'gpt-6-astra', costModelClass: 'subscription' },
     });
+    try {
+      const notice = card.querySelector('.routing-subscription-notice');
+      assert.ok(notice && !notice.hidden, 'status line shows for a foreign slot on Claude Code');
+      assert.equal(notice.querySelector('.routing-subscription-bridge-status').textContent, 'Codex server will be set up when you click Save');
+      assert.ok(notice.querySelector('.routing-subscription-notice-copy').hidden, 'no Copy request on Claude Code');
+      assert.ok(notice.querySelector('.routing-subscription-request-details').hidden, 'no Show request on Claude Code');
+    } finally {
+      h.win.close();
+    }
+  }
+
+  // (b) OpenCode has no automatic setup: foreign subscription slot with no backend block -> bridged-missing: status row + one Copy request button, no textarea rendered by default.
+  {
+    const { h, card } = await buildCard({
+      handWrittenBackend: false,
+      backend: { vendor: 'openai', transport: 'mcp', model: 'gpt-6-astra', costModelClass: 'subscription' },
+    }, undefined, 'opencode');
     try {
       assert.ok(card, 'card should render');
       const notice = card.querySelector('.routing-subscription-notice');
@@ -6532,7 +6550,7 @@ test('p27-t3: summary line format and Connection <details> collapse per slot sta
       backend: { vendor: 'google', transport: 'mcp', model: 'gemini-2.5-pro', costModelClass: 'subscription' },
     });
     try {
-      assert.equal(text, 'google · gemini-2.5-pro · bridged via MCP (not installed) · subscription · 0 fallbacks');
+      assert.equal(text, 'google · gemini-2.5-pro · via Gemini MCP · subscription · 0 fallbacks');
       assert.ok(idSpan.className.includes('agent-accent-foreign'), 'google under claude-code is foreign -> accented');
       assert.ok(details, 'Connection <details> should render for a bridged-missing slot');
       assert.equal(details.open, true, 'bridged-missing (needs a bridge with none set up) starts open');
@@ -6869,7 +6887,7 @@ test('p35-t1: Copy/Paste settings reproduces routing fields on another card, kee
     assert.equal(targetVendorSel.value, 'openai', 'vendor pasted onto target');
     // p101-t4: transport is shown as a derived read-only line off OpenCode.
     const targetTransportLine = targetCard.querySelector('[data-field-key="agent:coding-specialist.connection"]') as any;
-    assert.equal(targetTransportLine.textContent, 'Connection: via codex bridge', 'transport pasted onto target');
+    assert.equal(targetTransportLine.textContent, 'Connection: via Codex MCP', 'transport pasted onto target');
     const targetMcpInput = targetCard.querySelector('[data-field-key="agent:coding-specialist.mcpServer"]') as any;
     assert.equal(targetMcpInput.value, 'codex', 'mcp server pasted onto target');
     const targetUseDefaultCheckbox = targetCard.querySelector('.routing-use-default-fallback-checkbox') as any;
