@@ -47,7 +47,7 @@ import {
 import { isBareNodeCommand, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, agentMarkdownHasLegacyOfficeAgentsMarker, healLegacyOfficeAgentsFrontmatter, healLegacyAgentFilesInDir, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownIsRelayManaged, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, agentMarkdownHasLegacyOfficeAgentsMarker, healLegacyOfficeAgentsFrontmatter, healLegacyAgentFilesInDir, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -79,7 +79,7 @@ import {
 } from "../../core/providerSelection";
 import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
 import { loadRoutingProfile } from "../../core/routingProfile";
-import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, buildBridgePicker, describeBridgeSetup, describeVendorBridgeSetups, isRegistrableBridgeServer, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
+import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, profileUsesCodexWrite, CODEX_WRITE_SERVER, buildBridgePicker, describeBridgeSetup, describeVendorBridgeSetups, isRegistrableBridgeServer, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
 import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
 import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
@@ -5169,7 +5169,10 @@ export class TycoonPanel {
             agentResults.push({ id: a.id, status: "created" });
           } else {
             const existingContent = fs.readFileSync(agentPath, "utf8");
-            if (agentMarkdownHasTycoonMarker(existingContent)) {
+            if (agentMarkdownIsRelayManaged(existingContent)) {
+              // Owned by the routing save (managed relay): a pack refresh never overwrites it.
+              agentResults.push({ id: a.id, status: "unchanged" });
+            } else if (agentMarkdownHasTycoonMarker(existingContent)) {
               if (existingContent === generated) {
                 agentResults.push({ id: a.id, status: "unchanged" });
               } else {
@@ -5720,7 +5723,7 @@ export class TycoonPanel {
    * the failure is only logged — install must never be blocked on this.
    */
   private _resolveCodexBinaryForInstall(id: string, config: unknown): unknown {
-    if (id !== "codex" || config === null || typeof config !== "object") {
+    if ((id !== "codex" && id !== CODEX_WRITE_SERVER) || config === null || typeof config !== "object") {
       return config;
     }
     const cfg = config as Record<string, unknown>;
@@ -7193,6 +7196,7 @@ export class TycoonPanel {
                 continue; // never install an agent the user doesn't already have
               }
               if (!agentMarkdownHasTycoonMarker(existingContent)) continue; // not ours — never touch
+              if (agentMarkdownIsRelayManaged(existingContent)) continue; // managed relay: owned by the routing save
               const generated = buildAgentMarkdown(a, pack.id);
               if (existingContent !== generated) {
                 fs.writeFileSync(agentPath, generated);
@@ -7783,7 +7787,9 @@ export class TycoonPanel {
           } catch {
             existingTier = undefined;
           }
-          if (existingTier === a.tier) {
+          if (agentMarkdownIsRelayManaged(existing)) {
+            // Managed relay (routing save): leave the generated section and preserved body alone.
+          } else if (existingTier === a.tier) {
             const desired = buildAgentMarkdown(a);
             if (existing !== desired) {
               fs.writeFileSync(agentPath, desired);
@@ -8742,12 +8748,14 @@ export class TycoonPanel {
     try { previous = root !== "" ? loadRoutingProfile(root).profile : null; } catch { previous = null; }
     const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath, effectiveHarness });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    for (const n of result.relayNotices ?? []) void vscode.window.showWarningMessage(`TycoonAgents: ${n}`);
     if (result.ok) this._healKeywordsThenDoctrine(true);
     this._handleGetRouting();
     // Save is the user's consent to use a foreign vendor: register that vendor's bridge server
     // (Claude local scope) if it is not already, after the save reply and without blocking it.
     // Other harnesses use the dispatcher: nothing to add.
     if (result.ok && root !== "" && harnessUsesMcpJson(effectiveHarness)) {
+      void this._removeUnusedCodexWrite(root, profile);
       void this._registerBridgeServersForProfile(root, profile, previous).then((serverSetup) => {
         if (!serverSetup || this._disposed) return;
         void this._panel.webview.postMessage({ type: MSG.ROUTING_SERVER_SETUP, ...serverSetup });
@@ -8755,6 +8763,15 @@ export class TycoonPanel {
         this._handleGetProviderAgents();
       }).catch(() => { /* never throws; defensive */ });
     }
+  }
+
+  /** Remove the write-access Codex server from Claude local scope once no saved slot names it. Never throws. */
+  private async _removeUnusedCodexWrite(root: string, profile: unknown): Promise<void> {
+    try {
+      if (profileUsesCodexWrite(profile) || !this._useLocalMcp(root)) return;
+      if (!this._localMcpOps().has(root, CODEX_WRITE_SERVER)) return;
+      await this._removeLocalMcpConfig(root, CODEX_WRITE_SERVER);
+    } catch { /* best effort */ }
   }
 
   /** Register the bridge servers a saved profile needs; never throws. Returns undefined when none are needed. */
@@ -8816,6 +8833,7 @@ export class TycoonPanel {
     const root = this._projectRoot();
     const result = clearRoutingProfile({ root, scriptsDir: this._extensionUri.fsPath, effectiveHarness: this._resolveEffectiveHarness(root) });
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
+    for (const n of result.relayNotices ?? []) void vscode.window.showWarningMessage(`TycoonAgents: ${n}`);
     this._handleGetRouting();
   }
 

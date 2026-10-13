@@ -268,7 +268,7 @@ function agentKeywordDefaultsModule() {
  * on this.
  */
 function resolveCodexBinaryForInstallStandalone(id, config) {
-  if (id !== 'codex' || config === null || typeof config !== 'object' || config.command !== 'codex') {
+  if ((id !== 'codex' && id !== 'codex-write') || config === null || typeof config !== 'object' || config.command !== 'codex') {
     return config;
   }
   try {
@@ -1121,6 +1121,7 @@ function handleBrowserMessage(msg) {
         // Save is the user's consent to a foreign vendor: register its bridge server if missing,
         // after the save reply and without blocking it.
         if (result.ok && bridgeSetupModule().harnessUsesMcpJson(effectiveHarness)) {
+          removeUnusedCodexWriteStandalone(root, msg.profile);
           registerBridgeServersForProfileStandalone(root, msg.profile, previous).then((serverSetup) => {
             if (!serverSetup) return;
             broadcast('message', { type: 'routingServerSetup', ...serverSetup });
@@ -2634,7 +2635,10 @@ async function handleInstallPack(payload) {
           agentResults.push({ id: a.id, status: 'created' });
         } else {
           const existingContent = fs.readFileSync(agentPath, 'utf8');
-          if (agentMarkdownHasTycoonMarker(existingContent)) {
+          if (packCatalogModule().agentMarkdownIsRelayManaged(existingContent)) {
+            // Owned by the routing save (managed relay): a pack refresh never overwrites it.
+            agentResults.push({ id: a.id, status: 'unchanged' });
+          } else if (agentMarkdownHasTycoonMarker(existingContent)) {
             if (existingContent === generated) {
               agentResults.push({ id: a.id, status: 'unchanged' });
             } else {
@@ -2703,6 +2707,18 @@ function buildProviderAgentsPayload() {
     return { type: 'providerAgents', packId: BRIDGE_PACK_ID, ...(root ? { picker: buildBridgePicker(packAgents, bridgeSetupContextStandalone(root)) } : {}) };
   } catch (e) {
     return { type: 'providerAgents', packId: BRIDGE_PACK_ID, error: String(e) };
+  }
+}
+
+/** Standalone analog of panel.ts's _removeUnusedCodexWrite. Never throws. */
+async function removeUnusedCodexWriteStandalone(root, profile) {
+  try {
+    const { profileUsesCodexWrite, CODEX_WRITE_SERVER } = bridgeSetupModule();
+    if (profileUsesCodexWrite(profile) || !useLocalMcpStandalone(root)) return;
+    if (!localMcpOpsStandalone().has(root, CODEX_WRITE_SERVER)) return;
+    await removeLocalMcpStandalone(root, CODEX_WRITE_SERVER);
+  } catch {
+    /* best effort */
   }
 }
 
@@ -3052,7 +3068,9 @@ function installAgentFilesStandalone(root, agentsToInstall) {
         } catch {
           existingTier = undefined;
         }
-        if (existingTier === a.tier) {
+        if (packCatalogModule().agentMarkdownIsRelayManaged(existing)) {
+          // Managed relay (routing save): leave the generated section and preserved body alone.
+        } else if (existingTier === a.tier) {
           const desired = buildAgentMarkdown(a);
           if (existing !== desired) fs.writeFileSync(agentPath, desired);
         }

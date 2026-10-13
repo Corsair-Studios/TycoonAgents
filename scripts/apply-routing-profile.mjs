@@ -15,6 +15,10 @@
 //
 // Usage: node scripts/apply-routing-profile.mjs [--root <dir>] [--check]
 //   --root   project root to read/write (default: process.cwd())
+//   --relay  Claude Code harness: a normal agent whose slot names a bridged
+//            non-Anthropic provider becomes a managed relay to that provider
+//            (src/core/agentRelay.ts); without it, and for any agent whose slot
+//            is Anthropic again, a relayed file is reverted exactly.
 //   --check  write nothing; print files that would change and exit 1,
 //            or exit 0 if generated output already matches on disk.
 //
@@ -83,6 +87,7 @@ function loadCoreModules() {
   const agentBackendPath = path.join(REPO_ROOT, "out", "src", "core", "agentBackend.js");
   const routingProfilePath = path.join(REPO_ROOT, "out", "src", "core", "routingProfile.js");
   const { readAgentFrontmatter } = require(agentBackendPath);
+  const agentRelay = require(path.join(REPO_ROOT, "out", "src", "core", "agentRelay.js"));
   const {
     loadRoutingProfile,
     resolveAgentSlot,
@@ -97,21 +102,25 @@ function loadCoreModules() {
     resolveOrchestratorSlot,
     routingSlotToBackend,
     hasHandWrittenBackendBlock,
+    agentRelay,
   };
 }
 
 function parseArgs(argv) {
   let root = process.cwd();
   let check = false;
+  let relay = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--root") {
       root = argv[++i];
     } else if (arg === "--check") {
       check = true;
+    } else if (arg === "--relay") {
+      relay = true;
     }
   }
-  return { root, check };
+  return { root, check, relay };
 }
 
 // Render a Backend object as an indented YAML block (2-space indent),
@@ -219,6 +228,7 @@ function rewriteFrontmatterLines(fmLines, newBackendLines, newTopModel) {
   return out;
 }
 
+const RELAY_NOTICE_PREFIX = "TYCOON-RELAY-NOTICE:";
 const MANAGED_MARKER = "# managed-by: tycoon-routing";
 const BACKUP_FILENAME = path.join(".claude", "tycoon", "routing.backup.json");
 
@@ -368,10 +378,55 @@ function isOrchestratorFrontmatter(fmLines) {
   return false;
 }
 
+// ---- relay helpers ---------------------------------------------------------
+// Notices (a backup was made, markers are missing, a model was replaced) are
+// printed as `TYCOON-RELAY-NOTICE: <text>` lines after a real write so the
+// host can show them; pre-revert text of an edited relay goes to
+// <id>.md.relay-backup before the file is restored.
+const relayNotices = [];
+const relayBackups = []; // { filePath, content }
+
+function splitBom(text) {
+  return text.charCodeAt(0) === 0xfeff ? { bom: "\uFEFF", text: text.slice(1) } : { bom: "", text };
+}
+
+// The agent's catalog default model (REGISTER in out/.../packCatalog.js), "sonnet" when unavailable.
+let catalogModels;
+function relayFallbackModel(agentId) {
+  if (!catalogModels) {
+    catalogModels = new Map();
+    try {
+      const cat = require(path.join(REPO_ROOT, "out", "src", "host", "vscode", "packCatalog.js"));
+      for (const list of [cat.REGULAR_AGENTS, cat.LEAD_AGENTS, cat.REVIEWER_AGENTS, cat.FOREIGN_LLM_AGENTS]) {
+        for (const a of Array.isArray(list) ? list : []) if (a && typeof a.id === "string" && typeof a.model === "string") catalogModels.set(a.id, a.model);
+      }
+    } catch {
+      // fail open: "sonnet" below
+    }
+  }
+  return catalogModels.get(agentId) ?? "sonnet";
+}
+
+// Reconcile one agent file's relay state; BOM-safe (the BOM is stripped from the returned text).
+function reconcileRelayFile(filePath, agentId, bom, text, want) {
+  const r = require(path.join(REPO_ROOT, "out", "src", "core", "agentRelay.js")).reconcileRelayDetailed(bom + text, want, { agentId, fallbackModel: relayFallbackModel(agentId) });
+  for (const n of r.notices) if (!relayNotices.includes(n)) relayNotices.push(n);
+  if (r.backup !== undefined && !relayBackups.some((b) => b.filePath === filePath + ".relay-backup")) {
+    relayBackups.push({ filePath: filePath + ".relay-backup", content: r.backup });
+  }
+  return splitBom(r.content).text;
+}
+
+// True when raw agent file text declares role/tier orchestrator.
+function isOrchestratorFile(rawText) {
+  const split = splitFrontmatter(rawText);
+  return split.hasFrontmatter && isOrchestratorFrontmatter(split.fmLines);
+}
+
 function main() {
-  const { root, check } = parseArgs(process.argv.slice(2));
+  const { root, check, relay: relayEnabled } = parseArgs(process.argv.slice(2));
   const core = loadCoreModules();
-  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend, hasHandWrittenBackendBlock } = core;
+  const { loadRoutingProfile, resolveAgentSlot, resolveOrchestratorSlot, routingSlotToBackend, hasHandWrittenBackendBlock, agentRelay } = core;
 
   const { profile, path: profilePath, errors } = loadRoutingProfile(root);
 
@@ -405,11 +460,12 @@ function main() {
     for (const file of agentFilesNoProfile) {
       const filePath = path.join(agentsDir, file);
       const agentId = file.replace(/\.md$/, "");
-      const raw = fs.readFileSync(filePath, "utf8");
-      const stripped = restoreOrStripManagedBackendBlock(raw, backupDocNoProfile, agentId);
-      if (stripped !== undefined && stripped !== raw) {
+      const { bom, text: rawFile } = splitBom(fs.readFileSync(filePath, "utf8"));
+      const raw = reconcileRelayFile(filePath, agentId, bom, rawFile, null);
+      const stripped = restoreOrStripManagedBackendBlock(raw, backupDocNoProfile, agentId) ?? raw;
+      if (stripped !== rawFile) {
         wouldChange.push(filePath);
-        writes.push({ filePath, content: stripped });
+        writes.push({ filePath, content: bom + stripped });
       }
     }
     const resolvedOutPath = path.join(root, ".claude", "tycoon", "routing.resolved.json");
@@ -512,25 +568,49 @@ function main() {
     }
     const isExplicitAgent = Object.prototype.hasOwnProperty.call(profile.agents, agentId);
     const filePath = path.join(agentsDir, file);
-    const raw = fs.readFileSync(filePath, "utf8");
+    const { bom, text: rawFile } = splitBom(fs.readFileSync(filePath, "utf8"));
+    const slot0 = resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: hasHandWrittenBackendBlock(rawFile) });
+    // Relay state first: a relayed file whose slot is no longer a bridged
+    // foreign provider (or when relays are off) is restored exactly before the
+    // normal backend/model rewrite below runs on the original text.
+    // Only a provider named on the agent's OWN slot makes it a relay: a foreign vendor that comes
+    // only from the shared `defaults` slot never converts every agent.
+    const ownSlot = profile.agents[agentId];
+    const ownVendor = !!ownSlot && typeof ownSlot.vendor === "string" && ownSlot.vendor !== "";
+    const relayTarget = relayEnabled && slot0 && ownVendor && !isOrchestratorFile(rawFile)
+      ? agentRelay.relayTargetFor(agentId, routingSlotToBackend(slot0))
+      : null;
+    const raw = agentRelay.agentMarkdownIsRelayManaged(rawFile) && !relayTarget
+      ? reconcileRelayFile(filePath, agentId, bom, rawFile, null)
+      : rawFile;
     const split = splitFrontmatter(raw);
     if (!split.hasFrontmatter) {
       if (isExplicitAgent) untouched.push(filePath);
       continue;
     }
-    const slot = resolveAgentSlot(profile, agentId, { hasHandWrittenBackend: hasHandWrittenBackendBlock(raw) });
-    if (!slot) continue;
+    const slot = slot0;
+    if (!slot) {
+      if (raw !== rawFile) {
+        wouldChange.push(filePath);
+        writes.push({ filePath, content: bom + raw });
+      }
+      continue;
+    }
     const backend = routingSlotToBackend(slot);
+    const bridgeAgentAlready = hasHandWrittenBackendBlock(rawFile) || !!backupDoc.agents[agentId];
     const backupCountBefore = Object.keys(backupDoc.agents).length;
     snapshotHandWrittenBlockIfAny(backupDoc, agentId, raw, split.fmLines);
     if (Object.keys(backupDoc.agents).length !== backupCountBefore) backupDocChanged = true;
     const newBackendLines = renderBackendBlockLines(backend);
     const topModel = slotTopLevelModel(slot);
     const newFmLines = rewriteFrontmatterLines(split.fmLines, newBackendLines, topModel);
-    const newContent = `---${split.eol}${newFmLines.join(split.eol)}${split.eol}---${split.eol}${split.rest}`;
-    if (newContent !== raw) {
+    const rewritten = `---${split.eol}${newFmLines.join(split.eol)}${split.eol}---${split.eol}${split.rest}`;
+    const newContent = relayTarget
+      ? reconcileRelayFile(filePath, agentId, bom, rewritten, { target: relayTarget, skipConversion: bridgeAgentAlready })
+      : rewritten;
+    if (newContent !== rawFile) {
       wouldChange.push(filePath);
-      writes.push({ filePath, content: newContent });
+      writes.push({ filePath, content: bom + newContent });
     }
 
     const fallbackBackends = Array.isArray(slot.fallback)
@@ -605,17 +685,19 @@ function main() {
   for (const file of agentFiles) {
     const filePath = path.join(agentsDir, file);
     if (activePaths.has(filePath)) continue;
+    let bom;
     let raw;
     try {
-      raw = fs.readFileSync(filePath, "utf8");
+      ({ bom, text: raw } = splitBom(fs.readFileSync(filePath, "utf8")));
     } catch {
       continue;
     }
     const droppedId = file.replace(/\.md$/, "");
-    const stripped = restoreOrStripManagedBackendBlock(raw, backupDoc, droppedId);
-    if (stripped !== undefined && stripped !== raw) {
+    const unrelayed = reconcileRelayFile(filePath, droppedId, bom, raw, null);
+    const stripped = restoreOrStripManagedBackendBlock(unrelayed, backupDoc, droppedId) ?? unrelayed;
+    if (stripped !== raw) {
       wouldChange.push(filePath);
-      writes.push({ filePath, content: stripped });
+      writes.push({ filePath, content: bom + stripped });
     }
   }
 
@@ -667,9 +749,13 @@ function main() {
     process.exit(0);
   }
 
+  for (const { filePath, content } of relayBackups) {
+    fs.writeFileSync(filePath, content, "utf8");
+  }
   for (const { filePath, content } of writes) {
     fs.writeFileSync(filePath, content, "utf8");
   }
+  for (const n of relayNotices) console.log(`${RELAY_NOTICE_PREFIX} ${n}`);
   fs.mkdirSync(path.dirname(resolvedOutPath), { recursive: true });
   fs.writeFileSync(resolvedOutPath, resolvedJson, "utf8");
   if (backupDocChanged) {

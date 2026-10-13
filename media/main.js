@@ -23319,9 +23319,9 @@ function themeAnimPreviewDraw(player) {
   // vendor's bridge. Mirrors VENDOR_BRIDGE_SERVER in src/core/bridgeSetup.ts
   // (the host registers the server at Save). Native is not an option for these.
   var CLAUDE_BRIDGE_SERVER_BY_VENDOR = { openai: "codex", google: "gemini", xai: "openai-compatible", mistral: "openai-compatible", moonshot: "openai-compatible" };
-  var CLAUDE_BRIDGE_LABELS = { codex: "Codex", gemini: "Gemini", "openai-compatible": "OpenAI-compatible", "claude-cli": "Claude" };
+  var CLAUDE_BRIDGE_LABELS = { codex: "Codex", "codex-write": "Codex (write access)", gemini: "Gemini", "openai-compatible": "OpenAI-compatible", "claude-cli": "Claude" };
   // Servers the host registers at Save / Enable MCP (REGISTRABLE_BRIDGE_SERVERS in bridgeSetup.ts).
-  var CLAUDE_REGISTRABLE_BRIDGE_SERVERS = { codex: true, gemini: true, "openai-compatible": true, "claude-cli": true };
+  var CLAUDE_REGISTRABLE_BRIDGE_SERVERS = { codex: true, "codex-write": true, gemini: true, "openai-compatible": true, "claude-cli": true };
   var CLAUDE_BRIDGE_NON_AGENT_IDS = { orchestrator: true, defaults: true, defaultFallback: true };
 
   function claudeBridgeServerForVendor(vendor) {
@@ -24251,6 +24251,33 @@ function themeAnimPreviewDraw(player) {
       frag.appendChild(mcpRow);
       refreshMcpWarn();
       frag.appendChild(mcpWarnHolder);
+
+      // Opt-in Codex write access (Claude Code, a normal agent routed to Codex). Default: Codex proposes
+      // and the relay applies. Ticking registers the separate codex-write server (workspace-write sandbox).
+      var writeCapable = claudeAgentBridge && isTopLevelAgentSlot && !(agentInfo && agentInfo.handWrittenBackend) &&
+        String(slot.vendor || "").toLowerCase() === "openai" && (!slot.mcpServer || slot.mcpServer === "codex" || slot.mcpServer === "codex-write");
+      if (writeCapable) {
+        var writeLabel = document.createElement("label");
+        writeLabel.className = "routing-codex-write-label";
+        var writeBox = document.createElement("input");
+        writeBox.type = "checkbox";
+        writeBox.className = "routing-codex-write-checkbox";
+        writeBox.checked = slot.mcpServer === "codex-write";
+        writeBox.addEventListener("change", function () {
+          slot.transport = "mcp";
+          slot.mcpServer = writeBox.checked ? "codex-write" : "codex";
+          mcpInput.value = slot.mcpServer;
+          if (connectionLineEl) connectionLineEl.textContent = connectionLineText(slot, claudeAgentBridge);
+          refreshMcpWarn();
+        });
+        writeLabel.appendChild(writeBox);
+        writeLabel.appendChild(document.createTextNode(" Let Codex edit files in this project (workspace-write sandbox)"));
+        frag.appendChild(writeLabel);
+        var writeNote = document.createElement("div");
+        writeNote.className = "routing-env-note routing-codex-write-note";
+        writeNote.textContent = "Codex will then change files directly without asking. Left unticked, Codex proposes changes and this agent applies them.";
+        frag.appendChild(writeNote);
+      }
     }
 
     // p27-t3: collapse the vendor..MCP-server field block (everything just
@@ -25736,7 +25763,9 @@ function themeAnimPreviewDraw(player) {
           ? (providerIsNativeVendor
             ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} (native to this harness)`
             : `Backend: ${vendorLabelFor(a.vendor || "unknown")} ${routingOnCodexHost() ? "via TycoonAgents dispatcher" : "via MCP (hand-written)"}`)
-          : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.";
+          : (routingCurrentHarness === "claude-code"
+            ? "Save makes this agent a relay to that provider; start a new chat for it to take effect."
+            : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.");
         providerBody.appendChild(providerLabelSpan);
         providerBody.appendChild(providerHelpSpan);
         providerLabel.appendChild(providerCheckbox);
@@ -26180,7 +26209,8 @@ function themeAnimPreviewDraw(player) {
       var defaultsSection = buildSection("Default for all agents");
       var defaultsHelp = document.createElement("p");
       defaultsHelp.className = "routing-defaults-help";
-      defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it.";
+      defaultsHelp.textContent = "Agents without their own route use this. Agents with a hand-written backend keep it." +
+        (routingCurrentHarness === "claude-code" ? " On Claude Code a normal agent runs on another provider only when that provider is set on its own card; a default from another provider is a routing default and does not turn agents into relays." : "");
       defaultsSection.appendChild(defaultsHelp);
       if (!routingDraft.defaults) routingDraft.defaults = {};
       defaultsSection.appendChild(buildSlotSummaryLine(routingDraft.defaults, routingCurrentHarness, { id: "defaults", name: "Default for all agents" }));
@@ -26750,6 +26780,10 @@ function themeAnimPreviewDraw(player) {
       showToast(errText, "error");
     } else if (msg) {
       showToast("Saved to disk", "success");
+    }
+    // Relay notices: a backup of an edited relay, or a relay whose markers are gone and could not be restored.
+    if (msg && Array.isArray(msg.relayNotices)) {
+      msg.relayNotices.forEach(function (n) { showToast(String(n), "error"); });
     }
     renderRoutingModal();
     // p17-t4: a successful save can change routing.json's `defaults` slot,

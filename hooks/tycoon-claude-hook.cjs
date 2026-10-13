@@ -367,7 +367,7 @@ function getBridgeResultModule() {
 // "tycoon" registration). Only these may have their text header trusted by
 // parseBridgeResult; test/fallbackStatusDetection.test.ts pins this list
 // against the catalog so it cannot drift silently.
-const TYCOON_BRIDGE_SERVERS = ["codex", "claude-cli", "openai-compatible", "gemini", "tycoon", "tycoon-dispatcher"];
+const TYCOON_BRIDGE_SERVERS = ["codex", "codex-write", "claude-cli", "openai-compatible", "gemini", "tycoon", "tycoon-dispatcher"];
 function isTycoonBridgeTool(toolName) {
   const m = /^mcp__(.+?)__/.exec(String(toolName || ""));
   return !!m && TYCOON_BRIDGE_SERVERS.indexOf(m[1]) !== -1;
@@ -1075,16 +1075,19 @@ function buildMcpBackendRouting(agentsDir) {
       continue; // malformed backend block — skip this agent, don't crash the hook
     }
     if (!backend || (backend.transport !== "mcp" && backend.transport !== "openai-compatible")) continue;
-    if (!backend.mcpServer) continue;
+    // An openai-compatible slot saved without a server name reaches its provider
+    // through the openai-compatible bridge (a managed relay calls mcp__openai-compatible__chat).
+    const routedServer = backend.mcpServer || (backend.transport === "openai-compatible" ? "openai-compatible" : undefined);
+    if (!routedServer) continue;
     const entry = {
       agentId,
       vendor: backend.vendor,
       model: backend.model,
       costModelClass: backend.costModelClass,
-      mcpServer: backend.mcpServer,
+      mcpServer: routedServer,
       transport: backend.transport,
     };
-    const serverPrefix = "mcp__" + backend.mcpServer + "__";
+    const serverPrefix = "mcp__" + routedServer + "__";
     if (Array.isArray(backend.tools) && backend.tools.length > 0) {
       for (const tool of backend.tools) {
         exact.set(serverPrefix + tool, entry);
@@ -1094,6 +1097,24 @@ function buildMcpBackendRouting(agentsDir) {
     }
   }
   return { exact, prefixes };
+}
+
+// The primary backend of agent `specialistId`: routing.resolved.json first, else its agent file's
+// `backend:` block. Fail-open (undefined) on anything unreadable.
+function readSpecialistPrimaryBackend(agentsDir, tycoonDir, specialistId) {
+  try {
+    const resolved = readJsonSafe(path.join(tycoonDir, "routing.resolved.json"));
+    const entry = resolved && resolved.agents && resolved.agents[specialistId];
+    if (entry && entry.backend && typeof entry.backend === "object") return entry.backend;
+  } catch { /* fall through to the agent file */ }
+  try {
+    const mod = getAgentBackendModule();
+    if (!mod) return undefined;
+    const text = fs.readFileSync(path.join(agentsDir, specialistId + ".md"), "utf8");
+    return mod.parseAgentBackend(mod.readAgentFrontmatter(text)) || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // Subagent-context fallback: finds ANOTHER agent whose backend can actually
@@ -2923,6 +2944,15 @@ function main(raw) {
         record.costModelClass = mcpBackend.costModelClass;
         // tokens / cacheReadTokens intentionally left unset unless a future
         // tool result surface actually carries usage — see comment above.
+      } else if (isDispatcherTool(toolName) && toolInput && typeof toolInput.specialist === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(toolInput.specialist)) {
+        // A relay agent that goes through mcp__tycoon__delegate: the dispatcher runs the agent's
+        // primary provider, so show that provider (vendor, model, billing) on this call too.
+        const primary = readSpecialistPrimaryBackend(agentsDir, tycoonDir, toolInput.specialist);
+        if (primary && primary.vendor && String(primary.vendor).toLowerCase() !== "anthropic") {
+          record.model = primary.model;
+          record.vendor = primary.vendor;
+          if (primary.costModelClass) record.costModelClass = primary.costModelClass;
+        }
       } else if (toolName.indexOf("mcp__codex__") === 0) {
         // LEGACY FALLBACK: fires whenever no backend map entry matched this
         // call — either agentBackend.js isn't available next to this hook

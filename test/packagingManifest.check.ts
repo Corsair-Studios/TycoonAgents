@@ -29,6 +29,8 @@ const REQUIRED_ENTRIES = [
   "extension/out/src/core/agentBackend.js",
   "extension/out/src/core/modelAliases.js",
   "extension/out/src/core/routingProfile.js",
+  "extension/out/src/core/agentRelay.js",
+  "extension/out/src/host/vscode/packCatalog.js",
   "extension/out/src/core/localEnvStore.js",
   // p23-t11: panel.ts's INSTALL_CODEX_HOOKS/INSTALL_CODEX_DISPATCHER
   // handlers require these at runtime, and copy the two scripts they pass

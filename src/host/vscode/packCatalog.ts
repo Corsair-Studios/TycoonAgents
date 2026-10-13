@@ -7,6 +7,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { Backend } from "../../core/agentBackend";
+import { agentMarkdownIsRelayManaged } from "../../core/agentRelay";
+
+// A relay-managed agent file (frontmatter `tycoon_relay`) is owned by the
+// routing save: every text heal and resync below leaves it alone, so the
+// generated relay section, the preserved original body and the haiku wrapper
+// model survive panel opens. Reverting the relay brings the file back to the
+// heals' normal scope.
+export { agentMarkdownIsRelayManaged };
 
 /** The agent definition embedded in a capability pack. */
 export interface PackAgent {
@@ -260,6 +268,9 @@ export function agentMarkdownHasLegacyOfficeAgentsMarker(content: string): boole
  * recognised.
  */
 export function healLegacyOfficeAgentsFrontmatter(content: string, agentId: string, description: string): string | null {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return null;
+  }
   if (!agentMarkdownHasLegacyOfficeAgentsMarker(content)) {
     return null;
   }
@@ -415,6 +426,9 @@ export const SUPERSEDED_AGENT_NAMES: Record<string, string[]> = {
  * changes. Returns null when nothing applies.
  */
 export function healSupersededAgentTitle(content: string, agent: { id: string; name: string }): string | null {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return null;
+  }
   const prior = SUPERSEDED_AGENT_NAMES[agent.id];
   if (!prior || !agentMarkdownHasTycoonMarker(content)) return null;
   const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content);
@@ -497,6 +511,9 @@ export function workerAgentFingerprintMatches(content: string, agent: PackAgent)
  * output shape: `"## Role\n" + role + "\n\n" + "## Keywords ..."`.
  */
 export function resyncAgentRoleSection(content: string, newRole: string): string | null {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return null;
+  }
   const heading = "## Role\n";
   const headingIdx = content.indexOf(heading);
   if (headingIdx === -1) {
@@ -568,6 +585,9 @@ function backendBlockVendor(lines: string[]): string | undefined {
  * block is found at all (never touch a file whose shape isn't recognized).
  */
 export function resyncAgentFrontmatterFields(content: string, agent: PackAgent): string | null {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return null;
+  }
   const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
   if (!fmMatch) {
     return null;
@@ -704,6 +724,9 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
  * Claude Code. A user-edited body is never touched. Returns null when nothing to do.
  */
 export function healClaudeWorkerBody(content: string): string | null {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return null;
+  }
   const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content);
   if (!fm || !/^tycoon_pack\s*:/m.test(fm[0])) return null;
   const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker");
@@ -722,6 +745,7 @@ export function healForeignWrapperModel(
   content: string,
   catalogModel?: string,
 ): { content: string; from: string; to: string } | null {
+  if (agentMarkdownIsRelayManaged(content)) return null;
   const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(content);
   if (!fmMatch) return null;
   const lines = fmMatch[1].split(/\r\n|\n/);
@@ -753,6 +777,9 @@ export function healForeignWrapperModel(
  * and must not carry leaf-worker discipline).
  */
 export function resyncAgentDisciplineSection(content: string): string {
+  if (agentMarkdownIsRelayManaged(content)) {
+    return content;
+  }
   const heading = "## Working discipline\n";
   // Read-only roles (reviewer tier, search-retrieval) are identified from the
   // file's own frontmatter so existing callers need no agent argument.

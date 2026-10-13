@@ -225,6 +225,20 @@
     <li><strong>Save</strong> writes the slot to <code>routing.json</code>.</li>
   </ol>
   <p>
+    On Claude Code, saving an agent that uses another provider turns that
+    agent into a relay to the provider you chose: its file forwards the task,
+    with your original role instructions kept intact, and returns the
+    provider's result. Start a new chat for it to take effect. Codex is
+    registered read-only, so it proposes the exact changes and the agent
+    applies them. To let Codex edit files itself, tick <strong>Let Codex edit
+    files in this project (workspace-write sandbox)</strong> on that agent's
+    card: Codex then changes files directly without asking. A provider set only
+    in <strong>Default for all agents</strong> does not turn agents into relays.
+    Setting the agent back to Anthropic, or unticking <strong>Use another
+    provider for this agent</strong> and saving, restores the agent exactly as
+    it was.
+  </p>
+  <p>
     Pick this option when you don't need a specialist's own review-verdict
     contract and just want an agent that already exists in your roster to
     run on a different model.

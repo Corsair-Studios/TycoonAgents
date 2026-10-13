@@ -12,13 +12,13 @@ import { installMcpEntry } from "../src/core/bridgeSetup";
 import { renderDelegationDoctrine } from "../src/host/vscode/delegationDoctrine";
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const HIDDEN_IDS = ["codex", "claude-cli", "gemini", "openai-compatible", "tycoon"];
+const HIDDEN_IDS = ["codex", "codex-write", "claude-cli", "gemini", "openai-compatible", "tycoon"];
 
 function loadCatalog(): any[] {
   return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "media", "mcp", "catalog.json"), "utf8"));
 }
 
-test("the five bridge servers are flagged hidden in the MCP catalog and nothing else is", () => {
+test("the bridge servers are flagged hidden in the MCP catalog and nothing else is", () => {
   const hidden = loadCatalog().filter((e) => e.hidden === true).map((e) => e.id).sort();
   assert.deepEqual(hidden, [...HIDDEN_IDS].sort());
 });

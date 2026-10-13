@@ -174,7 +174,9 @@ export function bridgeServerFor(backend: Backend | null | undefined): string | n
 }
 
 /** Bridge MCP servers TycoonAgents may register on the user's behalf from the Agents screen. */
-const REGISTRABLE_BRIDGE_SERVERS = new Set(["codex", "gemini", OPENAI_COMPAT_SERVER, "claude-cli"]);
+/** The write-access sibling of the read-only `codex` server; registered only for an agent whose card ticks "Let Codex edit files". */
+export const CODEX_WRITE_SERVER = "codex-write";
+const REGISTRABLE_BRIDGE_SERVERS = new Set(["codex", CODEX_WRITE_SERVER, "gemini", OPENAI_COMPAT_SERVER, "claude-cli"]);
 
 /** True for a bridge server TycoonAgents may register on the user's behalf (the slot card's Enable MCP). */
 export function isRegistrableBridgeServer(name: unknown): name is string {
@@ -223,6 +225,18 @@ export function bridgeServersForRoutingProfile(profile: unknown, previous?: unkn
     if (server !== undefined && REGISTRABLE_BRIDGE_SERVERS.has(server) && !out.includes(server)) out.push(server);
   }
   return out;
+}
+
+/**
+ * True while any saved slot (agent, defaults, orchestrator or a fallback entry) still names the
+ * write-access Codex server. When false the host removes `codex-write` from Claude local scope.
+ */
+export function profileUsesCodexWrite(profile: unknown): boolean {
+  try {
+    return JSON.stringify(profile ?? null).includes(`"mcpServer":"${CODEX_WRITE_SERVER}"`);
+  } catch {
+    return false;
+  }
 }
 
 /** Describe one backend's setup state. Pure given the context. Returns null for a native (non-bridge) agent. */

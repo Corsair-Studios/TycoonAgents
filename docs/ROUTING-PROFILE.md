@@ -721,8 +721,63 @@ it only changes what's shown or which entries remain.
 #### Using another provider for one agent under Claude Code
 
 Checking "Use another provider for this agent" under the Claude Code
-harness writes a real route, but it only takes effect immediately for
-MCP-bridged agents (the hand-written reviewers above, which already call
-out to their vendor over MCP) — under Claude Code, Task subagents always
-run Claude models regardless of `routing.json`, so a route saved on any
-other agent there is prep, not live effect.
+harness and clicking Save turns that agent into a relay to the chosen
+provider. A Task subagent always runs on Claude, so the agent file itself
+forwards the work: Save rewrites `.claude/agents/<id>.md` as follows (the
+conversion is `src/core/agentRelay.ts`, applied by
+`scripts/apply-routing-profile.mjs --relay`, which `saveRoutingProfile` passes
+only when the effective harness is Claude Code).
+
+- Only a provider named on the agent's own card makes it a relay. A foreign
+  vendor that comes only from the shared "Default for all agents" slot does
+  not convert any agent; the Defaults section says so on Claude Code. An agent
+  already relayed reverts if its vendor then comes only from defaults.
+- Frontmatter: `model:` becomes the `haiku` wrapper alias, the previous value
+  is kept in `tycoon_relay_original_model`, and `tycoon_relay: <server>` names
+  the bridge. `name`, `description` and `disallowedTools` are unchanged. A
+  `tools:` allowlist gains the relay's MCP tool (and Read, Edit and Write in
+  propose mode); the original line is kept in `tycoon_relay_original_tools`.
+  `tycoon_relay_hash` lets a revert notice edits to the generated text.
+- Body: a generated `## Relay (managed by TycoonAgents)` section (between
+  `<!-- tycoon:relay:begin -->` and `<!-- tycoon:relay:end -->`) tells the
+  agent to call the provider's MCP tool once (`mcp__tycoon__delegate` when the
+  dispatcher is installed, otherwise `mcp__codex__codex`, `mcp__codex-write__codex`,
+  `mcp__claude-cli__claude`, `mcp__gemini__ask-gemini` or
+  `mcp__openai-compatible__chat`) with the slot's model id, the project
+  directory and the task verbatim, and to report the provider's result in the
+  project's report format. The agent's original body is kept verbatim under
+  `## Role instructions to forward to the provider`, between
+  `<!-- tycoon:relay-original:begin -->` and `<!-- tycoon:relay-original:end -->`.
+- Propose mode (Codex by default, Gemini, OpenAI-compatible endpoints): the
+  registered `codex` server is read-only, so the provider is asked for the exact
+  changes (a unified diff, or a file path with its full new content) and the
+  relay applies them with Read, Edit and Write exactly as returned, with no
+  extra reasoning. If a patch does not apply, the relay reports which file and
+  hunk failed.
+- Codex write access is opt-in. Ticking "Let Codex edit files in this project
+  (workspace-write sandbox)" on the card and saving is the consent: it
+  registers a separate local-scope server, `codex-write`, with the same
+  launcher but `sandbox_mode="workspace-write"` and `approval_policy="never"`,
+  and that agent's relay targets `mcp__codex-write__codex` and lets Codex make
+  the edits. Unticking, or reverting the agent, switches back; `codex-write` is
+  removed from local scope once no saved slot uses it. The read-only `codex`
+  entry is never changed, and no call ever passes sandbox or approval
+  arguments.
+- Workspace-capable bridge (Claude CLI): the provider makes the edits under the
+  server's registered permission mode.
+- Switching between foreign providers regenerates only the relay section.
+  Setting the slot back to Anthropic, or unchecking "Use another provider"
+  and saving, restores the original body, model and `tools:` line exactly and
+  removes the markers and keys (a stored model Claude Code would reject is
+  replaced by the agent's catalog default, with a notice). A leading BOM is
+  kept. If the file was edited after conversion, the edited file is first saved
+  as `<id>.md.relay-backup` and the save reports it; if the markers are gone,
+  the file is left as it is and the save reports that the agent is still a
+  relay.
+- Panel heals and resyncs skip a file that carries `tycoon_relay`, so the
+  relay survives panel opens until it is reverted.
+- The change applies to a new chat. The stage shows the agent in the
+  foreign-provider color while its provider call is active, whether the relay
+  calls the MCP tool directly or goes through `mcp__tycoon__delegate`.
+  Hand-written bridge agents (the reviewers above) and the Codex and OpenCode
+  harnesses keep their existing behavior.

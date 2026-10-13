@@ -163,6 +163,14 @@ export interface SaveRoutingResult {
    *  below), so this stays undefined for claude-code/opencode saves rather
    *  than padding every result with an irrelevant script run. */
   codex?: ScriptRunResult;
+  /** Notes from a relay conversion or revert the user should see: a backup of an edited relay, a relay that could not be restored. */
+  relayNotices?: string[];
+}
+
+/** Lines the apply script printed with the relay notice prefix. */
+function parseRelayNotices(output: string): string[] {
+  const prefix = "TYCOON-RELAY-NOTICE:";
+  return output.split(/\r?\n/).filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length).trim()).filter((l) => l !== "");
 }
 
 const EMPTY_SCRIPT_RESULT: ScriptRunResult = { code: -1, output: "" };
@@ -929,13 +937,16 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
   }
 
   // The OpenCode generator (project .opencode/ + opencode.json + the global config) only runs when OpenCode is the harness.
-  const runOpencode = resolveHarnessFor(root, opts.effectiveHarness) === "opencode";
+  const resolvedHarness = resolveHarnessFor(root, opts.effectiveHarness);
+  const runOpencode = resolvedHarness === "opencode";
+  // Claude Code only: a bridged foreign-provider slot turns the agent file into a managed relay.
+  const relayArgs = resolvedHarness === "claude-code" ? ["--relay"] : [];
   const check = {
-    claude: runScript(nodeBin, scripts.claude, root, ["--check"]),
+    claude: runScript(nodeBin, scripts.claude, root, ["--check", ...relayArgs]),
     opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, ["--check"]) : OPENCODE_SKIPPED_RESULT,
   };
   const write = {
-    claude: runScript(nodeBin, scripts.claude, root, []),
+    claude: runScript(nodeBin, scripts.claude, root, relayArgs),
     opencode: runOpencode ? runScript(nodeBin, scripts.opencode, root, []) : OPENCODE_SKIPPED_RESULT,
   };
   writeLastApplied(root, write, runOpencode);
@@ -957,7 +968,8 @@ export function saveRoutingProfile(opts: SaveRoutingProfileOptions): SaveRouting
   // (panel.ts turns codexResult.code !== 0 into a non-blocking message)
   // rather than reported as the whole save having failed.
   const ok = write.claude.code === 0 && write.opencode.code === 0;
-  return { ok, errors: [], check, write, ...(codexResult !== undefined ? { codex: codexResult } : {}) };
+  const relayNotices = parseRelayNotices(write.claude.output);
+  return { ok, errors: [], check, write, ...(codexResult !== undefined ? { codex: codexResult } : {}), ...(relayNotices.length > 0 ? { relayNotices } : {}) };
 }
 
 export interface ClearRoutingProfileOptions {
@@ -1004,5 +1016,6 @@ export function clearRoutingProfile(opts: ClearRoutingProfileOptions): SaveRouti
   writeLastApplied(root, write, runOpencode);
 
   const ok = write.claude.code === 0 && write.opencode.code === 0;
-  return { ok, errors: [], check, write };
+  const relayNotices = parseRelayNotices(write.claude.output);
+  return { ok, errors: [], check, write, ...(relayNotices.length > 0 ? { relayNotices } : {}) };
 }

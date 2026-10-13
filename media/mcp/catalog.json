@@ -284,6 +284,36 @@
     }
   },
   {
+    "id": "codex-write",
+    "hidden": true,
+    "name": "Codex (OpenAI, write access)",
+    "description": "Runs OpenAI's Codex with your ChatGPT sign-in and write access to the project (workspace-write sandbox).",
+    "summary": "Runs OpenAI's Codex with your ChatGPT sign-in.",
+    "requiresEnv": [],
+    "note": "Set up from the Agents screen when you tick Let Codex edit files in this project. Needs the Codex CLI signed in with `codex login`. Codex changes files in the project directly without asking.",
+    "docsUrl": "https://github.com/openai/codex",
+    "thirdParty": true,
+    "vendor": "OpenAI",
+    "package": "Codex CLI (run via `codex`, installed separately)",
+    "homepage": "https://github.com/openai/codex",
+    "network": true,
+    "dataNote": "Prompts, code, and file contents you send through this server are sent to OpenAI under your ChatGPT account. OpenAI is a different vendor than Anthropic.",
+    "config": {
+      "command": "node",
+      "args": [
+        ".claude/hooks/codex-mcp-launcher.cjs",
+        "-c",
+        "model=\"gpt-6.1-sol\"",
+        "-c",
+        "model_reasoning_effort=\"low\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_mode=\"workspace-write\""
+      ]
+    }
+  },
+  {
     "id": "claude-cli",
     "hidden": true,
     "name": "Claude CLI",
