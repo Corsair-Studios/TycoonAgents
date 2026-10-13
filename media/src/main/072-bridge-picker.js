@@ -22,7 +22,7 @@
   function bridgeStatusSummary(setup) {
     if (!setup) return { text: "No setup needed", warn: false };
     const bits = [];
-    if (setup.serverState === "missing") bits.push("Server not added to .mcp.json");
+    if (setup.serverState === "missing") bits.push("Server not installed");
     else if (setup.serverState === "installed") bits.push("Server ready");
     else if (setup.serverState === "dispatcher") bits.push("Runs through the dispatcher");
     const env = Array.isArray(setup.env) ? setup.env : [];

@@ -143,6 +143,10 @@ export function bridgeServerFor(backend: Backend | null | undefined): string | n
 export function describeBackendSetup(backend: Backend | null | undefined, ctx: BridgeSetupContext): BridgeSetupInfo | null {
   const server = bridgeServerFor(backend);
   if (!backend || server === null) return null;
+  // An Anthropic-vendor agent on the Claude Code harness runs as a normal Claude
+  // subagent on the user's sign-in: no bridge, so no setup badge. (Codex and
+  // OpenCode keep the bridge behaviour.)
+  if ((ctx.harness || "claude-code").toLowerCase() === "claude-code" && String(backend.vendor).toLowerCase() === "anthropic") return null;
   const probe = ctx.probe ?? ((names: string[]) => probeEnv(names, ctx.env));
   const rows: Array<{ name: string; required: boolean; kind: "credential" | "endpoint" }> = [];
   let signIn: string | undefined;

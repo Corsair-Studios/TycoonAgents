@@ -208,6 +208,14 @@ export function reconcileAgentKeywords(
     added.push(agent.id);
   }
 
+  // Appended entries must not land after the catch-all: config order breaks
+  // score ties, so primary-agent always stays last.
+  if (added.length > 0 && Object.prototype.hasOwnProperty.call(nextAgents, "primary-agent")) {
+    const catchAll = nextAgents["primary-agent"];
+    delete nextAgents["primary-agent"];
+    nextAgents["primary-agent"] = catchAll;
+  }
+
   if (dropped.length === 0 && added.length === 0) {
     return { config: safeConfig, dropped, added };
   }

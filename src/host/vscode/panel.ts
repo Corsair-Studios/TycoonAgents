@@ -47,7 +47,7 @@ import {
 import { resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -6251,6 +6251,16 @@ export class TycoonPanel {
           const filePath = path.join(agentsDir, file);
           const content = fs.readFileSync(filePath, "utf8");
           const catalog = FOREIGN_LLM_AGENTS.find((x) => x.id === id);
+          if (id === "claude-worker") {
+            // Body first (exact previously-shipped body only), then the denylist migration it gates.
+            let next = healClaudeWorkerBody(content) ?? content;
+            if (catalog) next = resyncAgentFrontmatterFields(next, catalog) ?? next;
+            if (next !== content) {
+              fs.writeFileSync(filePath, next);
+              this._rosterModelCache = undefined;
+              continue;
+            }
+          }
           const healed = healForeignWrapperModel(content, catalog?.model);
           if (healed === null) continue;
           fs.writeFileSync(filePath, healed.content);

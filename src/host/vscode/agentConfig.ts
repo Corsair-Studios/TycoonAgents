@@ -148,16 +148,19 @@ export function setKeywordPattern(
     config && typeof config.agents === "object" && config.agents !== null
       ? config.agents
       : {};
-  return {
-    ...config,
-    agents: {
-      ...prevAgents,
-      [agentId]: {
-        ...(prevAgents[agentId] ?? {}),
-        pattern,
-      },
-    },
-  };
+  const entry = { ...(prevAgents[agentId] ?? {}), pattern };
+  // A NEW key lands before the catch-all so primary-agent stays last (config
+  // order breaks score ties); an existing key keeps its position.
+  const catchAll = "primary-agent";
+  if (!(agentId in prevAgents) && agentId !== catchAll && catchAll in prevAgents) {
+    const nextAgents: Record<string, any> = {};
+    for (const [k, v] of Object.entries(prevAgents)) {
+      if (k === catchAll) nextAgents[agentId] = entry;
+      nextAgents[k] = v;
+    }
+    return { ...config, agents: nextAgents };
+  }
+  return { ...config, agents: { ...prevAgents, [agentId]: entry } };
 }
 
 /**

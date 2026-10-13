@@ -183,23 +183,28 @@ test("every foreign wrapper agent records a relay/judge classification and its w
   }
 });
 
-test("claude-worker frontmatter disallows direct file/shell/web tools (no tools allowlist); other agents only deny Agent", () => {
-  const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
-  const front = buildAgentMarkdown(worker, "multi-llm").split("---")[1];
-  assert.match(front, /^disallowedTools: Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch$/m);
-  assert.doesNotMatch(front, /^tools:/m);
-  for (const other of FOREIGN_LLM_AGENTS.filter((a) => a.id !== "claude-worker")) {
-    assert.match(buildAgentMarkdown(other, "multi-llm").split("---")[1], /^disallowedTools: Agent$/m);
+const LEGACY_DENYLIST = "Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch";
+
+test("claude-worker frontmatter disallows only Agent (no tools allowlist), like every other agent", () => {
+  for (const a of FOREIGN_LLM_AGENTS) {
+    const front = buildAgentMarkdown(a, "multi-llm").split("---")[1];
+    assert.match(front, /^disallowedTools: Agent$/m, a.id);
+    assert.doesNotMatch(front, /^tools:/m, a.id);
   }
 });
 
-test("resyncAgentFrontmatterFields updates disallowedTools only for tycoon_pack-marked claude-worker files", () => {
+test("resyncAgentFrontmatterFields migrates the legacy denylist to Agent only for marked claude-worker files with the Which route body", () => {
   const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
-  const old = buildAgentMarkdown(worker, "multi-llm").replace(/^disallowedTools: .*$/m, "disallowedTools: Agent");
+  const current = buildAgentMarkdown(worker, "multi-llm");
+  assert.match(current, /^## Which route/m);
+  const old = current.replace(/^disallowedTools: .*$/m, "disallowedTools: " + LEGACY_DENYLIST);
   const fixed = resyncAgentFrontmatterFields(old, worker);
   assert.ok(fixed);
-  assert.match(fixed!, /^disallowedTools: Agent, Read, Write,/m);
+  assert.match(fixed!, /^disallowedTools: Agent$/m);
   assert.equal(resyncAgentFrontmatterFields(fixed!, worker), null);
+  // A user-edited old body (no "## Which route") keeps its denylist.
+  const oldBody = old.replace(/^## Which route\r?\n[\s\S]*?(?=^## )/m, "");
+  assert.equal(resyncAgentFrontmatterFields(oldBody, worker), null);
   const unmarked = old.replace(/^tycoon_pack: .*\r?\n/m, "");
   assert.equal(resyncAgentFrontmatterFields(unmarked, worker), null);
 });
@@ -210,15 +215,16 @@ test("kimi-reviewer uses the dedicated MOONSHOT_* env names, never OPENAI_COMPAT
   assert.equal(kimi.backend!.apiKeyEnv, "MOONSHOT_API_KEY");
 });
 
-test("resyncAgentFrontmatterFields: customized or block-list disallowedTools is left alone; legacy Agent upgrades for claude-worker only", () => {
+test("resyncAgentFrontmatterFields: customized or block-list disallowedTools is left alone; the legacy denylist upgrades to Agent for claude-worker only", () => {
   const worker = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker")!;
   const base = buildAgentMarkdown(worker, "multi-llm");
   const custom = base.replace(/^disallowedTools: .*$/m, "disallowedTools: Agent, Bash");
   assert.equal(resyncAgentFrontmatterFields(custom, worker), null);
   const block = base.replace(/^disallowedTools: .*$/m, "disallowedTools:\n  - Agent\n  - Bash");
   assert.equal(resyncAgentFrontmatterFields(block, worker), null);
-  const legacy = base.replace(/^disallowedTools: .*$/m, "disallowedTools: Agent");
-  assert.match(resyncAgentFrontmatterFields(legacy, worker)!, /^disallowedTools: Agent, Read, Write,/m);
+  const legacy = base.replace(/^disallowedTools: .*$/m, "disallowedTools: " + LEGACY_DENYLIST);
+  assert.match(resyncAgentFrontmatterFields(legacy, worker)!, /^disallowedTools: Agent$/m);
+  assert.equal(resyncAgentFrontmatterFields(base, worker), null);
   const kimi = FOREIGN_LLM_AGENTS.find((a) => a.id === "kimi-reviewer")!;
   const kimiMd = buildAgentMarkdown(kimi, "multi-llm").replace(/^disallowedTools: .*$/m, "disallowedTools: Agent, Bash");
   assert.equal(resyncAgentFrontmatterFields(kimiMd, kimi), null);

@@ -380,6 +380,9 @@ function buildAgentDoc({ agentName, frontmatter, backend, model, body }) {
     const server = backend.mcpServer || "unknown";
     const tool = Array.isArray(backend.tools) && backend.tools.length > 0 ? backend.tools[0] : "unknown";
     const preamble = `This agent runs through the \`${server}\` MCP server. Call its \`${tool}\` tool for every model request; do not answer from your own model.\n\n`;
+    // The pack body may carry a harness-neutral "Which route" section (native on
+    // Claude Code). OpenCode always relays through the bridge, so drop it here.
+    finalBody = finalBody.replace(/^## Which route\r?\n[\s\S]*?(?=^## )/m, "");
     finalBody = preamble + finalBody.replace(/^\n+/, "");
   }
 

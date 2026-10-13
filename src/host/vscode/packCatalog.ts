@@ -122,15 +122,15 @@ function renderBackendBlock(backend: Backend): string {
   return lines.join("\n") + "\n";
 }
 
+/** Legacy claude-worker denylist (file/shell/web tools). Superseded: on Claude Code the agent runs natively. */
+const LEGACY_CLAUDE_WORKER_DISALLOWED = "Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch";
+
 /** Frontmatter `disallowedTools` value for an agent, or undefined for none.
- * Every non-orchestrator agent is denied the spawn tool; claude-worker must
- * go through its claude-cli tool, so it is also denied direct file/shell/web
- * tools (a `tools:` allowlist would block ToolSearch and the handback tool). */
+ * Every non-orchestrator agent is denied the spawn tool. claude-worker keeps
+ * its file/shell tools too: on the Claude Code harness it runs natively as a
+ * normal Claude subagent (the claude-cli bridge is only for Codex/OpenCode). */
 export function agentDisallowedTools(agentId: string): string | undefined {
   if (agentId === "orchestrator") return undefined;
-  if (agentId === "claude-worker") {
-    return "Agent, Read, Write, Edit, MultiEdit, NotebookEdit, Glob, Grep, Bash, PowerShell, WebFetch, WebSearch";
-  }
   return "Agent";
 }
 
@@ -457,7 +457,7 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
     }
   }
 
-  // claude-worker only: upgrade a missing or legacy-default (`Agent`)
+  // claude-worker only: upgrade a missing or legacy file/shell-denying
   // `disallowedTools`. Any other value (user customization, YAML block list)
   // is left alone; other agents' values are never touched.
   const desiredDisallowed = agentDisallowedTools(agent.id);
@@ -467,7 +467,7 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
     if (idx === -1) {
       fixedLines.push(wanted);
       changed = true;
-    } else if (fixedLines[idx].replace(/^disallowedTools\s*:\s*/, "").trim().replace(/^["']|["']$/g, "") === "Agent") {
+    } else if (fixedLines[idx].replace(/^disallowedTools\s*:\s*/, "").trim().replace(/^["']|["']$/g, "") === LEGACY_CLAUDE_WORKER_DISALLOWED && /^## Which route/m.test(content)) {
       fixedLines[idx] = wanted;
       changed = true;
     }
@@ -492,6 +492,26 @@ export function resyncAgentFrontmatterFields(content: string, agent: PackAgent):
  * launch. Restores `catalogModel` when it is a valid alias, else `haiku` for
  * relay wrappers and `sonnet` otherwise. Returns null when nothing to heal.
  */
+/**
+ * Update an installed claude-worker whose body is EXACTLY the previously shipped
+ * one (always call the `claude` tool) to the current body, which runs natively on
+ * Claude Code. A user-edited body is never touched. Returns null when nothing to do.
+ */
+export function healClaudeWorkerBody(content: string): string | null {
+  const fm = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(content);
+  if (!fm || !/^tycoon_pack\s*:/m.test(fm[0])) return null;
+  const agent = FOREIGN_LLM_AGENTS.find((a) => a.id === "claude-worker");
+  if (!agent || agent.body === undefined) return null;
+  const eol = fm[0].includes("\r\n") ? "\r\n" : "\n";
+  const legacyBody = agent.body
+    .replace(/^## Which route\n[\s\S]*?(?=^## )/m, "")
+    .replace("On the bridge route, use the `claude` tool. Always pass:", "Use the `claude` tool. Always pass:");
+  const rest = content.slice(fm[0].length).replace(/\r\n/g, "\n");
+  const header = `\n# ${agent.name}\n\n`;
+  if (rest !== header + legacyBody) return null;
+  return fm[0] + (header + agent.body).replace(/\n/g, eol);
+}
+
 export function healForeignWrapperModel(
   content: string,
   catalogModel?: string,
@@ -779,7 +799,7 @@ export const FOREIGN_LLM_AGENTS: PackAgent[] = [
     role: "Runs delegated implementation and review work through the user's own Claude CLI subscription login (via the claude-cli MCP server) instead of the orchestrator's metered API key.",
     keywords: "claude-cli|subscription-worker",
     backend: { vendor: "anthropic", transport: "mcp", mcpServer: "claude-cli", tools: ["claude"], model: "anthropic/sonnet", costModelClass: "subscription" },
-    body: "<!-- wrapper-class: judge - chooses cwd, model, max_turns and allowed_tools per task and decides done vs changes-requested, so it keeps sonnet -->\n\n## Role\nRuns delegated implementation and review work through the user's OWN `claude` CLI login (a Claude Max/Pro subscription) via the `claude-cli` MCP server, instead of the orchestrator's metered API key. This exists so a subscription seat can legitimately do work from OpenCode — always through Anthropic's own supported CLI surface, never a third-party OAuth token. Use this agent when the task should draw on the user's subscription quota rather than API billing.\n\n## Calling the claude CLI\nUse the `claude` tool. Always pass:\n- `prompt`: the task, self-contained — this is a fresh CLI session with no memory of this conversation.\n- `cwd`: set to the project directory ONLY when the task genuinely needs file context from it (reading/editing real files). Omitting `cwd` runs in an isolated scratch directory with no project CLAUDE.md loaded, which is cheaper and safer for pure reasoning/review tasks — prefer that when file access isn't required.\n- `model`: pick deliberately (the aliases `haiku` for a cheap read-only check, `sonnet` for implementation-grade work; an alias always resolves to the newest model, so do not pin a version like `claude-sonnet-4-6` unless the user asks). Do not rely on the server default for anything but trivial checks.\n- `max_turns`: keep this to the minimum the task needs; the CLI is agentic per turn and cost scales with turns.\n- `allowed_tools`: only when the task needs specific built-in CLI tools (e.g. `[\"Read\",\"Edit\"]`); the server's permission-mode defaults to read-only planning, so a task that must write files needs both `allowed_tools` naming the right tools and a caller-set `CLAUDE_CLI_PERMISSION_MODE` env that allows it — never assume write access is on by default.\n\n## Recognizing a provider failure vs. a task outcome\nThe `claude` tool reports `isError:true` with a plain-text message in `content[0].text` for: a missing/undiscoverable `claude` binary, a timed-out CLI process, non-JSON CLI output, a non-zero CLI exit, or the CLI's own `is_error:true`. Treat any `isError:true` response as **not a completed task** — do not interpret its text as a result. Report this as `verdict: \"provider-unavailable\"` with the raw error text, never silently treat an unreachable CLI as success.\n\n## Structured response shape\nReturn exactly one response object (as your report body), shaped like:\n\n```\nverdict: done | changes-requested | provider-unavailable\nsummary: <one sentence>\nchanges:\n  - file: <path>\n    line: <int or range>\n    note: <what changed, one sentence>\nprovider_error: <raw isError text, only when verdict is provider-unavailable>\n```\n\n`changes` is empty for a pure review/read task. Do not add extra fields, prose commentary, or a narrative wrapper around this shape.\n\n## Keywords (for task routing)\nclaude-cli|subscription-worker\n\n## Report Format\nOutcome first: state the verdict shape above directly. No headings, no decorative bullets, no flattery or self-assessment. Under 250 words. This is a single pass — do not invite a follow-up round.\n",
+    body: "<!-- wrapper-class: judge - chooses cwd, model, max_turns and allowed_tools per task and decides done vs changes-requested, so it keeps sonnet -->\n\n## Role\nRuns delegated implementation and review work through the user's OWN `claude` CLI login (a Claude Max/Pro subscription) via the `claude-cli` MCP server, instead of the orchestrator's metered API key. This exists so a subscription seat can legitimately do work from OpenCode — always through Anthropic's own supported CLI surface, never a third-party OAuth token. Use this agent when the task should draw on the user's subscription quota rather than API billing.\n\n## Which route\nOn the Claude Code harness you run natively as a normal Claude subagent on the user's own sign-in: do the delegated task directly with your own tools (Read, Edit, Bash and the rest) and do NOT call the `claude` tool or the `claude-cli` server — no bridge is needed. Use the `claude` tool below ONLY when you have no file or shell tools of your own and the `claude` tool is present (Codex and OpenCode, where the dispatcher bridge reaches the CLI). The response shape below applies on every route.\n\n## Calling the claude CLI\nOn the bridge route, use the `claude` tool. Always pass:\n- `prompt`: the task, self-contained — this is a fresh CLI session with no memory of this conversation.\n- `cwd`: set to the project directory ONLY when the task genuinely needs file context from it (reading/editing real files). Omitting `cwd` runs in an isolated scratch directory with no project CLAUDE.md loaded, which is cheaper and safer for pure reasoning/review tasks — prefer that when file access isn't required.\n- `model`: pick deliberately (the aliases `haiku` for a cheap read-only check, `sonnet` for implementation-grade work; an alias always resolves to the newest model, so do not pin a version like `claude-sonnet-4-6` unless the user asks). Do not rely on the server default for anything but trivial checks.\n- `max_turns`: keep this to the minimum the task needs; the CLI is agentic per turn and cost scales with turns.\n- `allowed_tools`: only when the task needs specific built-in CLI tools (e.g. `[\"Read\",\"Edit\"]`); the server's permission-mode defaults to read-only planning, so a task that must write files needs both `allowed_tools` naming the right tools and a caller-set `CLAUDE_CLI_PERMISSION_MODE` env that allows it — never assume write access is on by default.\n\n## Recognizing a provider failure vs. a task outcome\nThe `claude` tool reports `isError:true` with a plain-text message in `content[0].text` for: a missing/undiscoverable `claude` binary, a timed-out CLI process, non-JSON CLI output, a non-zero CLI exit, or the CLI's own `is_error:true`. Treat any `isError:true` response as **not a completed task** — do not interpret its text as a result. Report this as `verdict: \"provider-unavailable\"` with the raw error text, never silently treat an unreachable CLI as success.\n\n## Structured response shape\nReturn exactly one response object (as your report body), shaped like:\n\n```\nverdict: done | changes-requested | provider-unavailable\nsummary: <one sentence>\nchanges:\n  - file: <path>\n    line: <int or range>\n    note: <what changed, one sentence>\nprovider_error: <raw isError text, only when verdict is provider-unavailable>\n```\n\n`changes` is empty for a pure review/read task. Do not add extra fields, prose commentary, or a narrative wrapper around this shape.\n\n## Keywords (for task routing)\nclaude-cli|subscription-worker\n\n## Report Format\nOutcome first: state the verdict shape above directly. No headings, no decorative bullets, no flattery or self-assessment. Under 250 words. This is a single pass — do not invite a follow-up round.\n",
   },
 ];
 
