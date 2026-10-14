@@ -113,6 +113,31 @@ export function resolveEditTargetAgent(inputs: EditTargetInputs): string {
 }
 
 /**
+ * True when filePath is an orchestrator bookkeeping file (the session journal
+ * or the registered plan and its backup) under projectRoot. Handles absolute or
+ * relative paths, either slash style, and folds case on Windows-style roots.
+ * Mirrors isOrchestratorBookkeepingPath in tycoon-claude-hook.cjs.
+ */
+function normalizeSlashes(p: string): string {
+  const out: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "..") { if (out.length > 1) out.pop(); } else if (seg !== "." && !(seg === "" && out.length > 0)) out.push(seg);
+  }
+  return out.join("/");
+}
+
+export function isOrchestratorBookkeepingPath(filePath: string | undefined, projectRoot: string | undefined, platform: string = process.platform): boolean {
+  if (!filePath || !projectRoot) return false;
+  const norm = (p: string): string => normalizeSlashes(p.replace(/[\\]/g, "/"));
+  const root = norm(projectRoot).replace(/\/+$/, "");
+  const raw = filePath.replace(/[\\]/g, "/");
+  const target = raw.startsWith("/") || /^[A-Za-z]:\//.test(raw) ? normalizeSlashes(raw) : normalizeSlashes(`${root}/${raw}`);
+  const fold = platform === "win32" || /^[A-Za-z]:\//.test(root) ? (p: string) => p.toLowerCase() : (p: string) => p;
+  return [".claude/session-journal.json", ".claude/tycoon/plan.json", ".claude/tycoon/plan.json.bak"]
+    .some((rel) => fold(target) === fold(`${root}/${rel}`));
+}
+
+/**
  * Decide what should happen when a DIRECT (non-delegated) tool call is made
  * by the orchestrator itself (never called for a spawned worker — workers
  * are leaves and are supposed to call these tools directly).
@@ -125,7 +150,7 @@ export function resolveEditTargetAgent(inputs: EditTargetInputs): string {
  * block; a host that wants to enforce harder can escalate "nudge" to "deny"
  * itself.
  */
-export function decideDirectToolCall(toolName: string, readCountSoFar: number, editTarget: string = "coding-specialist"): ToolCallDecision {
+export function decideDirectToolCall(toolName: string, readCountSoFar: number, editTarget: string = "coding-specialist", editPath?: { filePath?: string; projectRoot?: string }): ToolCallDecision {
   if (toolName === "Grep" || toolName === "Glob") {
     return {
       action: "nudge",
@@ -133,6 +158,7 @@ export function decideDirectToolCall(toolName: string, readCountSoFar: number, e
     };
   }
   if (toolName === "Edit" || toolName === "Write") {
+    if (editPath && isOrchestratorBookkeepingPath(editPath.filePath, editPath.projectRoot)) return { action: "allow" };
     return {
       action: "nudge",
       message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${editTarget}) — the orchestrator coordinates, it does not implement.`,

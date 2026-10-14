@@ -24,6 +24,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LEAF_WORKER_DENY_MESSAGE = void 0;
 exports.matchAgentFromKeywords = matchAgentFromKeywords;
 exports.resolveEditTargetAgent = resolveEditTargetAgent;
+exports.isOrchestratorBookkeepingPath = isOrchestratorBookkeepingPath;
 exports.decideDirectToolCall = decideDirectToolCall;
 exports.decideSpawn = decideSpawn;
 exports.startReviewGate = startReviewGate;
@@ -83,6 +84,35 @@ function resolveEditTargetAgent(inputs) {
     return inputs.fallbackAgent || "primary-agent";
 }
 /**
+ * True when filePath is an orchestrator bookkeeping file (the session journal
+ * or the registered plan and its backup) under projectRoot. Handles absolute or
+ * relative paths, either slash style, and folds case on Windows-style roots.
+ * Mirrors isOrchestratorBookkeepingPath in tycoon-claude-hook.cjs.
+ */
+function normalizeSlashes(p) {
+    const out = [];
+    for (const seg of p.split("/")) {
+        if (seg === "..") {
+            if (out.length > 1)
+                out.pop();
+        }
+        else if (seg !== "." && !(seg === "" && out.length > 0))
+            out.push(seg);
+    }
+    return out.join("/");
+}
+function isOrchestratorBookkeepingPath(filePath, projectRoot, platform = process.platform) {
+    if (!filePath || !projectRoot)
+        return false;
+    const norm = (p) => normalizeSlashes(p.replace(/[\\]/g, "/"));
+    const root = norm(projectRoot).replace(/\/+$/, "");
+    const raw = filePath.replace(/[\\]/g, "/");
+    const target = raw.startsWith("/") || /^[A-Za-z]:\//.test(raw) ? normalizeSlashes(raw) : normalizeSlashes(`${root}/${raw}`);
+    const fold = platform === "win32" || /^[A-Za-z]:\//.test(root) ? (p) => p.toLowerCase() : (p) => p;
+    return [".claude/session-journal.json", ".claude/tycoon/plan.json", ".claude/tycoon/plan.json.bak"]
+        .some((rel) => fold(target) === fold(`${root}/${rel}`));
+}
+/**
  * Decide what should happen when a DIRECT (non-delegated) tool call is made
  * by the orchestrator itself (never called for a spawned worker — workers
  * are leaves and are supposed to call these tools directly).
@@ -95,7 +125,7 @@ function resolveEditTargetAgent(inputs) {
  * block; a host that wants to enforce harder can escalate "nudge" to "deny"
  * itself.
  */
-function decideDirectToolCall(toolName, readCountSoFar, editTarget = "coding-specialist") {
+function decideDirectToolCall(toolName, readCountSoFar, editTarget = "coding-specialist", editPath) {
     if (toolName === "Grep" || toolName === "Glob") {
         return {
             action: "nudge",
@@ -103,6 +133,8 @@ function decideDirectToolCall(toolName, readCountSoFar, editTarget = "coding-spe
         };
     }
     if (toolName === "Edit" || toolName === "Write") {
+        if (editPath && isOrchestratorBookkeepingPath(editPath.filePath, editPath.projectRoot))
+            return { action: "allow" };
         return {
             action: "nudge",
             message: `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${editTarget}) — the orchestrator coordinates, it does not implement.`,

@@ -2118,11 +2118,29 @@ function resolveEditTargetAgent(projectRoot) {
   return (cfg && cfg.fallback_agent) || "primary-agent";
 }
 
-function computeComplianceNudge(toolName, tycoonDir, projectRoot) {
+// Orchestrator bookkeeping files the managed CLAUDE.md / project-plan skill
+// tell the orchestrator to write itself. Mirrors isOrchestratorBookkeepingPath
+// in src/core/delegationEnforcement.ts.
+function isOrchestratorBookkeepingPath(filePath, projectRoot) {
+  if (typeof filePath !== "string" || !filePath || !projectRoot) return false;
+  const norm = (p) => path.posix.normalize(String(p).replace(/[\\]/g, "/"));
+  const root = norm(projectRoot).replace(/\/+$/, "");
+  let target = norm(filePath);
+  const isAbs = target.startsWith("/") || /^[A-Za-z]:\//.test(target);
+  if (!isAbs) target = path.posix.normalize(root + "/" + target);
+  const winLike = process.platform === "win32" || /^[A-Za-z]:\//.test(root);
+  const fold = (p) => (winLike ? p.toLowerCase() : p);
+  return [".claude/session-journal.json", ".claude/tycoon/plan.json", ".claude/tycoon/plan.json.bak"]
+    .some((rel) => fold(target) === fold(root + "/" + rel));
+}
+
+function computeComplianceNudge(toolName, tycoonDir, projectRoot, filePath) {
   if (toolName === "Grep" || toolName === "Glob") {
     return `${toolName} ran directly on the orchestrator. Searches belong to search-retrieval (Haiku) — cheaper, and the work stays visible in the delegation view.`;
   }
   if (toolName === "Edit" || toolName === "Write") {
+    const root = projectRoot || path.dirname(path.dirname(tycoonDir));
+    if (isOrchestratorBookkeepingPath(filePath, root)) return undefined;
     return `${toolName} ran directly on the orchestrator. File changes belong to a specialist (${resolveEditTargetAgent(projectRoot || path.dirname(path.dirname(tycoonDir)))}) — the orchestrator coordinates, it does not implement.`;
   }
   if (toolName === "Read") {
@@ -3086,7 +3104,7 @@ function main(raw) {
       // never nag them.
       let nudge;
       if (workerId === "orchestrator") {
-        nudge = computeComplianceNudge(toolName, tycoonDir, projectRoot);
+        nudge = computeComplianceNudge(toolName, tycoonDir, projectRoot, payload.tool_input && payload.tool_input.file_path);
       }
 
       /** @type {Record<string, unknown>} */
