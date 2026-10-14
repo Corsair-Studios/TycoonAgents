@@ -17,7 +17,7 @@
 // Agent set matched (fresh, non-UEFN, direct-delegation-mode VS Code
 // install — see panel.ts `_handleInstallHooks` ~5837-5852):
 //   - `workerAgentsForProject(false)` -> search-retrieval, primary-agent,
-//     coding-specialist, ux-ui-designer (the UEFN branch additionally
+//     coding-specialist, testing-specialist, ux-ui-designer (the UEFN branch additionally
 //     withholds coding-specialist/ux-ui-designer; a fresh non-UEFN direct
 //     install is the closest single default to mirror here).
 //   - `REVIEWER_AGENTS` -> reviewer (installed by default; `reviewEnabled`

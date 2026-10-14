@@ -123,7 +123,7 @@ test("FIXED ordering: seeding keywords after installing worker agent files popul
   (fakeThis as any)._installWorkerAgents.call(fakeThis, root);
   (TycoonPanel.prototype as any)._ensureAgentKeywordsSeeded.call(fakeThis);
 
-  for (const id of ["search-retrieval", "primary-agent", "coding-specialist", "ux-ui-designer"]) {
+  for (const id of ["search-retrieval", "primary-agent", "coding-specialist", "testing-specialist", "ux-ui-designer"]) {
     const agentFile = path.join(root, ".claude", "agents", `${id}.md`);
     if (!fs.existsSync(agentFile)) continue; // e.g. UEFN-only exclusions
     assert.notEqual(

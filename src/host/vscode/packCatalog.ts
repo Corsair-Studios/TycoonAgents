@@ -1061,8 +1061,10 @@ export const REVIEWER_AGENTS: PackAgent[] = [
  * `fallback_agent` (see `_defaultAgentRoutingConfig` in panel.ts), so
  * keyword-unmatched tasks had no real agent file to route to and silently
  * fell back to the orchestrator doing the work itself. Non-UEFN projects
- * additionally get `coding-specialist` and `ux-ui-designer`; UEFN projects
- * get neither (a UEFN pack install brings its own `uefn-auditor` and
+ * additionally get `coding-specialist`, `testing-specialist` and
+ * `ux-ui-designer`; `testing-specialist` is a default for code projects (unit
+ * tests/specs), separate from the Playwright pack's `web-qa` (browser/e2e).
+ * UEFN projects get neither (a UEFN pack install brings its own `uefn-auditor` and
  * `verse-expert`, and this file's `REVIEWER_AGENTS` reviewer would conflict
  * with `uefn-auditor` as a verification gate, so it is likewise withheld —
  * see `_handleInstallHooks` in panel.ts). Pure: reads only `REGULAR_AGENTS`.
@@ -1070,7 +1072,7 @@ export const REVIEWER_AGENTS: PackAgent[] = [
 export function workerAgentsForProject(isUefn: boolean): PackAgent[] {
   const ids = isUefn
     ? ["search-retrieval", "primary-agent"]
-    : ["search-retrieval", "primary-agent", "coding-specialist", "ux-ui-designer"];
+    : ["search-retrieval", "primary-agent", "coding-specialist", "testing-specialist", "ux-ui-designer"];
   return ids
     .map((id) => REGULAR_AGENTS.find((a) => a.id === id))
     .filter((a): a is PackAgent => a !== undefined);

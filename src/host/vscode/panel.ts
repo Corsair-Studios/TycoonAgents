@@ -7949,7 +7949,7 @@ export class TycoonPanel {
    * `workerAgentsForProject`): always `search-retrieval` and `primary-agent`
    * (the Wildcard Agent — the id must match the `fallback_agent` default,
    * see `_readKeywordsConfig`'s fallback return value); for non-UEFN projects also
-   * `coding-specialist` and `ux-ui-designer`. Called both from
+   * `coding-specialist`, `testing-specialist` and `ux-ui-designer`. Called both from
    * `_ensureWorkerAgentsInstalled` (panel-open auto-heal, gated on
    * `_hooksInstalledForRoot`) and from `_handleInstallHooks` (explicit
    * Install/Repair), so both a fresh install and an upgraded older project

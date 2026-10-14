@@ -426,13 +426,18 @@ test("workerAgentsForProject(true) returns exactly search-retrieval and primary-
   );
 });
 
-test("workerAgentsForProject(false) returns search-retrieval, primary-agent, coding-specialist, ux-ui-designer in that exact order", () => {
+test("workerAgentsForProject(false) returns search-retrieval, primary-agent, coding-specialist, testing-specialist, ux-ui-designer in that exact order", () => {
   const result = workerAgentsForProject(false);
-  assert.equal(result.length, 4);
+  assert.equal(result.length, 5);
   assert.deepEqual(
     result.map((a) => a.id),
-    ["search-retrieval", "primary-agent", "coding-specialist", "ux-ui-designer"]
+    ["search-retrieval", "primary-agent", "coding-specialist", "testing-specialist", "ux-ui-designer"]
   );
+});
+
+test("workerAgentsForProject gives non-UEFN projects testing-specialist and UEFN projects not", () => {
+  assert.ok(workerAgentsForProject(false).some((a) => a.id === "testing-specialist"));
+  assert.equal(workerAgentsForProject(true).some((a) => a.id === "testing-specialist"), false);
 });
 
 test("workerAgentsForProject includes primary-agent (the Wildcard Agent) for BOTH UEFN and non-UEFN projects, matching search-retrieval's project-agnostic install", () => {
