@@ -309,6 +309,7 @@ import {
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
+import { agentFilesAdded, listAgentFiles, newChatNoticeText } from "./newChatNotice";
 import { dismissMismatch, isMismatchSuppressed, loadDismissedMismatch, mismatchPayload, newHarnessMismatchState, scanHarnessMismatch, suppressMismatch, type HarnessMismatchState } from "./harnessMismatch";
 import { copiesFromNewerInstall, discoverSiblingExtensions } from "./installedExtensions";
 import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
@@ -7460,8 +7461,12 @@ export class TycoonPanel {
       // notify hook (CODEX_HOME/config.toml + .codex/hooks.json), never the
       // Claude hooks, and leaves everything else in place.
       if (this._effectiveHarness(root) === "codex") {
+        const codexWasInstalled = this._codexHookSettingsSlice().status === "installed";
         this._handleInstallCodexHooks();
         const slice = this._codexHookSettingsSlice();
+        if (slice.status === "installed" && !codexWasInstalled) {
+          void vscode.window.showInformationMessage(newChatNoticeText("codex"));
+        }
         void this._panel.webview.postMessage({
           type: MSG.INSTALL_STATE,
           installed: slice.status === "installed",
@@ -7651,6 +7656,7 @@ export class TycoonPanel {
       // unchecks it, the webview follows this installHooks message with a
       // SET_REVIEW_ENABLED(false) that turns it back off.
       const reviewEnabled = true;
+      const agentFilesBefore = listAgentFiles(root);
       let claudeMdError: string | undefined;
       try {
         // 7a. Persist the chosen mode + the default Review-pass state.
@@ -7755,11 +7761,20 @@ export class TycoonPanel {
       // current (see 7a3 above and _ensureProjectPlanSkillFresh).
       this._ensureProjectPlanSkillFresh();
 
+      // 7h. A chat that was open before this install never sees agent files
+      // written now; tell the user to start a new one. Only when this run
+      // wrote a NEW agent file (a no-op repair stays silent).
+      const newChatNeeded = agentFilesAdded(agentFilesBefore, listAgentFiles(root));
+      if (newChatNeeded) {
+        void vscode.window.showInformationMessage(newChatNoticeText("claude-code"));
+      }
+
       // 8. Success.
       void this._panel.webview.postMessage({
         type: MSG.INSTALL_STATE,
         installed: true,
         delegation_mode: delegationMode,
+        ...(newChatNeeded ? { newChatNotice: "Start a new Claude chat to use your agents." } : {}),
         ...(claudeMdError !== undefined ? { claudeMdError } : {}),
       });
     } catch (err) {

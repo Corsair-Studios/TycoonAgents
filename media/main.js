@@ -3597,7 +3597,7 @@ if (typeof module !== "undefined" && module.exports) {
       // — or any other optional action — ever had a chance to render.
       setupStage = "optionals";
       showSetup();
-      setupStatusEl.textContent = "Hooks installed ✓";
+      setupStatusEl.textContent = "Hooks installed ✓" + (info && info.newChatNotice ? " " + info.newChatNotice : "");
       installHooksBtn.setAttribute("hidden", "");
       if (info && info.error) {
         setupErrorEl.textContent = info.error;

@@ -25,10 +25,12 @@ import * as path from "node:path";
 const NodeModule = require("module");
 const originalLoad = NodeModule._load;
 let configuredProviderSetting: string | undefined;
+const infoMessages: string[] = [];
 function makeVscodeStub(): unknown {
   return {
     __esModule: true,
     extensions: { getExtension: () => undefined },
+    window: { showInformationMessage: (m: string) => { infoMessages.push(m); return Promise.resolve(undefined); } },
     workspace: {
       getConfiguration: () => ({
         // Real VS Code's `.get()` always returns the package.json default
@@ -654,7 +656,11 @@ test("_handleInstallHooks on the Codex harness installs the Codex hook, not the 
     const cur = versionDir(base, "0.0.710");
     const posted: any[] = [];
     const fake = makeCheckInstallFake(root, cur.hook, posted);
+    infoMessages.length = 0;
     (TycoonPanel.prototype as any)._handleInstallHooks.call(fake, "flat");
+    assert.deepEqual(infoMessages.filter((m) => /Start a new Codex session/.test(m)).length, 1, "first Codex install shows the new-session notice");
+    (TycoonPanel.prototype as any)._handleInstallHooks.call(fake, "flat");
+    assert.equal(infoMessages.length, 1, "a re-run with the hook already installed stays silent");
     const last = [...posted].reverse().find((m) => m.type === "installState" && m.busy !== true);
     assert.equal(last.installed, true);
     assert.equal(last.harness, "codex");
