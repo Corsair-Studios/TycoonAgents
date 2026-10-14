@@ -161,19 +161,18 @@ test("a NEWER versioned entry also moves to the stable folder (the stable folder
   }
 });
 
-test("repoint leaves foreign entries, unlisted ids and unrecognised launchers untouched", async () => {
+test("repoint leaves foreign entries and unrecognised launchers untouched", async () => {
   const f = fx();
   try {
     const oldHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.1", ["codex-mcp-launcher.cjs"]);
     const newHooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     const foreign = { command: "npx", args: ["-y", "third-party@1.0.0"] };
     const forged = { command: "evil", args: [fwd(path.join(oldHooks, "codex-mcp-launcher.cjs"))] };
-    const ours = entryAt(oldHooks);
-    fs.writeFileSync(f.file, JSON.stringify({ keepMe: 1, projects: { [claudeProjectKey(f.root)]: { mcpServers: { foreign, forged, other: ours, codex: ours } } } }));
+    fs.writeFileSync(f.file, JSON.stringify({ keepMe: 1, projects: { [claudeProjectKey(f.root)]: { mcpServers: { foreign, forged } } } }));
     const before = fs.readFileSync(f.file, "utf8");
     const r = await repointLocalMcpEntries(f.root, newHooks, ["foreign", "forged", "missing-id"], f.opts);
     assert.deepEqual(r, { repointed: [], errors: [], missing: [] });
-    assert.equal(fs.readFileSync(f.file, "utf8"), before, "ids not in ourIds (other, codex) and foreign ones are untouched");
+    assert.equal(fs.readFileSync(f.file, "utf8"), before, "foreign and forged entries are untouched");
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });
   }
@@ -282,6 +281,31 @@ test("repoint refreshes args that exactly match a superseded catalog model, and 
     const r2 = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts, CAT_DEFS);
     assert.deepEqual(r2, { repointed: [], errors: [], missing: [] });
     assert.deepEqual(localServers(f)["codex"].args, [script, ...custom]);
+  } finally {
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("repoint migrates codex and codex-write from versioned paths, keeping sandbox args; second run is a no-op", async () => {
+  const f = fx();
+  try {
+    const oldHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-0.0.744", ["codex-mcp-launcher.cjs"]);
+    const stable = mkStable(f, ["codex-mcp-launcher.cjs"]);
+    const mk = (mode: string) => ({ command: "node", args: [fwd(path.join(oldHooks, "codex-mcp-launcher.cjs")), "-c", 'approval_policy="never"', "-c", `sandbox_mode="${mode}"`] });
+    await registerLocalMcpServer(f.root, "codex", mk("read-only"), f.opts);
+    await registerLocalMcpServer(f.root, "codex-write", mk("workspace-write"), f.opts);
+    // Caller passes only "codex": codex-write must still migrate.
+    const r = await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts);
+    assert.deepEqual([...r.repointed].sort(), ["codex", "codex-write"]);
+    const s = localServers(f);
+    const script = fwd(path.join(stable, "codex-mcp-launcher.cjs"));
+    assert.equal(s["codex"].args[0], script);
+    assert.equal(s["codex-write"].args[0], script);
+    assert.deepEqual(s["codex"].args.slice(1), mk("read-only").args.slice(1));
+    assert.deepEqual(s["codex-write"].args.slice(1), mk("workspace-write").args.slice(1));
+    const bytes = fs.readFileSync(f.file, "utf8");
+    assert.deepEqual(await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts), { repointed: [], errors: [], missing: [] });
+    assert.equal(fs.readFileSync(f.file, "utf8"), bytes);
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });
   }

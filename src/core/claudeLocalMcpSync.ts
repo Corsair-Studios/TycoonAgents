@@ -31,6 +31,7 @@ import {
 import { isInStableBridgeDir, resolveStableBridgeDir } from "./stableBridgeDir";
 import type { LocalMcpOps, LocalMcpOptions } from "./claudeLocalMcp";
 import { CODEX_LEGACY_MODELS } from "./agentsUiMode";
+import { registrableBridgeServerIds } from "./bridgeSetup";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -107,7 +108,13 @@ export async function repointLocalMcpEntries(root: string, hooksDir: string, our
   const platform = o.platform ?? process.platform;
   const isFile = o.isFile ?? ((p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
   const local = readLocalMcpServers(root, o);
-  for (const id of ourIds) {
+  // The id set is the caller's ids, every registrable bridge server (codex-write included) and any
+  // registered entry of ours still inside a versioned extension folder, whatever its id.
+  const ids = new Set<string>([...ourIds, ...registrableBridgeServerIds()]);
+  for (const [id, e] of Object.entries(local)) {
+    if (isOurLocalEntry(e, o) && installKindOf((e as { args: string[] }).args[0], o) === "vscode-extension") ids.add(id);
+  }
+  for (const id of ids) {
     const entry = local[id];
     if (!isOurLocalEntry(entry, o)) continue;
     const cfg = entry as Record<string, unknown>;

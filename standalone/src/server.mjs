@@ -570,7 +570,7 @@ async function ensureLocalMcpCurrentStandalone(root) {
     if (!useLocalMcpStandalone(root)) return;
     const stable = stableLocalMcpStandalone();
     if (stable.error) return;
-    const defs = mcpApprovalModule().tycoonServerDefsFromMedia(MEDIA_DIR);
+    const defs = mcpApprovalModule().localMcpSyncDefsFromMedia(MEDIA_DIR);
     const sync = claudeLocalMcpSyncModule();
     const repointed = await sync.repointLocalMcpEntries(root, stable.ops.hooksDir, Object.keys(defs), {}, defs);
     for (const e of repointed.errors) console.warn(`[tycoonagents-standalone] local MCP sync: ${e}`);

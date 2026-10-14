@@ -178,6 +178,11 @@ export function bridgeServerFor(backend: Backend | null | undefined): string | n
 export const CODEX_WRITE_SERVER = "codex-write";
 const REGISTRABLE_BRIDGE_SERVERS = new Set(["codex", CODEX_WRITE_SERVER, "gemini", OPENAI_COMPAT_SERVER, "claude-cli"]);
 
+/** Every bridge server id TycoonAgents may register (includes codex-write). */
+export function registrableBridgeServerIds(): string[] {
+  return [...REGISTRABLE_BRIDGE_SERVERS];
+}
+
 /** True for a bridge server TycoonAgents may register on the user's behalf (the slot card's Enable MCP). */
 export function isRegistrableBridgeServer(name: unknown): name is string {
   return typeof name === "string" && REGISTRABLE_BRIDGE_SERVERS.has(name);

@@ -81,7 +81,7 @@ import { getValue as getLocalEnvValue } from "../../core/localEnvStore";
 import { loadRoutingProfile } from "../../core/routingProfile";
 import { BRIDGE_PACK_ID, bridgeServersForRoutingProfile, profileUsesCodexWrite, CODEX_WRITE_SERVER, buildBridgePicker, describeBridgeSetup, describeVendorBridgeSetups, isRegistrableBridgeServer, installBridgeSelection, installMcpEntry, serverForInstalledAgent, harnessUsesMcpJson, mcpServerState } from "../../core/bridgeSetup";
 import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../core/bridgeSetup";
-import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
+import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, localMcpSyncDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
 import { localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
@@ -4718,7 +4718,7 @@ export class TycoonPanel {
         if (!this._useLocalMcp(root)) return;
         const stable = this._stableLocalMcp();
         if (stable.error) return;
-        const defs = this._tycoonServerDefs();
+        const defs = localMcpSyncDefsFromMedia(path.join(this._extensionUri.fsPath, "media"));
         const repointed = await repointLocalMcpEntries(root, stable.ops.hooksDir, Object.keys(defs), {}, defs);
         for (const e of repointed.errors) console.warn(`TycoonAgents: local MCP sync: ${e}`);
         for (const id of repointed.missing) {

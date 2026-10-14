@@ -22,7 +22,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { bridgeServerFor, BRIDGE_PACK_ID } from "./bridgeSetup";
+import { bridgeServerFor, BRIDGE_PACK_ID, registrableBridgeServerIds } from "./bridgeSetup";
 import { GEMINI_BACKEND_ENV } from "./hostBridgeSettings";
 import type { Backend } from "./agentBackend";
 import { resolveConfigForPlatform, withDispatcherProjectDir } from "../host/vscode/mcpCatalog";
@@ -689,4 +689,22 @@ export function findChangedApprovedIds(
   const approved = Object.keys(defs).filter((id) => strArray(local.data["enabledMcpjsonServers"]).includes(id) || allow.includes(`mcp__${id}`));
   const ids = approved.filter((id) => state.foreign.includes(id) || state.modified.includes(id) || state.outFallback || state.pathHijack !== null || (id === "tycoon" && state.dispatcherBlockedBy.length > 0));
   return { ok: true, ids, unsafeSettingsPath: state.unsafeSettingsPath };
+}
+
+/**
+ * Catalog entries used to keep local-scope registrations current: tycoonServerDefsFromMedia plus every
+ * registrable bridge server (codex-write has no pack agent, so the approval set omits it). Never used
+ * for approvals.
+ */
+export function localMcpSyncDefsFromMedia(mediaDir: string): TycoonServerDefs {
+  const out = tycoonServerDefsFromMedia(mediaDir);
+  let cat: unknown = [];
+  try { cat = JSON.parse(fs.readFileSync(path.join(mediaDir, "mcp", "catalog.json"), "utf8")); } catch { /* keep empty */ }
+  if (Array.isArray(cat)) {
+    for (const id of registrableBridgeServerIds()) {
+      const e = cat.find((x) => x && typeof x === "object" && (x as { id?: unknown }).id === id);
+      if (e && !out[id]) out[id] = e as TycoonServerDefs[string];
+    }
+  }
+  return out;
 }
