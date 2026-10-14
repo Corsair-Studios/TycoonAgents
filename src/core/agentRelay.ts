@@ -28,9 +28,61 @@ export const RELAY_SECTION_BEGIN = "<!-- tycoon:relay:begin -->";
 export const RELAY_SECTION_END = "<!-- tycoon:relay:end -->";
 export const RELAY_ORIGINAL_BEGIN = "<!-- tycoon:relay-original:begin -->";
 export const RELAY_ORIGINAL_END = "<!-- tycoon:relay-original:end -->";
+export const RELAY_BRIEF_BEGIN = "<!-- tycoon:relay-brief:begin -->";
+export const RELAY_BRIEF_END = "<!-- tycoon:relay-brief:end -->";
 export const RELAY_WRAPPER_MODEL = "haiku";
 export const RELAY_HEADING = "## Relay (managed by TycoonAgents)";
-export const RELAY_ORIGINAL_HEADING = "## Role instructions to forward to the provider";
+export const RELAY_ORIGINAL_HEADING = "## Original instructions (kept for revert, not forwarded)";
+/** Heading written by 0.0.742/0.0.743; regenerateRelay rewrites it to RELAY_ORIGINAL_HEADING. */
+export const RELAY_ORIGINAL_HEADING_LEGACY = "## Role instructions to forward to the provider";
+/** Sections of the original that must not reach the provider (they are the Claude worker's own leaf rules). */
+export const RELAY_BRIEF_OMITTED_HEADINGS = ["## Working discipline"];
+const normHeading = (h: string): string => h.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** The preserved original minus the omitted sections (code fences respected). Pure; output is LF-separated. */
+export function buildRelayBrief(original: string): string {
+  const lines = original.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let fence: string | null = null;
+  let skipping = false;
+  for (const line of lines) {
+    const f = /^\s*(```|~~~)/.exec(line);
+    if (f) {
+      if (fence === null) fence = f[1];
+      else if (f[1] === fence) fence = null;
+    } else if (fence === null && /^#{1,2}[ \t]+\S/.test(line)) {
+      skipping = RELAY_BRIEF_OMITTED_HEADINGS.some((h) => normHeading(h) === normHeading(line));
+    }
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n").replace(/\s+$/, "").replace(/^\s*\n/, "");
+}
+
+/** Servers whose provider edits files itself; their relay must never edit. */
+export const RELAY_WRITE_MODE_SERVERS = ["codex-write", "claude-cli"];
+export const RELAY_DENY_PROVIDER_FIRST = "relay agent must call its provider first";
+export const RELAY_DENY_PROVIDER_EDITS = "the provider makes edits in write mode";
+export const RELAY_EDIT_TOOL_NAMES = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+export const RELAY_SHELL_TOOL_NAMES = ["Bash", "PowerShell"];
+export const RELAY_DENY_SHELL = "relay agents do not run shell commands";
+
+/** True when `toolName` is the relay's provider call: `mcp__<server>__*` or the dispatcher. */
+export function isRelayProviderCall(server: string, toolName: string): boolean {
+  return toolName.startsWith(`mcp__${server}__`) || toolName === "mcp__tycoon__delegate";
+}
+
+/**
+ * Pure PreToolUse decision for a relay subagent run. Twin: relayDecide in
+ * hooks/tycoon-claude-hook.cjs (parity asserted by test/relayEnforcement.test.ts).
+ * Read/Grep/Glob and every other non-edit tool are always allowed.
+ */
+export function decideRelayToolCall(a: { server: string; toolName: string; providerCalled: boolean }): { allow: true } | { allow: false; reason: string } {
+  if (RELAY_SHELL_TOOL_NAMES.includes(a.toolName)) return { allow: false, reason: RELAY_DENY_SHELL };
+  if (!RELAY_EDIT_TOOL_NAMES.includes(a.toolName)) return { allow: true };
+  if (RELAY_WRITE_MODE_SERVERS.includes(a.server)) return { allow: false, reason: RELAY_DENY_PROVIDER_EDITS };
+  if (!a.providerCalled) return { allow: false, reason: RELAY_DENY_PROVIDER_FIRST };
+  return { allow: true };
+}
 
 /** The routing backend facts a relay needs. */
 export interface RelayBackendInput {
@@ -133,7 +185,7 @@ function providerModelArg(t: RelayTarget): string {
 }
 
 /** The generated relay section (without the surrounding section markers), LF-separated. */
-export function buildRelayBody(t: RelayTarget): string {
+export function buildRelayBody(t: RelayTarget, original?: string): string {
   const toolName = `mcp__${t.server}__${t.tool}`;
   const model = providerModelArg(t);
   const lines: string[] = [];
@@ -169,7 +221,11 @@ export function buildRelayBody(t: RelayTarget): string {
     lines.push(`   - \`model\`: \`"${model}"\` when the tool accepts a model argument.`);
   }
   lines.push("");
-  lines.push("The brief is the text of the section \"" + RELAY_ORIGINAL_HEADING.replace(/^## /, "") + "\" below, verbatim, followed by the task you were given, verbatim. Do not summarize, reword or add to either. The provider sees only this text, never this conversation.");
+  if (original !== undefined) {
+    lines.push("The brief is the text between the brief markers under \"Brief to forward\" below, verbatim, followed by the task you were given, verbatim. Do not summarize, reword or add to either, and never forward the \"" + RELAY_ORIGINAL_HEADING.replace(/^## /, "") + "\" section. The provider sees only this text, never this conversation.");
+  } else {
+    lines.push("The brief is the task you were given, verbatim. Do not summarize, reword or add to it. The provider sees only this text, never this conversation.");
+  }
   if (t.kind === "text-only") {
     lines.push("");
     lines.push("Because this provider cannot edit files here, end the brief with this instruction: \"Do not modify any files. Return the exact changes: a unified diff, or for a small file the file path and its full new content. Return analysis only if the task asks for no changes.\"");
@@ -187,6 +243,14 @@ export function buildRelayBody(t: RelayTarget): string {
   lines.push("");
   lines.push("### Reporting");
   lines.push("Return the provider's result in this project's report format: the outcome first (what changed with file:line, the verification result, open issues), under 250 words, plain prose. Add nothing of your own beyond a one-line note when the provider failed or its output was truncated.");
+  if (original !== undefined) {
+    lines.push("");
+    lines.push("### Brief to forward");
+    lines.push("Generated from the original instructions below without their \"Working discipline\" section (rules for a worker that edits files itself, not for the provider).");
+    lines.push(RELAY_BRIEF_BEGIN);
+    lines.push(buildRelayBrief(original));
+    lines.push(RELAY_BRIEF_END);
+  }
   return lines.join("\n");
 }
 
@@ -194,8 +258,8 @@ function withEol(text: string, eol: string): string {
   return eol === "\n" ? text : text.replace(/\n/g, eol);
 }
 
-function buildRelaySection(t: RelayTarget, eol: string): string {
-  return withEol(`${RELAY_SECTION_BEGIN}\n${buildRelayBody(t)}\n${RELAY_SECTION_END}`, eol);
+function buildRelaySection(t: RelayTarget, eol: string, original?: string): string {
+  return withEol(`${RELAY_SECTION_BEGIN}\n${buildRelayBody(t, original)}\n${RELAY_SECTION_END}`, eol);
 }
 
 /** 53-bit string hash (cyrb53): detects edits to the generated text, not a security control. */
@@ -278,7 +342,7 @@ function joinFile(eol: string, fmLines: string[], rest: string): string {
 function assembleBody(target: RelayTarget, original: string, eol: string): string {
   return (
     eol +
-    buildRelaySection(target, eol) + eol + eol +
+    buildRelaySection(target, eol, original) + eol + eol +
     RELAY_ORIGINAL_HEADING + eol +
     RELAY_ORIGINAL_BEGIN + eol +
     original + eol +
@@ -320,6 +384,19 @@ export function convertToRelay(content: string, target: RelayTarget): string | n
   return bom + joinFile(eol, fm, body);
 }
 
+/** The preserved original between the markers, or undefined when they are missing or damaged. */
+function extractOriginal(rest: string): string | undefined {
+  const bIdx = rest.indexOf(RELAY_ORIGINAL_BEGIN);
+  const eIdx = rest.lastIndexOf(RELAY_ORIGINAL_END);
+  if (bIdx < 0 || eIdx < bIdx) return undefined;
+  const afterBegin = bIdx + RELAY_ORIGINAL_BEGIN.length;
+  const nl = rest.startsWith("\r\n", afterBegin) ? "\r\n" : rest.startsWith("\n", afterBegin) ? "\n" : "";
+  const bodyStart = afterBegin + nl.length;
+  const bodyEnd = eIdx - nl.length;
+  if (nl === "" || bodyEnd < bodyStart || rest.slice(bodyEnd, eIdx) !== nl) return undefined;
+  return rest.slice(bodyStart, bodyEnd);
+}
+
 /** Regenerate only the relay section (and the relay keys) of an already-relayed file. */
 export function regenerateRelay(content: string, target: RelayTarget): string | null {
   const bom = content.charCodeAt(0) === 0xfeff ? "\uFEFF" : "";
@@ -331,7 +408,10 @@ export function regenerateRelay(content: string, target: RelayTarget): string | 
   const b = rest.indexOf(RELAY_SECTION_BEGIN);
   const eIdx = rest.indexOf(RELAY_SECTION_END);
   if (b < 0 || eIdx < b) return null;
-  const nextRest = rest.slice(0, b) + buildRelaySection(target, eol) + rest.slice(eIdx + RELAY_SECTION_END.length);
+  const original = extractOriginal(rest);
+  let nextRest = rest.slice(0, b) + buildRelaySection(target, eol, original) + rest.slice(eIdx + RELAY_SECTION_END.length);
+  const legacyHeading = RELAY_ORIGINAL_HEADING_LEGACY + eol + RELAY_ORIGINAL_BEGIN;
+  if (nextRest.includes(legacyHeading)) nextRest = nextRest.replace(legacyHeading, () => RELAY_ORIGINAL_HEADING + eol + RELAY_ORIGINAL_BEGIN);
   const fmLines = m[1].split(/\r?\n/);
   const originalModel = lineValue(fmLines, RELAY_ORIGINAL_MODEL_KEY);
   const fm = writeRelayFrontmatter(fmLines, {

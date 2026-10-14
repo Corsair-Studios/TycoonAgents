@@ -96,7 +96,7 @@ for (const eol of ["\n", "\r\n"]) {
     assert.match(relayed, /^tycoon_relay_original_model: sonnet$/m);
     assert.match(relayed, /^disallowedTools: Agent$/m);
     assert.ok(relayed.includes("## Relay (managed by TycoonAgents)"));
-    assert.ok(relayed.includes("## Role instructions to forward to the provider"));
+    assert.ok(relayed.includes("## Original instructions (kept for revert, not forwarded)"));
     assert.ok(relayed.includes(ORIGINAL_BODY.replace(/\n/g, eol)), "original body is kept verbatim inside the markers");
     assert.equal(reconcileRelay(relayed, null), original);
   });

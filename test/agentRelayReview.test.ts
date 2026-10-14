@@ -93,8 +93,9 @@ test("a tools allowlist gains the relay's tools and is restored exactly", () => 
 test("an edited relay is backed up before it is restored, with a notice", () => {
   const original = agent();
   const relayed = convertToRelay(original, target("codex"))!;
-  const edited = relayed.replace("# Coding Specialist", "# Coding Specialist (my edit outside the markers)").replace("Implements code.", "Implements code.");
-  const withHeading = edited.replace("## Role instructions to forward to the provider", "## Role instructions to forward to the provider (changed)");
+  const at = relayed.indexOf("<!-- tycoon:relay-original:begin -->");
+  const edited = relayed.slice(0, at) + relayed.slice(at).replace("# Coding Specialist", "# Coding Specialist (my edit outside the markers)");
+  const withHeading = edited.replace("## Original instructions (kept for revert, not forwarded)", "## Role instructions to forward to the provider (changed)");
   const r = reconcileRelayDetailed(withHeading, null, { agentId: "coding-specialist" });
   assert.equal(r.content, original.replace("# Coding Specialist", "# Coding Specialist (my edit outside the markers)"));
   assert.equal(r.backup, withHeading);

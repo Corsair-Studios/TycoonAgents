@@ -745,8 +745,8 @@ only when the effective harness is Claude Code).
   `mcp__claude-cli__claude`, `mcp__gemini__ask-gemini` or
   `mcp__openai-compatible__chat`) with the slot's model id, the project
   directory and the task verbatim, and to report the provider's result in the
-  project's report format. The agent's original body is kept verbatim under
-  `## Role instructions to forward to the provider`, between
+  project's report format. A generated `### Brief to forward` block (between `<!-- tycoon:relay-brief:begin/end -->`) holds the original minus its `## Working discipline` section. The agent's full original body is kept verbatim under
+  `## Original instructions (kept for revert, not forwarded)`, between
   `<!-- tycoon:relay-original:begin -->` and `<!-- tycoon:relay-original:end -->`.
 - Propose mode (Codex by default, Gemini, OpenAI-compatible endpoints): the
   registered `codex` server is read-only, so the provider is asked for the exact

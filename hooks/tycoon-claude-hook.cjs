@@ -2141,6 +2141,184 @@ function logHookWarning(tycoonDir, message, extra) {
   } catch { /* logging must never crash the hook */ }
 }
 
+// ---------------------------------------------------------------------------
+// Relay enforcement (plan: managed relay agents). A relay agent's file carries
+// `tycoon_relay: <server>` frontmatter. Propose mode (text-only bridges): Edit/
+// Write/MultiEdit/NotebookEdit are denied until the run has called its provider
+// (`mcp__<server>__*` or `mcp__tycoon__delegate`). Write mode (codex-write,
+// claude-cli): they are always denied, the provider edits. Read/Grep/Glob and
+// every other tool are never denied. Twin: decideRelayToolCall in
+// src/core/agentRelay.ts (parity asserted by test/relayEnforcement.test.ts).
+// Per-run state lives in relay-runs.json keyed `<session>:<agent instance id>`.
+// FAIL-OPEN: an unreadable state file or any error allows the call (logged once).
+// ---------------------------------------------------------------------------
+const RELAY_EDIT_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+const RELAY_SHELL_TOOLS = ["Bash", "PowerShell"];
+const RELAY_WRITE_SERVERS = ["codex-write", "claude-cli"];
+
+function relayDecide(server, toolName, providerCalled) {
+  if (RELAY_SHELL_TOOLS.includes(toolName)) return { allow: false, reason: "relay agents do not run shell commands" };
+  if (!RELAY_EDIT_TOOLS.includes(toolName)) return { allow: true };
+  if (RELAY_WRITE_SERVERS.includes(server)) return { allow: false, reason: "the provider makes edits in write mode" };
+  if (!providerCalled) return { allow: false, reason: "relay agent must call its provider first" };
+  return { allow: true };
+}
+
+function isRelayProviderCall(server, toolName) {
+  return toolName.indexOf("mcp__" + server + "__") === 0 || toolName === "mcp__tycoon__delegate";
+}
+
+/** The `tycoon_relay` server of .claude/agents/<agentId>.md, or "" when it is not a relay (or unreadable). */
+function readRelayServer(agentsDir, agentId) {
+  try {
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(agentId)) return "";
+    const mdPath = path.join(agentsDir, agentId + ".md");
+    if (!fs.existsSync(mdPath)) return "";
+    const fmMatch = stripBom(fs.readFileSync(mdPath, "utf8")).match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!fmMatch) return "";
+    const m = fmMatch[1].match(/^tycoon_relay[ \t]*:[ \t]*(.*?)[ \t]*\r?$/m);
+    return m ? m[1].replace(/^["']|["']$/g, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+// Per-run state: one marker file per flag under relay-runs/ (no shared
+// read-modify-write, so parallel relays cannot lose flags).
+//   <key>.attempted  the provider tool was invoked (PreToolUse)
+//   <key>.called     the provider answered successfully (PostToolUse)
+function relayRunsDir(tycoonDir) { return path.join(tycoonDir, "relay-runs"); }
+function relayRunBase(tycoonDir, sessionId, instanceId) {
+  const safe = (s) => String(s).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+  return path.join(relayRunsDir(tycoonDir), safe(sessionId || "unknown-session") + "-" + safe(instanceId));
+}
+
+function pruneRelayRuns(tycoonDir, now) {
+  try {
+    const dir = relayRunsDir(tycoonDir);
+    for (const f of fs.readdirSync(dir)) {
+      try {
+        const p = path.join(dir, f);
+        if (now - fs.statSync(p).mtimeMs > 24 * 3600 * 1000) fs.unlinkSync(p);
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+}
+
+function writeRelayMarker(tycoonDir, base, flag, agent, server, now) {
+  fs.mkdirSync(relayRunsDir(tycoonDir), { recursive: true });
+  const file = base + "." + flag;
+  if (fs.existsSync(file)) return;
+  atomicWriteSync(file, JSON.stringify({ agent, server, at: now }));
+}
+
+function relayFailOpenOnce(tycoonDir, why) {
+  try {
+    const flag = path.join(tycoonDir, "relay-enforce-warned.flag");
+    if (fs.existsSync(flag)) return;
+    fs.writeFileSync(flag, String(Date.now()), "utf8");
+    logHookWarning(tycoonDir, "relay enforcement failed open: " + why);
+  } catch { /* never block on logging */ }
+}
+
+function relayAgentOf(payload, workerId) {
+  let agent = workerId && workerId !== "orchestrator" ? workerId : "";
+  if (!agent && typeof payload.agent_type === "string") agent = payload.agent_type.toLowerCase().replace(/\s+/g, "-");
+  return agent;
+}
+
+/**
+ * PreToolUse for a subagent run. Returns a deny reason string, or "" to allow.
+ * Records that the provider tool was attempted (for the no-provider-call warning).
+ */
+function enforceRelayPreToolUse(tycoonDir, agentsDir, payload, workerId, instanceId, toolName, now) {
+  try {
+    if (!instanceId) return "";
+    const agent = relayAgentOf(payload, workerId);
+    if (!agent) return "";
+    const server = readRelayServer(agentsDir, agent);
+    if (!server) return "";
+    const base = relayRunBase(tycoonDir, payload.session_id, instanceId);
+    if (isRelayProviderCall(server, toolName)) {
+      writeRelayMarker(tycoonDir, base, "attempted", agent, server, now);
+      pruneRelayRuns(tycoonDir, now);
+      return "";
+    }
+    if (RELAY_EDIT_TOOLS.indexOf(toolName) >= 0 && RELAY_WRITE_SERVERS.indexOf(server) < 0) {
+      // The state dir must be usable, otherwise "called" could never be recorded: fail open.
+      try { fs.mkdirSync(relayRunsDir(tycoonDir), { recursive: true }); } catch (e) {
+        relayFailOpenOnce(tycoonDir, "relay-runs is not writable: " + String(e && e.message ? e.message : e));
+        return "";
+      }
+    }
+    const d = relayDecide(server, toolName, fs.existsSync(base + ".called"));
+    return d.allow ? "" : d.reason;
+  } catch (e) {
+    relayFailOpenOnce(tycoonDir, String(e && e.message ? e.message : e));
+    return "";
+  }
+}
+
+/** True when a provider tool response is a success: not isError, not a failing bridge envelope. */
+function relayProviderSucceeded(payload, hookEvent, toolName) {
+  if (hookEvent !== "PostToolUse") return false;
+  const resp = payload.tool_response;
+  if (resp && typeof resp === "object" && !Array.isArray(resp) && resp.isError === true) return false;
+  try {
+    const bridge = getBridgeResultModule();
+    if (bridge && typeof bridge.parseBridgeResult === "function") {
+      const env = bridge.parseBridgeResult(resp, { trustedTextHeader: isTycoonBridgeTool(toolName) });
+      if (env && (env.status === "provider_error" || env.status === "timeout" || env.status === "empty")) return false;
+    }
+  } catch { /* an unparsable envelope is not proof of failure */ }
+  return true;
+}
+
+/** PostToolUse: a successful provider response unlocks propose-mode edits for this run. */
+function recordRelayProviderResult(tycoonDir, agentsDir, activeAgentFile, activityFile, payload, hookEvent, toolName, now) {
+  try {
+    const instanceId = typeof payload.agent_id === "string" ? payload.agent_id : "";
+    if (!instanceId || toolName.indexOf("mcp__") !== 0) return;
+    let agent = relayAgentOf(payload, "");
+    if (!agent) agent = relayAgentOf(payload, resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now).workerId);
+    if (!agent) return;
+    const server = readRelayServer(agentsDir, agent);
+    if (!server || !isRelayProviderCall(server, toolName)) return;
+    if (!relayProviderSucceeded(payload, hookEvent, toolName)) return;
+    writeRelayMarker(tycoonDir, relayRunBase(tycoonDir, payload.session_id, instanceId), "called", agent, server, now);
+  } catch (e) {
+    relayFailOpenOnce(tycoonDir, String(e && e.message ? e.message : e));
+  }
+}
+
+/** SubagentStop: records relay_no_provider_call when a relay run never invoked its provider; deletes the run's files. */
+function finishRelayRun(tycoonDir, agentsDir, activityFile, payload, workerId, now) {
+  try {
+    const instanceId = typeof payload.agent_id === "string" ? payload.agent_id : "";
+    if (!instanceId) return;
+    const agent = relayAgentOf(payload, workerId);
+    const server = agent ? readRelayServer(agentsDir, agent) : "";
+    if (!server) return;
+    const base = relayRunBase(tycoonDir, payload.session_id, instanceId);
+    const attempted = fs.existsSync(base + ".attempted") || fs.existsSync(base + ".called");
+    for (const flag of ["attempted", "called"]) { try { fs.unlinkSync(base + "." + flag); } catch { /* absent */ } }
+    pruneRelayRuns(tycoonDir, now);
+    if (attempted) return;
+    const record = {
+      event: "ProviderError",
+      kind: "relay_no_provider_call",
+      reason: "relay_no_provider_call",
+      workerId: agent,
+      message: agent + " finished without calling its provider (" + server + "); the relay did not forward the task",
+      at: now,
+    };
+    if (payload.session_id) record.sessionId = payload.session_id;
+    fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
+  } catch (e) {
+    relayFailOpenOnce(tycoonDir, String(e && e.message ? e.message : e));
+  }
+}
+
 // A single assistant transcript entry's billable/cache-read token split, or
 // undefined if the entry carries no usage. Skips sidechain entries (nested
 // tool-use sub-conversations, not the top-level turn) and any entry whose
@@ -2461,6 +2639,7 @@ function main(raw) {
     try {
       fs.appendFileSync(activityFile, JSON.stringify(record) + "\n", "utf8");
     } catch { /* ignore */ }
+    finishRelayRun(tycoonDir, agentsDir, activityFile, payload, workerId, at);
     process.exit(0);
   }
 
@@ -2876,6 +3055,20 @@ function main(raw) {
       const resolved = resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, at);
       const workerId = resolved.workerId;
 
+      // Relay enforcement: a denied edit is not recorded as activity.
+      const relayDeny = enforceRelayPreToolUse(tycoonDir, agentsDir, payload, workerId, instanceId, toolName, at);
+      if (relayDeny) {
+        try {
+          process.stdout.write(JSON.stringify({
+            hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: relayDeny },
+          }));
+          process.exit(0);
+        } catch {
+          try { process.stderr.write(relayDeny); } catch { /* best-effort */ }
+          process.exit(2);
+        }
+      }
+
       // Compliance nudge: ONLY ever computed for the orchestrator itself.
       // Spawned workers are leaves and are supposed to grep/edit directly —
       // never nag them.
@@ -3045,6 +3238,7 @@ function main(raw) {
   // output (see test/tycoonClaudeHook*.test.ts, unchanged by this task).
   // -------------------------------------------------------------------------
   if (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") {
+    recordRelayProviderResult(tycoonDir, agentsDir, activeAgentFile, activityFile, payload, hookEvent, toolName, at);
     try {
       const fallbackChain = getFallbackChainModule();
       if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0 && !isDispatcherTool(toolName)) {
