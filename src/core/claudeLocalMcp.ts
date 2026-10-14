@@ -142,7 +142,8 @@ function loadProjects(o: LocalMcpOptions): Record<string, unknown> {
     if (readCache && readCache.file === file && readCache.mtimeMs === st.mtimeMs && readCache.size === st.size) return readCache.projects;
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
     const projects = isPlainObject(parsed) && isPlainObject(parsed.projects) ? parsed.projects : {};
-    readCache = { file, mtimeMs: st.mtimeMs, size: st.size, projects };
+    // A file modified moments ago may be rewritten again within the same mtime tick at the same size; only cache settled files.
+    readCache = Date.now() - st.mtimeMs > 2000 ? { file, mtimeMs: st.mtimeMs, size: st.size, projects } : undefined;
     return projects;
   } catch {
     return {};

@@ -7,7 +7,8 @@
 // full, authoritative tier — this is a contributor convenience for
 // iterating on one area without paying for the whole suite every time.
 import { spawnSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -66,10 +67,13 @@ if (files.length === 0) {
 console.error(`test:fast running ${files.length} file(s) matching "${pattern}":`);
 for (const f of files) console.error(`  ${path.relative(root, f)}`);
 
+// No test may touch the real ~/.claude.json or `claude` binary (same as scripts/run-tests.mjs).
+const claudeSandbox = mkdtempSync(path.join(os.tmpdir(), 'tycoon-test-claude-'));
 const result = spawnSync(
   process.execPath,
   ['--test', '--test-timeout=60000', '--test-force-exit', ...files],
-  { stdio: 'inherit' },
+  { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: claudeSandbox, TYCOON_CLAUDE_BIN: 'none' } },
 );
+try { rmSync(claudeSandbox, { recursive: true, force: true }); } catch { /* best effort */ }
 
 process.exit(result.status ?? 1);
