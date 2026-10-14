@@ -309,7 +309,7 @@ import {
 } from "./hookInstall";
 export { mergeTycoonHooks } from "./hookInstall";
 import { silentRepairLocalHooks, backupSettingsCopy, atomicWrite, recordAllHookSlots } from "./hookAutoRepair";
-import { agentFilesAdded, listAgentFiles, newChatNoticeText } from "./newChatNotice";
+import { agentsDirExists, claudeSetupNotice, listAgentFiles, newChatNoticeText } from "./newChatNotice";
 import { dismissMismatch, isMismatchSuppressed, loadDismissedMismatch, mismatchPayload, newHarnessMismatchState, scanHarnessMismatch, suppressMismatch, type HarnessMismatchState } from "./harnessMismatch";
 import { copiesFromNewerInstall, discoverSiblingExtensions } from "./installedExtensions";
 import { HOOK_WAIT_GRACE_MS, isWaitingForFirstHookEvent, readHooksChangedAt, readLastHookEventAt, recordHooksChanged, scanHookEvents, type HookEventScanState } from "./hookWait";
@@ -7656,6 +7656,7 @@ export class TycoonPanel {
       // unchecks it, the webview follows this installHooks message with a
       // SET_REVIEW_ENABLED(false) that turns it back off.
       const reviewEnabled = true;
+      const agentsDirExistedBefore = agentsDirExists(root);
       const agentFilesBefore = listAgentFiles(root);
       let claudeMdError: string | undefined;
       try {
@@ -7761,12 +7762,20 @@ export class TycoonPanel {
       // current (see 7a3 above and _ensureProjectPlanSkillFresh).
       this._ensureProjectPlanSkillFresh();
 
-      // 7h. A chat that was open before this install never sees agent files
-      // written now; tell the user to start a new one. Only when this run
-      // wrote a NEW agent file (a no-op repair stays silent).
-      const newChatNeeded = agentFilesAdded(agentFilesBefore, listAgentFiles(root));
-      if (newChatNeeded) {
-        void vscode.window.showInformationMessage(newChatNoticeText("claude-code"));
+      // 7h. Claude Code only watches agent directories that existed when the
+      // session started: a brand-new .claude/agents needs a window reload, new
+      // files in an existing one need a new chat. Only when this run wrote a
+      // NEW agent file (a no-op repair stays silent).
+      const setupNotice = claudeSetupNotice(agentsDirExistedBefore, agentFilesBefore, listAgentFiles(root));
+      if (setupNotice) {
+        const { message, button, command } = setupNotice;
+        if (button && command) {
+          void Promise.resolve(vscode.window.showInformationMessage(message, button)).then((picked) => {
+            if (picked === button) void vscode.commands.executeCommand(command);
+          });
+        } else {
+          void vscode.window.showInformationMessage(message);
+        }
       }
 
       // 8. Success.
@@ -7774,7 +7783,7 @@ export class TycoonPanel {
         type: MSG.INSTALL_STATE,
         installed: true,
         delegation_mode: delegationMode,
-        ...(newChatNeeded ? { newChatNotice: "Start a new Claude chat to use your agents." } : {}),
+        ...(setupNotice ? { newChatNotice: setupNotice.statusLine } : {}),
         ...(claudeMdError !== undefined ? { claudeMdError } : {}),
       });
     } catch (err) {

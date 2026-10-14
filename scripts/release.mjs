@@ -13,10 +13,12 @@
 import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 const ROOT = process.cwd();
 const PKG_PATH = join(ROOT, 'package.json');
+const LOCK_PATH = join(ROOT, 'package-lock.json');
 
 const LEVELS = ['patch', 'minor', 'major'];
 
@@ -41,6 +43,15 @@ function bumpVersion(version, level) {
     throw new Error(`Unknown bump level "${level}" (expected ${LEVELS.join(', ')})`);
   }
   return `${major}.${minor}.${patch}`;
+}
+
+// Sets the lockfile's top-level version and packages[""].version (2-space JSON,
+// trailing newline). Returns the new text.
+export function bumpLockfileVersion(raw, newVersion) {
+  const lock = JSON.parse(raw);
+  lock.version = newVersion;
+  if (lock.packages && lock.packages['']) lock.packages[''].version = newVersion;
+  return JSON.stringify(lock, null, 2) + '\n';
 }
 
 function main() {
@@ -83,6 +94,10 @@ function main() {
   const newPkgRaw = pkgRaw.replace(versionRe, `$1${newVersion}$3`);
   writeFileSync(PKG_PATH, newPkgRaw);
   console.log(`[release] Bumped version ${currentVersion} -> ${newVersion} (${level}) in package.json.`);
+  if (existsSync(LOCK_PATH)) {
+    writeFileSync(LOCK_PATH, bumpLockfileVersion(readFileSync(LOCK_PATH, 'utf8'), newVersion));
+    console.log('[release] Synced package-lock.json to the same version.');
+  }
 
   // `npm run package` runs the full vscode:prepublish chain (build, bundles,
   // check:paths, check:webview) before `vsce package`. shell:true lets Node
@@ -302,4 +317,6 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === join(process.argv[1])) {
+  main();
+}

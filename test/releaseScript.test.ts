@@ -264,3 +264,15 @@ test("--dry-run on a clean tree prints the plan without changing package.json", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("release.mjs bumpLockfileVersion sets both lockfile versions and keeps 2-space format", async () => {
+  const mod = await dynamicImport(pathToFileURL(join(process.cwd(), "scripts", "release.mjs")).href);
+  const nl = String.fromCharCode(10);
+  const raw = JSON.stringify({ name: "x", version: "0.0.1", packages: { "": { name: "x", version: "0.0.1" }, "node_modules/a": { version: "9.9.9" } } }, null, 2) + nl;
+  const out = mod.bumpLockfileVersion(raw, "0.0.2");
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.version, "0.0.2");
+  assert.equal(parsed.packages[""].version, "0.0.2");
+  assert.equal(parsed.packages["node_modules/a"].version, "9.9.9");
+  assert.equal(out, JSON.stringify(parsed, null, 2) + nl);
+});
