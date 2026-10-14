@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link side-rail-current" href="ch-03.html" aria-current="page">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -47,7 +47,7 @@
       TycoonAgents is one scene renderer that can watch different
       combinations of editor and coding-agent harness. Only how you set it
       up differs &mdash; once the panel is open, every feature in the rest
-      of this handbook (Theme Maker, Metrics, Delegation, Project Plan)
+      of this handbook (Theme Builder, Metrics, Delegation, Project Plan)
       behaves identically no matter which front you're on. If you installed
       via VS Code + Claude Code in Chapter 02, you can skip straight to
       Chapter 04.
@@ -117,11 +117,11 @@ node standalone/src/cli.mjs watch .</pre>
       orchestrator's own model &mdash; see Chapter 15 for the full walkthrough
       and <code>docs/AGENT-BACKENDS.md</code> for the schema. Routing is
       wired end to end for these agents via <code>routing.json</code> and
-      the Routing view below; the per-agent <code>backend:</code>
-      frontmatter block itself is still schema-and-parser only &mdash; the
-      hook's dispatch path doesn't read it directly yet, so routing
-      changes go through the Routing view, not a hand-edited frontmatter
-      block.
+      the Routing view below. Each agent's <code>backend:</code>
+      frontmatter block is read by the hook for MCP and OpenAI-compatible agents, which uses it to attribute
+      every MCP call to the right vendor and model, and the Routing view
+      writes managed blocks there &mdash; so routing changes go through
+      the Routing view, not a hand-edited frontmatter block.
     </p>
   </div>
   <div class="callout note">
@@ -170,9 +170,9 @@ node standalone/src/cli.mjs watch .</pre>
     view while Codex is active also writes the delegation doctrine into
     Codex's own managed section of <code>AGENTS.md</code> (see &sect;
     1.3), leaving hand-written content alone.</li>
-    <li>On first use, Claude Code asks once per project to approve the
-    Codex MCP server before it will run &mdash; use
-    <code>claude mcp list</code> to check or approve it manually.</li>
+    <li>The Codex MCP server is registered for your project automatically,
+    with no approval prompt. Start a new Claude chat to load it; <code>claude
+    mcp list</code> shows it.</li>
   </ol>
   <p>
     The Codex MCP entry runs <code>node hooks/codex-mcp-launcher.cjs</code>,
@@ -227,10 +227,12 @@ node standalone/src/cli.mjs watch .</pre>
     <li>The active <strong>provider</strong> is shown per session.</li>
     <li>Worker cards carry a <strong>vendor / model</strong> label instead of
     always assuming Claude.</li>
-    <li>The Metrics tab's pricing column groups by <strong>cost class</strong>
+    <li>The Metrics tab's cost badge groups by <strong>cost class</strong>
     &mdash; metered (pay-per-token API), subscription (a CLI you're already
-    paying for), or local &mdash; since the three aren't comparable in raw
-    dollar terms.</li>
+    paying for), or local &mdash; since the three aren't comparable. A
+    same-vendor metered agent shows a ratio badge such as &ldquo;4&times;
+    cheaper&rdquo;; a subscription, local, or other-vendor agent shows its
+    billing label (Sub, Local, or API) instead, and no dollar amount.</li>
   </ul>
   <div class="section-head">
     <div class="s-title">&sect; 3.7 &middot; Not yet at parity</div>
@@ -243,8 +245,7 @@ node standalone/src/cli.mjs watch .</pre>
   </p>
   <ul>
     <li>A feature-by-feature parity table between the VS Code host and the
-    standalone host doesn't exist yet &mdash; it's planned for a later
-    phase of this project's own plan. Until then, check
+    standalone host doesn't exist, so check
     <code>standalone/README.md</code> directly for anything that touches
     feedback submission or the theme-view flow, since those are the areas
     most likely to differ.</li>

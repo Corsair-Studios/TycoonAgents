@@ -18,7 +18,7 @@
 <a class="side-rail-link side-rail-current" href="ch-02.html" aria-current="page">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -75,7 +75,7 @@
       <tr>
         <td>1 &middot; Theme authoring</td>
         <td>Generating custom art themes</td>
-        <td>A Theme Service sign-in (magic link or Google) and credits, used at authoring time only &mdash; the shipped plugin makes zero runtime AI calls. See Chapter 05.</td>
+        <td>A Theme Service sign-in (magic link or Google) and credits, used at authoring time only &mdash; the panel itself makes no AI calls. See Chapter 05.</td>
       </tr>
       <tr>
         <td>2 &middot; UEFN bridge / Power Tools</td>
@@ -106,7 +106,7 @@
 
   <div class="section-head">
     <div class="s-title">&sect; 2.2 &middot; Installing the extension</div>
-    <div class="s-caption">VSIX or marketplace &mdash; VS Code path; see Chapter 03 for standalone</div>
+    <div class="s-caption">VSIX &mdash; VS Code path; see Chapter 03 for standalone</div>
   </div>
   <p>
     This section covers the VS Code extension path specifically. If you'd
@@ -114,9 +114,10 @@
     Standalone Setup</a>.
   </p>
   <p>
-    In VS Code, install TycoonAgents either from a <code>.vsix</code> file
-    or from your editor's extension marketplace, the same way you'd install
-    any other extension. Once it's active in a workspace, the panel opens
+    In VS Code, install TycoonAgents from the <code>.vsix</code> attached to
+    each <a href="https://github.com/Corsair-Studios/TycoonAgents/releases">GitHub
+    release</a> (there is no Marketplace listing), the same way you'd install
+    any other <code>.vsix</code>. Once it's active in a workspace, the panel opens
     automatically &mdash; this is controlled by the
     <code>tycoonagents.autoShow</code> setting, which defaults to
     <code>true</code>. If you'd rather open it yourself, turn that setting
@@ -167,6 +168,12 @@
           TycoonAgents creates the agent roster in <code>.claude/agents</code>
           &mdash; one definition file per specialist, tuned to your project
           type (see Chapter 04 for the full roster).
+        </p>
+        <p>
+          In a brand-new project, setup then shows a <strong>Reload
+          Window</strong> button so Claude Code loads the new agents. When
+          agents are added to a project that already has them, starting a
+          new Claude chat is enough.
         </p>
       </div>
     </div>

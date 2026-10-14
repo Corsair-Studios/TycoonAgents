@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -62,7 +62,7 @@
     <tr><td>Model</td><td>Which model that agent is running on.</td></tr>
     <tr><td>Tasks</td><td>Completed task count. The orchestrator's row is marked with an asterisk (*) and shows its own completed tasks — hover it to see the delegated count too.</td></tr>
     <tr><td>Tokens</td><td>Total tokens consumed by that agent.</td></tr>
-    <tr><td>vs. orch.</td><td>A bar showing tasks completed relative to the busiest agent, plus a badge like "3x cheaper" or "2x pricier" derived from the model's price ratio to the orchestrator's model.</td></tr>
+    <tr><td>vs. orch.</td><td>A bar showing tasks completed relative to the busiest agent, plus a badge like "3&times; cheaper" or "2&times; pricier" derived from the model's price ratio to the orchestrator's model. Only metered agents from the same vendor as the orchestrator get a ratio. Subscription agents show "Sub", local ones show "Local", and other-vendor agents show their billing type ("Sub", "Local" or "API") instead of a multiplier.</td></tr>
   </tbody>
 </table>
 </div>
@@ -80,7 +80,7 @@
   <div class="step">
     <span class="stepno">01</span>
     <div>
-      <p><strong>Savings headline.</strong> A line like "Delegating avoided ~N% of the cost of running it all on the orchestrator's model" — scoped only to the work that was actually delegated, not the orchestrator's own coordination overhead.</p>
+      <p><strong>Savings headline.</strong> A line like "Delegated work ran at N&times; cheaper than running the same billable tokens on the orchestrator's model (estimate, published list rates)" — scoped only to the work that was actually delegated, not the orchestrator's own coordination overhead. It appears only when all delegated agents are metered and from the same vendor as the orchestrator; otherwise the panel shows "Relative cost not shown: &lt;reason&gt;" instead.</p>
     </div>
   </div>
   <div class="step">
@@ -117,7 +117,7 @@
 
 <div class="callout warn">
   <p class="callout-label">Warn</p>
-  <p>If delegation looks like it isn't working, the Coordination line is the fastest check: a high orchestrator task count next to few completed agent tasks usually means an agent's instructions aren't routing work to a specialist — worth a look at Keyword routing in Settings (Chapter 10).</p>
+  <p>If delegation looks like it isn't working, the Coordination line is the fastest check: a high orchestrator task count next to few completed agent tasks usually means an agent's instructions aren't routing work to a specialist — worth a look at each agent's Keywords field on the Agents screen (Chapter 10).</p>
 </div>
 
 <p>Both tabs share a <strong>Reset metrics</strong> button, which clears the counters for a fresh session without touching your themes or plan state.</p>

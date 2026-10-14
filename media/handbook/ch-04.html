@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link side-rail-current" href="ch-04.html" aria-current="page">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -76,16 +76,18 @@
   <p>
     Metrics lists every agent that has run in this workspace with a row
     per agent: tasks completed, tokens used, and the model it ran on. Each
-    row also carries a <strong>"vs. orch."</strong> bar &mdash; tasks
-    completed relative to the busiest agent &mdash; paired with an
-    <strong>"Nx cheaper"</strong> badge that expresses how much less that
-    agent's model costs relative to the orchestrator's, without ever
-    showing a dollar figure. These comparisons use Anthropic API token
+    row also carries a <strong>"vs. orch."</strong> bar whose fill shows tasks
+    completed relative to the busiest agent. Its label is a cost ratio
+    (&ldquo;Nx cheaper&rdquo;, &ldquo;Nx pricier&rdquo;, or &ldquo;same
+    cost&rdquo;) for a metered agent on the orchestrator's own vendor, and
+    a billing label (Sub, Local, or API) for subscription, local, or
+    other-vendor agents, without ever showing a dollar figure; while an
+    agent is active the label reads &ldquo;active&rdquo;. These comparisons use Anthropic API token
     rates and are informational only &mdash; Claude subscriptions (Max/Pro)
-    bill by plan, not per token. Token totals count input, output, and
-    cache reads at face value; cache reads dominate long sessions yet bill
-    at roughly 0.1x the input rate, so a real API bill would run well below
-    what raw totals suggest. See Chapter 11 for how to read the cost lens
+    bill by plan, not per token. The Tokens column counts input, output, and
+    cache writes, and shows cache reads separately (&ldquo;+ N cached&rdquo;)
+    because they dominate long sessions yet bill at roughly 0.1x the input
+    rate. See Chapter 11 for how to read the cost lens
     in full.
   </p>
 
@@ -136,13 +138,16 @@
     <div class="s-caption">everything else</div>
   </div>
   <p>
-    A menu sits alongside the tabs with four entries:
+    A menu sits alongside the tabs with these entries:
   </p>
   <ul>
+    <li><strong>Settings</strong> &mdash; the full settings surface (Chapter 10), including the <strong>Troubleshoot &amp; Fix</strong> button that runs diagnostics and offers repairs (Chapter 14).</li>
+    <li><strong>Agents</strong> &mdash; per-agent models, routing, and fallbacks.</li>
+    <li><strong>Tycoon Themes</strong> &mdash; switch active theme or open the Theme Builder (Part II).</li>
+    <li><strong>Skills / MCP / Packs</strong> &mdash; the optional skills, MCP servers, and capability packs.</li>
+    <li><strong>UEFN / Verse</strong> &mdash; the UEFN pack tools (VS Code only).</li>
+    <li><strong>Feedback</strong> &mdash; the two-step feedback form.</li>
     <li><strong>About</strong> &mdash; version and quick project info.</li>
-    <li><strong>Settings</strong> &mdash; the full settings surface (Chapter 10).</li>
-    <li><strong>Themes</strong> &mdash; switch active theme or open the Theme Maker (Part II).</li>
-    <li><strong>Troubleshoot &amp; Fix</strong> &mdash; runs diagnostics and offers repairs (Chapter 14).</li>
   </ul>
 
   <div class="callout tip">

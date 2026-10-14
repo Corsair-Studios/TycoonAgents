@@ -24,7 +24,8 @@ to create it:
   only, without touching the hook.
 
 Either path seeds only the core worker roster (`search-retrieval`,
-`primary-agent`, `coding-specialist`, `ux-ui-designer`) plus a reviewer,
+`primary-agent`, `coding-specialist`, `testing-specialist`, `ux-ui-designer`)
+plus a reviewer,
 matching a fresh VS Code install. Foreign-LLM reviewers such as
 `codex-reviewer`, `gemini-reviewer`, and `kimi-reviewer` are added
 separately from the Agents screen with **Add an agent from another provider**
@@ -79,11 +80,11 @@ interface RoutingSlot {
 
 | Field | Type | Default | Example |
 | --- | --- | --- | --- |
-| `vendor` | `string` | `"anthropic"` (when the slot is converted to a `Backend`) | `"opencode"`, `"anthropic"`, `"moonshot"` |
+| `vendor` | `string` | `"anthropic"` (when the slot is converted to a `Backend`) | `"openai"`, `"anthropic"`, `"moonshot"` |
 | `transport` | `"claude-native" \| "mcp" \| "openai-compatible"` | `"claude-native"` | `"mcp"` |
 | `mcpServer` | `string` | none | `"codex"` (required when `transport: "mcp"`) |
 | `tools` | `string[]` | none | `["mcp__codex__exec"]` |
-| `model` | `string` | none | `"anthropic/claude-sonnet-4-6"` or a bare alias like `"sonnet"` |
+| `model` | `string` | none | `"anthropic/sonnet"` or a bare alias like `"sonnet"` |
 | `costModelClass` | `"metered" \| "subscription" \| "local"` | `"metered"` | `"subscription"` |
 | `endpointEnv` | `string` (env var **name**, never a value) | none | `"KIMI_ENDPOINT_URL"` |
 | `credentialEnv` | `string` (env var **name**, never a value) | none | `"KIMI_API_KEY"` |
@@ -136,11 +137,11 @@ by writing an `agents[id]` entry containing nothing but `model`, and its
 fields it changes, since those usually imply a different endpoint/credential
 than the default's.
 
-```json
+```jsonc
 {
   "version": 1,
   "defaults": {
-    "vendor": "opencode",
+    "vendor": "opencode",   // OpenCode: Coming Soon
     "transport": "openai-compatible",
     "model": "custom/team-default-70b",
     "endpointEnv": "TEAM_ENDPOINT_URL",
@@ -152,7 +153,8 @@ than the default's.
 }
 ```
 
-Here `coding-specialist` resolves to `vendor: "opencode"`, `transport:
+Here `coding-specialist` resolves to `vendor: "opencode"` (OpenCode: Coming
+Soon), `transport:
 "openai-compatible"`, `endpointEnv: "TEAM_ENDPOINT_URL"`, and `credentialEnv:
 "TEAM_API_KEY"` all inherited from `defaults`, with only `model` swapped for
 its own entry. Any agent with no entry in `agents` at all resolves to
@@ -209,7 +211,7 @@ does not include it.
 {
   "version": 1,
   "orchestrator": {
-    "vendor": "opencode",
+    "vendor": "opencode",   // OpenCode: Coming Soon
     "transport": "openai-compatible",
     "model": "opencode/big-pickle",
     "costModelClass": "local",
@@ -219,7 +221,7 @@ does not include it.
     "coding-specialist": {
       "vendor": "anthropic",
       "transport": "claude-native",
-      "model": "anthropic/claude-sonnet-4-6",
+      "model": "anthropic/sonnet",
       "costModelClass": "subscription"
     },
     "kimi-reviewer": {
@@ -235,7 +237,7 @@ does not include it.
           "transport": "mcp",
           "mcpServer": "codex",
           "tools": ["mcp__codex__exec"],
-          "model": "openai/gpt-5.4-mini",
+          "model": "openai/gpt-6-luna",
           "costModelClass": "subscription"
         }
       ]
@@ -248,7 +250,7 @@ does not include it.
 ```
 
 In this example: the orchestrator runs on a locally-hosted `big-pickle`
-model through OpenCode; `coding-specialist` is pinned to the Claude
+model through OpenCode (Coming Soon); `coding-specialist` is pinned to the Claude
 subscription via the native transport; `kimi-reviewer` runs against a local
 OpenAI-compatible endpoint and falls back to Codex (via MCP) if that
 endpoint is unavailable. Any agent not listed here (e.g. `search-retrieval`)
@@ -374,7 +376,7 @@ in `src/core/fallbackChain.ts`:
   orchestrator's next turn. `fallback-state.json` is evicted on session end
   the same way the rest of that hook's per-session state is (see the hook's
   `Stop` handling).
-- **OpenCode** (`hooks/tycoon-opencode-plugin.ts`): detection has TWO
+- **OpenCode (Coming Soon)** (`hooks/tycoon-opencode-plugin.ts`): detection has TWO
   distinct entry points, because `tool.execute.after` for the `task` tool
   **never fires at all** when a subagent hits a real provider/connection
   failure (confirmed live — `docs/opencode-probe-findings.md` "Remote VM
@@ -419,7 +421,7 @@ in `src/core/fallbackChain.ts`:
   confirmed working).
 
 **What a user sees in the panel:** the metrics rollup
-(`buildMetricsRollup`, `media/main.js:14277`) sums each agent's
+(`buildMetricsRollup`, in the panel's `media/main.js` bundle) sums each agent's
 `fallbackCount` into a `fallbackCount` total shown alongside the
 per-vendor and per-`costModelClass` breakdowns (`byVendor`, `byCostClass`)
 and the `local` rows' time-based (`activeMs`, since local agents have no
@@ -427,7 +429,7 @@ token cost). A per-agent row that most recently ran on a fallback shows
 that agent's live `vendor`/`model` as the fallback entry's own (not the
 originally-assigned primary's).
 
-**Two known limitations:**
+**Two known limitations (OpenCode: Coming Soon):**
 
 1. An OpenCode-side `RoutingSlot.fallback` chain entry carries no per-entry
    `costModelClass` in `AgentMetric` — routing.resolved.json only records

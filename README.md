@@ -30,9 +30,9 @@ Tested on Windows. macOS and Linux support is experimental.
 
 ## Mandatory delegation & orchestration
 
-TycoonAgents installs a **delegation doctrine** into your project's `CLAUDE.md` and a roster of specialist sub-agents into `.claude/agents/`. The rule it establishes is simple: **the orchestrator coordinates work — it does not do the work.** Implementation, searching, and exploration are all delegated via the Task tool to the specialist best suited to each job. Doing that work directly on the orchestrator's model costs roughly **5× more per token when the orchestrator is Opus** — more in practice, since the orchestrator re-reads its large context every turn (less if you've configured a cheaper orchestrator model) and hides the work from the visualization.
+TycoonAgents installs a **delegation doctrine** into your project's `CLAUDE.md` and a roster of specialist sub-agents into `.claude/agents/`. The rule it establishes is simple: **the orchestrator coordinates work — it does not do the work.** Implementation, searching, and exploration are all delegated via the Task tool to the specialist best suited to each job. Doing that work directly on the orchestrator's model costs **many times more per token when the orchestrator is Opus** — more in practice, since the orchestrator re-reads its large context every turn (less if you've configured a cheaper orchestrator model) and hides the work from the visualization.
 
-The roster the extension seeds (all model tiers are configurable):
+The default roster the extension seeds (all model tiers are configurable):
 
 | Agent | Model | Handles |
 | --- | --- | --- |
@@ -40,22 +40,23 @@ The roster the extension seeds (all model tiers are configurable):
 | **search-retrieval** | Haiku | File/code search, grep/glob, lookups — the cheapest tier |
 | **coding-specialist** | Sonnet | Implementation, edits, bug fixes, refactoring |
 | **testing-specialist** | Sonnet | Tests, specs, coverage |
-| **ux-ui-designer** | Sonnet | Webview scene, layout, CSS, animation |
-| **vscode-integration** | Sonnet | Extension API, webview, panel, lifecycle |
-| **workspace-monitor** | Sonnet | Agent lifecycle / hook-record mapping |
-| **uefn-auditor** | Sonnet | Reviews UEFN Verse for correctness, deprecations, and API compliance against the locally installed Verse/Fortnite/Unreal digests — does not author features |
-| **verse-expert** | Sonnet | Writes and refactors UEFN Verse device scripts and island gameplay, using the UEFN Bridge for live-editor control |
+| **ux-ui-designer** | Sonnet | Layout, CSS, canvas, animation, accessibility |
+| **reviewer** | Sonnet | Generic code review pass (code projects; withheld in UEFN projects, where `uefn-auditor` is the gate) |
+| **uefn-auditor** | Sonnet (UEFN pack) | Reviews UEFN Verse for correctness, deprecations, and API compliance against the locally installed Verse/Fortnite/Unreal digests — does not author features |
+| **verse-expert** | Sonnet (UEFN pack) | Writes and refactors UEFN Verse device scripts and island gameplay, using the UEFN Bridge for live-editor control |
 | **Wildcard Agent** | Sonnet | Catch-all for work no specialist keyword matched — a signal to refine routing, not a design goal |
+
+Code projects get search-retrieval, the Wildcard Agent, coding-specialist, testing-specialist, ux-ui-designer and reviewer. UEFN projects get search-retrieval and the Wildcard Agent plus the UEFN pack's verse-expert and uefn-auditor. The Playwright QA pack adds web-qa. Specialists such as vscode-integration and workspace-monitor are not part of the default roster.
 
 The doctrine also builds in **verification discipline**: a "completed" notification is not proof, so the orchestrator reads changed files on disk before trusting a result, keeps concurrent workers on disjoint files, and treats workers as leaves that do the work themselves rather than re-delegating.
 
 ## Token savings you can see
 
-Because searches run on Haiku and implementation on Sonnet instead of everything on the orchestrator's (recommended: Opus or higher) model, most of your work is routed to models that are cheaper and better suited to each job — **several times cheaper** per token — Haiku is about **5× cheaper than Opus** per token. The metrics panel makes that concrete, without pretending to be a billing statement:
+Because searches run on Haiku and implementation on Sonnet instead of everything on the orchestrator's (recommended: Opus or higher) model, most of your work is routed to models that are cheaper and better suited to each job — **many times cheaper** per token. The panel shows the live ratio for your configured models. The metrics panel makes that concrete, without pretending to be a billing statement:
 
-- **Per-agent "vs. orch." badge** — each delegated agent shows how much cheaper (or pricier) its model is than the orchestrator's, e.g. *"5× cheaper."*
+- **Per-agent "vs. orch." badge** — a ratio such as *"N× cheaper"* (or *"N× pricier"*) appears only for metered agents on the same vendor as the orchestrator. Subscription agents show *Sub*, local ones show *Local*, and other-vendor agents show their billing type (API).
 - **Cost-share bar** — each agent's row fills in proportion to its estimated share of the run's blended cost, so you can see at a glance where the spend went.
-- **Session headline** — *"Delegating this work avoided ~N% of the cost of running it all on the orchestrator."* Shown only when delegation was actually cheaper.
+- **Session headline** — *"Delegating this work avoided ~N% of the cost of running it all on the orchestrator."* Shown only when delegation was actually cheaper, and only for same-vendor metered agents.
 
 **When the ratio isn't shown.** The relative-cost line only appears when every delegated worker in the run shares one vendor with a shipped price table and reported real token usage. In mixed-vendor setups — say a Codex, Gemini, or Kimi reviewer alongside Claude workers — or when a worker returns no usage at all, the panel shows *"Relative cost not shown: <reason>"* instead; per-agent token and call counts still display. Separately, because TycoonAgents delegation spawns Claude Code subagents, VS Code's own Agent map also lists them — the two views agree only in a pure Claude setup, since foreign-harness workers never appear in the Agent map.
 
@@ -69,11 +70,11 @@ Figures are **dimensionless ratios** from measured tokens × approximate per-mod
 
 Turn a design doc into an **approvable plan** and let the fleet execute it. The Project Plan feature decomposes a spec into an ordered set of **phases**, each holding **tasks** with concrete acceptance criteria, then works through them one task at a time — delegating each to the right specialist, verifying the result against its own criteria, and **stopping at every phase gate for your approval** before moving on.
 
-All the reasoning happens in Claude Code; the extension only reads and displays `.claude/tycoon/plan.json` and lets you approve, retry, or skip tasks from the panel (see "Self-contained & hook-driven" below for the zero-runtime-AI claim this rests on). It's **on by default** for new installs and toggleable in Settings.
+All the reasoning happens in Claude Code; the extension only reads and displays `.claude/tycoon/plan.json` and lets you approve, retry, or skip tasks from the panel (see "Self-contained & hook-driven" below). It's **on by default** for new installs and toggleable in Settings.
 
 ## Self-contained & hook-driven
 
-The shipped extension makes **zero runtime AI calls of its own.** Everything you see is built from **hooks** that record when agents are dispatched, work, and finish, captured by whichever harness is installed (Claude Code or Codex (Experimental)). The visualization and metrics are a normalized view of those records, nothing more. (Image generation for themes is an *authoring-time* convenience only; see below.)
+The panel itself makes **no AI calls.** Model calls go only through the CLIs and servers you configure (relays and the dispatcher forward your briefs to them). The only optional network features are theme generation (the hosted Theme Service) and the Routing view's "Test connection". Everything you see is built from **hooks** that record when agents are dispatched, work, and finish, captured by whichever harness is installed (Claude Code or Codex (Experimental)). The visualization and metrics are a normalized view of those records, nothing more.
 
 ## Setup
 
@@ -85,6 +86,8 @@ Install the extension and open the TycoonAgents panel. First run (or the **Repai
 - enables the Project Plan by default.
 
 Everything it writes is marker-scoped and reversible, and it never stamps your own generated code.
+
+In a new project, first-run setup then shows a **Reload Window** button so Claude Code loads the new agents. When agents are added to an existing project, starting a new Claude chat is enough.
 
 ## What's shipped
 
@@ -107,7 +110,7 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 - **Build & defend** — agents build objects across your site and defend the base from incoming attacks.
 - **Achievements, badges & rebirths** — earn badges for milestones; rebirth for compounding bonuses (and the whole fleet dances for three seconds when you do).
 
-The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; the standalone host always shows the full view.
+The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol, Luna). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; the standalone host always shows the full view.
 
 The Agents screen's **Keyword health** card flags routing problems in `agent-keywords.json` (dangling refs, multi-word segments that can never match, an agent listed after the Wildcard Agent) and offers a **Fix all** to normalize them. See [`docs/keyword-routing.md`](docs/keyword-routing.md) for how Task routing scores keywords.
 
@@ -118,14 +121,14 @@ The scene is **user-authored data** — you can generate your own theme (charact
 1. **Open the Theme Builder** from the Themes panel — it's the primary path for creating a theme.
 2. **Choose a model.** Pick a generation model — it defaults to **Latest (recommended)** and offers older/cheaper tiers if you'd rather save cost. Generation runs through the Corsair Theme Service using credits (see "Sign-in and credits" below).
 3. **Fill the generate form** — theme name, creative direction, and an environment description, plus per-slot editors for the characters (16), objects (21), enemies (4), expressions (8), badges (25), and decor (9).
-4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board (including the isometric stage/background) until it's right.
+4. **Generate and review.** Each sprite board is generated in turn; a review list lets you rename items, edit descriptions and creative direction, and **accept or retry** each board until it's right.
 5. **Use it.** Themes are stored in the extension's global storage and loaded into the live scene at runtime; you can **export a theme as a `.zip`** and import it elsewhere.
 
 Character boards get a walk pose guide (two-legged or four-legged, chosen per character with the Body control) attached by the service as a reference image so row 1 walk frames stay consistent, at no extra credit cost.
 
 Changing the creative direction after descriptions already exist marks them stale; use **Re-derive descriptions** to regenerate the text before generating or retrying images. See the [GitHub releases page](https://github.com/Corsair-Studios/TycoonAgents/releases) for what changed in recent versions.
 
-Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or `node src/cli.mjs watch <project-path>`.
+Prefer to author outside VS Code? There's a **standalone theme host** in [`standalone/`](standalone/) that drives the same generation pipeline in a browser tab — `npm start` for a dev server, or, from the `standalone/` folder, `node src/cli.mjs watch <project-path>`.
 
 > Image generation happens **only at authoring time**, through the Corsair Theme Service (see "Self-contained & hook-driven" above) — themes are just data.
 
@@ -202,7 +205,7 @@ TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/c
 
 Any recent Codex CLI works: a runtime launcher discovers the Codex binary and picks the connection method automatically (`mcp-server` or an `app-server`-based adapter); set `TYCOON_CODEX_BACKEND` to `mcp-server` or `app-server` to override. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
-The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost); `gpt-6-astra` is the most capable tier and `gpt-6-luna` the cheapest. On first use, Claude Code asks once to approve the project's Codex MCP server — run `claude mcp list` to see or approve it.
+The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost); `gpt-6-astra` is the most capable tier and `gpt-6-luna` the cheapest. The project's Codex MCP server is registered automatically, with no approval prompt; start a new Claude chat to load it (`claude mcp list` shows it).
 
 Adding a Codex agent from the Agents screen installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
 

@@ -31,9 +31,9 @@ several plausible-looking slugs historically (see
 `~/.codex/models_cache.json`) to list the slugs your account actually accepts before changing a
 `model=` launch arg or an agent's `backend.model`. As noted above, the
 `CODEX_BINARY_PATH` (`CODEX_CLI_PATH` in `hooks/codex-mcp-launcher.cjs`) override skips the
-discovery ladder entirely and spawns that binary directly. On first use, Claude Code asks once
-per project to approve the project-level Codex MCP server before it will run; use
-`claude mcp list` to see its current approval state or approve it manually.
+discovery ladder entirely and spawns that binary directly. The project-level Codex MCP server is
+registered automatically at local scope, with no approval prompt; start a new Claude
+chat to load it, and use `claude mcp list` to see it.
 
 ## Token usage
 

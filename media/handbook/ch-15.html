@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -114,13 +114,15 @@
   <div class="callout note">
     <span class="callout-label">Codex and Claude Worker are subscription-backed</span>
     <p>
-      These two don't use a metered API key at all &mdash; they shell out
-      to the vendor's own official CLI (<code>codex</code>,
-      <code>claude</code>) that you're already logged into, so a
-      subscription seat (ChatGPT Plus/Pro, Claude Max/Pro) can do delegated
-      work without TycoonAgents ever touching a credential. This only
-      activates when an agent's own configuration names that MCP server
-      &mdash; nothing routes to a subscription CLI implicitly.
+      These two don't use a metered API key at all. Codex goes through the
+      vendor's own official CLI (<code>codex</code>) that you're already
+      logged into. Claude Worker runs natively as a normal Claude subagent on
+      the Claude Code harness, and uses the <code>claude</code> CLI bridge
+      only on Codex. Either way a subscription seat (ChatGPT Plus/Pro, Claude
+      Max/Pro) can do delegated work without TycoonAgents ever touching a
+      credential. This only activates when an agent's own configuration names
+      that agent or MCP server &mdash; nothing routes to a subscription CLI
+      implicitly.
     </p>
   </div>
   <p>
@@ -150,7 +152,7 @@
   <p><strong>Option A &mdash; in the panel (easiest).</strong></p>
   <ol>
     <li>Open <strong>Routing</strong> and pick the agent.</li>
-    <li>On Claude Code and Codex, each provider shows fixed key rows: the variable name is already filled in (e.g. <code>MISTRAL_API_KEY</code>) and the row shows whether it is set or unset. For <strong>Custom endpoint&hellip;</strong>, you type the names yourself in the <strong>API key env</strong> / <strong>Endpoint URL env</strong> fields.</li>
+    <li>On Claude Code and Codex, each provider shows fixed key rows: the variable name is already filled in (e.g. <code>MISTRAL_API_KEY</code>) and the row shows whether it is set or unset. For <strong>Custom endpoint&hellip;</strong>, you type the names yourself in the <strong>Base URL variable</strong> / <strong>API key variable</strong> fields.</li>
     <li>Click <strong>Set value&hellip;</strong>, paste the key, and press <strong>Save</strong>. <strong>Clear stored value</strong> removes it again.</li>
     <li>Click <strong>Test connection</strong> to make one tiny real call. The key is only ever sent over https to that provider's own host. If you set a custom base URL, the result says so and nothing is tested automatically.</li>
   </ol>
@@ -216,8 +218,10 @@
     the exact <strong>Model</strong> id your endpoint serves, and a
     <strong>Billing label</strong> (<code>metered</code>, <code>subscription</code>,
     or <code>local</code>).</li>
-    <li>Set <strong>Endpoint URL env</strong> and <strong>API key env</strong>
-    to environment variable <em>names</em> only, then click
+    <li>Set <strong>Base URL variable</strong> (upper case, ending in
+    <code>_BASE_URL</code>) and <strong>API key variable</strong> (ending in
+    <code>_API_KEY</code>, <code>_KEY</code> or <code>_TOKEN</code>; optional
+    for a local server) to environment variable <em>names</em> only, then click
     <strong>Set value&hellip;</strong> next to each to store the actual
     URL/key &mdash; both are saved under the TycoonAgents per-user app-data
     folder, never in the project. The field only ever shows a
@@ -246,11 +250,9 @@
 
   <h3>Use any OpenAI-compatible model</h3>
   <p>
-    Most model servers and hosts speak the same OpenAI-style chat API
-    &mdash; local ones like Ollama, LM Studio, vLLM and the llama.cpp server,
-    and hosted ones like OpenRouter, Groq, Together, DeepSeek and Fireworks.
-    That means a brand-new model usually works the day it appears, with no
-    TycoonAgents update.
+    Any server that speaks the OpenAI chat-completions API is expected to work
+    &mdash; for example Ollama or LM Studio. Use <strong>Test
+    connection</strong> to check that your endpoint responds.
   </p>
   <ol>
     <li>Open <strong>Routing</strong>, pick the agent, and set

@@ -18,7 +18,7 @@
 <a class="side-rail-link" href="ch-02.html">02 &middot; Install &amp; First-Run</a>
 <a class="side-rail-link" href="ch-03.html">03 &middot; Standalone Setup</a>
 <a class="side-rail-link" href="ch-04.html">04 &middot; Panel Tour</a>
-<div class="side-rail-part">Part II &middot; Theme Maker</div>
+<div class="side-rail-part">Part II &middot; Theme Builder</div>
 <a class="side-rail-link" href="ch-05.html">05 &middot; Theme Service</a>
 <a class="side-rail-link" href="ch-06.html">06 &middot; Building a Theme</a>
 <a class="side-rail-link" href="ch-07.html">07 &middot; Generation &amp; Review</a>
@@ -87,8 +87,12 @@
   <p>
     The important part: this is a <strong>visualization of work that is
     already happening</strong>. TycoonAgents does not make your agents
-    faster or smarter, and it never calls an AI model itself at runtime. It
-    reads hook events and draws pictures. That's the whole contract.
+    faster or smarter, and the panel itself makes no AI calls. It reads hook
+    events and draws pictures. Model calls happen only through the CLIs and
+    servers you configure (relays and the dispatcher forward your briefs to
+    them). The only optional network features are theme generation, which
+    uses the hosted Theme Service, and the Routing view's &ldquo;Test
+    connection&rdquo;. That's the whole contract.
   </p>
 
   <figure style="margin:1.75rem 0;text-align:center">
@@ -171,12 +175,11 @@
     backgrounds &mdash; comes from a <strong>theme</strong>: a bundle of
     generated art matched to a creative direction you choose (a neon-city
     theme, a high-seas theme, whatever fits your project or your mood). A
-    theme is built once, using the Theme Maker's image-generation pipeline
+    theme is built once, using the Theme Builder's image-generation pipeline
     (Part II of this handbook), and stored locally. After that, the panel
     never calls an image API again &mdash; it just renders the stored frames.
-    Generating art is the only part of TycoonAgents that talks to an
-    external AI provider, and it only happens when you explicitly ask it
-    to.
+    Generating art happens only when you explicitly ask for it, through
+    the hosted Theme Service.
   </p>
 
   <div class="callout note">
