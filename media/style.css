@@ -8783,3 +8783,9 @@ button.theme-review-preview:focus-visible::after {
 .mcp-approval-text { margin: 0; font-size: 13px; color: var(--text); line-height: 1.5; }
 .mcp-approval-list { margin: 0; padding-left: 20px; font-size: 13px; color: var(--text); font-family: var(--vscode-editor-font-family, monospace); }
 .mcp-approval-optin { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); line-height: 1.4; }
+
+.routing-new-chat-notice {
+  font-size: 11px;
+  color: var(--text);
+  margin: 6px 0;
+}

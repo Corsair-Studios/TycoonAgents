@@ -1839,6 +1839,7 @@
     // every live "routing" repush while the modal stays open, see
     // handleRoutingPayload).
     routingExpandedAgents = {};
+    routingNewChatNotice = {};
     // p71-t1 review fix: a fresh open must never show a stale "Fixed N"
     // line left over from a previous open's "Fix all" click.
     keywordHealthFixResultText = null;

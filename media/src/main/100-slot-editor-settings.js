@@ -1249,7 +1249,7 @@
         frag.appendChild(writeLabel);
         var writeNote = document.createElement("div");
         writeNote.className = "routing-env-note routing-codex-write-note";
-        writeNote.textContent = "Codex will then change files directly without asking. Left unticked, Codex proposes changes and this agent applies them.";
+        writeNote.textContent = "Codex will then change files directly without asking. Left unticked, Codex proposes changes and this agent applies them. Start a new Claude chat for this to take effect.";
         frag.appendChild(writeNote);
       }
     }
@@ -2214,7 +2214,18 @@
     btn.appendChild(document.createTextNode(label));
   }
 
+  // Agent ids whose last successful Save changed provider/model/write access/relay; cleared on modal open and on the next save.
+  var routingNewChatNotice = {};
+  var routingPendingNewChat = {};
+
   function appendCardRemoveFooter(card, a) {
+    if (routingNewChatNotice[a.id]) {
+      const savedNote = document.createElement("div");
+      savedNote.className = "routing-env-note routing-new-chat-notice";
+      savedNote.setAttribute("role", "status");
+      savedNote.textContent = "Saved. Start a new Claude chat to use this change.";
+      card.appendChild(savedNote);
+    }
     const footer = document.createElement("div");
     footer.className = "agent-remove-footer";
 
@@ -2738,7 +2749,7 @@
             ? `Backend: ${vendorLabelFor(a.vendor || "unknown")} (native to this harness)`
             : `Backend: ${vendorLabelFor(a.vendor || "unknown")} ${routingOnCodexHost() ? "via TycoonAgents dispatcher" : "via MCP (hand-written)"}`)
           : (routingCurrentHarness === "claude-code"
-            ? "Save makes this agent a relay to that provider; start a new chat for it to take effect."
+            ? "Save makes this agent a relay to that provider. Start a new Claude chat for this to take effect."
             : "Applies to MCP-bridged agents now, and to every agent when OpenCode runs them.");
         providerBody.appendChild(providerLabelSpan);
         providerBody.appendChild(providerHelpSpan);
@@ -3463,6 +3474,15 @@
     }
     routingSaving = true;
     routingLastResult = null;
+    routingNewChatNotice = {};
+    routingPendingNewChat = {};
+    try {
+      var baseAgents = (buildRoutingDraft(lastRoutingPayload) || {}).agents || {};
+      var slotKey = function (sl) { sl = sl || {}; return JSON.stringify([sl.vendor || "", sl.model || "", sl.transport || "", sl.mcpServer || ""]); };
+      Object.keys(routingDraft.agents || {}).forEach(function (id) {
+        if (slotKey(routingDraft.agents[id]) !== slotKey(baseAgents[id])) routingPendingNewChat[id] = true;
+      });
+    } catch (e) { routingPendingNewChat = {}; }
     renderRoutingModal();
     vscode.postMessage({ type: ROUTING_MSG.SAVE, profile: profile });
   }
@@ -3754,7 +3774,9 @@
       showToast(errText, "error");
     } else if (msg) {
       showToast("Saved to disk", "success");
+      routingNewChatNotice = routingPendingNewChat;
     }
+    routingPendingNewChat = {};
     // Relay notices: a backup of an edited relay, or a relay whose markers are gone and could not be restored.
     if (msg && Array.isArray(msg.relayNotices)) {
       msg.relayNotices.forEach(function (n) { showToast(String(n), "error"); });
