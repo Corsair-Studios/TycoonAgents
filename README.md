@@ -78,6 +78,8 @@ The panel itself makes **no AI calls.** Model calls go only through the CLIs and
 
 ## Setup
 
+Requirements: VS Code with the Claude Code extension (or Codex (Experimental)), and **Node.js 18 or newer** (LTS recommended, from nodejs.org), because the activity hooks and bridge servers are Node scripts. On Windows, keep the installer's "Add to PATH" option on. Restart VS Code after installing Node so it picks up the new PATH. If Node is missing, **Hook health** in Settings shows "Node.js not found for hooks".
+
 Install the extension and open the TycoonAgents panel. First run (or the **Repair** button) sets everything up in your project:
 
 - writes the delegation doctrine into `CLAUDE.md` (in a managed, auto-healing block),

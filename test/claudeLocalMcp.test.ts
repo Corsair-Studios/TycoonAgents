@@ -4,6 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+// Best-effort temp cleanup: on Windows a just-killed child can still hold a handle (EPERM/EBUSY).
+function rmBestEffort(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch {
+    /* leaving a temp dir behind must never fail a test */
+  }
+}
+
 // Never let a test reach the real Claude config (~/.claude.json) or the real `claude` binary.
 process.env.CLAUDE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "tycoon-claude-cfg-"));
 process.env.TYCOON_CLAUDE_BIN = "none";
@@ -98,7 +107,7 @@ test("win32: a differently-cased drive letter key is read", () => {
     assert.equal(hasLocalMcpServer("D:\\ACode\\Proj\\", "a", f.opts), true);
     assert.equal(hasLocalMcpServer("D:\\ACode\\Proj", "b", f.opts), false);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -108,7 +117,7 @@ test("posix: case differences are different projects", () => {
     writeCfg(f, { projects: { "/Home/U/Proj": { mcpServers: { a: CFG } } } });
     assert.deepEqual(readLocalMcpServers("/home/u/proj", f.opts), {});
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -129,7 +138,7 @@ test("win32: a write goes into the existing differently-cased key, not a new one
     assert.deepEqual(after.projects["d:/ACode/Proj"].mcpServers, {});
     assert.deepEqual(after.projects["D:/ACode/Proj"].mcpServers, { keep: { command: "x" } });
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -140,7 +149,7 @@ test("a new key is written with forward slashes and no trailing slash", async ()
     assert.equal(r.ok, true);
     assert.deepEqual(Object.keys(readCfg(f).projects), ["D:/ACode/New"]);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -157,7 +166,7 @@ test("file fallback creates a missing file with only projects[key].mcpServers[id
     assert.deepEqual(readCfg(f), { projects: { [f.key]: { mcpServers: { srv: CFG } } } });
     assert.deepEqual(readLocalMcpServers(f.root, f.opts), { srv: CFG });
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -187,7 +196,7 @@ test("file fallback preserves every other top-level and project key and formatti
     assert.equal((await removeLocalMcpServer(f.root, "srv", f.opts)).ok, true);
     assert.deepEqual(readCfg(f), original);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -200,7 +209,7 @@ test("file fallback keeps CRLF line endings", async () => {
     assert.ok(text.includes("\r\n"));
     assert.equal(/[^\r]\n/.test(text), false, "no bare LF");
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -215,7 +224,7 @@ test("a missing project in an existing file is created without touching the rest
     assert.equal(after.theme, "dark");
     assert.deepEqual(after.projects[f.key], { mcpServers: { srv: CFG } });
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -226,7 +235,7 @@ test("an existing project without mcpServers gets only that key added", async ()
     assert.equal((await registerLocalMcpServer(f.root, "srv", CFG, f.opts)).ok, true);
     assert.deepEqual(readCfg(f).projects[f.key], { allowedTools: ["Read"], mcpServers: { srv: CFG } });
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -241,7 +250,7 @@ test("invalid JSON is refused and left byte-for-byte untouched", async () => {
     assert.equal(fs.readFileSync(f.file, "utf8"), bad);
     assert.deepEqual(fs.readdirSync(f.dir).filter((n) => n.endsWith(".tmp")), []);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -267,7 +276,7 @@ test("a non-object file, a non-object projects and a non-object mcpServers are a
     assert.match(r.error ?? "", /mcpServers/);
     assert.equal(fs.readFileSync(f.file, "utf8"), bad);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -284,7 +293,7 @@ test("removing from invalid JSON, a missing file or a missing project is a succe
     assert.deepEqual(await removeLocalMcpServer(f.root, "srv", f.opts), { ok: true, via: "unchanged" });
     assert.equal(fs.readFileSync(f.file, "utf8"), other);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -298,7 +307,7 @@ test("registering an identical entry is a no-op that does not rewrite the file",
     assert.equal(fs.readFileSync(f.file, "utf8"), before);
     assert.equal(fs.statSync(f.file).mtimeMs, mtime);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -311,7 +320,7 @@ test("a changed entry replaces the old one and leaves no temp files", async () =
     assert.deepEqual(readCfg(f).projects[f.key].mcpServers.srv, next);
     assert.deepEqual(fs.readdirSync(f.dir).filter((n) => n.endsWith(".tmp")), []);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -330,7 +339,7 @@ test("invalid server ids and non-object configs are rejected before anything run
     assert.equal(runs, 0);
     assert.equal(fs.existsSync(f.file), false);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -348,7 +357,7 @@ test("withLocalMcpServers merges local over .mcp.json and returns the same objec
     const noServers = withLocalMcpServers({}, f.root, f.opts) as any;
     assert.deepEqual(Object.keys(noServers.mcpServers).sort(), ["b", "c"]);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -361,7 +370,7 @@ test("the default options honour TYCOON_CLAUDE_BIN=none and CLAUDE_CONFIG_DIR (n
     assert.equal(fs.existsSync(f.file), true);
     assert.equal(fs.existsSync(path.join(f.dir, "no-home")), false);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -402,7 +411,7 @@ test("CLI add uses `mcp add-json --scope local <id> <json>` with cwd = project",
     assert.deepEqual(calls[0].args, ["mcp", "add-json", "--scope", "local", "srv", JSON.stringify(CFG)]);
     assert.equal(calls[0].cwd, f.root);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -418,7 +427,7 @@ test("CLI replace of a different existing entry removes first, then adds", async
     assert.deepEqual(calls[0].args, ["mcp", "remove", "srv", "--scope", "local"]);
     assert.deepEqual(readCfg(f).projects[f.key].mcpServers.srv, CFG);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -433,7 +442,7 @@ test("an async run seam is awaited", async () => {
   try {
     assert.equal((await registerLocalMcpServer(f.root, "srv", CFG, f.opts)).via, "cli");
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -446,7 +455,7 @@ test("CLI exit 0 that did not actually register falls back to the file", async (
     assert.deepEqual(r, { ok: true, via: "file" });
     assert.deepEqual(readCfg(f).projects[f.key].mcpServers.srv, CFG);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -460,7 +469,7 @@ test("CLI nonzero exit falls back to the file write", async () => {
     assert.equal(calls.length, 1);
     assert.deepEqual(readCfg(f).projects[f.key].mcpServers.srv, CFG);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -475,7 +484,7 @@ test("CLI failure plus an unwritable file reports both errors", async () => {
     assert.match(r.error ?? "", /claude CLI: boom happened/);
     assert.equal(fs.readFileSync(f.file, "utf8"), "{bad");
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -496,7 +505,7 @@ test("a run seam that throws, rejects or reports an error is treated as a CLI fa
       fs.writeFileSync(f.file, "{}");
       assert.equal((await registerLocalMcpServer(f.root, "srv", CFG, f.opts)).via, "file");
     } finally {
-      fs.rmSync(f.dir, { recursive: true, force: true });
+      rmBestEffort(f.dir);
     }
   }
 });
@@ -510,7 +519,7 @@ test("binary: null never calls the CLI", async () => {
     assert.equal((await removeLocalMcpServer(f.root, "srv", f.opts)).via, "file");
     assert.equal(runs, 0);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -527,7 +536,7 @@ test("CLI remove uses `mcp remove <id> --scope local` and reports cli; absent id
     assert.equal(calls[0].cwd, f.root);
     assert.equal(hasLocalMcpServer(f.root, "srv", f.opts), false);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -540,7 +549,7 @@ test("a failing CLI remove still removes the entry through the file sweep", asyn
     assert.equal(r.ok, true);
     assert.deepEqual(Object.keys(readCfg(f).projects[f.key].mcpServers), ["keep"]);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -569,7 +578,7 @@ test("CLI timeout kills the child and ends in an error result", async () => {
     }
     assert.equal(alive, false, "child was killed");
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -582,7 +591,7 @@ test("a real process exiting nonzero is a CLI failure (default run, stderr trimm
     assert.equal(r.ok, false);
     assert.match(r.error ?? "", /claude CLI: /);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -597,7 +606,7 @@ test("createLocalMcpOps wires has/set/remove to the same options", async () => {
     assert.equal((await ops.remove(f.root, "srv")).ok, true);
     assert.equal(ops.has(f.root, "srv"), false);
   } finally {
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(f.dir);
   }
 });
 
@@ -698,7 +707,7 @@ test("localizeMcpConfig points relative and absolute project hook args at the in
     const out2 = localizeMcpConfig(abs, hooks, { platform: "win32" }) as any;
     assert.equal(out2.config.args[0], installedBridgeScript(hooks, "codex-mcp-launcher.cjs"));
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    rmBestEffort(dir);
   }
 });
 
@@ -719,7 +728,7 @@ test("localizeMcpConfig fails when the script is missing from the install, and l
     assert.equal((localizeMcpConfig(unknown, hooks, { platform: "win32" }) as any).config, unknown);
     assert.equal((localizeMcpConfig("str", hooks) as any).config, "str");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    rmBestEffort(dir);
   }
 });
 
@@ -742,7 +751,7 @@ test("localised configs carry env var names only, never secret values", async ()
   } finally {
     if (saved === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = saved;
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.rmSync(f.dir, { recursive: true, force: true });
+    rmBestEffort(dir);
+    rmBestEffort(f.dir);
   }
 });
