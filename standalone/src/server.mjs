@@ -3430,6 +3430,7 @@ function buildStandaloneSettingsPayload() {
           claudeTier: route?.claudeTier ?? null,
           routeSource: route?.routeSource ?? 'frontmatter',
           handWrittenBackend: route?.handWrittenBackend ?? false,
+          relayServer: route?.relayServer ?? null,
           harnessDefault: route?.harnessDefault ?? null,
         };
       });

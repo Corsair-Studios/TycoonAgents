@@ -34,6 +34,8 @@ export interface AgentRouteInfo {
   claudeTier: ClaudeTier | null;
   routeSource: RoutingProvenance;
   handWrittenBackend: boolean;
+  /** `tycoon_relay` bridge server (e.g. "codex") when the agent file is a managed relay, else null. Display only. */
+  relayServer: string | null;
   /** Codex harness only: the model this agent runs on when it has no explicit
    *  choice (display only, never written to routing.json). null otherwise. */
   harnessDefault: HarnessDefaultInfo | null;
@@ -94,6 +96,16 @@ function readFrontmatterModel(root: string, agentId: string): string | null {
   }
 }
 
+function readRelayServer(root: string, agentId: string): string | null {
+  try {
+    const content = fs.readFileSync(path.join(root, ".claude", "agents", `${agentId}.md`), "utf8");
+    const v = readAgentFrontmatter(content)["tycoon_relay"];
+    return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Per-agent route fields for the Settings screen, keyed by agent id. Built
  * from buildRoutingView(root) so both hosts agree on precedence/provenance
@@ -130,6 +142,7 @@ export function describeAgentRoutes(root: string, opts: { harness?: string } = {
       claudeTier: claudeTierFromModel(resolvedModel),
       routeSource,
       handWrittenBackend: agent.handWrittenBackend,
+      relayServer: readRelayServer(root, agent.id),
       harnessDefault,
     };
   }

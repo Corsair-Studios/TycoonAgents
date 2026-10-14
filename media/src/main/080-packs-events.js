@@ -737,6 +737,7 @@
    * @param {{id?:string, model?:string}} agent
    * @returns {string|null}
    */
+  const RELAY_SERVER_LABELS = { codex: "Codex", "codex-write": "Codex", "claude-cli": "Claude CLI", gemini: "Gemini", "openai-compatible": "OpenAI-compatible" };
   function bridgeAwareModelText(agent) {
     const hd = harnessDefaultFor(agent);
     if (hd) return hd.label;
@@ -744,7 +745,18 @@
     const sa = id && lastSettings && Array.isArray(lastSettings.agents)
       ? lastSettings.agents.find((x) => x && x.id === id)
       : null;
-    if (!sa || !sa.handWrittenBackend || typeof sa.resolvedModel !== "string" || !sa.resolvedModel.trim()) return null;
+    if (!sa) return null;
+    // Managed relay (frontmatter `tycoon_relay`): the file's own model is just the
+    // Claude wrapper; the work runs on the provider model, reached via the bridge.
+    if (sa.relayServer && typeof sa.resolvedModel === "string" && sa.resolvedModel.trim()) {
+      const relayVendor = String(sa.vendor || "").toLowerCase();
+      if (relayVendor && relayVendor !== "anthropic") {
+        const via = RELAY_SERVER_LABELS[String(sa.relayServer).toLowerCase()] || String(sa.relayServer);
+        const onCodexHarness = !!(lastSettings && lastSettings.harness && lastSettings.harness.effective === "codex");
+        return onCodexHarness ? sa.resolvedModel.trim() : `${sa.resolvedModel.trim()} (via ${via})`;
+      }
+    }
+    if (!sa.handWrittenBackend || typeof sa.resolvedModel !== "string" || !sa.resolvedModel.trim()) return null;
     const vendor = String(sa.vendor || "").toLowerCase();
     if (!vendor || vendor === "anthropic") return null;
     const bare = sa.resolvedModel.trim().replace(/^[^/]+\//, "");

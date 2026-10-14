@@ -47,7 +47,7 @@ import {
 import { isBareNodeCommand, resolveNodeBinary } from "../../providers/codex/resolveNodeBinary";
 import { installCodexDispatcher, uninstallCodexDispatcher, isDispatcherMarkerInConfigToml, readCodexDispatcherState, CODEX_DISPATCHER_STALE_MESSAGE } from "../../providers/codex/installCodexDispatcher";
 import { catalogSummary } from "../../shared/catalogSummary";
-import { buildAgentMarkdown, agentMarkdownIsRelayManaged, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, resyncAgentFrontmatterFields, agentMarkdownHasLegacyOfficeAgentsMarker, healLegacyOfficeAgentsFrontmatter, healLegacyAgentFilesInDir, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
+import { buildAgentMarkdown, agentMarkdownIsRelayManaged, agentMarkdownTier, agentMarkdownHasTycoonMarker, workerAgentFingerprintMatches, resyncAgentRoleSection, resyncAgentDisciplineSection, regenerateAgentMarkdownKeepingExtras, resyncAgentFrontmatterFields, agentMarkdownHasLegacyOfficeAgentsMarker, healLegacyOfficeAgentsFrontmatter, healLegacyAgentFilesInDir, healForeignWrapperModel, healClaudeWorkerBody, FOREIGN_LLM_AGENTS, LEAD_AGENTS, REVIEWER_AGENTS, workerAgentsForProject, UEFN_CONFLICT_AGENT_IDS, conflictingUefnAgents, type PackAgent } from "./packCatalog";
 import {
   seedMissingAgentKeywords,
   parseAgentKeywords,
@@ -5173,10 +5173,11 @@ export class TycoonPanel {
               // Owned by the routing save (managed relay): a pack refresh never overwrites it.
               agentResults.push({ id: a.id, status: "unchanged" });
             } else if (agentMarkdownHasTycoonMarker(existingContent)) {
-              if (existingContent === generated) {
+              const refreshed = regenerateAgentMarkdownKeepingExtras(existingContent, generated);
+              if (existingContent === refreshed) {
                 agentResults.push({ id: a.id, status: "unchanged" });
               } else {
-                fs.writeFileSync(agentPath, generated);
+                fs.writeFileSync(agentPath, refreshed);
                 agentResults.push({ id: a.id, status: "refreshed" });
               }
             } else if (workerAgentFingerprintMatches(existingContent, a)) {
@@ -6554,7 +6555,7 @@ export class TycoonPanel {
           // sections below the frontmatter. Body text is untouched.
           const frontmatterUpdated = resyncAgentFrontmatterFields(content, a);
           let next = frontmatterUpdated === null ? content : frontmatterUpdated;
-          const roleUpdated = resyncAgentRoleSection(next, a.role);
+          const roleUpdated = resyncAgentRoleSection(next, a.role, a.id);
           next = roleUpdated === null ? next : roleUpdated;
           // Workers/reviewers are LEAVES — keep the "## Working discipline"
           // section current too (added/updated in the same read-modify-write).
@@ -7197,7 +7198,9 @@ export class TycoonPanel {
               }
               if (!agentMarkdownHasTycoonMarker(existingContent)) continue; // not ours — never touch
               if (agentMarkdownIsRelayManaged(existingContent)) continue; // managed relay: owned by the routing save
-              const generated = buildAgentMarkdown(a, pack.id);
+              // Silent (no click): only sections that exactly equal a shipped version are regenerated.
+              const merged = regenerateAgentMarkdownKeepingExtras(existingContent, buildAgentMarkdown(a, pack.id), { silent: true });
+              const generated = resyncAgentFrontmatterFields(merged, a) ?? merged;
               if (existingContent !== generated) {
                 fs.writeFileSync(agentPath, generated);
               }
@@ -7790,7 +7793,7 @@ export class TycoonPanel {
           if (agentMarkdownIsRelayManaged(existing)) {
             // Managed relay (routing save): leave the generated section and preserved body alone.
           } else if (existingTier === a.tier) {
-            const desired = buildAgentMarkdown(a);
+            const desired = regenerateAgentMarkdownKeepingExtras(existing, buildAgentMarkdown(a));
             if (existing !== desired) {
               fs.writeFileSync(agentPath, desired);
             }
@@ -8970,6 +8973,7 @@ export class TycoonPanel {
         claudeTier: route?.claudeTier ?? null,
         routeSource: route?.routeSource ?? "frontmatter",
         handWrittenBackend: route?.handWrittenBackend ?? false,
+        relayServer: route?.relayServer ?? null,
         harnessDefault: route?.harnessDefault ?? null,
       };
     });

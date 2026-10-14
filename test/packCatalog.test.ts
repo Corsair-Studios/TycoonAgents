@@ -335,12 +335,14 @@ test("resyncAgentDisciplineSection inserts the section when absent, then is idem
   assert.equal(resyncAgentDisciplineSection(inserted), inserted, "a second resync is a no-op");
 });
 
-test("resyncAgentDisciplineSection refreshes a stale discipline body", () => {
-  const stale = `# ${agent.name}\n\n## Working discipline\n- old outdated bullet\n`;
+test("resyncAgentDisciplineSection refreshes a previously shipped discipline body and leaves an edited one alone", () => {
+  const v1 = WORKING_DISCIPLINE_BODY.split("\n").slice(0, 2).concat("- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues.").join("\n");
+  const stale = `# ${agent.name}\n\n## Working discipline\n${v1}\n`;
   const fixed = resyncAgentDisciplineSection(stale);
-  assert.ok(!fixed.includes("old outdated bullet"), "stale body is replaced");
   assert.ok(fixed.includes(WORKING_DISCIPLINE_BODY), "canonical body is written");
   assert.equal(resyncAgentDisciplineSection(fixed), fixed, "idempotent after refresh");
+  const edited = `# ${agent.name}\n\n## Working discipline\n- old outdated bullet\n`;
+  assert.equal(resyncAgentDisciplineSection(edited), edited, "an unknown (user-edited) body is never replaced");
 });
 
 // ---------------------------------------------------------------------------

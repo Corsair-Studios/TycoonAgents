@@ -510,7 +510,7 @@ export function workerAgentFingerprintMatches(content: string, agent: PackAgent)
  * shape we don't recognize). Inverse-adjacent to buildAgentMarkdown's exact
  * output shape: `"## Role\n" + role + "\n\n" + "## Keywords ..."`.
  */
-export function resyncAgentRoleSection(content: string, newRole: string): string | null {
+export function resyncAgentRoleSection(content: string, newRole: string, agentId?: string): string | null {
   if (agentMarkdownIsRelayManaged(content)) {
     return null;
   }
@@ -536,6 +536,12 @@ export function resyncAgentRoleSection(content: string, newRole: string): string
 
   const currentBody = rest.slice(0, bodyEnd);
   if (currentBody === newRole) {
+    return content;
+  }
+  // Silent heal: only a paragraph that is exactly a previously shipped role text
+  // for this agent is ours to replace; anything else is the user's wording.
+  const shipped = agentId ? (SUPERSEDED_ROLES[agentId] ?? []) : [];
+  if (!shipped.includes(currentBody)) {
     return content;
   }
 
@@ -764,15 +770,32 @@ export function healForeignWrapperModel(
 }
 
 /**
+ * Every `## Working discipline` body TycoonAgents has shipped (current worker,
+ * current read-only, and the two earlier worker versions). The heal replaces a
+ * section only when its body equals one of these exactly; anything else is the
+ * user's edit and stays untouched.
+ */
+// MAINTAINERS: any change to WORKING_DISCIPLINE_BODY or WORKING_DISCIPLINE_READ_ONLY_BODY
+// MUST add the OLD body to the list returned here. Installed files carrying an old
+// body are only upgraded when they match a known shipped body exactly.
+function knownDisciplineBodies(): string[] {
+  const lines = WORKING_DISCIPLINE_BODY.split("\n");
+  const v1 = [lines[0], lines[1], "- Report the concrete outcome in under 250 words: what changed (file:line), how you verified it, and any open issues."].join("\n");
+  const v2 = lines.slice(0, 5).join("\n");
+  return [WORKING_DISCIPLINE_BODY, WORKING_DISCIPLINE_READ_ONLY_BODY, v1, v2];
+}
+
+/**
  * Ensure a managed worker agent file carries the current `## Working
- * discipline` section (see {@link WORKING_DISCIPLINE_BODY}). This section is
- * the LAST section by construction, so it spans from its heading to end of
- * file. Behavior:
- *  - present and current → returns the input content unchanged (idempotent);
- *  - present but stale → replaces heading→EOF with the canonical section;
- *  - ABSENT (file installed before the section existed) → appends it with the
- *    usual blank-line separator.
- * Never returns null — a missing section is added, not a reason to skip.
+ * discipline` section (see {@link WORKING_DISCIPLINE_BODY}). The section it
+ * owns runs from its heading to the next heading of level 1 or 2 (or EOF);
+ * sections the user added before or after it are never part of that span.
+ *  - present and current: returns the input content unchanged (idempotent);
+ *  - present and EXACTLY a previously shipped body: only that body is replaced
+ *    with the canonical one (surrounding blank lines and every other section
+ *    are preserved byte-for-byte);
+ *  - present but edited by the user: left alone;
+ *  - ABSENT (file installed before the section existed): appended at the end.
  * Only ever call this for NON-orchestrator agents (the orchestrator delegates
  * and must not carry leaf-worker discipline).
  */
@@ -780,20 +803,124 @@ export function resyncAgentDisciplineSection(content: string): string {
   if (agentMarkdownIsRelayManaged(content)) {
     return content;
   }
-  const heading = "## Working discipline\n";
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
   // Read-only roles (reviewer tier, search-retrieval) are identified from the
   // file's own frontmatter so existing callers need no agent argument.
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)?.[1] ?? "";
   const idMatch = /^name\s*:\s*["']?([^\s"']+)/m.exec(fm);
   const tierMatch = /^tier\s*:\s*(\S+)/m.exec(fm);
-  const canonical = heading + workingDisciplineBodyFor({ id: idMatch?.[1] ?? "", tier: tierMatch?.[1] }) + "\n";
-  const headingIdx = content.indexOf(heading);
-  if (headingIdx === -1) {
-    const base = content.endsWith("\n") ? content : content + "\n";
-    return base + "\n" + canonical;
+  const canonicalBody = workingDisciplineBodyFor({ id: idMatch?.[1] ?? "", tier: tierMatch?.[1] });
+  const heading = /^## Working discipline[ \t]*(?:\r?\n|$)/m.exec(content);
+  if (!heading) {
+    const base = content.endsWith("\n") ? content : content + eol;
+    return base + eol + "## Working discipline" + eol + canonicalBody.replace(/\n/g, eol) + eol;
   }
-  const updated = content.slice(0, headingIdx) + canonical;
-  return updated === content ? content : updated;
+  const bodyStart = heading.index + heading[0].length;
+  const next = /^#{1,2} \S/m.exec(content.slice(bodyStart));
+  const end = next ? bodyStart + next.index : content.length;
+  const span = content.slice(bodyStart, end);
+  const trailing = /\s*$/.exec(span)![0];
+  const body = span.slice(0, span.length - trailing.length).replace(/\r\n/g, "\n");
+  if (body === canonicalBody || !knownDisciplineBodies().includes(body)) {
+    return content;
+  }
+  return content.slice(0, bodyStart) + canonicalBody.replace(/\n/g, eol) + trailing + content.slice(end);
+}
+
+interface MdSection { heading: string; text: string }
+
+/** Split agent markdown into the part before the first `## ` heading and its `## ` sections (a `## ` line inside a code fence is not a heading). */
+function splitAgentSections(text: string): { head: string; sections: MdSection[] } {
+  const starts: Array<{ idx: number; heading: string }> = [];
+  let fence: string | null = null;
+  const re = /([^\r\n]*)(\r?\n|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0] === "" ) break;
+    const line = m[1];
+    const f = /^\s*(```|~~~)/.exec(line);
+    if (f) {
+      if (fence === null) fence = f[1];
+      else if (f[1] === fence) fence = null;
+    } else if (fence === null && /^## /.test(line)) {
+      starts.push({ idx: m.index, heading: line.trim() });
+    }
+  }
+  const head = text.slice(0, starts.length ? starts[0].idx : text.length);
+  const sections = starts.map((st, i) => ({ heading: st.heading, text: text.slice(st.idx, i + 1 < starts.length ? starts[i + 1].idx : text.length) }));
+  return { head, sections };
+}
+
+function sectionBody(sec: MdSection): string {
+  return sec.text.replace(/\r\n/g, "\n").split("\n").slice(1).join("\n").trim();
+}
+
+/** True when this section body is exactly a version of that template section TycoonAgents shipped. */
+function isShippedSectionBody(agentId: string, heading: string, body: string): boolean {
+  if (heading === "## Role") return (SUPERSEDED_ROLES[agentId] ?? []).includes(body);
+  if (heading === "## Keywords (for task routing)") return (SUPERSEDED_DEFAULT_KEYWORDS[agentId] ?? []).includes(body);
+  if (heading === "## Working discipline") return knownDisciplineBodies().includes(body);
+  return false;
+}
+
+/**
+ * Regenerate a managed agent file from `generated` (the shipped template) while
+ * keeping the user's additions.
+ *  - Sections whose heading the template lacks (e.g. a user's `## Report Format`)
+ *    stay where they were.
+ *  - A user-renamed template heading (an unmatched section at the template
+ *    section's own position) counts as the user's version and is kept, not duplicated.
+ *  - Template sections missing from the file are appended.
+ *  - Explicit mode (default, a user click): matching template sections and the
+ *    frontmatter/title are regenerated.
+ *  - `silent: true` (no click): the frontmatter/title stay as they are and a
+ *    template section is regenerated only when the file's copy exactly equals a
+ *    known shipped version; otherwise the user's section is kept.
+ * Idempotent: merging its own output returns it unchanged.
+ */
+export function regenerateAgentMarkdownKeepingExtras(existing: string, generated: string, opts: { silent?: boolean } = {}): string {
+  const silent = opts.silent === true;
+  const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+  const toEol = (t: string): string => t.replace(/\r?\n/g, eol);
+  const g = splitAgentSections(generated);
+  const e = splitAgentSections(existing);
+  const agentId = /^name\s*:\s*["']?([^\s"']+)/m.exec(/^---\r?\n([\s\S]*?)\r?\n---/.exec(generated)?.[1] ?? "")?.[1] ?? "";
+  const gByHeading = new Map(g.sections.map((x) => [x.heading, x]));
+  const eHeadings = new Set(e.sections.map((x) => x.heading));
+  const consumed = new Set<string>(); // template headings already represented in the output
+  const renamed = new Set<number>(); // existing indexes holding a user-renamed template section
+  g.sections.forEach((gs, gi) => {
+    if (eHeadings.has(gs.heading)) return;
+    const cand = e.sections[gi];
+    if (cand && !gByHeading.has(cand.heading)) {
+      renamed.add(gi);
+      consumed.add(gs.heading);
+    }
+  });
+  const trailingWs = (t: string): string => /\s*$/.exec(t)![0];
+  let out = silent ? e.head : toEol(g.head);
+  e.sections.forEach((es, ei) => {
+    const gs = gByHeading.get(es.heading);
+    if (gs && !consumed.has(es.heading)) {
+      consumed.add(es.heading);
+      const keepUser = silent && !(sectionBody(es) === sectionBody(gs) || isShippedSectionBody(agentId, es.heading, sectionBody(es)));
+      if (keepUser || sectionBody(es) === sectionBody(gs)) {
+        out += es.text;
+      } else {
+        out += toEol(gs.text.replace(/\s+$/, "")) + trailingWs(es.text);
+      }
+      return;
+    }
+    out += es.text; // extra section or user-renamed template heading: untouched, in place
+    void ei;
+  });
+  for (const gs of g.sections) {
+    if (consumed.has(gs.heading) || eHeadings.has(gs.heading)) continue;
+    if (out.length > 0 && !out.endsWith("\n")) out += eol;
+    if (out.length > 0 && !/\n\s*\n$/.test(out)) out += eol;
+    out += toEol(gs.text.replace(/\s+$/, "")) + eol;
+  }
+  return out;
 }
 
 /**

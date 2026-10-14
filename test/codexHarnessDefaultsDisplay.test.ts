@@ -468,6 +468,42 @@ test('Bridge wrapper (Mistral Reviewer) tooltip shows the backend model: bare on
   }
 });
 
+test('Relay agent (tycoon_relay) tooltip shows the provider model via the bridge, not the Claude tier', async () => {
+  const { win, doc, dispatch, flush, assertNoErrors } = await bootMain();
+  try {
+    const settings: any = codexSettingsPayload();
+    settings.harness = { effective: 'claude-code' };
+    settings.agents = settings.agents.filter((x: any) => x.id !== 'coding-specialist');
+    settings.agents.push({
+      id: 'coding-specialist', name: 'Coding Specialist', model: 'sonnet', keywords: 'code', claudeTier: null,
+      resolvedModel: 'openai/gpt-6.1-sol', vendor: 'openai', costModelClass: 'subscription',
+      handWrittenBackend: false, relayServer: 'codex', harnessDefault: null,
+    });
+    dispatch({ type: 'settings', payload: settings });
+    dispatch({
+      type: 'state',
+      state: {
+        sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {},
+        agentMetrics: [
+          { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', rosterModel: 'opus', tokens: 0, activeMs: 0, taskCount: 0 },
+          { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 100, activeMs: 10, taskCount: 1 },
+        ],
+      },
+    });
+    await flush();
+    assertNoErrors('relay tooltip');
+    const row = [...doc.querySelectorAll('#metrics-tbody tr')].find((r: any) => /Coding Specialist/.test(r.textContent)) as any;
+    assert.ok(row, 'expected the Coding Specialist row');
+    const title = row.querySelector('.col-name').title as string;
+    assert.match(title, /Coding Specialist — openai\/gpt-6\.1-sol \(via Codex\)/);
+    assert.doesNotMatch(title, /Sonnet/);
+    const span = row.querySelector('.col-name span') as any;
+    assert.doesNotMatch(String(span.className), /agent-accent-foreign/, 'light blue only while active');
+  } finally {
+    win.close();
+  }
+});
+
 test('Saving routing: fixed-endpoint vendor fallbacks (xai/mistral) are written as openai-compatible, anthropic fallbacks unchanged', async () => {
   const { win, doc, posted, dispatch, flush, assertNoErrors } = await bootMain();
   try {

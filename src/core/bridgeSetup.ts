@@ -38,7 +38,7 @@ import {
 import { shouldSkipPackAgentForClaudeSubscription } from "./claudeSubscriptionBridge";
 import { isSafeAgentId } from "../host/vscode/agentConfig";
 import { hasMcpServer, mergeMcpServer, resolveConfigForPlatform, isUnpinnedMcpConfig } from "../host/vscode/mcpCatalog";
-import { buildAgentMarkdown, agentMarkdownHasTycoonMarker } from "../host/vscode/packCatalog";
+import { buildAgentMarkdown, agentMarkdownHasTycoonMarker, regenerateAgentMarkdownKeepingExtras } from "../host/vscode/packCatalog";
 import type { PackAgent } from "../host/vscode/packCatalog";
 import { withHookWriteAsync } from "./hookWriteGate";
 import { hasLocalMcpServer, localizeMcpConfig, readLocalMcpServers, withLocalMcpServers } from "./claudeLocalMcp";
@@ -676,7 +676,8 @@ export interface BridgeInstallResult {
 export function writeBridgeAgentFile(root: string, agent: PackAgent, packId: string): AgentFileStatus {
   const agentsDir = path.join(root, ".claude", "agents");
   const agentPath = path.join(agentsDir, `${agent.id}.md`);
-  const generated = buildAgentMarkdown(agent, packId);
+  const fresh = buildAgentMarkdown(agent, packId);
+  let generated = fresh;
   if (!fs.existsSync(agentPath)) {
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.writeFileSync(agentPath, generated);
@@ -684,6 +685,7 @@ export function writeBridgeAgentFile(root: string, agent: PackAgent, packId: str
   }
   const existing = fs.readFileSync(agentPath, "utf8");
   if (agentMarkdownHasTycoonMarker(existing)) {
+    generated = regenerateAgentMarkdownKeepingExtras(existing, fresh);
     if (existing === generated) return "unchanged";
     fs.writeFileSync(agentPath, generated);
     return "refreshed";
