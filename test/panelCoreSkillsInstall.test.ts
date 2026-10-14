@@ -126,6 +126,7 @@ test("tycoon-ready-test skill spawns agents under their own subagent_type and pi
   assert.match(text, /answered by <vendor\/model>/);
   assert.match(text, /Claude Code harness/);
   assert.match(text, /Codex harness has no Task tool/);
-  const dev = fs.readFileSync(path.join(REPO_ROOT, ".claude", "skills", "tycoon-ready-test", "SKILL.md"), "utf8");
-  assert.equal(dev, text, "repo .claude copy must match shipped copy");
+  // .claude/ is gitignored (a developer-local copy); absent on CI checkouts.
+  const devPath = path.join(REPO_ROOT, ".claude", "skills", "tycoon-ready-test", "SKILL.md");
+  if (fs.existsSync(devPath)) assert.equal(fs.readFileSync(devPath, "utf8"), text, "repo .claude copy must match shipped copy");
 });

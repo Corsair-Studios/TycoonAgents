@@ -57,7 +57,8 @@ for (const [label, impl] of [["ts", { systemExe, npmInvocation }], ["cjs", bin]]
     }
   });
 
-  test(`${label} npmInvocation resolves absolutely, runs node directly (no shell) on win32`, () => {
+  // win32 path semantics (drive letters, backslashes) only resolve under the Windows path module.
+  test(`${label} npmInvocation resolves absolutely, runs node directly (no shell) on win32`, { skip: process.platform !== "win32" }, () => {
     const exists = (p: string): boolean => /node\.exe$|npm-cli\.js$/.test(p);
     const r = impl.npmInvocation({ platform: "win32", env: { PATH: "C:\\nodejs" }, cwd: "C:\\proj", execPath: "", exists });
     assert.ok(r);
@@ -67,7 +68,7 @@ for (const [label, impl] of [["ts", { systemExe, npmInvocation }], ["cjs", bin]]
   });
 }
 
-test("resolveBareOnPath skips cwd and relative PATH entries on win32", () => {
+test("resolveBareOnPath skips cwd and relative PATH entries on win32", { skip: process.platform !== "win32" }, () => {
   const project = projectWithPlants();
   try {
     const env = { PATH: `.;${project};C:\\good` };

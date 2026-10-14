@@ -633,7 +633,7 @@ async function installMcpEntryLocal(root: string, mcpId: string, entry: any, dep
   if (isUnpinnedMcpConfig(finalConfig)) {
     return { status: "skipped", error: `${mcpId} is not version-pinned and was not installed.` };
   }
-  const localized = localizeMcpConfig(finalConfig, local.hooksDir);
+  const localized = localizeMcpConfig(finalConfig, local.hooksDir, { platform: deps.platform });
   if (!localized.ok) return { status: "skipped", error: localized.error };
   const written = await local.set(root, mcpId, localized.config);
   if (!written.ok) return { status: "skipped", error: written.error ?? `Could not register ${mcpId}.` };

@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -129,8 +129,9 @@ test("bridge bodies treat the dispatcher as optional", () => {
 
 test("ready-test SKILL.md copies are identical and point at project hook directories", () => {
   const media = readFileSync(join(process.cwd(), "media", "skills", "tycoon-ready-test", "SKILL.md"), "utf8");
-  const dev = readFileSync(join(process.cwd(), ".claude", "skills", "tycoon-ready-test", "SKILL.md"), "utf8");
-  assert.equal(dev, media);
+  // .claude/ is gitignored (a developer-local copy); absent on CI checkouts.
+  const devPath = join(process.cwd(), ".claude", "skills", "tycoon-ready-test", "SKILL.md");
+  if (existsSync(devPath)) assert.equal(readFileSync(devPath, "utf8"), media);
   assert.ok(!media.includes("repo-root `hooks/`"));
   assert.ok(media.includes(".claude/hooks/") && media.includes(".claude/tycoon/"));
 });

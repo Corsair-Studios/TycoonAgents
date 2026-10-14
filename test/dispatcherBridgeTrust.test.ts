@@ -114,7 +114,7 @@ test("canonical entry spawns process.execPath with the sibling script and allowl
   assert.notEqual(r.kind, "bridge_untrusted");
   assert.equal(e.spawned.length, 1);
   assert.equal(e.spawned[0].command, process.execPath);
-  assert.equal(e.spawned[0].args[0], fs.realpathSync(path.join(e.hooks, "gemini-mcp-wrapper.cjs")));
+  assert.equal(e.spawned[0].args[0], fs.realpathSync.native(path.join(e.hooks, "gemini-mcp-wrapper.cjs")));
   assert.equal(e.spawned[0].env.GEMINI_MCP_BACKEND, "gemini");
 });
 
