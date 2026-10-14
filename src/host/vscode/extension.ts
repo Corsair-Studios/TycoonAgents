@@ -17,6 +17,7 @@ import { seedBundledThemes, type SeedResult } from "./bundledThemeSeeds";
 import { resolveProjectRoot } from "./progressScope";
 import { startMcpApprovalGuard } from "./mcpApprovalGuardHost";
 import { initLog, log } from "./log";
+import { installStableBridges } from "../../core/stableBridgeDir";
 import { resolveProviderId } from "../../core/providerSelection";
 import type { ProviderId } from "../../core/providerSelection";
 import { createProvider } from "./providerFactory";
@@ -94,6 +95,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const idleFreezeMs = cfg.get<number>("idleFreezeMinutes", 3) * 60000;
   const sanityCapMs = cfg.get<number>("sanityCapMinutes", 15) * 60000;
   const runtime = new Runtime({ idleFreezeMs, sanityCapMs });
+
+  // Keep the stable per-user launcher folder (~/.tycoonagents/bin) current: Claude local-scope
+  // MCP entries point there, not into this versioned extension folder. Never downgrades.
+  try {
+    // Only this extension's own install folder is ever the source.
+    const stable = installStableBridges(path.join(context.extensionPath, "hooks"), { fromActivation: true });
+    if (stable.status === "error") console.warn(`TycoonAgents: launcher folder: ${stable.errors.join("; ")}`);
+  } catch (err) {
+    console.warn("TycoonAgents: launcher folder sync failed:", err);
+  }
 
   // Best-effort: seed bundled starter themes into global storage on first
   // run so a freshly installed plugin has a default theme available.

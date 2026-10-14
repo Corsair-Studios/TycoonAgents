@@ -30,7 +30,7 @@ function fx(extra: Partial<LocalMcpOptions> = {}): Fx {
   const cfgDir = path.join(dir, "cfg");
   fs.mkdirSync(root);
   fs.mkdirSync(cfgDir);
-  return { dir, file: path.join(cfgDir, ".claude.json"), root, key: claudeProjectKey(root), opts: { env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir }, binary: null, ...extra } };
+  return { dir, file: path.join(cfgDir, ".claude.json"), root, key: claudeProjectKey(root), opts: { env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir }, homedir: path.join(dir, "home"), binary: null, verifyDelayMs: 0, ...extra } };
 }
 
 const cleanup = (f: Fx): void => fs.rmSync(f.dir, { recursive: true, force: true });
@@ -222,29 +222,38 @@ test("installKindOf: a digit must follow the extension id; casing and separators
   assert.equal(installKindOf("hooks/a.cjs"), "standalone");
 });
 
-test("repoint: extension -> newer extension moves, extension -> standalone never does, never back to older", async () => {
+function stableDir(f: Fx, files = ["codex-mcp-launcher.cjs"]): string {
+  const d = fwd(path.join(f.dir, "home", ".tycoonagents", "bin"));
+  fs.mkdirSync(d, { recursive: true });
+  for (const n of files) fs.writeFileSync(path.join(d, n), "//");
+  return d;
+}
+
+test("repoint: a versioned extension entry moves to the stable folder once; a non-stable target is refused", async () => {
   const f = fx({ platform: "win32" });
   try {
     const v1 = hooksDir(f.dir, "ext/tycoonagents.tycoonagents-0.0.1");
     const v2 = hooksDir(f.dir, "ext/tycoonagents.tycoonagents-0.0.2");
-    const standalone = hooksDir(f.dir, "standalone-root");
+    const stable = stableDir(f);
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [fwd(path.join(v1, "codex-mcp-launcher.cjs"))] }, f.opts);
-    assert.deepEqual((await repointLocalMcpEntries(f.root, standalone, ["codex"], f.opts)).repointed, []);
-    assert.deepEqual((await repointLocalMcpEntries(f.root, v2, ["codex"], f.opts)).repointed, ["codex"]);
-    assert.equal((readLocalMcpServers(f.root, f.opts) as any).codex.args[0], fwd(path.join(v2, "codex-mcp-launcher.cjs")));
-    assert.deepEqual((await repointLocalMcpEntries(f.root, v1, ["codex"], f.opts)).repointed, []);
+    const refused = await repointLocalMcpEntries(f.root, v2, ["codex"], f.opts);
+    assert.deepEqual(refused.repointed, []);
+    assert.equal(refused.errors.length, 1);
+    assert.deepEqual((await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts)).repointed, ["codex"]);
+    assert.equal((readLocalMcpServers(f.root, f.opts) as any).codex.args[0], fwd(path.join(stable, "codex-mcp-launcher.cjs")));
+    assert.deepEqual((await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts)).repointed, []);
   } finally {
     cleanup(f);
   }
 });
 
-test("repoint: an extension entry whose folder was deleted is repointed even to an older version", async () => {
+test("repoint: an extension entry whose folder was deleted moves to the stable folder", async () => {
   const f = fx({ platform: "win32" });
   try {
     const gone = path.join(f.dir, "ext", "tycoonagents.tycoonagents-2.0.0", "hooks");
-    const v1 = hooksDir(f.dir, "ext/tycoonagents.tycoonagents-1.0.0");
+    const stable = stableDir(f);
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [fwd(path.join(gone, "codex-mcp-launcher.cjs"))] }, f.opts);
-    assert.deepEqual((await repointLocalMcpEntries(f.root, v1, ["codex"], f.opts)).repointed, ["codex"]);
+    assert.deepEqual((await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts)).repointed, ["codex"]);
   } finally {
     cleanup(f);
   }
@@ -322,12 +331,12 @@ test("repoint and config reads never add anything to local scope from a repo's .
         gemini: { command: "node", args: [fwd(path.join(hooksCopy, "gemini-mcp-wrapper.cjs"))] },
       },
     }));
-    const installed = hooksDir(f.dir, "ext/tycoonagents.tycoonagents-1.0.0", ["codex-mcp-launcher.cjs", "gemini-mcp-wrapper.cjs"]);
+    const installed = stableDir(f, ["codex-mcp-launcher.cjs", "gemini-mcp-wrapper.cjs"]);
 
     // The panel-open path: reads plus a repoint pass over the canonical ids.
     readProjectMcpConfig(f.root, "claude-code");
     const r = await repointLocalMcpEntries(f.root, installed, ["codex", "gemini"], f.opts);
-    assert.deepEqual(r, { repointed: [], errors: [] });
+    assert.deepEqual(r, { repointed: [], errors: [], missing: [] });
     assert.deepEqual(readLocalMcpServers(f.root, f.opts), {});
     assert.equal(fs.existsSync(f.file), false, "no ~/.claude.json was created");
 
@@ -335,7 +344,7 @@ test("repoint and config reads never add anything to local scope from a repo's .
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [fwd(path.join(hooksCopy, "codex-mcp-launcher.cjs"))] }, f.opts);
     const before = fs.readFileSync(f.file, "utf8");
     const r2 = await repointLocalMcpEntries(f.root, installed, ["codex", "gemini"], f.opts);
-    assert.deepEqual(r2, { repointed: [], errors: [] });
+    assert.deepEqual(r2, { repointed: [], errors: [], missing: [] });
     assert.equal(fs.readFileSync(f.file, "utf8"), before);
     assert.deepEqual(Object.keys(readLocalMcpServers(f.root, f.opts)), ["codex"]);
   } finally {
@@ -353,7 +362,7 @@ test("only the install paths in src call local-scope registration (no migration 
     }
   };
   walk(path.join(process.cwd(), "src"));
-  assert.deepEqual(callers.sort(), ["src/core/claudeLocalMcp.ts", "src/core/claudeLocalMcpSync.ts", "src/host/vscode/panel.ts"].sort());
+  assert.deepEqual(callers.sort(), ["src/core/claudeLocalMcp.ts", "src/core/claudeLocalMcpSync.ts"].sort());
   const src = fs.readFileSync(path.join(process.cwd(), "src", "core", "claudeLocalMcp.ts"), "utf8");
   assert.doesNotMatch(src, /migrat/i);
 });

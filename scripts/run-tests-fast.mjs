@@ -72,7 +72,7 @@ const claudeSandbox = mkdtempSync(path.join(os.tmpdir(), 'tycoon-test-claude-'))
 const result = spawnSync(
   process.execPath,
   ['--test', '--test-timeout=60000', '--test-force-exit', ...files],
-  { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: claudeSandbox, TYCOON_CLAUDE_BIN: 'none' } },
+  { stdio: 'inherit', env: { ...process.env, CLAUDE_CONFIG_DIR: claudeSandbox, TYCOON_CLAUDE_BIN: 'none', USERPROFILE: path.join(claudeSandbox, 'home'), HOME: path.join(claudeSandbox, 'home'), TYCOON_TEST_HOME_SANDBOX: '1', TYCOON_MCP_VERIFY_DELAY_MS: '0' } },
 );
 try { rmSync(claudeSandbox, { recursive: true, force: true }); } catch { /* best effort */ }
 

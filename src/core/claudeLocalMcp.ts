@@ -34,6 +34,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
+import { randomBytes } from "crypto";
 import { systemExe } from "./safeExec";
 import { MCP_BRIDGE_HOOK_FILES, resolveHookInterpreter } from "../host/vscode/hookInstall";
 import { findOnPosixLadder } from "../providers/codex/posixBinDiscovery";
@@ -52,6 +53,8 @@ export interface LocalMcpOptions {
   run?: (bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv) => CliRunResult | Promise<CliRunResult>;
   /** CLI timeout override in ms (tests). */
   timeoutMs?: number;
+  /** Pause before re-reading ~/.claude.json to confirm a write survived a running Claude Code (default 300; tests 0). */
+  verifyDelayMs?: number;
 }
 
 export interface CliRunResult {
@@ -417,7 +420,7 @@ function editClaudeJson(root: string, edit: (servers: Record<string, unknown>) =
     }
     if (current !== undefined && hasUnsafeIntegerLiteral(current)) return { ok: false, error: `${path.basename(file)} holds a number too large to rewrite safely, so it was left untouched. Use the claude CLI (claude mcp add-json --scope local) instead.` };
     if (current !== undefined && current !== raw) continue; // changed underneath us: re-read and retry once
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
     try {
       fs.writeFileSync(tmp, out, { mode: 0o600 });
       fs.renameSync(tmp, file);
@@ -435,9 +438,33 @@ function editClaudeJson(root: string, edit: (servers: Record<string, unknown>) =
   return { ok: false, error: `${path.basename(file)} kept changing while it was being updated; try again.` };
 }
 
+/** Pause before re-reading the settings file: verifyDelayMs, else TYCOON_MCP_VERIFY_DELAY_MS (ms), else 300. */
+function verifyDelayOf(o: LocalMcpOptions): number {
+  if (typeof o.verifyDelayMs === "number") return o.verifyDelayMs;
+  const v = Number((o.env ?? process.env).TYCOON_MCP_VERIFY_DELAY_MS);
+  return Number.isFinite(v) && v >= 0 ? Math.min(v, 5000) : 300;
+}
+
+const sleep = (ms: number): Promise<void> => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
+
+/**
+ * Re-read ~/.claude.json after a short pause (a running Claude Code may rewrite the
+ * file from its in-memory copy right after our edit) and report whether `id` is
+ * registered; with `exact`, whether it equals that config.
+ */
+async function entryPersisted(root: string, id: string, o: LocalMcpOptions, exact?: unknown): Promise<boolean> {
+  await sleep(verifyDelayOf(o));
+  readCache = undefined;
+  const cur = readLocalMcpServers(root, o)[id];
+  if (cur === undefined) return false;
+  return exact === undefined ? true : JSON.stringify(cur) === JSON.stringify(exact);
+}
+
 /**
  * Register `config` as local-scope server `id` for the project at `root`
  * (CLI first, file fallback). Idempotent: an identical entry is left alone.
+ * Never leaves the entry removed: when the replacement cannot be confirmed, the
+ * previous entry is restored (CLI, then file) and re-checked.
  */
 export async function registerLocalMcpServer(root: string, id: string, config: unknown, o: LocalMcpOptions = {}): Promise<LocalMcpWriteResult> {
   if (!SERVER_ID_RE.test(id)) return { ok: false, error: `"${id}" is not a valid MCP server name.` };
@@ -446,36 +473,104 @@ export async function registerLocalMcpServer(root: string, id: string, config: u
   if (current !== undefined && JSON.stringify(current) === JSON.stringify(config)) return { ok: true, via: "unchanged" };
   const bin = binaryFor(o);
   let cliFailure = "";
-  if (bin) {
-    if (current !== undefined) await runCli(bin, ["mcp", "remove", id, "--scope", "local"], root, o);
-    const r = await runCli(bin, ["mcp", "add-json", "--scope", "local", id, JSON.stringify(config)], root, o);
-    readCache = undefined;
-    if (r.ok && hasLocalMcpServer(root, id, o)) {
-      // Mirror onto any other drive-letter-case variant of this project's key.
-      editClaudeJson(root, (s) => { s[id] = config; }, false, o);
-      return { ok: true, via: "cli" };
+  let failure = "";
+  try {
+    if (bin) {
+      if (current !== undefined) await runCli(bin, ["mcp", "remove", id, "--scope", "local"], root, o);
+      const r = await runCli(bin, ["mcp", "add-json", "--scope", "local", id, JSON.stringify(config)], root, o);
+      readCache = undefined;
+      if (r.ok && hasLocalMcpServer(root, id, o)) {
+        // Mirror onto any other drive-letter-case variant of this project's key.
+        editClaudeJson(root, (s) => { s[id] = config; }, false, o);
+        if (await entryPersisted(root, id, o)) return { ok: true, via: "cli" };
+        cliFailure = "the new entry did not persist (Claude Code may have rewritten its settings file)";
+      } else {
+        cliFailure = r.detail;
+      }
     }
-    cliFailure = r.detail;
+    {
+      const f = editClaudeJson(root, (s) => { s[id] = config; }, true, o);
+      if (f.ok && (await entryPersisted(root, id, o, config))) return { ok: true, via: "file" };
+      if (f.ok) {
+        // Clobbered by a running Claude Code: write once more, then confirm again.
+        const f2 = editClaudeJson(root, (s) => { s[id] = config; }, true, o);
+        if (f2.ok && (await entryPersisted(root, id, o, config))) return { ok: true, via: "file" };
+        failure = "the new entry did not persist after a retry";
+      } else {
+        failure = f.error ?? "write failed";
+      }
+    }
+  } catch (e) {
+    failure = `unexpected error: ${String(e)}`;
   }
-  const f = editClaudeJson(root, (s) => { s[id] = config; }, true, o);
-  if (f.ok) return { ok: true, via: "file" };
-  let error = cliFailure ? `${f.error ?? "write failed"} (claude CLI: ${cliFailure})` : (f.error ?? "write failed");
-  if (current !== undefined && bin) {
-    // The CLI removed the old entry before the add failed: put it back.
+  let error = cliFailure ? `${failure} (claude CLI: ${cliFailure})` : failure;
+  if (current !== undefined) {
+    // The previous entry may have been removed before the add failed: always put it back.
     const restored = await restorePreviousLocalMcp(root, id, current, bin, o);
     error += restored ? " The previous entry was restored." : " The previous entry could not be restored; re-enable it from the panel.";
   }
   return { ok: false, error };
 }
 
-/** Rollback for a failed replace: re-register `previous` (CLI, then file) unless the entry is already back. */
-async function restorePreviousLocalMcp(root: string, id: string, previous: unknown, bin: string, o: LocalMcpOptions): Promise<boolean> {
+/** Rollback for a failed replace: re-register `previous` (CLI, then file) unless the entry is already back; verified. */
+async function restorePreviousLocalMcp(root: string, id: string, previous: unknown, bin: string | undefined, o: LocalMcpOptions): Promise<boolean> {
   readCache = undefined;
-  if (hasLocalMcpServer(root, id, o)) return true;
-  const r = await runCli(bin, ["mcp", "add-json", "--scope", "local", id, JSON.stringify(previous)], root, o);
-  readCache = undefined;
-  if (r.ok && hasLocalMcpServer(root, id, o)) return true;
-  return editClaudeJson(root, (s) => { s[id] = previous; }, true, o).ok;
+  if (hasLocalMcpServer(root, id, o) && (await entryPersisted(root, id, o))) return true;
+  if (bin) {
+    const r = await runCli(bin, ["mcp", "add-json", "--scope", "local", id, JSON.stringify(previous)], root, o);
+    readCache = undefined;
+    if (r.ok && (await entryPersisted(root, id, o))) return true;
+  }
+  for (let i = 0; i < 2; i++) {
+    const f = editClaudeJson(root, (s) => { s[id] = previous; }, true, o);
+    if (f.ok && (await entryPersisted(root, id, o, previous))) return true;
+  }
+  return false;
+}
+
+export interface SafeReplaceResult {
+  ok: boolean;
+  /** "replaced" (new entry confirmed), "unchanged" (nothing matched / already new), "kept" (write failed, old entry intact), "missing" (neither entry is present). */
+  outcome: "replaced" | "unchanged" | "kept" | "missing";
+  error?: string;
+}
+
+/**
+ * Replace local-scope entry `id` (which must currently equal `expectedOld`) with `next`
+ * by ONE atomic edit of ~/.claude.json: the entry is never removed first, and only
+ * entries equal to `expectedOld` are touched. After a pause the file is re-read; if a
+ * running Claude Code clobbered the edit it is repeated once. Reports "missing" when
+ * the entry is absent after that, so the caller can warn the user.
+ */
+export async function replaceLocalMcpEntrySafely(root: string, id: string, expectedOld: unknown, next: unknown, o: LocalMcpOptions = {}): Promise<SafeReplaceResult> {
+  if (!SERVER_ID_RE.test(id)) return { ok: false, outcome: "kept", error: `"${id}" is not a valid MCP server name.` };
+  if (!isPlainObject(next)) return { ok: false, outcome: "kept", error: `${id} has no usable configuration.` };
+  const oldJson = JSON.stringify(expectedOld);
+  const nextJson = JSON.stringify(next);
+  const first = readLocalMcpServers(root, o)[id];
+  if (first !== undefined && JSON.stringify(first) === nextJson) return { ok: true, outcome: "unchanged" };
+  let lastError = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const f = editClaudeJson(
+      root,
+      (s) => {
+        const have = s[id];
+        // First pass: only the exact entry we read. Retry: also re-add when it vanished.
+        if (have !== undefined ? JSON.stringify(have) === oldJson : attempt > 0) s[id] = next;
+      },
+      attempt > 0,
+      o,
+    );
+    if (!f.ok) lastError = f.error ?? "write failed";
+    if (await entryPersisted(root, id, o, next)) return { ok: true, outcome: "replaced" };
+    if (readLocalMcpServers(root, o)[id] !== undefined && JSON.stringify(readLocalMcpServers(root, o)[id]) !== oldJson) {
+      // Something else (the user, another tool) changed it meanwhile: leave it alone.
+      return { ok: true, outcome: "unchanged" };
+    }
+  }
+  const now = readLocalMcpServers(root, o)[id];
+  if (now === undefined) return { ok: false, outcome: "missing", error: lastError || `${id} disappeared from the Claude settings file while it was being updated.` };
+  return { ok: false, outcome: "kept", error: lastError || `${id} could not be updated; the existing entry was left as is.` };
 }
 
 /** Remove local-scope server `id` for the project at `root` (CLI first, file fallback). Absent is success. */

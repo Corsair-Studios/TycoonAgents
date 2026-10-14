@@ -84,7 +84,7 @@ import type { BridgeSetupInfo, McpInstallOutcome, OtherAgentSpec } from "../../c
 import { mcpEntryMatchesOurs, tycoonServerDefsFromMedia, computeMcpApprovalState, approveTycoonMcpServers, removeTycoonMcpApprovals, revokeTycoonMcpApproval, repairTycoonHookCopies, approvalSliceFromState } from "../../core/mcpApproval";
 import type { ApprovalEnv } from "../../core/mcpApproval";
 import { runApprovalGuardSoon } from "./mcpApprovalGuardHost";
-import { createLocalMcpOps, localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
+import { localizeMcpConfig, withLocalMcpServers } from "../../core/claudeLocalMcp";
 import type { LocalMcpOps } from "../../core/claudeLocalMcp";
 import {
   POWER_TOOLS_DIR_SETTING,
@@ -99,7 +99,8 @@ import {
   providedMcpKeys,
   sanitizeProvidedMcpEntry,
 } from "../../core/providedMcp";
-import { repointLocalMcpEntries } from "../../core/claudeLocalMcpSync";
+import { repointLocalMcpEntries, stableLocalMcp } from "../../core/claudeLocalMcpSync";
+import { resolveStableBridgeDir } from "../../core/stableBridgeDir";
 import { withHookWrite, withHookWriteAsync } from "../../core/hookWriteGate";
 import { ensureTycoonGitignore } from "../../core/tycoonGitignore";
 import { readClaudeSubscriptionOptIn, shouldSkipPackAgentForClaudeSubscription, claudeSubscriptionBlockedMessage } from "../../core/claudeSubscriptionBridge";
@@ -4649,9 +4650,19 @@ export class TycoonPanel {
     return root !== "" && harnessUsesMcpJson(this._resolveEffectiveHarness(root));
   }
 
-  /** Local-scope operations bound to the INSTALLED extension's hooks directory (bridge scripts run from there). */
+  /**
+   * Local-scope operations bound to the stable per-user launcher directory (~/.tycoonagents/bin):
+   * the bridge scripts are copied there from the installed extension, so registered entries never
+   * point into the versioned extension folder and extension updates never rewrite them.
+   */
+  private _stableLocalMcp(): ReturnType<typeof stableLocalMcp> {
+    const r = stableLocalMcp();
+    if (r.error) console.warn(`TycoonAgents: ${r.error}`);
+    return r;
+  }
+
   private _localMcpOps(): LocalMcpOps {
-    return createLocalMcpOps(path.join(this._extensionUri.fsPath, "hooks"));
+    return this._stableLocalMcp().ops;
   }
 
   /** True when `id` counts as installed under the shared rule (Claude Code: local scope only). */
@@ -4667,7 +4678,9 @@ export class TycoonPanel {
 
   /** Register a finalised catalog config at local scope; returns an error message, or undefined on success. */
   private async _registerLocalMcpConfig(root: string, id: string, config: unknown): Promise<string | undefined> {
-    const ops = this._localMcpOps();
+    const stable = this._stableLocalMcp();
+    if (stable.error) return stable.error;
+    const ops = stable.ops;
     const localized = localizeMcpConfig(config, ops.hooksDir);
     if (!localized.ok) return localized.error;
     const r = await ops.set(root, id, localized.config);
@@ -4703,10 +4716,20 @@ export class TycoonPanel {
       try {
         const root = this._projectRoot();
         if (!this._useLocalMcp(root)) return;
-        const ops = this._localMcpOps();
+        const stable = this._stableLocalMcp();
+        if (stable.error) return;
         const defs = this._tycoonServerDefs();
-        const repointed = await repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs), {}, defs);
+        const repointed = await repointLocalMcpEntries(root, stable.ops.hooksDir, Object.keys(defs), {}, defs);
         for (const e of repointed.errors) console.warn(`TycoonAgents: local MCP sync: ${e}`);
+        for (const id of repointed.missing) {
+          // Visible, never silent: a server the user installed vanished while its entry was being moved.
+          void Promise.resolve(vscode.window.showWarningMessage(
+            `TycoonAgents: the ${id} server was lost from your Claude settings while it was being updated.`,
+            `Install ${id} server`,
+          )).then((answer) => {
+            if (answer === `Install ${id} server`) void this._handleInstallMcp(id);
+          });
+        }
         if (repointed.repointed.length > 0) {
           log(`panel: local-scope MCP repointed ${repointed.repointed.join(",")}`);
           this._handleGetSettings();
@@ -9254,8 +9277,9 @@ export class TycoonPanel {
   private _codexHookScriptPath(): string {
     return vscode.Uri.joinPath(this._extensionUri, "hooks", "tycoon-codex-hook.cjs").fsPath;
   }
+  /** The dispatcher in the stable per-user launcher folder (copied there at activation), never the versioned extension folder. */
   private _codexDispatcherScriptPath(): string {
-    return vscode.Uri.joinPath(this._extensionUri, "hooks", "tycoon-dispatcher-mcp.cjs").fsPath;
+    return path.join(resolveStableBridgeDir().dir ?? path.join(this._extensionUri.fsPath, "hooks"), "tycoon-dispatcher-mcp.cjs");
   }
 
   /** Bounded, never-throwing detection of whether the Codex notify hook is

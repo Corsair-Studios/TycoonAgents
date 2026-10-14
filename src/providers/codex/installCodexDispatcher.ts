@@ -543,6 +543,8 @@ export function detectCodexDispatcherState(
   const curDir = extensionVersionDir(currentScriptPath);
   // A newer extension version's path belongs to another window; leave it.
   if (isNewerExtensionPath(script, currentScriptPath)) return "installed";
+  // The current script is in the stable launcher folder (no version in its path): an entry still in a versioned extension folder moves there once.
+  if (oldDir !== undefined && curDir === undefined) return "stale";
   return oldDir !== undefined && curDir !== undefined && oldDir !== curDir ? "stale" : "installed";
 }
 

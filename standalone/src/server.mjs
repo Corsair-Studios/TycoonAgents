@@ -326,7 +326,11 @@ function installCodexDispatcherModule() {
 // Extension-parity script paths: the standalone process's own copies under
 // REPO_ROOT/hooks/ (same files panel.ts ships in the .vsix's hooks/ dir).
 const CODEX_HOOK_SCRIPT_PATH = path.join(REPO_ROOT, 'hooks', 'tycoon-codex-hook.cjs');
-const CODEX_DISPATCHER_SCRIPT_PATH = path.join(REPO_ROOT, 'hooks', 'tycoon-dispatcher-mcp.cjs');
+// The dispatcher is launched from the stable per-user launcher folder (<home>/.tycoonagents/bin), never a versioned or repo folder.
+function codexDispatcherScriptPath() {
+  const dir = stableBridgeDirModule().resolveStableBridgeDir().dir;
+  return path.join(dir || path.join(REPO_ROOT, 'hooks'), 'tycoon-dispatcher-mcp.cjs');
+}
 // Markers mirrored from installCodexHooks.ts's private TOML_MARKER_START /
 // HOOKS_JSON_MARKER_DESCRIPTION constants (not exported — that file must
 // not be edited here). Keep byte-identical to that file's.
@@ -500,6 +504,11 @@ function providedMcpModule() {
   if (!_providedMcpModule) _providedMcpModule = requireCompiledOrThrow(path.join(REPO_ROOT, 'out', 'src', 'core', 'providedMcp.js'), 'providedMcp');
   return _providedMcpModule;
 }
+let _stableBridgeDirModule;
+function stableBridgeDirModule() {
+  if (!_stableBridgeDirModule) _stableBridgeDirModule = requireCompiledOrThrow(path.join(REPO_ROOT, 'out', 'src', 'core', 'stableBridgeDir.js'), 'stableBridgeDir');
+  return _stableBridgeDirModule;
+}
 let _claudeLocalMcpSyncModule;
 function claudeLocalMcpSyncModule() {
   if (!_claudeLocalMcpSyncModule) _claudeLocalMcpSyncModule = requireCompiledOrThrow(CLAUDE_LOCAL_MCP_SYNC_JS, 'claudeLocalMcpSync');
@@ -511,9 +520,18 @@ function useLocalMcpStandalone(root) {
   return !!root && bridgeSetupModule().harnessUsesMcpJson(resolveEffectiveHarness(root));
 }
 
-/** Local-scope operations; bridge scripts run from this install's hooks/ folder, never from the project. */
+/**
+ * Local-scope operations; bridge scripts run from the stable per-user launcher folder
+ * (~/.tycoonagents/bin, override TYCOON_BRIDGE_DIR) that this install keeps current, never from the
+ * project and never from a versioned folder.
+ */
+function stableLocalMcpStandalone() {
+  const r = claudeLocalMcpSyncModule().stableLocalMcp();
+  if (r.error) console.warn(`[tycoonagents-standalone] ${r.error}`);
+  return r;
+}
 function localMcpOpsStandalone() {
-  return claudeLocalMcpModule().createLocalMcpOps(path.join(REPO_ROOT, 'hooks'));
+  return stableLocalMcpStandalone().ops;
 }
 
 /** The project's .mcp.json object with this user's local-scope servers merged in (Claude Code harness only). */
@@ -527,7 +545,9 @@ function withLocalMcpStandalone(root, config) {
 
 /** Register a finalised catalog config at local scope; returns an error message or undefined. */
 async function registerLocalMcpStandalone(root, id, config) {
-  const ops = localMcpOpsStandalone();
+  const stable = stableLocalMcpStandalone();
+  if (stable.error) return stable.error;
+  const ops = stable.ops;
   const localized = claudeLocalMcpModule().localizeMcpConfig(config, ops.hooksDir);
   if (!localized.ok) return localized.error;
   const r = await ops.set(root, id, localized.config);
@@ -548,11 +568,16 @@ const NEW_CHAT_HINT = 'Start a new Claude chat to load the newly installed MCP s
 async function ensureLocalMcpCurrentStandalone(root) {
   try {
     if (!useLocalMcpStandalone(root)) return;
-    const ops = localMcpOpsStandalone();
+    const stable = stableLocalMcpStandalone();
+    if (stable.error) return;
     const defs = mcpApprovalModule().tycoonServerDefsFromMedia(MEDIA_DIR);
     const sync = claudeLocalMcpSyncModule();
-    const repointed = await sync.repointLocalMcpEntries(root, ops.hooksDir, Object.keys(defs), {}, defs);
+    const repointed = await sync.repointLocalMcpEntries(root, stable.ops.hooksDir, Object.keys(defs), {}, defs);
     for (const e of repointed.errors) console.warn(`[tycoonagents-standalone] local MCP sync: ${e}`);
+    // Visible, never silent: a server that vanished while its entry was being moved shows an install error on its card.
+    for (const id of repointed.missing || []) {
+      broadcast('message', { type: 'mcpInstalled', id, ok: false, error: `The ${id} server was lost from your Claude settings while it was being updated. Install the ${id} server again.` });
+    }
   } catch (err) {
     console.warn('[tycoonagents-standalone] local MCP sync failed:', err);
   }
@@ -1342,7 +1367,7 @@ function handleBrowserMessage(msg) {
           projectDir: root,
           env: process.env,
           platform: process.platform,
-          serverScriptPath: CODEX_DISPATCHER_SCRIPT_PATH,
+          serverScriptPath: codexDispatcherScriptPath(),
         });
         _lastCodexDispatcherWarnings = result.warnings;
       } catch (err) {
@@ -5470,6 +5495,13 @@ export async function startServer({
   // Claude Code harness: servers installed from this UI live at Claude local
   // scope. Migrate earlier .mcp.json installs and repoint our entries at this
   // install (best effort, never blocks startup).
+  try {
+    // Copy this install's bridge scripts into the stable per-user launcher folder (never downgrades).
+    const stable = stableBridgeDirModule().installStableBridges(path.join(REPO_ROOT, 'hooks'), { fromActivation: true });
+    if (stable.status === 'error') console.warn(`[tycoonagents-standalone] launcher folder: ${stable.errors.join('; ')}`);
+  } catch (err) {
+    console.warn('[tycoonagents-standalone] launcher folder sync failed:', err);
+  }
   for (const { root } of roots) void ensureLocalMcpCurrentStandalone(root);
 
   // Auto-heal the always-on core skills (tycoon-ready-test, tycoon-diagnose)

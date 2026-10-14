@@ -22,12 +22,20 @@ import {
  * never crosses install kinds and never touches foreign entries.
  */
 
+function mkStable(f: Fx, files: string[]): string {
+  fs.mkdirSync(f.stable, { recursive: true });
+  for (const n of files) fs.writeFileSync(path.join(f.stable, n), "// stub\n");
+  return f.stable;
+}
+
 function tmp(prefix = "local-sync-"): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
 interface Fx {
   dir: string;
+  /** The stable launcher folder (TYCOON_BRIDGE_DIR). */
+  stable: string;
   file: string;
   root: string;
   opts: LocalMcpOptions;
@@ -39,7 +47,9 @@ function fx(): Fx {
   fs.mkdirSync(root);
   const cfgDir = path.join(dir, "cfg");
   fs.mkdirSync(cfgDir);
-  return { dir, file: path.join(cfgDir, ".claude.json"), root, opts: { env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir }, binary: null, platform: "win32" } };
+  const home = path.join(dir, "home");
+  const stable = fwd(path.join(home, ".tycoonagents", "bin"));
+  return { dir, stable, file: path.join(cfgDir, ".claude.json"), root, opts: { env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir }, homedir: home, binary: null, platform: "win32", verifyDelayMs: 0 } };
 }
 
 function cfg(f: Fx): any {
@@ -105,33 +115,47 @@ test("repoint moves our entry from an older install to the current one, keeping 
   const f = fx();
   try {
     const oldHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.1", ["codex-mcp-launcher.cjs"]);
-    const newHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const newHooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     await registerLocalMcpServer(f.root, "codex", entryAt(oldHooks), f.opts);
     const r = await repointLocalMcpEntries(f.root, newHooks, ["codex"], f.opts);
-    assert.deepEqual(r, { repointed: ["codex"], errors: [] });
+    assert.deepEqual(r, { repointed: ["codex"], errors: [], missing: [] });
     const e = localServers(f)["codex"];
     assert.equal(e.args[0], fwd(path.join(newHooks, "codex-mcp-launcher.cjs")));
     assert.deepEqual(e.args.slice(1), ["-c", "model=x"]);
     assert.deepEqual(e.env, { KEEP: "1" });
     assert.equal(e.command, "node");
-    // Running again is a no-op.
+    // Running again is a no-op: the file is byte-identical.
+    const bytes = fs.readFileSync(f.file, "utf8");
     const again = await repointLocalMcpEntries(f.root, newHooks, ["codex"], f.opts);
-    assert.deepEqual(again, { repointed: [], errors: [] });
+    assert.deepEqual(again, { repointed: [], errors: [], missing: [] });
+    assert.equal(fs.readFileSync(f.file, "utf8"), bytes);
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });
   }
 });
 
-test("repoint never downgrades an entry that points at a newer extension version that still exists", async () => {
+test("an entry already in the stable folder never changes, whatever the extension version", async () => {
+  const f = fx();
+  try {
+    const stable = mkStable(f, ["codex-mcp-launcher.cjs"]);
+    await registerLocalMcpServer(f.root, "codex", entryAt(stable), f.opts);
+    const before = fs.readFileSync(f.file, "utf8");
+    assert.deepEqual(await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts), { repointed: [], errors: [], missing: [] });
+    assert.equal(fs.readFileSync(f.file, "utf8"), before);
+  } finally {
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a NEWER versioned entry also moves to the stable folder (the stable folder is canonical)", async () => {
   const f = fx();
   try {
     const newer = mkHooks(f.dir, "tycoonagents.tycoonagents-2.0.0", ["codex-mcp-launcher.cjs"]);
-    const older = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.0", ["codex-mcp-launcher.cjs"]);
+    const stable = mkStable(f, ["codex-mcp-launcher.cjs"]);
     await registerLocalMcpServer(f.root, "codex", entryAt(newer), f.opts);
-    const before = fs.readFileSync(f.file, "utf8");
-    const r = await repointLocalMcpEntries(f.root, older, ["codex"], f.opts);
-    assert.deepEqual(r, { repointed: [], errors: [] });
-    assert.equal(fs.readFileSync(f.file, "utf8"), before);
+    const r = await repointLocalMcpEntries(f.root, stable, ["codex"], f.opts);
+    assert.deepEqual(r.repointed, ["codex"]);
+    assert.equal(localServers(f)["codex"].args[0], fwd(path.join(stable, "codex-mcp-launcher.cjs")));
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });
   }
@@ -141,14 +165,14 @@ test("repoint leaves foreign entries, unlisted ids and unrecognised launchers un
   const f = fx();
   try {
     const oldHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.1", ["codex-mcp-launcher.cjs"]);
-    const newHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const newHooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     const foreign = { command: "npx", args: ["-y", "third-party@1.0.0"] };
     const forged = { command: "evil", args: [fwd(path.join(oldHooks, "codex-mcp-launcher.cjs"))] };
     const ours = entryAt(oldHooks);
     fs.writeFileSync(f.file, JSON.stringify({ keepMe: 1, projects: { [claudeProjectKey(f.root)]: { mcpServers: { foreign, forged, other: ours, codex: ours } } } }));
     const before = fs.readFileSync(f.file, "utf8");
     const r = await repointLocalMcpEntries(f.root, newHooks, ["foreign", "forged", "missing-id"], f.opts);
-    assert.deepEqual(r, { repointed: [], errors: [] });
+    assert.deepEqual(r, { repointed: [], errors: [], missing: [] });
     assert.equal(fs.readFileSync(f.file, "utf8"), before, "ids not in ourIds (other, codex) and foreign ones are untouched");
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });
@@ -159,7 +183,7 @@ test("repoint reports an error and leaves the entry when the new install lacks t
   const f = fx();
   try {
     const oldHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.1", ["codex-mcp-launcher.cjs"]);
-    const emptyNew = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", []);
+    const emptyNew = mkStable(f, []);
     const entry = entryAt(oldHooks);
     await registerLocalMcpServer(f.root, "codex", entry, f.opts);
     const r = await repointLocalMcpEntries(f.root, emptyNew, ["codex"], f.opts);
@@ -175,7 +199,7 @@ test("repoint reports an error and leaves the entry when the new install lacks t
 test("repoint swaps a vanished absolute interpreter for the discovered one even when the script is current", async () => {
   const f = fx();
   try {
-    const hooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const hooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     const gone = path.join(f.dir, "gone", "node.exe");
     await registerLocalMcpServer(f.root, "codex", entryAt(hooks, { command: gone }), f.opts);
     const r = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts);
@@ -197,18 +221,17 @@ test("installKindOf classifies extension, project and standalone script paths", 
 test("repoint never crosses install kinds and never rewrites a project-relative entry", async () => {
   const f = fx();
   try {
-    const extHooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const extHooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     const standaloneHooks = path.join(f.dir, "standalone", "hooks");
     fs.mkdirSync(standaloneHooks, { recursive: true });
     fs.writeFileSync(path.join(standaloneHooks, "codex-mcp-launcher.cjs"), "//");
     const projectEntry = { command: "node", args: [fwd(path.join(f.root, ".claude", "hooks", "codex-mcp-launcher.cjs"))] };
     await registerLocalMcpServer(f.root, "codex", projectEntry, f.opts);
     const before = fs.readFileSync(f.file, "utf8");
-    assert.deepEqual(await repointLocalMcpEntries(f.root, extHooks, ["codex"], f.opts), { repointed: [], errors: [] });
-    assert.deepEqual(await repointLocalMcpEntries(f.root, standaloneHooks, ["codex"], f.opts), { repointed: [], errors: [] });
+    assert.deepEqual(await repointLocalMcpEntries(f.root, extHooks, ["codex"], f.opts), { repointed: [], errors: [], missing: [] });
     assert.equal(fs.readFileSync(f.file, "utf8"), before);
 
-    // A standalone entry is not rewritten by an extension window...
+    // A standalone entry whose script still exists is not rewritten...
     const sEntry = { command: "node", args: [fwd(path.join(standaloneHooks, "codex-mcp-launcher.cjs"))] };
     await registerLocalMcpServer(f.root, "codex", sEntry, f.opts);
     assert.deepEqual((await repointLocalMcpEntries(f.root, extHooks, ["codex"], f.opts)).repointed, []);
@@ -222,11 +245,9 @@ test("repoint moves a standalone entry only once its old script is gone", async 
   const f = fx();
   try {
     const oldRoot = path.join(f.dir, "old-standalone", "hooks");
-    const newRoot = path.join(f.dir, "new-standalone", "hooks");
-    for (const d of [oldRoot, newRoot]) {
-      fs.mkdirSync(d, { recursive: true });
-      fs.writeFileSync(path.join(d, "codex-mcp-launcher.cjs"), "//");
-    }
+    const newRoot = mkStable(f, ["codex-mcp-launcher.cjs"]);
+    fs.mkdirSync(oldRoot, { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "codex-mcp-launcher.cjs"), "//");
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [fwd(path.join(oldRoot, "codex-mcp-launcher.cjs"))] }, f.opts);
     assert.deepEqual((await repointLocalMcpEntries(f.root, newRoot, ["codex"], f.opts)).repointed, [], "old script still exists");
     fs.rmSync(path.join(oldRoot, "codex-mcp-launcher.cjs"));
@@ -247,19 +268,19 @@ const CAT_DEFS = { codex: { config: { command: "node", args: [".claude/hooks/cod
 test("repoint refreshes args that exactly match a superseded catalog model, and leaves customised args alone", async () => {
   const f = fx();
   try {
-    const hooks = mkHooks(f.dir, "tycoonagents.tycoonagents-1.0.5", ["codex-mcp-launcher.cjs"]);
+    const hooks = mkStable(f, ["codex-mcp-launcher.cjs"]);
     const script = fwd(path.join(hooks, "codex-mcp-launcher.cjs"));
     const old = ["-c", 'model="gpt-5.6-sol"', "-c", 'model_reasoning_effort="low"'];
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [script, ...old], env: { KEEP: "1" } }, f.opts);
     const r = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts, CAT_DEFS);
-    assert.deepEqual(r, { repointed: ["codex"], errors: [] });
+    assert.deepEqual(r, { repointed: ["codex"], errors: [], missing: [] });
     assert.deepEqual(localServers(f)["codex"].args, [script, ...CAT_TAIL]);
     assert.deepEqual(localServers(f)["codex"].env, { KEEP: "1" });
     // User-customised args (different effort) are not touched.
     const custom = ["-c", 'model="gpt-5.6-sol"', "-c", 'model_reasoning_effort="high"'];
     await registerLocalMcpServer(f.root, "codex", { command: "node", args: [script, ...custom] }, f.opts);
     const r2 = await repointLocalMcpEntries(f.root, hooks, ["codex"], f.opts, CAT_DEFS);
-    assert.deepEqual(r2, { repointed: [], errors: [] });
+    assert.deepEqual(r2, { repointed: [], errors: [], missing: [] });
     assert.deepEqual(localServers(f)["codex"].args, [script, ...custom]);
   } finally {
     fs.rmSync(f.dir, { recursive: true, force: true });

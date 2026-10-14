@@ -129,6 +129,34 @@ function sameFile(a, b) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+/**
+ * The per-user launcher folder TycoonAgents keeps current (src/core/stableBridgeDir.ts):
+ * ALWAYS <os.homedir()>/.tycoonagents/bin. No environment variable can move it: a
+ * repository can set env for this process, and this folder decides what is trusted.
+ */
+function stableBridgeDir() {
+  try { return path.join(require("os").homedir(), ".tycoonagents", "bin"); } catch { return undefined; }
+}
+
+/**
+ * True when `requested` resolves to a regular file named `base` sitting directly in the
+ * real stable folder: the folder is not a link, the file is not a symlink or junction,
+ * and its real location is the folder's real location.
+ */
+function isStableCopy(requested, base) {
+  const dir = stableBridgeDir();
+  if (!dir) return false;
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink()) return false;
+    const st = fs.lstatSync(requested);
+    if (!st.isFile() || st.isSymbolicLink()) return false;
+  } catch { return false; }
+  const dirReal = safeRealpath(dir);
+  const reqReal = safeRealpath(requested);
+  if (!dirReal || !reqReal || path.basename(reqReal) !== base) return false;
+  return sameFile(path.dirname(reqReal), dirReal) && sameFile(path.dirname(path.resolve(requested)), path.resolve(dir));
+}
+
 /** Returns { command, args, env } to spawn, or { error, kind } when the entry is not canonical. */
 function resolveTrustedBridge(serverName, entry, projectDir, hooksDir) {
   const allowed = Object.prototype.hasOwnProperty.call(BRIDGE_SCRIPTS_BY_SERVER, serverName) ? BRIDGE_SCRIPTS_BY_SERVER[serverName] : undefined;
@@ -147,7 +175,7 @@ function resolveTrustedBridge(serverName, entry, projectDir, hooksDir) {
   if (!ownReal || !dirReal || !sameFile(ownReal, path.join(dirReal, base))) return untrusted(serverName, "bridge script path escapes the dispatcher directory");
   const requested = path.resolve(projectDir, args[0]);
   const requestedReal = safeRealpath(requested);
-  if (!requestedReal || !sameFile(requestedReal, ownReal)) return untrusted(serverName, "script is not the dispatcher's own copy");
+  if (!requestedReal || !(sameFile(requestedReal, ownReal) || isStableCopy(requested, base))) return untrusted(serverName, "script is not the dispatcher's own copy");
   const extra = args.slice(1);
   if (extra.length > 0) {
     if (serverName !== "codex" || extra.length % 2 !== 0) return untrusted(serverName, "unexpected arguments");

@@ -6,9 +6,14 @@
 
 // ---------------------------------------------------------------------------
 // Keeping local-scope MCP registrations current (host-agnostic, no `vscode`):
-//   - repointLocalMcpEntries: an extension update moves the versioned install
-//     folder; entries the user already registered at local scope are repointed
-//     to the current one, never downgraded and never across install kinds.
+//   - Entries point at the stable per-user launcher directory (stableBridgeDir.ts),
+//     which no extension update moves, so an update never rewrites them.
+//   - repointLocalMcpEntries: a ONE-TIME migration of entries that still point into a
+//     versioned extension folder (or a vanished standalone folder) to the stable
+//     directory. Entries already there are left alone. The rewrite is a single
+//     atomic edit of ~/.claude.json that never removes first, is verified after a
+//     pause and retried once; an entry that is still missing is reported in
+//     `missing` so the host can warn the user.
 // Nothing is ever registered from what a repository contains: a server reaches
 // local scope only through an explicit click in the UI. Only entries whose
 // command is recognisably ours are ever touched.
@@ -17,13 +22,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import { MCP_BRIDGE_HOOK_FILES, resolveHookInterpreter } from "../host/vscode/hookInstall";
-import { isNewerExtensionPath } from "../providers/codex/installCodexHooks";
 import {
+  createLocalMcpOps,
   installedBridgeScript,
   readLocalMcpServers,
-  registerLocalMcpServer,
+  replaceLocalMcpEntrySafely,
 } from "./claudeLocalMcp";
-import type { LocalMcpOptions } from "./claudeLocalMcp";
+import { isInStableBridgeDir, resolveStableBridgeDir } from "./stableBridgeDir";
+import type { LocalMcpOps, LocalMcpOptions } from "./claudeLocalMcp";
 import { CODEX_LEGACY_MODELS } from "./agentsUiMode";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -38,13 +44,14 @@ function sameFile(a: string, b: string, platform: NodeJS.Platform): boolean {
 }
 
 /** True when a local-scope entry is one TycoonAgents registered: a node launcher running one of our bridge scripts. */
-export function isOurLocalEntry(entry: unknown): boolean {
+export function isOurLocalEntry(entry: unknown, o: LocalMcpOptions = {}): boolean {
   if (!isPlainObject(entry)) return false;
   for (const k of Object.keys(entry)) if (k !== "command" && k !== "args" && k !== "env" && k !== "type") return false;
   if (typeof entry.command !== "string" || !/^node(\.exe)?$/i.test(path.basename(entry.command.replace(/\\/g, "/")))) return false;
   const first = Array.isArray(entry.args) ? entry.args[0] : undefined;
   if (typeof first !== "string") return false;
-  const m = HOOK_ARG_RE.exec(first.replace(/\\/g, "/"));
+  const norm = first.replace(/\\/g, "/");
+  const m = HOOK_ARG_RE.exec(norm) ?? (isInStableBridgeDir(norm, o) ? /\/([^/]+)$/.exec(norm) : null);
   return !!m && (MCP_BRIDGE_HOOK_FILES as ReadonlyArray<string>).includes(m[1]);
 }
 
@@ -52,10 +59,11 @@ export function isOurLocalEntry(entry: unknown): boolean {
  * Which kind of install a bridge script path belongs to. A VS Code window and the
  * standalone server each own only their own kind; neither rewrites the other's.
  */
-export type InstallKind = "vscode-extension" | "project" | "standalone";
+export type InstallKind = "stable" | "vscode-extension" | "project" | "standalone";
 
-export function installKindOf(scriptPath: string): InstallKind {
+export function installKindOf(scriptPath: string, o: LocalMcpOptions = {}): InstallKind {
   const p = scriptPath.replace(/\\/g, "/");
+  if (isInStableBridgeDir(p, o)) return "stable";
   if (/\/tycoonagents\.tycoonagents-\d/i.test(p)) return "vscode-extension";
   if (/(?:^|\/)\.claude\/hooks\//.test(p)) return "project";
   return "standalone";
@@ -84,38 +92,41 @@ export function refreshedCatalogTail(have: unknown[], catalogArgs: unknown): str
 export interface RepointResult {
   repointed: string[];
   errors: string[];
+  /** Ids whose entry could not be confirmed after the rewrite (neither old nor new is present): warn the user. */
+  missing: string[];
 }
 
 /**
- * Repoint our local-scope entries (ids in `ourIds`) at `hooksDir`. An entry already
- * there, one that points at a NEWER extension version (another window owns it), and
- * anything not recognisably ours are left alone. Other args and env are preserved.
+ * Migrate our local-scope entries (ids in `ourIds`) to `hooksDir`, the stable launcher
+ * directory. Entries already in it, project copies and anything not recognisably ours
+ * are left alone; versioned-extension entries always move (the stable directory is
+ * canonical, so no downgrade concern). Other args and env are preserved.
  */
 export async function repointLocalMcpEntries(root: string, hooksDir: string, ourIds: Iterable<string>, o: LocalMcpOptions = {}, defs: Record<string, { config?: unknown }> = {}): Promise<RepointResult> {
-  const result: RepointResult = { repointed: [], errors: [] };
+  const result: RepointResult = { repointed: [], errors: [], missing: [] };
   const platform = o.platform ?? process.platform;
   const isFile = o.isFile ?? ((p: string) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
   const local = readLocalMcpServers(root, o);
   for (const id of ourIds) {
     const entry = local[id];
-    if (!isOurLocalEntry(entry)) continue;
+    if (!isOurLocalEntry(entry, o)) continue;
     const cfg = entry as Record<string, unknown>;
     const args = cfg.args as unknown[];
     const oldScript = args[0] as string;
-    const file = HOOK_ARG_RE.exec(oldScript.replace(/\\/g, "/"))![1];
+    const file = /([^/\\]+)$/.exec(oldScript)![1];
     const newScript = installedBridgeScript(hooksDir, file);
+    if (installKindOf(newScript, o) !== "stable") {
+      result.errors.push(`${id}: ${hooksDir} is not the TycoonAgents launcher folder; entry left as is.`);
+      continue;
+    }
     if (!isFile(newScript)) {
-      result.errors.push(`${id}: ${file} is missing from this install; entry left as is.`);
+      result.errors.push(`${id}: ${file} is missing from the TycoonAgents launcher folder; entry left as is.`);
       continue;
     }
     if (!sameFile(oldScript, newScript, platform)) {
-      // Only the same kind of install is ever rewritten: a VS Code window never
-      // touches a standalone or project path and vice versa.
-      const kind = installKindOf(oldScript);
-      if (kind !== installKindOf(newScript) || kind === "project") continue;
-      // Never downgrade: a newer extension version belongs to another window. Standalone
-      // roots carry no version, so one is repointed only once its script is gone.
-      if (kind === "vscode-extension" && isNewerExtensionPath(oldScript, newScript) && isFile(oldScript)) continue;
+      const kind = installKindOf(oldScript, o);
+      if (kind === "project") continue;
+      // A standalone root carries no version: move it only once its script is gone.
       if (kind === "standalone" && isFile(oldScript)) continue;
     }
     let command = cfg.command as string;
@@ -126,9 +137,29 @@ export async function repointLocalMcpEntries(root: string, hooksDir: string, our
     const freshTail = refreshedCatalogTail(args.slice(1), isPlainObject(catCfg) ? catCfg.args : undefined);
     if (sameFile(oldScript, newScript, platform) && command === cfg.command && !freshTail) continue;
     const next: Record<string, unknown> = { ...cfg, command, args: [newScript, ...(freshTail ?? args.slice(1))] };
-    const r = await registerLocalMcpServer(root, id, next, o);
-    if (r.ok) result.repointed.push(id);
-    else result.errors.push(`${id}: ${r.error ?? "could not update"}`);
+    const r = await replaceLocalMcpEntrySafely(root, id, cfg, next, o);
+    if (r.outcome === "replaced") result.repointed.push(id);
+    else if (r.outcome === "missing") {
+      result.missing.push(id);
+      result.errors.push(`${id}: ${r.error ?? "entry is missing after the update"}`);
+    } else if (!r.ok) result.errors.push(`${id}: ${r.error ?? "could not update"}`);
   }
   return result;
+}
+
+export interface StableLocalMcp {
+  ops: LocalMcpOps;
+  /** Set when the launcher directory cannot be resolved: registering must not proceed. */
+  error?: string;
+}
+
+/**
+ * Local-scope operations bound to the stable launcher directory (<home>/.tycoonagents/bin).
+ * Copying into it is done once at activation / standalone startup (installStableBridges);
+ * entries are never registered against the versioned extension folder.
+ */
+export function stableLocalMcp(o: LocalMcpOptions = {}): StableLocalMcp {
+  const r = resolveStableBridgeDir(o);
+  if (!r.dir) return { ops: createLocalMcpOps("", o), error: r.error ?? "TycoonAgents could not find its launcher folder." };
+  return { ops: createLocalMcpOps(r.dir, o) };
 }
