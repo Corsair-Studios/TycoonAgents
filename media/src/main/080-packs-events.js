@@ -89,18 +89,22 @@
    * priced as the newest Sonnet. Exact-id rows (anthropic/claude-...) pin
    * the rate of that specific model and win over the alias row; older
    * exact-id rows are kept so historical metrics keep their original rate.
-   * Alias rows, current as of 2026-09:
+   * Alias rows, current as of 2026-10:
    *   opus    $4 in / $20 out  -> (3*4  + 20)/4 = $8    [Opus 5.5; older opus-4-x rows keep $5/$25 -> $10]
    *   sonnet  $2 in / $10 out  -> (3*2  + 10)/4 = $4    [Sonnet 5.5]
-   *   haiku   $1 in / $5  out  -> (3*1  +  5)/4 = $2    [Haiku 4.5]
+   *   haiku   $0.10 in / $0.50 out -> (3*0.1 + 0.5)/4 = $0.2   [Haiku 5.5, prompts up to 100k tokens; over 100k it is $0.50/$2.50 -> $1]
    *   fable   $10 in / $50 out -> (3*10 + 50)/4 = $20   [Fable 5.1]
    * Only TOTAL tokens are tracked per agent (no input/output/cache split), so
    * treat this as a rough estimate — RATIOS between models matter more than
    * absolute accuracy. These are API rates and do NOT reflect Claude
    * subscription (Max/Pro) billing. Run the /update-pricing skill to refresh
-   * Anthropic rates from live prices. (rates confirmed ~2026-07)
+   * Anthropic rates from live prices. (rates confirmed ~2026-10)
    *
-   * PLACEHOLDERS — every non-anthropic/* row below is a rough seed, not a
+   * OpenAI rows (gpt-6-astra/gpt-6.1-sol/gpt-6-luna, ~2026-10) use the same 3:1
+   *   blend on OpenAI's published standard rates: astra $10/$50 -> 20, sol
+   *   $2/$10 -> 4, luna $0.10/$0.50 -> 0.2.
+   *
+   * PLACEHOLDERS — every other non-anthropic/non-gpt-6 row below is a rough seed, not a
    * verified published rate. Refresh via the update-pricing skill before
    * relying on these for anything but relative ordering.
    *
@@ -111,9 +115,9 @@
   const PRICE_TABLE = {
     "anthropic/opus": { perMtok: 8, weight: 12 },
     "anthropic/sonnet": { perMtok: 4, weight: 3 },
-    "anthropic/haiku": { perMtok: 2, weight: 0.8 },
+    "anthropic/haiku": { perMtok: 0.2, weight: 0.08 },
     "anthropic/fable": { perMtok: 20, weight: 30 },
-    // Exact current model ids (Claude docs models overview, 2026-09); these
+    // Exact current model ids (Claude docs models overview, 2026-10); these
     // win over the alias rows above. Refresh via the update-pricing skill.
     "anthropic/claude-fable-5-1": { perMtok: 20, weight: 30 }, // $10 in / $50 out
     "anthropic/claude-opus-5-5": { perMtok: 8, weight: 12 }, // $4 in / $20 out -> (12+20)/4
@@ -127,16 +131,17 @@
     "anthropic/claude-opus-5": { perMtok: 10, weight: 15 },
     "anthropic/claude-sonnet-5": { perMtok: 4, weight: 3 }, // $2 in / $10 out, same as sonnet-5-5
     "anthropic/claude-sonnet-5-5": { perMtok: 4, weight: 3 }, // $2 in / $10 out
+    "anthropic/claude-haiku-5-5": { perMtok: 0.2, weight: 0.08 }, // $0.10 in / $0.50 out (prompts <=100k)
     "anthropic/claude-haiku-4-5": { perMtok: 2, weight: 0.8 }, // $1 in / $5 out
     // placeholders — refresh via the update-pricing skill
     "openai/gpt-5": { perMtok: 8, weight: 12 },
     "openai/gpt-5.4-mini": { perMtok: 1.5, weight: 1 },
-    // seed, unverified — codex-reviewer's current model (2026-09-15); refresh via update-pricing
-    "openai/gpt-6.1-sol": { perMtok: 1, weight: 0.7 },
-    // seed, unverified — higher-tier option, costlier than gpt-6.1-sol; refresh via update-pricing
-    "openai/gpt-6-astra": { perMtok: 1.5, weight: 1 },
-    // seed, unverified — cheapest tier; refresh via update-pricing
-    "openai/gpt-6-luna": { perMtok: 0.5, weight: 0.4 },
+    // OpenAI GPT-6 lineup, standard short-context rates from
+    // https://developers.openai.com/api/docs/pricing (confirmed ~2026-10), 3:1 blend.
+    // Used for OpenAI-vs-OpenAI comparisons only; never against another vendor.
+    "openai/gpt-6.1-sol": { perMtok: 4, weight: 3 }, // $2 in / $10 out -> (6+10)/4 (Sonnet-tier)
+    "openai/gpt-6-astra": { perMtok: 20, weight: 30 }, // $10 in / $50 out -> (30+50)/4 (Opus-tier)
+    "openai/gpt-6-luna": { perMtok: 0.2, weight: 0.08 }, // $0.10 in / $0.50 out -> (0.3+0.5)/4 (Haiku-tier)
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },

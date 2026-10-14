@@ -6,7 +6,7 @@
 // Mirrors the repeated manual sequence: bump patch version, `npm run
 // package` (which runs the full vscode:prepublish chain — build, bundles,
 // check:paths, check:webview — then `vsce package`), verify the .vsix,
-// `git add -A`, commit "Release x.y.z: ...", create an annotated `vx.y.z`
+// `git add -u` (tracked files only; journal unstaged), commit "Release x.y.z: ...", create an annotated `vx.y.z`
 // tag, `git push origin main --follow-tags`, then a best-effort step that
 // never fails the release itself: publish a GitHub Release (`gh release
 // create`) with the .vsix attached.
@@ -118,9 +118,15 @@ function main() {
   const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`;
 
   try {
-    execSync('git add -A', { stdio: 'inherit', cwd: ROOT });
+    // Tracked modifications only: untracked work (design-docs/, spikes/) must not ride along.
+    execSync('git add -u', { stdio: 'inherit', cwd: ROOT });
+    // The session journal is hook-managed and is never part of a release commit.
+    const stagedJournal = execSync('git diff --cached --name-only -- .claude/session-journal.json', { cwd: ROOT, encoding: 'utf8' }).trim();
+    if (stagedJournal) {
+      execSync('git reset -q HEAD -- .claude/session-journal.json', { stdio: 'inherit', cwd: ROOT });
+    }
   } catch (err) {
-    console.error(`\n[release] "git add -A" failed: ${err.message}\n[release] Nothing was committed or pushed.\n`);
+    console.error(`\n[release] staging failed: ${err.message}\n[release] Nothing was committed or pushed.\n`);
     process.exit(1);
   }
 

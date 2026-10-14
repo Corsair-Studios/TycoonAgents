@@ -7016,13 +7016,13 @@ test('Eligible savings: pure priced Anthropic delegated agents render the three 
     assert.ok(!hiddenLine, 'the hidden-savings line must be absent when savings.eligible is true');
 
     // Same vendor (anthropic), orchestrator priced (sonnet=4/Mtok), delegated
-    // 4000 tokens @ sonnet + 1000 tokens @ haiku(2/Mtok): billed = 0.018,
-    // counterfactual = 5000/1e6*4 = 0.02, ratio = 0.02/0.018 ≈ 1.11 ->
-    // fmtRatio -> "1.1".
+    // 4000 tokens @ sonnet + 1000 tokens @ haiku(0.2/Mtok): billed = 0.0162,
+    // counterfactual = 5000/1e6*4 = 0.02, ratio = 0.02/0.0162 ≈ 1.23 ->
+    // fmtRatio -> "1.2".
     const details = [...delegationBody.querySelectorAll('.delegation-stats-detail')].map((n: any) => n.textContent || '');
     assert.ok(
-      details.some((t: string) => /^Delegated work ran at 1\.1× cheaper than running the same billable tokens on the orchestrator's model/.test(t)),
-      `expected the 1.1x ratio line to render when savings are eligible, got: ${JSON.stringify(details)}`
+      details.some((t: string) => /^Delegated work ran at 1\.2× cheaper than running the same billable tokens on the orchestrator's model/.test(t)),
+      `expected the 1.2x ratio line to render when savings are eligible, got: ${JSON.stringify(details)}`
     );
     assert.doesNotMatch(String(delegationBody.textContent), /\$/, 'the Metrics/Delegation tabs render no dollar figures');
   } finally {

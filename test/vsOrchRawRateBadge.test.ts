@@ -534,7 +534,7 @@ test("metrics row badge: NEGATIVE ANCHOR -- unpriced orchestrator model renders 
 // / <=0.95 conditional with the real fmtRatio()-formatted output.
 // ---------------------------------------------------------------------------
 
-test("metrics row badge: Sonnet orchestrator + Haiku worker crosses the >=1.05 branch ('2x cheaper'), independent of cache-read volume", () => {
+test("metrics row badge: Sonnet orchestrator + Haiku worker crosses the >=1.05 branch (sonnet/haiku table ratio), independent of cache-read volume", () => {
   for (const cache of CACHE_READ_VOLUMES) {
     const { doc, dispatch, errors } = bootMainJs();
     dispatchMetrics(dispatch, [
@@ -544,12 +544,13 @@ test("metrics row badge: Sonnet orchestrator + Haiku worker crosses the >=1.05 b
     pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
-    assert.equal(text, "2× cheaper", `cache=${cache}: expected '2× cheaper' (raw 4/2 sonnet/haiku ratio, >=1.05 branch), got '${text}'`);
+    const want = cheaperLabel(tableRate("anthropic/sonnet"), tableRate("anthropic/haiku"));
+    assert.equal(text, want, `cache=${cache}: expected '${want}' (raw sonnet/haiku table ratio, >=1.05 branch), got '${text}'`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
 });
 
-test("metrics row badge: Haiku orchestrator + Sonnet worker crosses the <=0.95 branch ('2x pricier'), independent of cache-read volume", () => {
+test("metrics row badge: Haiku orchestrator + Sonnet worker crosses the <=0.95 branch (haiku/sonnet table ratio), independent of cache-read volume", () => {
   for (const cache of CACHE_READ_VOLUMES) {
     const { doc, dispatch, errors } = bootMainJs();
     dispatchMetrics(dispatch, [
@@ -559,7 +560,8 @@ test("metrics row badge: Haiku orchestrator + Sonnet worker crosses the <=0.95 b
     pushSettings(doc, dispatch, agentsPayload());
 
     const text = rowBadgeText(doc, "Coding Specialist");
-    assert.equal(text, "2× pricier", `cache=${cache}: expected '2× pricier' (raw 2/4 haiku/sonnet ratio, <=0.95 branch), got '${text}'`);
+    const want = pricierLabel(tableRate("anthropic/haiku"), tableRate("anthropic/sonnet"));
+    assert.equal(text, want, `cache=${cache}: expected '${want}' (raw haiku/sonnet table ratio, <=0.95 branch), got '${text}'`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
 });
