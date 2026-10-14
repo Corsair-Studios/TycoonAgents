@@ -586,3 +586,22 @@ test("CodexSandboxUnavailable record maps to an event and sets the warning until
   assert.equal(isCodexSandboxWarningActive(state), false);
   assert.equal(codexSandboxWarning(state), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Stale note: a new run never shows an older run's lastReport
+// ---------------------------------------------------------------------------
+
+test("WorkerSpawned clears the previous run's lastReport; a ProviderError after it keeps the run's own error note", () => {
+  let s = initialWorldState();
+  s = applyEvent(s, { type: "WorkerSpawned", at: T, workerId: "w-note", role: "coder" } as never);
+  s = applyEvent(s, { type: "WorkerStopped", at: T + 1, workerId: "w-note", report: "old failure note", reportChars: 16 } as never);
+  assert.equal(metric(s.agentMetrics, "w-note")?.lastReport, "old failure note");
+  s = applyEvent(s, { type: "WorkerSpawned", at: T + 2, workerId: "w-note", role: "coder" } as never);
+  assert.equal(metric(s.agentMetrics, "w-note")?.lastReport, undefined);
+  assert.equal(metric(s.agentMetrics, "w-note")?.lastReportChars, undefined);
+  s = applyEvent(s, { type: "WorkerStopped", at: T + 3, workerId: "w-note", report: "ProviderError: boom", reportChars: 19 } as never);
+  s = applyEvent(s, { type: "ProviderError", at: T + 4, workerId: "w-note", message: "boom" } as never);
+  const m = metric(s.agentMetrics, "w-note");
+  assert.equal(m?.status, "error");
+  assert.equal(m?.lastReport, "ProviderError: boom");
+});

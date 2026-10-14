@@ -475,3 +475,33 @@ test("a transcript with no agent_transcript_path/transcript_path at all also fai
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a transcript ending in a SubagentHandback tool_use reports its message; prose in the same turn wins", () => {
+  const root = setupProject();
+  try {
+    const handback = { type: "tool_use", id: "t1", name: "SubagentHandback", input: { message: "  Relay done: 3 files changed.  " } };
+    const transcriptPath = writeTranscript(root, [
+      { role: "assistant", message: { role: "assistant", content: [{ type: "text", text: "earlier prose" }] } },
+      { role: "assistant", message: { role: "assistant", content: [handback] } },
+    ]);
+    runHook(root, { hook_event_name: "SubagentStop", agent_transcript_path: transcriptPath, agent_type: "codex-reviewer", session_id: "s1" });
+    const rec = readActivity(root).find((r) => r.event === "SubagentStop");
+    assert.equal(rec?.report, "Relay done: 3 files changed.");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+  const root2 = setupProject();
+  try {
+    const transcriptPath = writeTranscript(root2, [
+      { role: "assistant", message: { role: "assistant", content: [
+        { type: "tool_use", id: "t1", name: "SubagentHandback", input: { message: "handback text" } },
+        { type: "text", text: "real prose" },
+      ] } },
+    ]);
+    runHook(root2, { hook_event_name: "SubagentStop", agent_transcript_path: transcriptPath, agent_type: "codex-reviewer", session_id: "s1" });
+    const rec = readActivity(root2).find((r) => r.event === "SubagentStop");
+    assert.equal(rec?.report, "real prose");
+  } finally {
+    rmSync(root2, { recursive: true, force: true });
+  }
+});

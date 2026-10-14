@@ -1596,6 +1596,18 @@ function lastAssistantTextFromTranscript(transcriptPath) {
         if (text) {
           return text;
         }
+        // No prose: a relay run ends by calling the SubagentHandback tool, whose
+        // input.message IS the report. Prose in the same turn still wins (above).
+        if (Array.isArray(content)) {
+          for (let j = content.length - 1; j >= 0; j--) {
+            const c = content[j];
+            if (c && c.type === "tool_use" && typeof c.name === "string" &&
+                /(^|__)SubagentHandback$/.test(c.name) &&
+                c.input && typeof c.input.message === "string" && c.input.message.trim()) {
+              return c.input.message.trim();
+            }
+          }
+        }
         // Assistant turn found but it was tool-calls-only (no prose) — keep
         // walking backward for an earlier assistant turn that has text.
       } catch { /* skip malformed line */ }

@@ -839,6 +839,11 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
               : { fallbackOf: undefined, fallbackDepth: undefined, fallbackIsDefault: undefined }),
           fallbackCount: event.fallbackOf !== undefined && event.fallbackOf === event.workerId ? m.fallbackCount + 1 : m.fallbackCount,
           status: "active" as const,
+          // A new run never shows an older run's note. A duplicate start record
+          // for a spawnId already live (same run) keeps it.
+          ...(event.spawnId !== undefined && (m.liveSpawns ?? []).includes(event.spawnId)
+            ? {}
+            : { lastReport: undefined, lastReportChars: undefined }),
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
           // liveSpawns: only touched when this event carries a spawnId — a
