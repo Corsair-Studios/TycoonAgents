@@ -360,7 +360,6 @@ function buildStatePayload() {
       sessionActive: true,
       completedTasks: 3,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {
         a1: { id: 'a1', role: 'builder', state: 'build' },
         a2: { id: 'a2', role: 'hauler', state: 'walk' },
@@ -398,7 +397,6 @@ function buildOrchestratorTaskCountStatePayload(orchestratorTaskCount: number) {
       sessionActive: true,
       completedTasks: 5,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },
@@ -431,7 +429,6 @@ function buildTeamStatePayload() {
       sessionActive: true,
       completedTasks: 4,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },
@@ -458,7 +455,6 @@ function buildOrchestratorNotFirstStatePayload() {
       sessionActive: true,
       completedTasks: 4,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },
@@ -939,7 +935,7 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
       assert.ok(leadRow, 'Build Lead row should exist');
       const leadTokensCell = leadRow.querySelector('td.col-tokens');
       assert.ok(leadTokensCell, 'lead row should have a tokens cell');
-      assert.equal(leadTokensCell.textContent, '800', "lead row shows its own tokens only, no team rollup sum");
+      assert.equal(leadTokensCell.firstChild.textContent, '800', "lead row shows its own tokens only, no team rollup sum");
 
       // p60-t2 dollar-free rewrite: neither the Metrics tab (this rendered
       // table, agent rows plus per-vendor/per-cost-class footer rows) nor
@@ -1022,7 +1018,6 @@ test('media/main.js boots + drives without throwing in a jsdom runtime', async (
           sessionActive: true,
           completedTasks: 0,
           idleFreezeMs: 180000,
-          sanityCapMs: 900000,
           workers: {},
           agentMetrics: [
             {
@@ -4531,7 +4526,6 @@ test('accent: metrics table colors a foreign active agent light blue with no "(f
         sessionActive: true,
         completedTasks: 2,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, activeMs: 30000 },
@@ -4584,7 +4578,6 @@ test('accent: metrics table colors a fallback agent amber with "(fb)" suffix on 
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           {
@@ -4632,7 +4625,6 @@ test('fallback marker: a cleared fallbackOf drops "(fb)" while the tooltip keeps
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           {
@@ -4686,7 +4678,6 @@ test('p63-t5: an agentMetrics record with no `tokens` field renders "n/a" in its
         sessionActive: true,
         completedTasks: 2,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, activeMs: 30000 },
@@ -4733,7 +4724,6 @@ test('p63-t5: agentMetrics with tokens:0 renders "0", not "n/a", and counts as a
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 0, activeMs: 1000, taskCount: 0 },
@@ -4774,7 +4764,6 @@ test('p63-t5: cacheReadTokens renders only as a separate "+ X cached" span, neve
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', vendor: 'anthropic', tokens: 100000, cacheReadTokens: 400000, activeMs: 1000, taskCount: 1 },
@@ -4823,7 +4812,6 @@ test('p63-t5: no "$" character anywhere in the rendered Metrics tab output', asy
         sessionActive: true,
         completedTasks: 2,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', vendor: 'anthropic', tokens: 500, cacheReadTokens: 200, activeMs: 30000 },
@@ -4863,7 +4851,6 @@ test('p32-t1: metrics table suffixes "(dfb)" instead of "(fb)" when the metric h
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           {
@@ -4915,7 +4902,6 @@ test('accent: metrics-row agent-accent-foreign applies only while the agent is a
         sessionActive: true,
         completedTasks: 2,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           {

@@ -67,9 +67,12 @@ export type NormalizedEvent =
       model?: string; // full model id, e.g. from a generic mcp/openai-compatible backend match (p2-t2)
       vendor?: string; // backend vendor, e.g. "anthropic" | "openai" | "google" (p2-t2)
       costModelClass?: "metered" | "subscription" | "local"; // (p2-t2)
+      toolUseId?: string; // Claude Code tool_use_id of this call (MCP calls only); pairs with WorkerToolDone
       provider?: string;
       sessionId?: string;
     }
+  // The matching PostToolUse / PostToolUseFailure for an MCP WorkerActivity: the call finished.
+  | { type: "WorkerToolDone"; at: number; workerId: WorkerId; tool: string; toolUseId?: string; provider?: string; sessionId?: string }
   | { type: "TaskCompleted"; at: number; workerId: WorkerId; label?: string; provider?: string; sessionId?: string }
   // report: the subagent's final assistant-message text (capped, see
   // HookRecord.report in providers/claude-code/hookRecord.ts for the exact

@@ -3693,6 +3693,9 @@ body {
   /* fill the bounded #metrics-panel and scroll internally when compressed
      content overflows; no scrollbar when expanded and content fits. */
   overflow-y: auto;
+  /* Narrow panels: the nowrap table is wider than the body, so scroll it
+     sideways instead of clipping the Tokens column. */
+  overflow-x: auto;
   padding: 16px 16px 12px;
 }
 
@@ -3906,6 +3909,14 @@ td.col-tokens {
   color: var(--muted);
   font-size: 0.85em;
   font-variant-numeric: tabular-nums;
+}
+
+/* Subtle in-progress hint and bridge note beside the Tokens number. */
+.col-tokens-running,
+.col-tokens-bridge-note {
+  color: var(--muted);
+  font-size: 0.85em;
+  cursor: help;
 }
 
 /* Tighten the small numeric columns (values never reach triple digits) */
@@ -4214,6 +4225,7 @@ tr.metrics-row--child td.col-name {
 /* Scrollbar styling */
 #metrics-body::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 #metrics-body::-webkit-scrollbar-track {

@@ -274,7 +274,6 @@ function stateWithOrchestratorMetric(model: string | null) {
       sessionActive: true,
       completedTasks: 0,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },
@@ -335,7 +334,6 @@ function renderOrchestratorRow(model: string | null | undefined) {
         sessionActive: true,
         completedTasks: 0,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [{ id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100, activeMs: 100 }],
       },
@@ -424,7 +422,7 @@ test("orchestrator model label: NEGATIVE ANCHOR -- empty agentMetrics array -> '
   openAgentsModal(doc, dispatch);
   dispatch({
     type: "state",
-    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },
+    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, workers: {}, agentMetrics: [] },
   });
   dispatch({ type: "settings", payload: agentsPayload() });
   const row = doc.querySelector('[data-agent-row="orchestrator"]');
@@ -467,7 +465,7 @@ test("orchestrator model help text differs between observed and unknown states (
   openAgentsModal(doc2, dispatch2);
   dispatch2({
     type: "state",
-    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },
+    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, workers: {}, agentMetrics: [] },
   });
   dispatch2({ type: "settings", payload: agentsPayload() });
   const unknownHelp = doc2.querySelector('[data-agent-row="orchestrator"] .orchestrator-model-help');

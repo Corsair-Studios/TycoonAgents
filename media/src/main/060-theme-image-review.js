@@ -52,7 +52,7 @@
 
   /** @type {{ sessionActive: boolean; workers: Record<string, { id: string; role?: string; state: string }>; completedTasks: number }} */
   let state = { sessionActive: false, workers: {}, completedTasks: 0 };
-  let idleFreezeMs = 180000, sanityCapMs = 900000;
+  let idleFreezeMs = 180000;
 
   // ── Single source of truth for "is this agent active?" ───────────────
   // Both the agent-metrics panel and the canvas character scene MUST use
@@ -2524,7 +2524,6 @@
       state = msg.state;
       showOrchestratorLimitBanner(state && state.orchestratorLimit);
       idleFreezeMs = state.idleFreezeMs ?? 180000;
-      sanityCapMs = state.sanityCapMs ?? 900000;
       // Maintain insertion order for stable x positions
       for (const id of Object.keys(state.workers)) {
         if (!workerOrder.includes(id)) {

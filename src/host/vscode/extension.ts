@@ -93,8 +93,7 @@ export function activate(context: vscode.ExtensionContext): void {
   initLog(context);
   const cfg = vscode.workspace.getConfiguration("tycoonagents");
   const idleFreezeMs = cfg.get<number>("idleFreezeMinutes", 3) * 60000;
-  const sanityCapMs = cfg.get<number>("sanityCapMinutes", 15) * 60000;
-  const runtime = new Runtime({ idleFreezeMs, sanityCapMs });
+  const runtime = new Runtime({ idleFreezeMs });
 
   // Keep the stable per-user launcher folder (~/.tycoonagents/bin) current: Claude local-scope
   // MCP entries point there, not into this versioned extension folder. Never downgrades.

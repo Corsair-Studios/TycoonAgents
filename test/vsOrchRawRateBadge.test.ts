@@ -291,7 +291,6 @@ function dispatchMetrics(dispatch: (d: any) => void, agentMetrics: any[]) {
       sessionActive: true,
       completedTasks: 3,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },

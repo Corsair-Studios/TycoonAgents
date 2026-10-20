@@ -55,8 +55,7 @@
   <thead><tr><th>Setting key</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>tycoonagents.autoShow</code></td><td>true</td><td>Automatically opens the live agent panel when a workspace opens.</td></tr>
-    <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Freezes an agent's live time after this many minutes with no activity.</td></tr>
-    <tr><td><code>tycoonagents.sanityCapMinutes</code></td><td>15</td><td>Hard cap on any single active stretch, in minutes.</td></tr>
+    <tr><td><code>tycoonagents.idleFreezeMinutes</code></td><td>3</td><td>Time pauses after this many minutes with no activity, except while an MCP tool call is still running (up to 30 minutes per call).</td></tr>
     <tr><td><code>tycoonagents.provider</code></td><td>claude-code</td><td>Which coding agent harness TycoonAgents reads activity from — <code>claude-code</code> or <code>codex</code>. The <code>TYCOON_PROVIDER</code> environment variable, if set, always overrides this.</td></tr>
     <tr><td><code>tycoonagents.agents.multiProvider</code></td><td>false</td><td>Shows vendor and fallback controls for every agent in the Agents view. Turn this on if you use more than one AI provider for delegation — see <a href="ch-15.html">Chapter 15 · Adding Other AIs</a>. Leave it off if you use a single AI provider.</td></tr>
     <tr><td><code>tycoonagents.themeService.endpoint</code></td><td>&nbsp;</td><td>Advanced: override the Theme Service base URL (https only). Leave empty for the production service — see &sect; 5.6.</td></tr>

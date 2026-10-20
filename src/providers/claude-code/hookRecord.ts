@@ -4,7 +4,7 @@
  * Attribution header - optional; end users may remove it.
  */
 
-export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "SubagentStop" | "Stop" | "ProviderError" | "StopFailure" | "CodexSandboxUnavailable";
+export type ClaudeHookEventName = "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SubagentStop" | "Stop" | "ProviderError" | "StopFailure" | "CodexSandboxUnavailable";
 
 /** One JSON line the hook script appends to the activity IPC file. Our contract, not Claude's raw schema. */
 export interface HookRecord {
@@ -17,6 +17,7 @@ export interface HookRecord {
   userPrompt?: boolean;      // UserPromptSubmit/Stop: set by the hooks on a person-initiated top-level prompt/turn (never a
                               // subagent or bridge child); the panel uses it for the harness-mismatch hint only.
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
+  toolUseId?: string;        // PreToolUse (mcp__ tools) / PostToolUse: Claude Code's tool_use_id, pairs a call with its finish
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
   ok?: boolean;              // SubagentStop (codex dispatcher): true on success, false on failure.

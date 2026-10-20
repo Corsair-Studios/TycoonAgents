@@ -208,6 +208,14 @@ export interface AgentMetric {
    */
   spawnStartAt?: Record<string, number>;
   /**
+   * MCP tool calls this agent has started (PreToolUse) and not yet seen finish
+   * (PostToolUse / PostToolUseFailure). While non-empty, creditedElapsed keeps
+   * accruing past the idle freeze, up to IN_FLIGHT_CEILING_MS per call. Absent
+   * (never an empty array) when nothing is in flight. `id` is the hook's
+   * tool_use_id when it carried one, else calls are matched by tool name.
+   */
+  inFlightCalls?: { id?: string; tool: string; at: number }[];
+  /**
    * True when the MOST RECENT spawn for this agent had its role guessed
    * from keyword scoring (HookRecord.roleInferred) rather than an explicit
    * agent name/subagent_type match. Undefined/false otherwise.
@@ -282,8 +290,6 @@ export interface MetricsWorldState {
   _agentMetricsInternal: AgentMetricInternal[];
   /** Freeze live timer after this many ms with no activity (default 180000 = 3 min). */
   idleFreezeMs: number;
-  /** Hard cap on any single active stretch in ms (default 900000 = 15 min). */
-  sanityCapMs: number;
   /** Most recent hook activity timestamp (epoch ms) across all agents, or null if none. */
   lastActivityAt?: number | null;
   /**
@@ -355,7 +361,7 @@ export function codexSandboxWarning(
   return isCodexSandboxWarningActive(state) ? CODEX_SANDBOX_WARNING_MESSAGE : undefined;
 }
 
-export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?: number }): MetricsWorldState {
+export function initialWorldState(limits?: { idleFreezeMs?: number }): MetricsWorldState {
   return {
     sessionActive: false,
     workers: {},
@@ -364,7 +370,6 @@ export function initialWorldState(limits?: { idleFreezeMs?: number; sanityCapMs?
     agentMetrics: [],
     _agentMetricsInternal: [],
     idleFreezeMs: limits?.idleFreezeMs ?? 180000,
-    sanityCapMs: limits?.sanityCapMs ?? 900000,
     lastActivityAt: null,
   };
 }
@@ -531,6 +536,7 @@ function mergeMetricRows(a: AgentMetric, b: AgentMetric): AgentMetric {
   if (cb) merged.cacheReadModelBreakdown = cb;
   if (a.liveSpawns || b.liveSpawns) merged.liveSpawns = [...(a.liveSpawns ?? []), ...(b.liveSpawns ?? [])];
   if (a.spawnStartAt || b.spawnStartAt) merged.spawnStartAt = { ...(b.spawnStartAt ?? {}), ...(a.spawnStartAt ?? {}) };
+  if (a.inFlightCalls || b.inFlightCalls) merged.inFlightCalls = [...(a.inFlightCalls ?? []), ...(b.inFlightCalls ?? [])];
   if (a.usageReported === false || b.usageReported === false) merged.usageReported = false;
   return merged;
 }
@@ -540,25 +546,47 @@ function elapsedSince(workStartAt: number | null, now: number): number {
   return workStartAt !== null ? Math.max(0, now - workStartAt) : 0;
 }
 
+/** Ceiling on how long ONE in-flight tool call keeps a run accruing past the idle freeze (30 min). */
+export const IN_FLIGHT_CEILING_MS = 30 * 60 * 1000;
+
 /**
- * Compute credited elapsed time for an active stretch, capped by idle-freeze
- * and a hard sanity cap.
+ * Compute credited elapsed time for an active stretch.
  *
- * - If lastActivityAt is known, freeze "now" at lastActivityAt + idleFreezeMs
- *   so idle gaps don't inflate the total.
- * - Clamp the result to [0, sanityCapMs] to prevent runaway values from
- *   sessions that were cut off without a proper stop event.
+ * - There is no per-run hard cap: a run accrues for as long as it stays active.
+ * - Idle freeze: "now" is clamped to lastActivityAt + idleFreezeMs so idle gaps
+ *   don't inflate the total.
+ * - Exception: while an MCP tool call is in flight (started, no matching
+ *   PostToolUse yet) the run keeps accruing until that call's start +
+ *   IN_FLIGHT_CEILING_MS, after which it freezes as idle again.
+ *
+ * media/src/main/080-packs-events.js liveMsFor mirrors this exactly.
  */
 export function creditedElapsed(
   workStartAt: number | null,
   lastActivityAt: number | null,
   now: number,
   idleFreezeMs: number,
-  sanityCapMs: number,
+  inFlightCalls?: readonly { at: number }[] | null,
 ): number {
   if (workStartAt === null) return 0;
-  const cappedNow = lastActivityAt !== null ? Math.min(now, lastActivityAt + idleFreezeMs) : now;
-  return Math.min(Math.max(0, cappedNow - workStartAt), sanityCapMs);
+  if (lastActivityAt === null) return Math.max(0, now - workStartAt);
+  let until = lastActivityAt + idleFreezeMs;
+  if (inFlightCalls) {
+    for (const c of inFlightCalls) until = Math.max(until, c.at + IN_FLIGHT_CEILING_MS);
+  }
+  return Math.max(0, Math.min(now, until) - workStartAt);
+}
+
+/** In-flight calls younger than the ceiling; ones whose PostToolUse never arrived are dropped. */
+function pruneInFlight(calls: { id?: string; tool: string; at: number }[] | undefined, now: number) {
+  return calls?.filter((c) => now - c.at <= IN_FLIGHT_CEILING_MS);
+}
+
+/** Drop the in-flight list (key removed, not emptied) from a metric. */
+function withoutInFlight<T extends AgentMetric>(m: T): T {
+  if (m.inFlightCalls === undefined) return m;
+  const { inFlightCalls: _drop, ...rest } = m;
+  return rest as T;
 }
 
 // Pure reducer: fold a normalized event into the world state.
@@ -640,9 +668,9 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
         state._agentMetricsInternal,
         ORCHESTRATOR_ID,
         (m) => ({
-          ...m,
+          ...withoutInFlight(m),
           status: "active" as const,
-          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+          activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls),
           workStartAt: event.at,
           lastActivityAt: event.at,
         }),
@@ -655,7 +683,7 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
       const nextInternals = afterOrchestrator.map((m) =>
         m.id !== ORCHESTRATOR_ID && (m.status === "active" || m.workStartAt !== null)
           ? {
-              ...m,
+              ...withoutInFlight(m),
               status: "idle" as const,
               workStartAt: null,
               // Clear any spawn-instance bookkeeping left over from the dead
@@ -713,9 +741,9 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
                 }
               : m.cacheReadModelBreakdown;
           return {
-            ...m,
+            ...withoutInFlight(m),
             status: "idle" as const,
-            activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+            activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls),
             tokens: m.tokens + tokenDelta,
             cacheReadTokens: m.cacheReadTokens + cacheReadDelta,
             model: event.model ?? m.model,
@@ -733,9 +761,9 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
       const nextInternals = afterOrchestrator.map((m) =>
         m.id !== ORCHESTRATOR_ID && (m.status === "active" || m.workStartAt !== null)
           ? {
-              ...m,
+              ...withoutInFlight(m),
               status: "idle" as const,
-              activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+              activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls),
               workStartAt: null,
               // Same orphan-sweep cleanup as SessionStart's sweep above — see
               // its comment.
@@ -954,6 +982,15 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
+          // An MCP call stays "in flight" until WorkerToolDone retires it.
+          ...(event.detail !== undefined && event.detail.startsWith("mcp__")
+            ? {
+                inFlightCalls: [
+                  ...(pruneInFlight(m.inFlightCalls, event.at) ?? []),
+                  { ...(event.toolUseId !== undefined ? { id: event.toolUseId } : {}), tool: event.detail, at: event.at },
+                ],
+              }
+            : {}),
         }),
         event.provider,
         event.sessionId,
@@ -961,6 +998,33 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
       return {
         ...state,
         workers: nextWorkers,
+        _agentMetricsInternal: nextInternals,
+        agentMetrics: toPublicMetrics(nextInternals),
+      };
+    }
+
+    case "WorkerToolDone": {
+      // PostToolUse / PostToolUseFailure for an MCP call: retire the matching
+      // in-flight entry (by tool_use_id when both sides have one, else the
+      // oldest entry for the same tool). Never starts a timer or flips status.
+      const nextInternals = upsertMetric(
+        state._agentMetricsInternal,
+        event.workerId,
+        (m) => {
+          const calls = pruneInFlight(m.inFlightCalls, event.at);
+          if (!calls || calls.length === 0) return m.inFlightCalls ? withoutInFlight(m) : m;
+          let idx = event.toolUseId !== undefined ? calls.findIndex((c) => c.id === event.toolUseId) : -1;
+          if (idx < 0) idx = calls.findIndex((c) => c.tool === event.tool && (event.toolUseId === undefined || c.id === undefined));
+          if (idx < 0) return m;
+          const remaining = calls.filter((_, i) => i !== idx);
+          const base = remaining.length > 0 ? { ...m, inFlightCalls: remaining } : withoutInFlight(m);
+          return m.workStartAt !== null ? { ...base, lastActivityAt: Math.max(m.lastActivityAt ?? 0, event.at) } : base;
+        },
+        event.provider,
+        event.sessionId,
+      );
+      return {
+        ...state,
         _agentMetricsInternal: nextInternals,
         agentMetrics: toPublicMetrics(nextInternals),
       };
@@ -1048,8 +1112,8 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           const hasSpawnCredit =
             event.spawnId !== undefined && m.spawnStartAt !== undefined && event.spawnId in m.spawnStartAt;
           const creditedMs = hasSpawnCredit
-            ? creditedElapsed(m.spawnStartAt![event.spawnId!], m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs)
-            : creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs);
+            ? creditedElapsed(m.spawnStartAt![event.spawnId!], m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls)
+            : creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls);
           let nextSpawnStartAt = m.spawnStartAt;
           let nextWorkStartAt = stillLive ? m.workStartAt : null;
           if (hasSpawnCredit) {
@@ -1063,7 +1127,7 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
             }
           }
           return {
-            ...m,
+            ...(stillLive ? m : withoutInFlight(m)),
             status: stillLive ? ("active" as const) : ("idle" as const),
             // A cross-agent fallback TARGET row (marker names ANOTHER slot)
             // drops its marker once its run ends and no other spawn of it is
@@ -1118,10 +1182,10 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           m.liveSpawns !== undefined && m.liveSpawns.length > 0
             ? m
             : {
-                ...m,
+                ...withoutInFlight(m),
                 status: "error" as const,
                 // Finalize any active time before entering error state.
-                activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, state.sanityCapMs),
+                activeMs: m.activeMs + creditedElapsed(m.workStartAt, m.lastActivityAt, event.at, state.idleFreezeMs, m.inFlightCalls),
                 workStartAt: null,
               },
         event.provider,

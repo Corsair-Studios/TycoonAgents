@@ -66,7 +66,6 @@ function buildStatePayload() {
       sessionActive: true,
       completedTasks: 2,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics,
     },

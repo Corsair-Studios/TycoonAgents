@@ -276,7 +276,6 @@ test("recommendation badge button: visible label names the destination model, ne
       sessionActive: true,
       completedTasks: 1,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics: [
         { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, activeMs: 1000, taskCount: 1 },
@@ -309,7 +308,6 @@ test("recommendation badge: suppressed for one render immediately after the user
       sessionActive: true,
       completedTasks: 1,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics: [
         { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, activeMs: 1000, taskCount: 1 },

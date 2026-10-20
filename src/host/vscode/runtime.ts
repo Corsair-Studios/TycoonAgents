@@ -13,7 +13,7 @@ export class Runtime {
   private state: MetricsWorldState;
   private listeners: Array<(s: MetricsWorldState) => void> = [];
 
-  constructor(private limits?: { idleFreezeMs: number; sanityCapMs: number }) {
+  constructor(private limits?: { idleFreezeMs: number }) {
     this.state = initialWorldState(limits);
   }
 

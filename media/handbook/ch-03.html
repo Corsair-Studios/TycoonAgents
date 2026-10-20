@@ -161,33 +161,52 @@ node standalone/src/cli.mjs watch .</pre>
     TycoonAgents picks the right connection method automatically, and
     <code>TYCOON_CODEX_BACKEND</code> (<code>mcp-server</code> or
     <code>app-server</code>) overrides the choice.</li>
-    <li>Run <strong>Install Hooks</strong> (or the portable/team install
-    path) at least once so <code>.claude/hooks/</code> has
-    <code>codex-mcp-launcher.cjs</code> and its fallback companion
-    <code>codex-app-server-mcp.cjs</code>, and so the Codex <code>notify</code>
-    hook is registered in <code>CODEX_HOME/config.toml</code>. Installing
-    the hooks, switching the harness to Codex, or saving in the Routing
-    view while Codex is active also writes the delegation doctrine into
-    Codex's own managed section of <code>AGENTS.md</code> (see &sect;
-    1.3), leaving hand-written content alone.</li>
-    <li>The Codex MCP server is registered for your project automatically,
-    with no approval prompt. Start a new Claude chat to load it; <code>claude
-    mcp list</code> shows it.</li>
+    <li>Run <strong>Install Hooks</strong> on the first-run screen. With Codex
+    as the harness it registers the Codex <code>notify</code> hook in
+    <code>CODEX_HOME/config.toml</code> (a managed block that uninstall removes
+    cleanly) and writes <code>.codex/hooks.json</code> in the project. It does
+    not touch the Claude hooks or <code>.claude/settings*.json</code>.</li>
+    <li>The same setup writes the delegation doctrine into Codex's own managed
+    section of <code>AGENTS.md</code> (see &sect; 1.3) and generates
+    <code>.claude/tycoon/codex-agents.toml.generated</code>, leaving
+    hand-written content alone. Switching the harness to Codex, or saving in
+    the Routing view while Codex is active, refreshes both.</li>
+    <li>Optional: use the panel's Codex dispatcher button to register the
+    <code>tycoon</code> dispatcher MCP server in
+    <code>CODEX_HOME/config.toml</code>. It is a separate, explicit click and
+    is not part of Install Hooks.</li>
   </ol>
+  <div class="callout note">
+    <span class="callout-label">Codex as a reviewer on Claude Code</span>
+    <p>
+      This is a different setup from the harness above. When Claude Code is
+      the harness and you add a Codex reviewer from the Agents screen, saving
+      the agent (or saving a Routing profile that uses Codex) registers the
+      Codex MCP server at local scope for your project, with no approval
+      prompt. Start a new Claude chat to load it; <code>claude mcp list</code>
+      shows it. The entry runs <code>node</code> on
+      <code>codex-mcp-launcher.cjs</code> from the per-user
+      <code>~/.tycoonagents/bin</code> folder, which extension updates do not
+      move. (Install Hooks on Claude Code also copies the same bridge scripts
+      into <code>.claude/hooks/</code> for project-relative
+      <code>.mcp.json</code> entries.)
+    </p>
+    <p>
+      The launcher discovers the Codex binary at runtime (checking the
+      <code>CODEX_BINARY_PATH</code>/<code>CODEX_CLI_PATH</code> override
+      first, then <code>node_modules</code>, PATH, the npm global install
+      location, Homebrew, <code>~/.codex/bin</code>, <code>~/.local/bin</code>,
+      and finally the newest OpenAI VS Code extension bundle). It prefers a
+      binary that still exposes <code>mcp-server</code>, and otherwise falls
+      back automatically to <code>codex-app-server-mcp.cjs</code>, a shim over
+      Codex's <code>app-server</code> protocol exposing the same
+      <code>codex</code> and <code>codex-reply</code> tools.
+    </p>
+  </div>
   <p>
-    The Codex MCP entry runs <code>node hooks/codex-mcp-launcher.cjs</code>,
-    which discovers the Codex binary at runtime (checking the
-    <code>CODEX_BINARY_PATH</code>/<code>CODEX_CLI_PATH</code> override
-    first, then <code>node_modules</code>, PATH, the npm global install
-    location, Homebrew, <code>~/.codex/bin</code>, <code>~/.local/bin</code>,
-    and finally the newest OpenAI VS Code extension bundle). It prefers a
-    binary that still exposes <code>mcp-server</code>, and otherwise falls
-    back automatically to <code>codex-app-server-mcp.cjs</code>, a shim over
-    Codex's <code>app-server</code> protocol exposing the same
-    <code>codex</code> and <code>codex-reply</code> tools. Both the fallback
-    shim and Codex support as a whole are Experimental: Codex has not been
-    tested as thoroughly as Claude Code as a harness, so it is still
-    considered an experimental mode.
+    Both the fallback shim and Codex support as a whole are Experimental:
+    Codex has not been tested as thoroughly as Claude Code as a harness, so
+    it is still considered an experimental mode.
   </p>
   <div class="callout note">
     <span class="callout-label">Known limitation</span>

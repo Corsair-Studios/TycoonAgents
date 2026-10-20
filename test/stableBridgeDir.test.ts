@@ -436,8 +436,10 @@ test("migration reports the server as missing (for the panel warning) when the e
     const entry = versionedEntry(f);
     fs.writeFileSync(f.cfgFile, JSON.stringify({ projects: { [claudeProjectKey(f.root)]: { mcpServers: { codex: entry } } } }, null, 2));
     const gone = JSON.stringify({ projects: { [claudeProjectKey(f.root)]: { mcpServers: {} } } }, null, 2);
-    const opts = { ...f.opts, verifyDelayMs: 60 };
-    const timers = clobberAt(f, [25, 95], gone);
+    // Wide margins: clobber 1 lands before verify 1 (>=300ms); clobber 2 lands after the retry write but before
+    // verify 2 (>=600ms), even when slow sync fs work under suite load delays the first verify pause.
+    const opts = { ...f.opts, verifyDelayMs: 300 };
+    const timers = clobberAt(f, [100, 450], gone);
     const r = await repointLocalMcpEntries(f.root, f.stable, ["codex"], opts);
     timers.forEach(clearTimeout);
     assert.deepEqual(r.repointed, []);
@@ -468,8 +470,8 @@ test("registerLocalMcpServer restores the previous entry when the new one cannot
     const prev = versionedEntry(f);
     const snapshot = JSON.stringify({ projects: { [claudeProjectKey(f.root)]: { mcpServers: { codex: prev } } } }, null, 2);
     fs.writeFileSync(f.cfgFile, snapshot);
-    const opts = { ...f.opts, verifyDelayMs: 50 };
-    const timers = clobberAt(f, [20, 70], snapshot);
+    const opts = { ...f.opts, verifyDelayMs: 300 };
+    const timers = clobberAt(f, [100, 450], snapshot);
     const r = await registerLocalMcpServer(f.root, "codex", { command: "node", args: ["/new.cjs"] }, opts);
     timers.forEach(clearTimeout);
     assert.equal(r.ok, false);

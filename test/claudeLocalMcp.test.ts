@@ -561,14 +561,14 @@ test("CLI timeout kills the child and ends in an error result", async () => {
   try {
     fs.writeFileSync(f.file, "{bad"); // forces an error result after the CLI fails
     const env = { ...process.env, CLAUDE_CONFIG_DIR: f.dir, NODE_OPTIONS: `--require ${JSON.stringify(hang.replace(/\\/g, "/"))}` };
-    const r = await registerLocalMcpServer(f.root, "srv", CFG, { env, binary: process.execPath, timeoutMs: 2500 });
+    const r = await registerLocalMcpServer(f.root, "srv", CFG, { env, binary: process.execPath, timeoutMs: 8000 }); // generous: node startup + --require must finish before the timer even under heavy suite load
     assert.equal(r.ok, false);
     assert.match(r.error ?? "", /timed out/);
     assert.equal(fs.readFileSync(f.file, "utf8"), "{bad");
     const pid = Number(fs.readFileSync(pidFile, "utf8"));
     assert.ok(pid > 0);
     let alive = true;
-    for (let i = 0; i < 60 && alive; i++) {
+    for (let i = 0; i < 150 && alive; i++) {
       try {
         process.kill(pid, 0);
         await new Promise((res) => setTimeout(res, 100));

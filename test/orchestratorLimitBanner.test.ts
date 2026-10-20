@@ -144,7 +144,6 @@ function boot() {
             sessionActive: true,
             completedTasks: 0,
             idleFreezeMs: 180000,
-            sanityCapMs: 900000,
             workers: {},
             agentMetrics,
             ...(orchestratorLimit ? { orchestratorLimit } : {}),

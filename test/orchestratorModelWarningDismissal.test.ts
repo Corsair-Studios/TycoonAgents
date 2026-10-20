@@ -234,7 +234,6 @@ function stateWithOrchestratorModel(model: string) {
       sessionActive: true,
       completedTasks: 0,
       idleFreezeMs: 180000,
-      sanityCapMs: 900000,
       workers: {},
       agentMetrics: [{ id: "orchestrator", name: "Orchestrator", status: "idle", model, tokens: 500, activeMs: 1000 }],
     },
@@ -312,7 +311,7 @@ test("banner: does NOT render in the Unknown state (no orchestrator metric obser
   openAgentsModal(boot.doc, boot.dispatch);
   boot.dispatch({
     type: "state",
-    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {}, agentMetrics: [] },
+    state: { sessionActive: true, completedTasks: 0, idleFreezeMs: 180000, workers: {}, agentMetrics: [] },
   });
   boot.dispatch({ type: "settings", payload: agentsPayload() });
   assert.equal(boot.doc.getElementById("orchestrator-model-notice"), null);

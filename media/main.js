@@ -13781,7 +13781,7 @@ if (typeof module !== "undefined" && module.exports) {
 
   /** @type {{ sessionActive: boolean; workers: Record<string, { id: string; role?: string; state: string }>; completedTasks: number }} */
   let state = { sessionActive: false, workers: {}, completedTasks: 0 };
-  let idleFreezeMs = 180000, sanityCapMs = 900000;
+  let idleFreezeMs = 180000;
 
   // ── Single source of truth for "is this agent active?" ───────────────
   // Both the agent-metrics panel and the canvas character scene MUST use
@@ -16253,7 +16253,6 @@ if (typeof module !== "undefined" && module.exports) {
       state = msg.state;
       showOrchestratorLimitBanner(state && state.orchestratorLimit);
       idleFreezeMs = state.idleFreezeMs ?? 180000;
-      sanityCapMs = state.sanityCapMs ?? 900000;
       // Maintain insertion order for stable x positions
       for (const id of Object.keys(state.workers)) {
         if (!workerOrder.includes(id)) {
@@ -20218,14 +20217,71 @@ function themeAnimPreviewDraw(player) {
   // that used to live here (isTeamExpanded/setTeamExpanded/aggregateTeam)
   // were removed along with it.
 
-  /** Live (in-progress-inclusive) active ms for one agent metric entry, capped as usual. */
+  /** Mirror of IN_FLIGHT_CEILING_MS in src/core/state.ts: max time one in-flight MCP call keeps a run accruing. */
+  const IN_FLIGHT_CEILING_MS = 30 * 60 * 1000;
+
+  /**
+   * Instant after which a run's live clock stops (null = never stops). Mirrors
+   * the host's creditedElapsed (src/core/state.ts): no per-run cap; frozen
+   * idleFreezeMs after the last activity, except while an MCP call is in
+   * flight, which extends the clock to its start + IN_FLIGHT_CEILING_MS.
+   */
+  function liveClockLimit(agent) {
+    if (agent.lastActivityAt == null) return null;
+    let until = agent.lastActivityAt + idleFreezeMs;
+    const calls = Array.isArray(agent.inFlightCalls) ? agent.inFlightCalls : [];
+    for (const c of calls) until = Math.max(until, c.at + IN_FLIGHT_CEILING_MS);
+    return until;
+  }
+
+  /** Live (in-progress-inclusive) active ms for one agent metric entry. */
   function liveMsFor(agent) {
     const status = ((agent && agent.status) || "idle").toLowerCase();
     const isActive = status === "active";
+    const limit = agent && agent.workStartAt ? liveClockLimit(agent) : null;
     const seg = agent && agent.workStartAt
-      ? Math.min(Math.max(0, Math.min(Date.now(), (agent.lastActivityAt ?? Date.now()) + idleFreezeMs) - agent.workStartAt), sanityCapMs)
+      ? Math.max(0, Math.min(Date.now(), limit ?? Date.now()) - agent.workStartAt)
       : 0;
     return ((agent && agent.activeMs) || 0) + (isActive ? seg : 0);
+  }
+
+  /**
+   * Why an in-progress run's live time has stopped advancing, or "" when it
+   * is still ticking (or the agent is not active). Mirrors liveMsFor, which
+   * in turn mirrors the host's creditedElapsed (src/core/state.ts), so the
+   * live figure never jumps backwards when the run's total is stored.
+   * One value covers concurrent runs: workStartAt is the EARLIEST start.
+   * "tool" = an MCP call has been running past its 30 min ceiling.
+   * @returns {""|"idle"|"tool"}
+   */
+  function liveTimePauseReason(agent) {
+    if (!agent || (agent.status || "idle").toLowerCase() !== "active" || !agent.workStartAt) return "";
+    const limit = liveClockLimit(agent);
+    if (limit === null || Date.now() <= limit) return "";
+    return Array.isArray(agent.inFlightCalls) && agent.inFlightCalls.length > 0 ? "tool" : "idle";
+  }
+
+  /**
+   * True when this row's work reaches the Claude Code harness through the
+   * Codex MCP server or the Gemini bridge. Those bridges return no usage, so
+   * the row's TOKENS only cover the Claude relay. openai-compatible,
+   * claude-cli and dispatcher (mcp__tycoon__delegate) paths report tokens
+   * and are not matched. Fallback rows are excluded (their tokens come from
+   * the fallback run).
+   */
+  function isUnreportedBridgeRow(agent) {
+    if (!agent || !agent.id || agent.id === "orchestrator") return false;
+    const harness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    if (harness !== "claude-code") return false;
+    if (typeof agent.fallbackOf === "string" && agent.fallbackOf.trim() !== "") return false;
+    const ra = lastRoutingPayload && Array.isArray(lastRoutingPayload.agents)
+      ? lastRoutingPayload.agents.find((x) => x && x.id === agent.id)
+      : null;
+    const b = ra && ra.backend;
+    if (!b || b.transport !== "mcp") return false;
+    const server = String(b.mcpServer || "").toLowerCase();
+    const vendor = String(b.vendor || "").toLowerCase();
+    return /^(codex|gemini|agy|antigravity)/.test(server) || ((vendor === "openai" || vendor === "google") && !!server);
   }
 
   /**
@@ -20429,11 +20485,17 @@ function themeAnimPreviewDraw(player) {
     mcpTd.textContent = String(agent.mcpCount ?? 0);
     row.appendChild(mcpTd);
 
-    // Show live elapsed time while active, capped by idle-freeze and sanity cap.
+    // Show live elapsed time while active, frozen by the idle rule (see liveClockLimit).
     const liveMs = liveMsFor(agent);
     const timeTd = document.createElement("td");
     timeTd.className = "col-time";
     timeTd.title = "Active time this agent has spent working.";
+    const pauseReason = liveTimePauseReason(agent);
+    if (pauseReason === "idle") {
+      timeTd.title += " Paused — no activity for " + Math.round(idleFreezeMs / 60000) + " min.";
+    } else if (pauseReason === "tool") {
+      timeTd.title += " Paused — tool call running over " + Math.round(IN_FLIGHT_CEILING_MS / 60000) + " min.";
+    }
     timeTd.textContent = fmtMs(liveMs);
     row.appendChild(timeTd);
 
@@ -20461,6 +20523,21 @@ function themeAnimPreviewDraw(player) {
         cacheSpan.textContent = ` + ${fmtTokens(cacheRead)} cached`;
         tokensTd.appendChild(cacheSpan);
       }
+    }
+    if (isActive) {
+      const runHint = document.createElement("span");
+      runHint.className = "col-tokens-running";
+      runHint.textContent = " running…";
+      runHint.title = "Tokens are added when this run finishes";
+      tokensTd.appendChild(runHint);
+    }
+    if (isUnreportedBridgeRow(agent)) {
+      const mark = document.createElement("span");
+      mark.className = "col-tokens-bridge-note";
+      mark.textContent = " †";
+      mark.title = "Provider tokens not reported by Codex/Gemini — this shows only the Claude relay's tokens";
+      mark.setAttribute("aria-label", mark.title);
+      tokensTd.appendChild(mark);
     }
     row.appendChild(tokensTd);
 
@@ -21198,8 +21275,9 @@ function themeAnimPreviewDraw(player) {
 
   // Re-render once a second so any active agent's live time keeps advancing
   // between state pushes.
+  // Skipped while the panel is hidden; a visibilitychange repaint catches up.
   setInterval(() => {
-    if (lastMetrics.length && lastMetrics.some((a) => (a.status || "").toLowerCase() === "active")) {
+    if (!document.hidden && lastMetrics.length && lastMetrics.some((a) => (a.status || "").toLowerCase() === "active")) {
       renderMetrics(lastMetrics);
     }
     // Advisory-only stall check: re-render the plan section when the
@@ -21213,6 +21291,10 @@ function themeAnimPreviewDraw(player) {
       }
     }
   }, 1000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && lastMetrics.length) renderMetrics(lastMetrics);
+  });
 
   // ── Settings (Phase 2) ──────────────────────────────────────────
 

@@ -161,6 +161,17 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           ...(record.spawnId !== undefined ? { spawnId: record.spawnId } : {}),
         },
       ];
+    case "PostToolUse":
+      if (!record.tool) return [];
+      return [
+        {
+          type: "WorkerToolDone",
+          at: record.at,
+          workerId,
+          tool: record.tool,
+          ...(record.toolUseId !== undefined ? { toolUseId: record.toolUseId } : {}),
+        },
+      ];
     case "PreToolUse": {
       if (!record.tool) return [];
       if (record.tool === "Task" || record.tool === "Agent") {
@@ -218,6 +229,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           workerId,
           kind: toolToActivityKind(record.tool),
           detail: record.tool,
+          ...(record.toolUseId !== undefined ? { toolUseId: record.toolUseId } : {}),
           ...(record.model !== undefined ? { model: record.model } : {}),
           ...(record.vendor !== undefined ? { vendor: record.vendor } : {}),
           ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),

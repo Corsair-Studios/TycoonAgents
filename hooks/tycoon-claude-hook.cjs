@@ -3117,6 +3117,11 @@ function main(raw) {
       if (delegationMode) record.delegationMode = delegationMode;
       if (payload.session_id) record.sessionId = payload.session_id;
       if (nudge) record.warned = true;
+      // MCP calls carry their tool_use_id so the matching PostToolUse record can retire
+      // the call (core/state.ts in-flight tracking).
+      if (toolName.indexOf("mcp__") === 0 && typeof payload.tool_use_id === "string" && payload.tool_use_id !== "") {
+        record.toolUseId = payload.tool_use_id;
+      }
 
       // -------------------------------------------------------------------
       // Codex offload visibility (p6-t2): the Codex MCP server (media/mcp/
@@ -3269,6 +3274,19 @@ function main(raw) {
   // -------------------------------------------------------------------------
   if (hookEvent === "PostToolUse" || hookEvent === "PostToolUseFailure") {
     recordRelayProviderResult(tycoonDir, agentsDir, activeAgentFile, activityFile, payload, hookEvent, toolName, at);
+    // Finish marker for an MCP call: lets the metrics clock treat the call as in flight
+    // between its PreToolUse record and this one. Best-effort; never affects hook output.
+    if (toolName && toolName.indexOf("mcp__") === 0) {
+      try {
+        const postInstance = typeof payload.agent_id === "string" && payload.agent_id !== "" ? payload.agent_id : "";
+        const postWorker = resolveNonSpawnAgent(activeAgentFile, activityFile, postInstance, at).workerId;
+        /** @type {Record<string, unknown>} */
+        const postRecord = { event: "PostToolUse", tool: toolName, workerId: postWorker, at };
+        if (typeof payload.tool_use_id === "string" && payload.tool_use_id !== "") postRecord.toolUseId = payload.tool_use_id;
+        if (payload.session_id) postRecord.sessionId = payload.session_id;
+        fs.appendFileSync(activityFile, JSON.stringify(postRecord) + "\n", "utf8");
+      } catch { /* best-effort */ }
+    }
     try {
       const fallbackChain = getFallbackChainModule();
       if (fallbackChain && toolName && toolName.indexOf("mcp__") === 0 && !isDispatcherTool(toolName)) {

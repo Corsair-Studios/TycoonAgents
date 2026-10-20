@@ -363,7 +363,6 @@ test('Codex harness (metrics): default agents show Sol/Astra with OpenAI quota; 
         sessionActive: true,
         completedTasks: 1,
         idleFreezeMs: 180000,
-        sanityCapMs: 900000,
         workers: {},
         agentMetrics: [
           { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', rosterModel: 'opus', tokens: 0, activeMs: 0, taskCount: 0 },
@@ -444,7 +443,7 @@ test('Bridge wrapper (Mistral Reviewer) tooltip shows the backend model: bare on
       dispatch({
         type: 'state',
         state: {
-          sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {},
+          sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, workers: {},
           agentMetrics: [
             { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', rosterModel: 'opus', tokens: 0, activeMs: 0, taskCount: 0 },
             { id: 'mistral-reviewer', name: 'Mistral Reviewer', status: 'idle', model: 'haiku', tokens: 100, activeMs: 10, taskCount: 1 },
@@ -483,7 +482,7 @@ test('Relay agent (tycoon_relay) tooltip shows the provider model via the bridge
     dispatch({
       type: 'state',
       state: {
-        sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, sanityCapMs: 900000, workers: {},
+        sessionActive: true, completedTasks: 1, idleFreezeMs: 180000, workers: {},
         agentMetrics: [
           { id: 'orchestrator', name: 'Orchestrator', status: 'idle', model: 'opus', rosterModel: 'opus', tokens: 0, activeMs: 0, taskCount: 0 },
           { id: 'coding-specialist', name: 'Coding Specialist', status: 'idle', model: 'sonnet', tokens: 100, activeMs: 10, taskCount: 1 },

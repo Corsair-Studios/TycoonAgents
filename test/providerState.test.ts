@@ -577,28 +577,37 @@ test("SessionStart clears stale active subagents WITHOUT crediting activeMs", ()
 
 test("creditedElapsed: null workStartAt returns 0", () => {
   // When the agent has never started, elapsed is 0 regardless of other params.
-  assert.equal(creditedElapsed(null, null, T + 5000, 180_000, 900_000), 0);
-  assert.equal(creditedElapsed(null, T + 1000, T + 5000, 180_000, 900_000), 0);
+  assert.equal(creditedElapsed(null, null, T + 5000, 180_000), 0);
+  assert.equal(creditedElapsed(null, T + 1000, T + 5000, 180_000), 0);
 });
 
 test("creditedElapsed: idle freeze binds when gap exceeds freezeMs", () => {
   // workStart=0, lastActivity=0, now=200_000 (200s > 180s freeze).
-  // cappedNow = min(200_000, 0+180_000) = 180_000; result = min(180_000, 900_000) = 180_000.
-  const result = creditedElapsed(0, 0, 200_000, 180_000, 900_000);
+  // cappedNow = min(200_000, 0+180_000) = 180_000.
+  const result = creditedElapsed(0, 0, 200_000, 180_000);
   assert.equal(result, 180_000);
 });
 
-test("creditedElapsed: sanity cap binds when elapsed exceeds capMs", () => {
-  // workStart=0, lastActivity=1_000_000, now=1_000_000 (no freeze gap).
-  // cappedNow = min(1_000_000, 1_000_000+180_000) = 1_000_000; elapsed=1_000_000 > 900_000.
-  const result = creditedElapsed(0, 1_000_000, 1_000_000, 180_000, 900_000);
-  assert.equal(result, 900_000);
+test("creditedElapsed: no per-run hard cap (a 40 minute run with fresh activity credits 40 minutes)", () => {
+  const min40 = 40 * 60_000;
+  assert.equal(creditedElapsed(0, min40, min40, 180_000), min40);
+});
+
+test("creditedElapsed: an in-flight call extends past the idle freeze, up to the 30 minute ceiling", () => {
+  const min = 60_000;
+  const calls = [{ at: 5 * min }];
+  // 10 minutes into the call, no events since: still accruing.
+  assert.equal(creditedElapsed(0, 5 * min, 15 * min, 180_000, calls), 15 * min);
+  // Hung 45 minutes: freezes at call start + 30 min.
+  assert.equal(creditedElapsed(0, 5 * min, 50 * min, 180_000, calls), 35 * min);
+  // Same gap with no call in flight: idle freeze.
+  assert.equal(creditedElapsed(0, 5 * min, 50 * min, 180_000, []), 8 * min);
 });
 
 test("creditedElapsed: normal contiguous run returns now-workStart", () => {
   // workStart=1000, lastActivity=1200, now=1300. Gap=100 < freeze=180_000.
-  // cappedNow = min(1300, 1200+180_000) = 1300; elapsed=300 < 900_000.
-  const result = creditedElapsed(1000, 1200, 1300, 180_000, 900_000);
+  // cappedNow = min(1300, 1200+180_000) = 1300.
+  const result = creditedElapsed(1000, 1200, 1300, 180_000);
   assert.equal(result, 300);
 });
 
@@ -639,26 +648,70 @@ test("IDLE FREEZE: no activity after spawn; stop after freeze window caps active
   );
 });
 
-test("SANITY CAP: very long run with recent activity is capped at sanityCapMs", () => {
-  // Spawn at t=0, WorkerActivity at t=1_000_000 (lastActivityAt=1_000_000),
-  // WorkerStopped at t=1_000_000 (now==lastActivity => freeze doesn't bind).
-  // elapsed = 1_000_000 - 0 = 1_000_000 > 900_000 sanity cap.
-  // Expected activeMs = 900_000.
-  const spawnAt = 0;
-  const activityAt = 1_000_000;
-  const stopAt = 1_000_000;
+test("NO RUN CAP: a 40 minute run with steady events credits about 40 minutes", () => {
+  const min = 60_000;
   let state = initialWorldState();
-  state = applyEvent(state, { type: "SessionStart", at: spawnAt });
-  state = applyEvent(state, { type: "WorkerSpawned", at: spawnAt, workerId: "w-cap" });
-  state = applyEvent(state, { type: "WorkerActivity", at: activityAt, workerId: "w-cap", kind: "build" });
-  state = applyEvent(state, { type: "WorkerStopped", at: stopAt, workerId: "w-cap" });
-  const metric = state.agentMetrics.find((m) => m.id === "w-cap");
-  assert.ok(metric, "metric for w-cap must exist");
-  assert.equal(
-    metric!.activeMs,
-    900_000,
-    "activeMs must be capped at sanityCapMs (900s) when elapsed exceeds the cap",
-  );
+  state = applyEvent(state, { type: "SessionStart", at: 0 });
+  state = applyEvent(state, { type: "WorkerSpawned", at: 0, workerId: "w-long" });
+  for (let t = 30_000; t <= 40 * min; t += 30_000) {
+    state = applyEvent(state, { type: "WorkerActivity", at: t, workerId: "w-long", kind: "shell", detail: "Bash" });
+  }
+  state = applyEvent(state, { type: "WorkerStopped", at: 40 * min, workerId: "w-long" });
+  assert.equal(state.agentMetrics.find((m) => m.id === "w-long")!.activeMs, 40 * min);
+});
+
+const MIN = 60_000;
+function mcpRun(workerId: string, callAt: number, extra?: (s: ReturnType<typeof initialWorldState>) => ReturnType<typeof initialWorldState>) {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "SessionStart", at: 0 });
+  state = applyEvent(state, { type: "WorkerSpawned", at: 0, workerId });
+  state = applyEvent(state, { type: "WorkerActivity", at: callAt, workerId, kind: "wire", detail: "mcp__roblox-studio__multi_edit", toolUseId: "tu-1" });
+  return extra ? extra(state) : state;
+}
+
+test("IN FLIGHT: an MCP call of 10 minutes with no events keeps accruing", () => {
+  const state = mcpRun("w-mcp", MIN, (s) => applyEvent(s, { type: "WorkerStopped", at: 11 * MIN, workerId: "w-mcp" }));
+  assert.equal(state.agentMetrics.find((m) => m.id === "w-mcp")!.activeMs, 11 * MIN);
+});
+
+test("IN FLIGHT: a finished MCP call no longer extends the clock", () => {
+  const state = mcpRun("w-done", MIN, (s) => {
+    s = applyEvent(s, { type: "WorkerToolDone", at: 2 * MIN, workerId: "w-done", tool: "mcp__roblox-studio__multi_edit", toolUseId: "tu-1" });
+    assert.equal(s.agentMetrics.find((m) => m.id === "w-done")!.inFlightCalls, undefined);
+    return applyEvent(s, { type: "WorkerStopped", at: 20 * MIN, workerId: "w-done" });
+  });
+  assert.equal(state.agentMetrics.find((m) => m.id === "w-done")!.activeMs, 2 * MIN + 180_000);
+});
+
+test("IN FLIGHT: a call matches by tool name when no tool_use_id is present", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerActivity", at: 0, workerId: "w-name", kind: "wire", detail: "mcp__a__b" });
+  assert.equal(state.agentMetrics[0]!.inFlightCalls!.length, 1);
+  state = applyEvent(state, { type: "WorkerToolDone", at: 1000, workerId: "w-name", tool: "mcp__a__b" });
+  assert.equal(state.agentMetrics[0]!.inFlightCalls, undefined);
+});
+
+test("IN FLIGHT: calls whose PostToolUse never arrived are pruned after the ceiling", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "WorkerActivity", at: 0, workerId: "w-prune", kind: "wire", detail: "mcp__a__b", toolUseId: "old" });
+  state = applyEvent(state, { type: "WorkerActivity", at: 31 * MIN, workerId: "w-prune", kind: "wire", detail: "mcp__a__b", toolUseId: "new" });
+  assert.deepEqual(state.agentMetrics[0]!.inFlightCalls!.map((c) => c.id), ["new"]);
+  state = applyEvent(state, { type: "WorkerToolDone", at: 70 * MIN, workerId: "w-prune", tool: "mcp__a__b", toolUseId: "other" });
+  assert.equal(state.agentMetrics[0]!.inFlightCalls, undefined);
+});
+
+test("IN FLIGHT: a 45 minute hung call freezes 30 minutes past its start", () => {
+  const state = mcpRun("w-hung", MIN, (s) => applyEvent(s, { type: "WorkerStopped", at: 46 * MIN, workerId: "w-hung" }));
+  assert.equal(state.agentMetrics.find((m) => m.id === "w-hung")!.activeMs, 31 * MIN);
+});
+
+test("IDLE FREEZE: a non-MCP tool call gets no in-flight extension", () => {
+  let state = initialWorldState();
+  state = applyEvent(state, { type: "SessionStart", at: 0 });
+  state = applyEvent(state, { type: "WorkerSpawned", at: 0, workerId: "w-bash" });
+  state = applyEvent(state, { type: "WorkerActivity", at: MIN, workerId: "w-bash", kind: "shell", detail: "Bash" });
+  state = applyEvent(state, { type: "WorkerStopped", at: 30 * MIN, workerId: "w-bash" });
+  assert.equal(state.agentMetrics.find((m) => m.id === "w-bash")!.activeMs, MIN + 180_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -672,7 +725,7 @@ test("SessionStart credits and resets a stale active stretch (interrupted turn)"
   //
   // Then a second SessionStart arrives at T1 = T0 + 60min.
   // Expected behavior (new contract):
-  //   - activeMs gains creditedElapsed(T0, T0, T1, 180000, 900000) = 180000
+  //   - activeMs gains creditedElapsed(T0, T0, T1, 180000) = 180000
   //     (because lastActivityAt+idleFreezeMs = T0+180000 < T1, so cap binds at 180000)
   //   - workStartAt is RESET to T1 (not preserved as T0)
   //   - status = "active", lastActivityAt = T1
@@ -704,7 +757,7 @@ test("SessionStart credits and resets a stale active stretch (interrupted turn)"
   const orchAfter = state.agentMetrics.find((m) => m.id === "orchestrator");
   assert.ok(orchAfter, "orchestrator must exist after second SessionStart");
 
-  // creditedElapsed(T0, T0, T1, 180000, 900000):
+  // creditedElapsed(T0, T0, T1, 180000):
   //   cappedNow = min(T1, T0+180000) = T0+180000 (since T1 = T0+3600000 >> T0+180000)
   //   elapsed = (T0+180000) - T0 = 180000, capped at min(180000, 900000) = 180000
   const expectedGain = 180_000;
