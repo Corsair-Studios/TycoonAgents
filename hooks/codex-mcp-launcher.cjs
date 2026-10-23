@@ -18,8 +18,7 @@
  *      content-verified Codex binary. If the override is set but does not
  *      exist / doesn't verify, that is reported (not silently ignored) and
  *      discovery falls through to the remaining rungs.
- *   2. A project-local `node_modules/@openai/codex` devDependency (e.g.
- *      pinned to a build that still has `mcp-server`), resolved past its
+ *   2. A project-local `node_modules/@openai/codex` install, resolved past its
  *      own bin/codex.js and codex.cmd shims to the real vendor .exe/binary
  *      the matching platform package ships.
  *   3. `codex` on PATH.
@@ -62,9 +61,12 @@
  *
  * Backend selection: launched with only -c flags (the catalog shape) or an
  * explicit `mcp-server`, the launcher serves MCP. It uses the native
- * `mcp-server` subcommand when the resolved codex has it (codex-cli < 0.154
- * and --help lists it) and otherwise runs hooks/codex-app-server-mcp.cjs as a
- * child against that binary. TYCOON_CODEX_BACKEND=mcp-server|app-server
+ * newest discovered codex-cli: a >= 0.154 build (no `mcp-server`) runs through
+ * hooks/codex-app-server-mcp.cjs as a child against that binary and beats any
+ * legacy build, because legacy builds predate newer model catalogs and ChatGPT
+ * auth rejects those models from them. The native `mcp-server` subcommand is
+ * used only when no >= 0.154 build is found (codex-cli < 0.154 and --help
+ * lists it). An explicit override (rung 1) is decisive. TYCOON_CODEX_BACKEND=mcp-server|app-server
  * forces one (unset/auto = detect). Probes are bounded (10s) and cached
  * in-process.
  *
@@ -112,7 +114,7 @@ const path = require("path");
 const os = require("os");
 const readline = require("readline");
 const { spawnSync, spawn } = require("child_process");
-const { formatBridgeResult, classifyProviderError } = require("./bridge-result.cjs");
+const { formatBridgeResult, classifyProviderError, withClientOutdatedHint } = require("./bridge-result.cjs");
 const binDiscovery = require("./binDiscovery.cjs");
 
 const CODEX_VERSION_PREFIX = "codex-cli ";
@@ -152,14 +154,14 @@ function looksLikeCommandNotFound(stdout, stderr) {
  * rest. Returns { ok: true } on content-verified success, or
  * { ok: false, ranButWrongContent: boolean } on failure.
  */
-function probeCandidate(command, spawnSyncFn) {
+function probeCandidate(command, spawnSyncFn, timeoutMs) {
   try {
     const result = spawnSyncFn(command, ["--version"], {
       cwd: os.tmpdir(),
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
-      timeout: 10_000,
+      timeout: timeoutMs || 10_000,
     });
     const stdout = result.stdout || "";
     const stderr = result.stderr || "";
@@ -192,6 +194,14 @@ function versionLacksMcpServer(versionText) {
   const v = parseCodexVersion(versionText);
   if (!v) return false;
   return v[0] > 0 || v[1] >= 154;
+}
+
+/** Numeric compare of two [major, minor, patch] triples. */
+function compareCodexVersions(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
 }
 
 /**
@@ -520,6 +530,28 @@ function discoverCodexBinary(requestedArgs, opts) {
   const wantsMcpServer = Array.isArray(requestedArgs) && requestedArgs.includes("mcp-server");
   const allowIncapableFallback = Boolean(opts && opts.allowIncapableFallback) && wantsMcpServer;
   const skipCapability = Boolean(opts && opts.skipCapability);
+  // preferNewest: gather every content-verified candidate and choose the
+  // newest codex-cli. A >=0.154 build (served through the app-server shim)
+  // beats any legacy native `mcp-server` build, because a legacy build
+  // predates newer model catalogs and ChatGPT-account auth rejects those
+  // models from it. A legacy build is chosen only when nothing newer exists.
+  const preferNewest = Boolean(opts && opts.preferNewest) && wantsMcpServer && !skipCapability;
+  const pool = [];
+  // preferNewest probes every rung, so bound it: short per-probe timeouts and a
+  // cumulative deadline keep a few hung or AV-scanned shims from pushing
+  // startup past Codex's 30s MCP client timeout.
+  const probeTimeoutMs = preferNewest ? Number((opts && opts.probeTimeoutMs) || 4000) : undefined;
+  const probeDeadlineMs = Number((opts && opts.probeDeadlineMs) || 15000);
+  let probeStart = Date.now();
+  let deadlineHit = false;
+  function pastDeadline() {
+    if (!preferNewest || deadlineHit) return deadlineHit;
+    if (Date.now() - probeStart <= probeDeadlineMs) return false;
+    deadlineHit = true;
+    process.stderr.write(`codex-mcp-launcher: probe deadline (${probeDeadlineMs}ms) exceeded; choosing among the candidates found so far.
+`);
+    return true;
+  }
   // Injectable spawnSync-shaped seam (Plan p34-t3): defaults to the real
   // child_process.spawnSync, so CLI entry behaviour (`main()` with no
   // override) is byte-for-byte identical to before this seam existed.
@@ -550,7 +582,7 @@ function discoverCodexBinary(requestedArgs, opts) {
     // binary used in tests, whose --help output is not shaped like real
     // clap output. Literal token "mcp-server" anywhere in --help is
     // sufficient signal here.
-    const help = getHelpText(command, [], spawnSyncFn, helpCache);
+    const help = getHelpText(command, [], spawnSyncFn, helpCache, probeTimeoutMs);
     if (help && help.includes("mcp-server")) return true;
     if (allowIncapableFallback && !firstIncapable) firstIncapable = command;
     process.stderr.write(
@@ -560,11 +592,22 @@ function discoverCodexBinary(requestedArgs, opts) {
     return false;
   }
 
+  function considerForPool(command, version) {
+    if (versionLacksMcpServer(version)) {
+      pool.push({ command, newer: true, parsed: parseCodexVersion(version) || [0, 0, 0] });
+    } else if (hasCapability(command, version)) {
+      pool.push({ command, newer: false, parsed: parseCodexVersion(version) || [0, 0, 0] });
+    }
+  }
+
   const overrideVarName = process.env["CODEX_BINARY_PATH"] ? "CODEX_BINARY_PATH" : "CODEX_CLI_PATH";
   const override = process.env["CODEX_BINARY_PATH"] || process.env["CODEX_CLI_PATH"];
   if (override) {
     tried.push(`${overrideVarName}=${override}`);
-    const probed = probeCandidate(override, spawnSyncFn);
+    const probed = probeCandidate(override, spawnSyncFn, probeTimeoutMs);
+    if (preferNewest && probed.ok && versionLacksMcpServer(probed.version)) {
+      return { fallbackTo: override };
+    }
     if (probed.ok && hasCapability(override, probed.version)) {
       return override;
     }
@@ -588,25 +631,47 @@ function discoverCodexBinary(requestedArgs, opts) {
   collectPosixDirsSignal(candidates, seen);
   collectVsCodeExtensionSignal(candidates, seen);
 
+  probeStart = Date.now(); // candidate collection (e.g. npm prefix -g) does not count against the probe budget
   for (const candidate of candidates) {
+    if (pastDeadline()) break;
     tried.push(`${candidate.origin}: ${candidate.command}`);
-    const probed = probeCandidate(candidate.command, spawnSyncFn);
+    const probed = probeCandidate(candidate.command, spawnSyncFn, probeTimeoutMs);
+    if (preferNewest) {
+      if (probed.ok) considerForPool(candidate.command, probed.version);
+      continue;
+    }
     if (probed.ok && hasCapability(candidate.command, probed.version)) {
       return candidate.command;
     }
   }
 
   // Last rung (POSIX only): the user's login shell sees the PATH their terminal does.
-  if (process.platform !== "win32") {
+  if (process.platform !== "win32" && !pastDeadline()) {
     tried.push("login shell ($SHELL -ilc 'command -v codex')");
     const viaShell = ((opts && opts.loginShellLookup) || binDiscovery.loginShellLookup)("codex");
     if (viaShell) {
       tried.push(`login shell: ${viaShell}`);
-      const probed = probeCandidate(viaShell, spawnSyncFn);
-      if (probed.ok && hasCapability(viaShell, probed.version)) {
+      const probed = probeCandidate(viaShell, spawnSyncFn, probeTimeoutMs);
+      if (preferNewest) {
+        if (probed.ok) considerForPool(viaShell, probed.version);
+      } else if (probed.ok && hasCapability(viaShell, probed.version)) {
         return viaShell;
       }
     }
+  }
+
+  if (preferNewest && pool.length > 0) {
+    let best = null;
+    for (const entry of pool) {
+      if (!entry.newer) continue;
+      if (!best || compareCodexVersions(entry.parsed, best.parsed) > 0) best = entry;
+    }
+    if (best) return { fallbackTo: best.command };
+    let legacy = pool[0];
+    for (const entry of pool) {
+      if (compareCodexVersions(entry.parsed, legacy.parsed) > 0) legacy = entry;
+    }
+    return legacy.command; // highest legacy version; ladder order breaks ties
   }
 
   if (allowIncapableFallback && firstIncapable) {
@@ -653,7 +718,7 @@ function discoverCodexBinary(requestedArgs, opts) {
 const KNOWN_MCP_SERVER_SPELLINGS = ["mcp-server", "mcp serve", "serve"];
 
 const helpTextCache = new Map();
-function getHelpText(command, subArgs, spawnSyncFn, cache) {
+function getHelpText(command, subArgs, spawnSyncFn, cache, timeoutMs) {
   const spawn = spawnSyncFn || spawnSync;
   const helpCache = cache || helpTextCache;
   const key = command + "\0" + subArgs.join(" ");
@@ -665,7 +730,7 @@ function getHelpText(command, subArgs, spawnSyncFn, cache) {
       shell: needsShell(command),
       encoding: "utf8",
       windowsHide: true,
-      timeout: 10_000,
+      timeout: timeoutMs || 10_000,
     });
     text = (result.stdout || "") + (result.stderr || "");
   } catch {
@@ -825,12 +890,14 @@ function createMcpResultProxy(opts) {
     const text = textOfResult(result);
     const isError = Boolean(result && result.isError);
     const extra = result && result.structuredContent && typeof result.structuredContent === "object" ? { ...result.structuredContent } : {};
+    const errKind = isError ? classifyProviderError(text) : "";
+    const errText = isError ? withClientOutdatedHint(errKind, text) : text;
     const wrapped = formatBridgeResult({
       status: isError ? "provider_error" : "ok",
       provider: BRIDGE_PROVIDER,
       model: model || "",
-      text,
-      error: isError ? { kind: classifyProviderError(text), message: text } : { kind: "empty", message: "codex returned an empty answer" },
+      text: errText,
+      error: isError ? { kind: errKind, message: errText } : { kind: "empty", message: "codex returned an empty answer" },
       extra,
     });
     // codex's outputSchema `content` mirrors the (capped) summary, never the raw text.
@@ -878,13 +945,15 @@ function createMcpResultProxy(opts) {
         if (msg.result !== undefined) {
           opts.writeClient(bridgeResponse(msg.id, wrapResult(msg.result, entry.model)));
         } else {
-          const text = (msg.error && msg.error.message) || "codex mcp-server returned a JSON-RPC error";
+          const rawText = (msg.error && msg.error.message) || "codex mcp-server returned a JSON-RPC error";
+          const errKind = classifyProviderError(rawText);
+          const text = withClientOutdatedHint(errKind, rawText);
           opts.writeClient(bridgeResponse(msg.id, formatBridgeResult({
             status: "provider_error",
             provider: BRIDGE_PROVIDER,
             model: entry.model,
             text,
-            error: { kind: classifyProviderError(text), message: text },
+            error: { kind: errKind, message: text },
           })));
         }
         return;
@@ -968,6 +1037,7 @@ function main(opts) {
 
   const discovered = discoverCodexBinary(requestedArgs, {
     allowIncapableFallback: wantsMcpServer && backend === "auto",
+    preferNewest: wantsMcpServer && backend === "auto",
     skipCapability: backend === "mcp-server",
     spawnSync: spawnSyncFn,
     helpTextCache: helpCache,
@@ -977,7 +1047,7 @@ function main(opts) {
     // Plan p30-t1: every candidate that content-verified as Codex lacks the
     // `mcp-server` subcommand (0.154+ dropped it) — an explicit, logged
     // substitution, never silent.
-    launchAppServerShim(spawnFn, discovered.fallbackTo, requestedArgs, 'no discovered Codex CLI has an "mcp-server" subcommand');
+    launchAppServerShim(spawnFn, discovered.fallbackTo, requestedArgs, 'newest discovered Codex CLI (0.154+) has no "mcp-server" subcommand and is served through app-server');
     return;
   }
 
@@ -1025,6 +1095,7 @@ module.exports = {
   applyReasoningEffortOverride,
   parseCodexVersion,
   versionLacksMcpServer,
+  compareCodexVersions,
   wantsMcpServerLaunch,
   resolveBackendOverride,
   createMcpResultProxy,

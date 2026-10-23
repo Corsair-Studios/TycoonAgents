@@ -619,3 +619,174 @@ test("(proxy) mcp-server path forwards a tools/call model argument to the child 
   assert.equal(forwarded.params.arguments.prompt, "hi");
   proxy.dispose?.();
 });
+
+// ---------------------------------------------------------------------------
+// preferNewest: a >=0.154 CLI (served through the app-server shim) beats a
+// legacy native mcp-server build, which predates newer model catalogs.
+// ---------------------------------------------------------------------------
+
+function withLegacyAndNewerCandidates(
+  versions: { legacy?: string; newer?: string },
+  run: (ctx: { legacyPath: string; newerCommand: string; spawnSyncFn: ReturnType<typeof makeFakeSpawnSync> }) => void,
+) {
+  const projectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-proj-"));
+  const emptyHome = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-home-"));
+  const savedEnv: NodeJS.ProcessEnv = {
+    CODEX_LAUNCHER_PROJECT_ROOT: process.env["CODEX_LAUNCHER_PROJECT_ROOT"],
+    CODEX_CLI_PATH: process.env["CODEX_CLI_PATH"],
+    CODEX_BINARY_PATH: process.env["CODEX_BINARY_PATH"],
+    PATH: process.env["PATH"],
+    Path: process.env["Path"],
+    [HOME_ENV_KEY]: process.env[HOME_ENV_KEY],
+  };
+  try {
+    delete process.env["CODEX_CLI_PATH"];
+    delete process.env["CODEX_BINARY_PATH"];
+    process.env[HOME_ENV_KEY] = emptyHome;
+    process.env["PATH"] = "";
+    process.env["Path"] = "";
+    const triple = process.platform === "darwin" ? (process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin") : process.platform === "win32" ? "x86_64-pc-windows-msvc" : "x86_64-unknown-linux-musl";
+    const pkg = process.platform === "darwin" ? (process.arch === "arm64" ? "codex-darwin-arm64" : "codex-darwin-x64") : process.platform === "win32" ? "codex-win32-x64" : "codex-linux-x64";
+    const nmDir = join(projectRoot, "node_modules");
+    mkdirSync(join(nmDir, "@openai", "codex"), { recursive: true });
+    writeFileSync(join(nmDir, "@openai", "codex", "package.json"), "{}", "utf8");
+    // Rung 2 (project-local node_modules) holds the legacy build; rung 3 (bare PATH "codex") holds the newer one.
+    const legacyPath = join(nmDir, "@openai", pkg, "vendor", triple, "bin", IS_WIN ? "codex.exe" : "codex");
+    const newerCommand = "codex";
+    process.env["CODEX_LAUNCHER_PROJECT_ROOT"] = projectRoot;
+    const matches: Record<string, { version?: string; help?: string }> = {};
+    if (versions.legacy) matches[legacyPath] = { version: `codex-cli ${versions.legacy}`, help: "Commands:\n  mcp-server   Run the MCP stdio server\n" };
+    if (versions.newer) matches[newerCommand] = { version: `codex-cli ${versions.newer}`, help: Number(versions.newer.split(".")[1]) < 154 ? "Commands:\n  mcp-server   Run the MCP stdio server\n" : "Commands:\n  app-server   Run the app server\n" };
+    run({ legacyPath, newerCommand, spawnSyncFn: makeFakeSpawnSync(matches) });
+  } finally {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(emptyHome, { recursive: true, force: true });
+  }
+}
+
+test("(prefer-newest) a 0.162 CLI wins over an earlier-rung 0.153 CLI and is served through app-server", () => {
+  withLegacyAndNewerCandidates({ legacy: "0.153.0", newer: "0.162.0-alpha.17.2" }, ({ newerCommand, spawnSyncFn }) => {
+    const { result } = captureStderr(() => discoverCodexBinary(["mcp-server"], { spawnSync: spawnSyncFn, preferNewest: true, allowIncapableFallback: true }));
+    assert.deepEqual(result, { fallbackTo: newerCommand });
+  });
+});
+
+test("(prefer-newest) with only a 0.153 CLI the native mcp-server build is still chosen", () => {
+  withLegacyAndNewerCandidates({ legacy: "0.153.0" }, ({ legacyPath, spawnSyncFn }) => {
+    const { result } = captureStderr(() => discoverCodexBinary(["mcp-server"], { spawnSync: spawnSyncFn, preferNewest: true, allowIncapableFallback: true }));
+    assert.equal(result, legacyPath);
+  });
+});
+
+test("(prefer-newest) without the flag the earlier-rung legacy build still wins (previous behaviour)", () => {
+  withLegacyAndNewerCandidates({ legacy: "0.153.0", newer: "0.162.0" }, ({ legacyPath, spawnSyncFn }) => {
+    const { result } = captureStderr(() => discoverCodexBinary(["mcp-server"], { spawnSync: spawnSyncFn, allowIncapableFallback: true }));
+    assert.equal(result, legacyPath);
+  });
+});
+
+test("(prefer-newest) the highest version among several newer builds is picked", () => {
+  const { compareCodexVersions, parseCodexVersion } = require("../../hooks/codex-mcp-launcher.cjs");
+  assert.ok(compareCodexVersions(parseCodexVersion("0.162.0"), parseCodexVersion("0.155.9")) > 0);
+  assert.ok(compareCodexVersions(parseCodexVersion("0.154.0-alpha.6.1"), parseCodexVersion("0.154.0")) === 0);
+  assert.ok(compareCodexVersions(parseCodexVersion("0.153.0"), parseCodexVersion("0.154.0")) < 0);
+});
+
+test("(backend) codex 0.162 (alpha build) -> app-server shim answers initialize and tools/list", () => {
+  assertAppServerShim(runBackend("0.162.0-alpha.17.2"));
+});
+
+test("(outdated-client) the Codex 'not supported with a ChatGPT account' error is classified client_outdated with an update hint", () => {
+  const { classifyProviderError, withClientOutdatedHint } = require("../../hooks/bridge-result.cjs");
+  const raw = "unexpected status 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account";
+  assert.equal(classifyProviderError(raw), "client_outdated");
+  assert.match(withClientOutdatedHint("client_outdated", raw), /too old for this model.*Update the OpenAI \(Codex\) VS Code extension or the Codex CLI/);
+  assert.equal(withClientOutdatedHint("auth", "x"), "x");
+
+  const { createMcpResultProxy } = require("../../hooks/codex-mcp-launcher.cjs");
+  const toClient: string[] = [];
+  const proxy = createMcpResultProxy({ writeClient: (l: string) => toClient.push(l), writeChild: () => undefined, model: "gpt-6.1-sol", timeoutMs: 60000, env: {} });
+  proxy.onClientLine(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "codex", arguments: { prompt: "hi" } } }));
+  proxy.onChildLine(JSON.stringify({ jsonrpc: "2.0", id: 9, result: { isError: true, content: [{ type: "text", text: raw }] } }));
+  const out = JSON.parse(toClient[0]).result.structuredContent;
+  assert.equal(out.status, "provider_error");
+  assert.equal(out.error.kind, "client_outdated");
+  assert.match(out.error.message, /too old for this model/);
+  proxy.dispose?.();
+});
+
+test("(prefer-newest) a slow probe trips the cumulative deadline: probing stops and a candidate is still chosen", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-slow-"));
+  const emptyProjectRoot = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-root-"));
+  const emptyHome = mkdtempSync(join(tmpdir(), "tycoon-codex-launcher-empty-home-"));
+  const savedEnv: NodeJS.ProcessEnv = {
+    CODEX_LAUNCHER_PROJECT_ROOT: process.env["CODEX_LAUNCHER_PROJECT_ROOT"],
+    CODEX_CLI_PATH: process.env["CODEX_CLI_PATH"],
+    CODEX_BINARY_PATH: process.env["CODEX_BINARY_PATH"],
+    APPDATA: process.env["APPDATA"],
+    PATH: process.env["PATH"],
+    Path: process.env["Path"],
+    [HOME_ENV_KEY]: process.env[HOME_ENV_KEY],
+  };
+  try {
+    const slowJs = join(dir, "slow.js");
+    writeFileSync(
+      slowJs,
+      [
+        "const args = process.argv.slice(2);",
+        "setTimeout(() => {",
+        "  if (args.includes('--version')) console.log('codex-cli 0.153.0');",
+        "  else console.log('Commands: mcp-server (Run the MCP stdio server)');",
+        "}, 700);",
+      ].join("\n"),
+      "utf8",
+    );
+    const stubDir = join(dir, "bin");
+    mkdirSync(stubDir);
+    if (IS_WIN) {
+      writeFileSync(join(stubDir, "codex.cmd"), `@echo off\r\nnode ${cmdQuote(slowJs)} %*\r\n`);
+    } else {
+      writeFileSync(join(stubDir, "codex"), `#!/bin/sh\nexec node ${cmdQuote(slowJs)} "$@"\n`, "utf8");
+      chmodSync(join(stubDir, "codex"), 0o755);
+    }
+    delete process.env["CODEX_CLI_PATH"];
+    delete process.env["CODEX_BINARY_PATH"];
+    process.env["APPDATA"] = emptyHome;
+    process.env[HOME_ENV_KEY] = emptyHome;
+    process.env["CODEX_LAUNCHER_PROJECT_ROOT"] = emptyProjectRoot;
+    process.env["PATH"] = IS_WIN ? `${stubDir};${NODE_BIN_DIR}` : `${stubDir}:${NODE_BIN_DIR}:/bin:/usr/bin`;
+    process.env["Path"] = process.env["PATH"];
+    const realExit = process.exit;
+    (process as any).exit = (code: number) => { throw new Error("process.exit(" + code + ")"); };
+    let captured: { result: unknown; stderr: string };
+    try {
+      captured = captureStderr(() => discoverCodexBinary(["mcp-server"], { preferNewest: true, allowIncapableFallback: true, probeDeadlineMs: 200, helpTextCache: new Map() }));
+    } finally {
+      (process as any).exit = realExit;
+    }
+    const { result, stderr } = captured;
+    assert.equal(result, "codex", `the slow legacy candidate found before the deadline must still be chosen, stderr:\n${stderr}`);
+    assert.ok(stderr.includes("probe deadline"), `expected the deadline notice, stderr:\n${stderr}`);
+  } finally {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(emptyProjectRoot, { recursive: true, force: true });
+    rmSync(emptyHome, { recursive: true, force: true });
+  }
+});
+
+test("(prefer-newest) among legacy builds the highest version wins, not the ladder order", () => {
+  withLegacyAndNewerCandidates({ legacy: "0.150.0", newer: "0.153.2" }, ({ newerCommand, spawnSyncFn }) => {
+    // Both are below 0.154 here: the PATH build is the higher legacy version.
+    (spawnSyncFn as any).calls.length = 0;
+    const { result } = captureStderr(() => discoverCodexBinary(["mcp-server"], { spawnSync: spawnSyncFn, preferNewest: true, allowIncapableFallback: true }));
+    assert.equal(result, newerCommand);
+  });
+});

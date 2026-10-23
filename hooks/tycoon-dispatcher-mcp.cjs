@@ -429,7 +429,7 @@ function codexToolTimeoutMs() {
 const LIMIT_KINDS = ["quota", "billing", "rate_limit", "overloaded"];
 /** Kinds that advance the chain: provider limits, plus a wrong/unavailable model (HTTP 400 invalid_model, 404) -- exactly what a chain covers. Other 4xx request errors stay terminal. */
 // Also: a provider that cannot be used at all (bad/missing key, missing binary or config) -- the next entry may work.
-const FALLBACK_KINDS = LIMIT_KINDS.concat(["not_found", "auth", "cli_missing", "not_configured"]);
+const FALLBACK_KINDS = LIMIT_KINDS.concat(["not_found", "auth", "cli_missing", "not_configured", "client_outdated"]);
 
 function isDispatchFailure(fallbackChain, errorText) {
   if (fallbackChain && fallbackChain.isProviderFailure(errorText)) return true;

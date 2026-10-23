@@ -14,11 +14,11 @@ previously launched directly. The Codex MCP entry now runs `node hooks/codex-mcp
 which discovers the Codex binary at runtime — checking, in order, the `CODEX_BINARY_PATH` override
 (or its alias `CODEX_CLI_PATH`),
 the project's `node_modules`, `PATH`, the npm global install location, Homebrew, `~/.codex/bin`,
-`~/.local/bin`, and finally the newest OpenAI VS Code extension bundle. It prefers a discovered
-binary that still exposes `mcp-server`, and otherwise falls back to
-`hooks/codex-app-server-mcp.cjs`, a shim over Codex's `app-server` protocol that exposes the same
-`codex` and `codex-reply` tools. The project pins `@openai/codex` `0.153.0` as a devDependency for
-this reason. The fallback shim is Experimental.
+`~/.local/bin`, and finally the newest OpenAI VS Code extension bundle. It prefers the newest
+Codex CLI it finds: a 0.154+ build is served through `hooks/codex-app-server-mcp.cjs`, a shim over
+Codex's `app-server` protocol that exposes the same `codex` and `codex-reply` tools. A legacy build
+with a native `mcp-server` subcommand is used only when nothing newer is found. Older builds
+predate newer model catalogs, so the newest CLI is the one that accepts current models. The shim is Experimental.
 
 ## Reviewer model and MCP approval (Experimental)
 

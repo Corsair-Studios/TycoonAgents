@@ -245,7 +245,9 @@ function parseBridgeResult(toolResponse, opts) {
 /**
  * Short error.kind for a provider/CLI failure message: auth | quota |
  * billing | rate_limit | overloaded | not_found | network | cli_missing |
- * backend_unreadable | unknown.
+ * client_outdated | backend_unreadable | unknown.
+ *   client_outdated  the installed Codex CLI is too old for the requested model
+ *               ("not supported when using Codex with a ChatGPT account").
  *   quota       a plan/usage cap that lasts until a reset (Claude Code
  *               weekly/session/spend limit, Codex usage limit, OpenAI
  *               insufficient_quota, Gemini resource exhausted, Kimi daily
@@ -279,6 +281,10 @@ const RATE_LIMIT_RE = /\b429\b|rate.?limit|too many requests|requests too quickl
 // monthly spending limit is exceeded) is billing, not an auth failure.
 const SPEND_CAP_RE = /spending limit|spend(?:ing)? cap|monthly (?:spend(?:ing)? )?limit|usage limit/i;
 
+// OpenAI rejects a newer model from an older Codex CLI whose catalog predates it.
+const CLIENT_OUTDATED_RE = /model is not supported when using codex with a chatgpt account/i;
+const CLIENT_OUTDATED_HINT = "The installed Codex CLI is too old for this model. Update the OpenAI (Codex) VS Code extension or the Codex CLI, then retry.";
+
 function classifyProviderError(message, opts) {
   const t = String(message === undefined || message === null ? "" : message);
   const status = opts && Number(opts.httpStatus);
@@ -288,6 +294,7 @@ function classifyProviderError(message, opts) {
   if (status === 402) return BILLING_RE.test(t) ? "billing" : "quota";
   if (status === 529) return "overloaded";
   if (status === 404) return "not_found";
+  if (CLIENT_OUTDATED_RE.test(t)) return "client_outdated";
   if (/ENOENT|could not find the claude cli|failed to spawn|spawn [^\n]*EACCES|could not resolve a \.js entry|app-server child exited|not recognized as an internal|command not found|(?<!\bmodel:?\s*["'`]?)\b(?:agy|gemini)(?: cli| command| binary)?\s+(?:is\s+)?not (?:installed|found)\b|\b(?:agy|gemini|codex|claude|cli|command|binary|npx)\b[^\n]{0,30}\bnot installed\b/i.test(t)) return "cli_missing";
   if (/\b403\b/.test(t) && SPEND_CAP_RE.test(t)) return "billing";
   if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid api key|incorrect api key|authentication|not logged in|\blog ?in\b|\boauth|(?:api|key|token|credential|auth|403)[^\n]{0,60}permission[ _]denied|permission[ _]denied[^\n]{0,60}(?:api|key|token|credential|auth|403)/i.test(t)) return "auth";
@@ -315,6 +322,7 @@ function vendorModelLabel(vendor, model) {
 const SHORT_REASONS = {
   auth: "sign-in or key rejected",
   cli_missing: "CLI not installed",
+  client_outdated: "Codex CLI too old for this model; update it",
   not_found: "invalid model",
   rate_limit: "rate limited",
   quota: "usage limit reached",
@@ -435,6 +443,12 @@ function shortRetryDelayMs(error, opts) {
   return ms + minRun <= left ? ms : -1;
 }
 
+/** For a client_outdated failure, prefixes the actionable update hint to the raw provider text; other text passes through. */
+function withClientOutdatedHint(kind, text) {
+  const raw = String(text === undefined || text === null ? "" : text);
+  return kind === "client_outdated" ? CLIENT_OUTDATED_HINT + " (" + raw + ")" : raw;
+}
+
 /** { kind, message, resetHint?, retryAfterMs? } for an error string (opts: { kind?, httpStatus? }). */
 function describeProviderError(message, opts) {
   const msg = String(message === undefined || message === null ? "" : message);
@@ -463,6 +477,8 @@ function providerErrorResult(opts) {
 
 module.exports = {
   vendorModelLabel,
+  withClientOutdatedHint,
+  CLIENT_OUTDATED_HINT,
   shortFailureReason,
   fallbackAttribution,
   ENVELOPE_VERSION,

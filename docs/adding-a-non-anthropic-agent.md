@@ -11,10 +11,9 @@ Use **Add an agent from another provider** on the Agents screen (it registers th
 `.mcp.json.example` into your project's `.mcp.json`. The Codex entry launches the bundled
 `codex-mcp-launcher.cjs` launcher (copied into `.claude/hooks/` by the hook installer —
 `MCP_BRIDGE_HOOK_FILES` in `src/host/vscode/hookInstall.ts`), never `codex mcp-server` directly.
-The launcher discovers the Codex binary and prefers a pinned `@openai/codex@0.153` install's
-`mcp-server` subcommand (removed in codex-cli 0.154+), falling back automatically to
-`codex-app-server-mcp.cjs` — a shim over Codex's `app-server` protocol — when only a newer CLI is
-found:
+The launcher discovers the Codex binary and prefers the newest Codex CLI, serving a 0.154+ build
+through `codex-app-server-mcp.cjs` — a shim over Codex's `app-server` protocol. It uses a legacy
+build's native `mcp-server` subcommand (removed in codex-cli 0.154+) only when nothing newer is found:
 
 ```json
 "codex": {

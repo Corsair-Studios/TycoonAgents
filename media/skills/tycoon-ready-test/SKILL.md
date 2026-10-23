@@ -37,7 +37,7 @@ This skill is for the **Claude Code harness**, which has the Task/Agent tool. Th
 
 ## Bridge ping
 
-For a bridge agent, "ready" is not enough. The agent chooses ONE route before calling: its own vendor MCP tool (the `mcpServer`/`tools` in its frontmatter) if that server is configured; else `mcp__tycoon__delegate` with `specialist: "<its own id>"` if that tool is present; else it reports `bridge not installed`. It then makes exactly ONE minimal call on that route: reply "OK" in 5 tokens or fewer, cheapest model and lowest effort, no files, no tools. The agent reports the answering vendor/model taken from the tool result (not from itself). Rules:
+For a bridge agent, "ready" is not enough. The agent chooses ONE route before calling: its own vendor MCP tool (the `mcpServer`/`tools` in its frontmatter) if that server is configured; else `mcp__tycoon__delegate` with `specialist: "<its own id>"` if that tool is present; else it reports `bridge not installed`. It then makes exactly ONE minimal call on that route: reply "OK" in 5 tokens or fewer, the model configured in the agent's own `backend:` block (or the server default if it has none) at the lowest effort (strip a vendor prefix such as `openai/` when the tool expects a bare model id), no files, no tools. The agent reports the answering vendor/model taken from the tool result (not from itself). Rules:
 
 - If neither route exists in the session, report `bridge not installed` and suggest adding the agent from the Agents screen ("Add an agent from another provider", or Save an agent that uses another provider) and then starting a new chat: a server installed or changed since this chat began only loads in a new one.
 - If the call errors with an auth, key, or login problem, report `key or login missing`.
