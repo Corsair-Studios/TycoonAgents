@@ -6,7 +6,7 @@
 
 // ---------------------------------------------------------------------------
 // Host-agnostic "Apply team setup" implementation (plan task p49-t1, PRD
-// Milestone 2 — design-docs/team-setup-prd.md). Reads the committed
+// Milestone 2 — docs/design/team-setup-prd.md). Reads the committed
 // .claude/tycoon-team.json (src/core/teamSetup.ts's parseTeamManifest),
 // validates it, and re-runs the project's existing installers against it.
 // This module never calls into `vscode` and never talks to a real

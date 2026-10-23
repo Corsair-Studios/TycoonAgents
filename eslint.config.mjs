@@ -5,7 +5,7 @@
 // untyped-by-design and covered by its own crash-class checker
 // (media/**, see scripts/check-webview.mjs), vendored/generated output
 // (out/**), defensive CJS with intentional patterns (hooks/**), or a
-// separately-scoped bundle (uefn-bridge/**, design-doc/**).
+// separately-scoped bundle (uefn-bridge/**, tools/design-doc/**).
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
@@ -16,7 +16,7 @@ export default tseslint.config(
       'out/**',
       'hooks/**',
       'uefn-bridge/**',
-      'design-doc/**',
+      'tools/design-doc/**',
       'node_modules/**',
       // .claude/ holds installed/generated skill artifacts (bundled .mjs,
       // the hook .cjs), not authored source — same rationale as media/** and

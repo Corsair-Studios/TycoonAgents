@@ -7,7 +7,7 @@ repo must implement. It supersedes v1: the auth model now mirrors Speciary's
 Supabase-Auth-direct approach (the Speciary reference implementation) instead of a bespoke
 magic-link/device-token service, and pricing/ledger/webhook semantics mirror
 Speciary's Stripe store. Service-internal architecture stays out of scope
-(see `design-docs/theme-credits-prd.md`).
+(see `docs/design/theme-credits-prd.md`).
 
 **v3 changelog:** adds content-moderation screening ahead of ledger debit
 on `/api/generate` and `/api/plan`, a per-user provider safety identifier,

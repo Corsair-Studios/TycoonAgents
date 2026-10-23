@@ -133,7 +133,7 @@ function main() {
   const commitBody = `${commitMessage}\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`;
 
   try {
-    // Tracked modifications only: untracked work (design-docs/, spikes/) must not ride along.
+    // Tracked modifications only: untracked work (docs/design/, spikes/) must not ride along.
     execSync('git add -u', { stdio: 'inherit', cwd: ROOT });
     // The session journal is hook-managed and is never part of a release commit.
     const stagedJournal = execSync('git diff --cached --name-only -- .claude/session-journal.json', { cwd: ROOT, encoding: 'utf8' }).trim();

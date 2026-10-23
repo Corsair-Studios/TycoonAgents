@@ -21,7 +21,7 @@
 /spikes/
 
 # Design docs (PRDs, business material) stay private
-/design-docs/
+/docs/design/
 
 # Targets the private backend repo; stays in the private repo
 /test/themeServiceEndToEnd.test.ts

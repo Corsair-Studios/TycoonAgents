@@ -10,8 +10,6 @@ out/test/**
 out/**/*.test.js
 out/**/*.test.js.map
 docs/**
-design-doc/**
-design-docs/**
 *_tmp.cjs
 regen_tmp.cjs
 TycoonAgents.code-workspace

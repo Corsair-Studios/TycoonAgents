@@ -6,7 +6,7 @@
 
 // ---------------------------------------------------------------------------
 // Team manifest schema + pure builder/validator/serializer for
-// .claude/tycoon-team.json (design-docs/team-setup-prd.md, Milestone 1).
+// .claude/tycoon-team.json (docs/design/team-setup-prd.md, Milestone 1).
 //
 // This module does NOT read from disk. Hosts (panel.ts, standalone
 // server.mjs) assemble a TeamManifestInput from the roster loader, the

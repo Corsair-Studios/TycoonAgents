@@ -5,7 +5,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Readiness report core (plan task p50-t1, design-docs/team-setup-prd.md
+// Readiness report core (plan task p50-t1, docs/design/team-setup-prd.md
 // Milestone 3). Pure builder over INJECTED probes so it is independently
 // testable and reusable by both hosts (panel.ts, standalone/src/server.mjs)
 // — same posture as teamSetup.ts / teamSetupApply.ts. This module never
