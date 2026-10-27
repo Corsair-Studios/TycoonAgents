@@ -214,7 +214,14 @@ export interface AgentMetric {
    * (never an empty array) when nothing is in flight. `id` is the hook's
    * tool_use_id when it carried one, else calls are matched by tool name.
    */
-  inFlightCalls?: { id?: string; tool: string; at: number }[];
+  inFlightCalls?: { id?: string; tool: string; at: number; foreign?: { vendor: string; cli: string; model: string | null } }[];
+  /**
+   * Bash/PowerShell calls by this agent that ran another vendor's LLM CLI
+   * (codex exec, gemini -p, ...). Also counted in mcpCount. Absent until the first one.
+   */
+  foreignCliCalls?: number;
+  /** The most recent foreign-LLM CLI call (vendor, cli, model). Absent until the first one. */
+  lastForeignCli?: { vendor: string; cli: string; model: string | null };
   /**
    * True when the MOST RECENT spawn for this agent had its role guessed
    * from keyword scoring (HookRecord.roleInferred) rather than an explicit
@@ -536,6 +543,8 @@ function mergeMetricRows(a: AgentMetric, b: AgentMetric): AgentMetric {
   if (cb) merged.cacheReadModelBreakdown = cb;
   if (a.liveSpawns || b.liveSpawns) merged.liveSpawns = [...(a.liveSpawns ?? []), ...(b.liveSpawns ?? [])];
   if (a.spawnStartAt || b.spawnStartAt) merged.spawnStartAt = { ...(b.spawnStartAt ?? {}), ...(a.spawnStartAt ?? {}) };
+  if (a.foreignCliCalls || b.foreignCliCalls) merged.foreignCliCalls = (a.foreignCliCalls ?? 0) + (b.foreignCliCalls ?? 0);
+  if (a.lastForeignCli || b.lastForeignCli) merged.lastForeignCli = a.lastForeignCli ?? b.lastForeignCli;
   if (a.inFlightCalls || b.inFlightCalls) merged.inFlightCalls = [...(a.inFlightCalls ?? []), ...(b.inFlightCalls ?? [])];
   if (a.usageReported === false || b.usageReported === false) merged.usageReported = false;
   return merged;
@@ -578,7 +587,7 @@ export function creditedElapsed(
 }
 
 /** In-flight calls younger than the ceiling; ones whose PostToolUse never arrived are dropped. */
-function pruneInFlight(calls: { id?: string; tool: string; at: number }[] | undefined, now: number) {
+function pruneInFlight(calls: NonNullable<AgentMetric["inFlightCalls"]> | undefined, now: number) {
   return calls?.filter((c) => now - c.at <= IN_FLIGHT_CEILING_MS);
 }
 
@@ -587,6 +596,27 @@ function withoutInFlight<T extends AgentMetric>(m: T): T {
   if (m.inFlightCalls === undefined) return m;
   const { inFlightCalls: _drop, ...rest } = m;
   return rest as T;
+}
+
+/**
+ * In-flight bookkeeping for a WorkerActivity. A foreign-CLI call has no end record (no PostToolUse
+ * hook runs for shell commands), so it ends when the same worker's next activity arrives. MCP calls
+ * stay until WorkerToolDone retires them.
+ */
+function withActivityInFlight<T extends AgentMetric>(next: T, prev: AgentMetric, event: Extract<NormalizedEvent, { type: "WorkerActivity" }>): T {
+  const live = (pruneInFlight(prev.inFlightCalls, event.at) ?? []).filter((c) => !c.foreign);
+  const isMcpCall = event.detail !== undefined && event.detail.startsWith("mcp__");
+  const added =
+    isMcpCall || event.foreignCli !== undefined
+      ? [{
+          ...(event.toolUseId !== undefined ? { id: event.toolUseId } : {}),
+          tool: event.detail ?? "",
+          at: event.at,
+          ...(event.foreignCli !== undefined ? { foreign: event.foreignCli } : {}),
+        }]
+      : [];
+  const all = [...live, ...added];
+  return all.length > 0 ? { ...next, inFlightCalls: all } : withoutInFlight(next);
 }
 
 // Pure reducer: fold a normalized event into the world state.
@@ -961,7 +991,7 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
             }
           : state.workers;
       // Update metrics: increment mcpCount for wire activity; keep/start active timer.
-      const isMcp = event.kind === "wire";
+      const isMcp = event.kind === "wire" || event.foreignCli !== undefined;
       // For survey activity, split the genuinely-forbidden Grep/Glob (the delegation
       // leak) from a plain Read, which CLAUDE.md allows directly for known files.
       const isSurvey = event.kind === "survey";
@@ -970,7 +1000,7 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
       const nextInternals = upsertMetric(
         state._agentMetricsInternal,
         event.workerId,
-        (m) => ({
+        (m) => withActivityInFlight({
           ...m,
           status: "active" as const,
           mcpCount: isMcp ? m.mcpCount + 1 : m.mcpCount,
@@ -982,16 +1012,11 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,
-          // An MCP call stays "in flight" until WorkerToolDone retires it.
-          ...(event.detail !== undefined && event.detail.startsWith("mcp__")
-            ? {
-                inFlightCalls: [
-                  ...(pruneInFlight(m.inFlightCalls, event.at) ?? []),
-                  { ...(event.toolUseId !== undefined ? { id: event.toolUseId } : {}), tool: event.detail, at: event.at },
-                ],
-              }
+          // A call to another LLM through its CLI counts like an MCP provider call.
+          ...(event.foreignCli !== undefined
+            ? { foreignCliCalls: (m.foreignCliCalls ?? 0) + 1, lastForeignCli: event.foreignCli }
             : {}),
-        }),
+        }, m, event),
         event.provider,
         event.sessionId,
       );
@@ -1011,7 +1036,8 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
         state._agentMetricsInternal,
         event.workerId,
         (m) => {
-          const calls = pruneInFlight(m.inFlightCalls, event.at);
+          // A finished MCP call also means the worker moved on, which ends any foreign-CLI call.
+          const calls = pruneInFlight(m.inFlightCalls, event.at)?.filter((c) => !c.foreign);
           if (!calls || calls.length === 0) return m.inFlightCalls ? withoutInFlight(m) : m;
           let idx = event.toolUseId !== undefined ? calls.findIndex((c) => c.id === event.toolUseId) : -1;
           if (idx < 0) idx = calls.findIndex((c) => c.tool === event.tool && (event.toolUseId === undefined || c.id === undefined));

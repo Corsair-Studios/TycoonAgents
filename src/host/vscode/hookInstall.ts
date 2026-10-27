@@ -112,6 +112,11 @@ export const TYCOON_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }
   { event: "PreToolUse", matcher: "Task|Agent|Skill" },
   { event: "PreToolUse", matcher: "Read|Write|Edit|Grep|Glob|Bash" },
   { event: "PreToolUse", matcher: "mcp__.*" },
+  // PowerShell is not in the Bash entry above (that matcher stays as shipped so existing installs
+  // keep it). This lets the hook see a foreign-LLM CLI call (codex exec, gemini -p, ...) made
+  // from PowerShell. There is deliberately no Post slot for shell commands: it would spawn a
+  // node process after every command; core/state.ts ends the call on the worker's next activity.
+  { event: "PreToolUse", matcher: "PowerShell" },
   // p15-t1: detects a provider failure (quota/unavailable/unreachable) on a
   // registered backend MCP tool result and injects the fallback-chain
   // re-dispatch instruction — see hooks/tycoon-claude-hook.cjs's PostToolUse
@@ -176,6 +181,31 @@ export const LEGACY_MATCHER_ALIASES: ReadonlyArray<{ event: string; from: string
 ];
 
 /**
+ * Slots an earlier dev build installed and that no longer ship (a PostToolUse process per shell
+ * command was too costly). Only entries whose hooks are entirely ours are removed.
+ */
+export const REMOVED_HOOK_SLOTS: ReadonlyArray<{ event: string; matcher: string }> = [
+  { event: "PostToolUse", matcher: "Bash|PowerShell" },
+  { event: "PostToolUseFailure", matcher: "Bash|PowerShell" },
+];
+
+/** Drops pure-ours entries of a removed slot from `list`; returns the SAME array when nothing matched. */
+function dropPureOursEntries(list: HookEntry[], matcher: string): HookEntry[] {
+  const next = list.filter(
+    (e) =>
+      !(
+        e !== null &&
+        typeof e === "object" &&
+        e.matcher === matcher &&
+        Array.isArray(e.hooks) &&
+        e.hooks.length > 0 &&
+        e.hooks.every((h) => isOurHookCommand(h))
+      )
+  );
+  return next.length === list.length ? list : next;
+}
+
+/**
  * Renames the matcher of any entry in `list` whose matcher is `from` AND
  * whose hooks are entirely ours (per {@link isOurHookCommand}) to `to`.
  * Immutable — returns a NEW array only when something changed; returns the
@@ -226,6 +256,16 @@ export function migrateLegacyHookMatchers(
 
   let changed = false;
   const nextHooks: Record<string, unknown> = { ...hooks };
+  for (const slot of REMOVED_HOOK_SLOTS) {
+    const list = hooks[slot.event];
+    if (!Array.isArray(list)) continue;
+    const next = dropPureOursEntries(list as HookEntry[], slot.matcher);
+    if (next !== list) {
+      if (next.length > 0) nextHooks[slot.event] = next;
+      else delete nextHooks[slot.event];
+      changed = true;
+    }
+  }
   for (const alias of LEGACY_MATCHER_ALIASES) {
     const list = hooks[alias.event];
     if (!Array.isArray(list)) continue;
@@ -411,6 +451,14 @@ export function mergeTycoonHooks(
     if (list) {
       hooks[alias.event] = renamePureOursMatchers(list, alias.from, alias.to);
     }
+  }
+
+  for (const slot of REMOVED_HOOK_SLOTS) {
+    const list = hooks[slot.event];
+    if (!list) continue;
+    const next = dropPureOursEntries(list, slot.matcher);
+    if (next.length > 0) hooks[slot.event] = next;
+    else delete hooks[slot.event];
   }
 
   for (const slot of TYCOON_HOOK_SLOTS) {

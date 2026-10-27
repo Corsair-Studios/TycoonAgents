@@ -756,8 +756,12 @@ only when the effective harness is Claude Code).
   relay applies them with Read, Edit and Write exactly as returned, with no
   extra reasoning. If a patch does not apply, the relay reports which file and
   hunk failed.
-- Codex write access is opt-in. Ticking "Let Codex edit files in this project
-  (workspace-write sandbox)" on the card and saving is the consent: it
+- Codex write access is on by default when a working agent is switched to
+  Codex, and off and locked for reviewer-class agents (frontmatter
+  `tier: reviewer`, ids `reviewer`, `*-reviewer`, `uefn-auditor`, or a
+  description/role about review or audit; see `isReviewerClassAgent`). Agents
+  already saved keep their setting. The "Let Codex edit files in this project
+  (workspace-write sandbox)" box on the card, saved, is the consent: it
   registers a separate local-scope server, `codex-write`, with the same
   launcher but `sandbox_mode="workspace-write"` and `approval_policy="never"`,
   and that agent's relay targets `mcp__codex-write__codex` and lets Codex make

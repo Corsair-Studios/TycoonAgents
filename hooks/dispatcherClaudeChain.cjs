@@ -127,7 +127,7 @@ function findSpawnContext(activityFile, workerId, hinted) {
 }
 
 // Mirrors CODEX_ACCEPTED_MODELS / CODEX_REJECTED_MODELS in src/core/agentsUiMode.ts (a test asserts they match).
-const CODEX_ACCEPTED_BARE = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"];
+const CODEX_ACCEPTED_BARE = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"];
 const CODEX_REJECTED_BARE = ["gpt-5", "gpt-6"];
 // Older ids still in `codex debug models`: dispatch keeps accepting a saved bare id; the UI never offers them (mirrors CODEX_LEGACY_MODELS).
 const CODEX_LEGACY_BARE = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-5.5"];

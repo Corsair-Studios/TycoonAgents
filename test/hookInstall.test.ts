@@ -103,7 +103,7 @@ test("idempotency: running twice produces no duplicates", () => {
   const hooks = twice.hooks as Record<string, unknown[]>;
 
   // PreToolUse should still have exactly 3 entries
-  assert.equal(hooks["PreToolUse"].length, 3, "PreToolUse must have exactly 3 entries after two merges");
+  assert.equal(hooks["PreToolUse"].length, 4, "PreToolUse must have exactly 4 entries after two merges");
   // PostToolUse should still have exactly 2 entries (mcp__.* and Task|Agent)
   assert.equal(hooks["PostToolUse"].length, 2, "PostToolUse must have exactly 2 entries after two merges");
   // All other multi-matcher-free events should still have exactly 1 entry
@@ -156,8 +156,8 @@ test("preserves unrelated hooks in PreToolUse", () => {
   assert.ok(hasOther, "Unrelated SomeOther matcher must be preserved");
   const hasTas = ptu.some((e) => e.matcher === "Task|Agent|Skill");
   assert.ok(hasTas, "Task|Agent|Skill matcher must be added");
-  // Total: 1 existing + 3 tycoon = 4
-  assert.equal(ptu.length, 4, "PreToolUse should have 4 entries (1 existing + 3 tycoon)");
+  // Total: 1 existing + 4 tycoon = 5
+  assert.equal(ptu.length, 5, "PreToolUse should have 5 entries (1 existing + 4 tycoon)");
 });
 
 test("does not mutate input object", () => {

@@ -110,6 +110,7 @@ export function harnessModelLabel(model: string, effort?: string): string {
   let base = model;
   if (s.includes("sol")) base = "Sol";
   else if (s.includes("astra")) base = "Astra";
+  else if (s.includes("terra")) base = "Terra";
   else if (s.includes("luna")) base = "Luna";
   return effort ? `${base} ${effort}` : base;
 }

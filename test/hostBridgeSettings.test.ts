@@ -93,7 +93,7 @@ test("buildRoutingView carries bridge info and the Codex model presets", () => {
   const ids = view.presets.models.map((m) => m.id);
   assert.ok(ids.includes("openai/gpt-6.1-sol") && ids.includes("openai/gpt-6-astra") && ids.includes("openai/gpt-6-luna"));
   assert.ok(!ids.includes("openai/gpt-5.6-sol"), "retired id is no longer offered");
-  assert.deepEqual(ids.filter((i) => i.startsWith("openai/")), ["openai/gpt-6-astra", "openai/gpt-6.1-sol", "openai/gpt-6-luna"], "most to least capable");
+  assert.deepEqual(ids.filter((i) => i.startsWith("openai/")), ["openai/gpt-6-astra", "openai/gpt-6.1-sol", "openai/gpt-6.1-terra", "openai/gpt-6-luna"], "most to least capable");
   assert.equal(buildHostBridgeInfo(tmpProject(), {}).mcpJsonPresent, false);
 });
 

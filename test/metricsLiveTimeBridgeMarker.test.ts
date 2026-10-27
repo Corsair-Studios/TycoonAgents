@@ -394,3 +394,40 @@ test("bridge marker: absent for openai-compatible, claude-native, claude-cli and
     assert.equal(tokensCell(doc).querySelector(".col-tokens-bridge-note"), null, JSON.stringify(backend));
   }
 });
+
+const FOREIGN = { vendor: "openai", cli: "codex", model: "gpt-6.1-terra" };
+function workerRow(doc: any): any {
+  return [...doc.querySelectorAll("#metrics-tbody tr")].find((r: any) => /Coding Specialist/.test(r.textContent));
+}
+
+test("foreign CLI call: row lights light blue while the call is in flight, shows the model, MCP tooltip and dagger", () => {
+  const { win, doc, dispatch } = setup(CLAUDE_NATIVE);
+  win.Date.now = () => T0;
+  dispatchMetrics(dispatch, [ORCH, worker({
+    status: "active", workStartAt: T0, lastActivityAt: T0, mcpCount: 2, foreignCliCalls: 2,
+    inFlightCalls: [{ id: "t1", tool: "Bash", at: T0, foreign: FOREIGN }], lastForeignCli: FOREIGN,
+  })]);
+  const row = workerRow(doc);
+  assert.ok(row.querySelector(".agent-accent-foreign"), "name accent while in flight");
+  assert.match(row.querySelector(".agent-foreign-cli").textContent, /^via Codex CLI · gpt-6\.1-terra$/);
+  assert.match(row.querySelector(".col-mcp").title, /Includes 2 calls to other LLMs via their CLI/);
+  assert.ok(row.querySelector(".col-tokens-bridge-note"), "tokens dagger");
+
+  // Call finished: accent and via-line go away, count and dagger stay.
+  dispatchMetrics(dispatch, [ORCH, worker({ status: "active", workStartAt: T0, lastActivityAt: T0, mcpCount: 2, foreignCliCalls: 2, lastForeignCli: FOREIGN })]);
+  const after = workerRow(doc);
+  assert.equal(after.querySelector(".agent-accent-foreign"), null);
+  assert.ok(after.querySelector(".col-tokens-bridge-note"));
+});
+
+test("foreign CLI call: the amber fallback accent still wins over light blue", () => {
+  const { win, doc, dispatch } = setup(CLAUDE_NATIVE);
+  win.Date.now = () => T0;
+  dispatchMetrics(dispatch, [ORCH, worker({
+    status: "active", workStartAt: T0, lastActivityAt: T0, fallbackOf: "coding-specialist", foreignCliCalls: 1,
+    inFlightCalls: [{ id: "t1", tool: "Bash", at: T0, foreign: FOREIGN }],
+  })]);
+  const row = workerRow(doc);
+  assert.equal(row.querySelector(".agent-accent-foreign"), null);
+  assert.ok(row.querySelector(".agent-accent-fallback"));
+});

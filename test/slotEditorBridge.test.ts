@@ -223,6 +223,7 @@ function payload(agents: any[], harness: string, br: any = bridge()) {
         { id: 'google/gemini-2.5-pro', vendor: 'google', costModelClass: 'metered', label: 'google/gemini-2.5-pro' },
         { id: 'openai/gpt-6-astra', vendor: 'openai', costModelClass: 'subscription', label: 'Astra (openai/gpt-6-astra)' },
         { id: 'openai/gpt-6.1-sol', vendor: 'openai', costModelClass: 'subscription', label: 'Sol (openai/gpt-6.1-sol)' },
+        { id: 'openai/gpt-6.1-terra', vendor: 'openai', costModelClass: 'subscription', label: 'Terra (openai/gpt-6.1-terra)' },
         { id: 'openai/gpt-6-luna', vendor: 'openai', costModelClass: 'subscription', label: 'Luna (openai/gpt-6-luna)' },
       ],
       vendorKeys: [
@@ -517,17 +518,18 @@ test('claude-code: picking openai sets the Codex bridge, the catalog default mod
     vendorSel.dispatchEvent(new win.Event('change', { bubbles: true }));
     await flush();
     card = cardOf(doc, 'cs');
-    assert.equal(card.querySelector('.routing-connection-line').textContent, 'Connection: via Codex MCP');
+    assert.equal(card.querySelector('.routing-connection-line').textContent, 'Connection: via Codex (write access) MCP');
     const modelSel = card.querySelector('.routing-model-select') as any;
     assert.equal(modelSel.value, 'openai/gpt-6.1-sol', 'default catalog alias for the vendor');
     const modelOptions = Array.from(modelSel.options).map((o: any) => o.value).filter((v) => v && v !== '__custom__');
-    assert.deepEqual(modelOptions, ['openai/gpt-6-astra', 'openai/gpt-6.1-sol', 'openai/gpt-6-luna'], 'picker lists only the vendor models');
-    assert.equal((card.querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex');
+    assert.deepEqual(modelOptions, ['openai/gpt-6-astra', 'openai/gpt-6.1-sol', 'openai/gpt-6.1-terra', 'openai/gpt-6-luna'], 'picker lists only the vendor models');
+    assert.equal((card.querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex-write', 'working agent defaults to write access');
+    assert.equal((card.querySelector('.routing-codex-write-checkbox') as any).checked, true);
     assert.equal((card.querySelector('[data-field-key$=".costModelClass"]') as any).value, 'subscription');
     const summary = card.querySelector('.routing-slot-summary-line').textContent;
-    assert.match(summary, /^openai · openai\/gpt-6\.1-sol · via Codex MCP · subscription · 0 fallbacks/);
+    assert.match(summary, /^openai · openai\/gpt-6\.1-sol · via Codex \(write access\) MCP · subscription · 0 fallbacks/);
     assert.match(card.querySelector('.agent-stats').textContent, /billing subscription/);
-    assert.equal(statusOf(card), 'Codex server will be set up when you click Save');
+    assert.equal(statusOf(card), 'Codex (write access) server will be set up when you click Save');
     // The obsolete manual flow is gone on Claude Code.
     assert.equal(card.querySelector('.routing-subscription-notice-copy').hidden, true, 'no Copy request');
     assert.equal(card.querySelector('.routing-subscription-request-details').hidden, true, 'no Show request');
@@ -539,11 +541,74 @@ test('claude-code: picking openai sets the Codex bridge, the catalog default mod
     const slot = saveMsg.profile.agents.cs;
     assert.equal(slot.vendor, 'openai');
     assert.equal(slot.transport, 'mcp');
-    assert.equal(slot.mcpServer, 'codex');
+    assert.equal(slot.mcpServer, 'codex-write');
     assert.equal(slot.model, 'openai/gpt-6.1-sol');
-    assert.deepEqual(bridgeServersForRoutingProfile(saveMsg.profile, { version: 1, agents: { cs: { vendor: 'anthropic' } } }), ['codex']);
+    assert.deepEqual(bridgeServersForRoutingProfile(saveMsg.profile, { version: 1, agents: { cs: { vendor: 'anthropic' } } }), ['codex-write']);
   } finally {
     win.close();
+  }
+});
+
+async function pickOpenai(ctx: any, id: string) {
+  const vendorSel = cardOf(ctx.doc, id).querySelector('.routing-vendor-select') as any;
+  vendorSel.value = 'openai';
+  vendorSel.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  await ctx.flush();
+  return cardOf(ctx.doc, id);
+}
+
+test('claude-code: switching a reviewer-class agent to Codex leaves write access unticked and locked', async () => {
+  const ids = ['codex-reviewer', 'reviewer', 'uefn-auditor'];
+  for (const id of ids) {
+    const ctx = await renderClaude([agent(id, { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'metered' })], vendorSetup('absent'));
+    try {
+      const card = await pickOpenai(ctx, id);
+      assert.equal((card.querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex', id);
+      const box = card.querySelector('.routing-codex-write-checkbox') as any;
+      assert.equal(box.checked, false, id);
+      assert.equal(box.disabled, true, id);
+      assert.equal(card.querySelector('.routing-codex-write-label').title, 'Reviewers stay read-only so they never change the code they judge.');
+    } finally {
+      ctx.win.close();
+    }
+  }
+});
+
+test('claude-code: a host-flagged reviewerClass agent (frontmatter tier/description) is also locked; a working agent stays toggleable', async () => {
+  const flagged = agent('qa-lead', { vendor: 'anthropic', transport: 'claude-native', model: 'anthropic/sonnet', costModelClass: 'metered' });
+  const ctx = await renderClaude([flagged, CS_AGENT], vendorSetup('absent'));
+  try {
+    // The host's settings payload carries reviewerClass per agent (src/core/agentSettingsRoute.ts).
+    ctx.dispatch({ type: 'settings', payload: { harness: { effective: 'claude-code' }, agents: [
+      { id: 'qa-lead', name: 'qa-lead', keywords: '', claudeTier: 'sonnet', handWrittenBackend: false, reviewerClass: true, model: 'sonnet' },
+      { id: 'cs', name: 'cs', keywords: '', claudeTier: 'sonnet', handWrittenBackend: false, reviewerClass: false, model: 'sonnet' },
+    ] } });
+    await ctx.flush();
+    const locked = await pickOpenai(ctx, 'qa-lead');
+    assert.equal((locked.querySelector('.routing-codex-write-checkbox') as any).disabled, true);
+    const card = await pickOpenai(ctx, 'cs');
+    const box = card.querySelector('.routing-codex-write-checkbox') as any;
+    assert.equal(box.disabled, false);
+    box.checked = false;
+    box.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+    await ctx.flush();
+    assert.equal((cardOf(ctx.doc, 'cs').querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex', 'user can still untick');
+  } finally {
+    ctx.win.close();
+  }
+});
+
+test('claude-code: an agent already saved on read-only codex is not switched to write on load', async () => {
+  const saved = agent('old', { vendor: 'openai', transport: 'mcp', mcpServer: 'codex', model: 'openai/gpt-6.1-sol', costModelClass: 'subscription' });
+  const ctx = await renderClaude([saved], vendorSetup('installed'));
+  try {
+    const card = cardOf(ctx.doc, 'old');
+    const box = card.querySelector('.routing-codex-write-checkbox') as any;
+    assert.ok(box, 'write box present');
+    assert.equal(box.checked, false);
+    assert.equal((card.querySelector('[data-field-key$=".mcpServer"]') as any).value, 'codex');
+  } finally {
+    ctx.win.close();
   }
 });
 

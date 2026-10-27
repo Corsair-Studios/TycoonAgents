@@ -18,6 +18,7 @@ export interface HookRecord {
                               // subagent or bridge child); the panel uses it for the harness-mismatch hint only.
   tool?: string;             // PreToolUse only, e.g. "Task", "Read", "mcp__server__tool"
   toolUseId?: string;        // PreToolUse (mcp__ tools) / PostToolUse: Claude Code's tool_use_id, pairs a call with its finish
+  foreignCli?: { vendor: string; cli: string; model: string | null }; // PreToolUse Bash/PowerShell only: the command ran another vendor's LLM CLI (codex exec ...)
   workerId?: string;         // resolved agent id (or session id fallback)
   tokens?: number;           // SubagentStop only: total tokens consumed by the subagent session
   ok?: boolean;              // SubagentStop (codex dispatcher): true on success, false on failure.

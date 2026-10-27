@@ -67,7 +67,8 @@ export type NormalizedEvent =
       model?: string; // full model id, e.g. from a generic mcp/openai-compatible backend match (p2-t2)
       vendor?: string; // backend vendor, e.g. "anthropic" | "openai" | "google" (p2-t2)
       costModelClass?: "metered" | "subscription" | "local"; // (p2-t2)
-      toolUseId?: string; // Claude Code tool_use_id of this call (MCP calls only); pairs with WorkerToolDone
+      toolUseId?: string; // Claude Code tool_use_id of this call (MCP and foreign-CLI calls); pairs with WorkerToolDone
+      foreignCli?: { vendor: string; cli: string; model: string | null }; // a Bash/PowerShell call that ran another vendor's LLM CLI (core/foreignCli.ts)
       provider?: string;
       sessionId?: string;
     }

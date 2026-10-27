@@ -100,9 +100,9 @@
    * subscription (Max/Pro) billing. Run the /update-pricing skill to refresh
    * Anthropic rates from live prices. (rates confirmed ~2026-10)
    *
-   * OpenAI rows (gpt-6-astra/gpt-6.1-sol/gpt-6-luna, ~2026-10) use the same 3:1
+   * OpenAI rows (gpt-6-astra/gpt-6.1-sol/gpt-6.1-terra/gpt-6-luna, ~2026-10) use the same 3:1
    *   blend on OpenAI's published standard rates: astra $10/$50 -> 20, sol
-   *   $2/$10 -> 4, luna $0.10/$0.50 -> 0.2.
+   *   $2/$10 -> 4, terra $1/$5 -> 2, luna $0.10/$0.50 -> 0.2.
    *
    * PLACEHOLDERS — every other non-anthropic/non-gpt-6 row below is a rough seed, not a
    * verified published rate. Refresh via the update-pricing skill before
@@ -141,6 +141,7 @@
     // Used for OpenAI-vs-OpenAI comparisons only; never against another vendor.
     "openai/gpt-6.1-sol": { perMtok: 4, weight: 3 }, // $2 in / $10 out -> (6+10)/4 (Sonnet-tier)
     "openai/gpt-6-astra": { perMtok: 20, weight: 30 }, // $10 in / $50 out -> (30+50)/4 (Opus-tier)
+    "openai/gpt-6.1-terra": { perMtok: 2, weight: 1.5 }, // $1 in / $5 out -> (3+5)/4 (between Sol and Luna)
     "openai/gpt-6-luna": { perMtok: 0.2, weight: 0.08 }, // $0.10 in / $0.50 out -> (0.3+0.5)/4 (Haiku-tier)
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
@@ -1330,6 +1331,9 @@
    */
   function isUnreportedBridgeRow(agent) {
     if (!agent || !agent.id || agent.id === "orchestrator") return false;
+    // A hand-written agent that shells out to another LLM's CLI (codex exec, gemini -p, ...):
+    // that CLI's tokens are never captured, so TOKENS only cover this agent's own model.
+    if (agent.foreignCliCalls > 0) return true;
     const harness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
     if (harness !== "claude-code") return false;
     if (typeof agent.fallbackOf === "string" && agent.fallbackOf.trim() !== "") return false;
@@ -1341,6 +1345,22 @@
     const server = String(b.mcpServer || "").toLowerCase();
     const vendor = String(b.vendor || "").toLowerCase();
     return /^(codex|gemini|agy|antigravity)/.test(server) || ((vendor === "openai" || vendor === "google") && !!server);
+  }
+
+  /** The foreign-LLM CLI call currently in flight for this agent, or null. */
+  function foreignCliInFlight(agent) {
+    const calls = agent && Array.isArray(agent.inFlightCalls) ? agent.inFlightCalls : [];
+    for (let i = calls.length - 1; i >= 0; i--) {
+      if (calls[i] && calls[i].foreign && calls[i].foreign.vendor) return calls[i].foreign;
+    }
+    return null;
+  }
+
+  /** "via Codex CLI · gpt-6.1-terra" for a foreign-LLM CLI call (model omitted when unknown). */
+  function foreignCliLabel(f) {
+    const names = { codex: "Codex CLI", gemini: "Gemini CLI", opencode: "OpenCode CLI", ollama: "Ollama" };
+    const cli = names[f.cli] || String(f.cli || "CLI");
+    return "via " + cli + (f.model ? " · " + f.model : "");
   }
 
   /**
@@ -1366,8 +1386,11 @@
     // already rebuild #metrics-tbody from scratch on every settings/metrics
     // update — no separate recompute pass needed here).
     const rowHarness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    // A foreign-LLM CLI call in flight (Bash running codex exec etc.) lights the row like an MCP
+    // bridge call does; fallback still wins inside agentAccent.
+    const foreignInFlight = foreignCliInFlight(agent);
     const rowAccentKind = agentAccent({
-      vendor: agent.vendor,
+      vendor: foreignInFlight ? foreignInFlight.vendor : agent.vendor,
       costModelClass: agent.costModelClass,
       fallbackOf: agent.fallbackOf,
       harness: rowHarness,
@@ -1405,6 +1428,16 @@
       countBadge.textContent = `×${agent.liveSpawns.length}`;
       countBadge.title = `${agent.liveSpawns.length} concurrent spawns currently routed to this agent.`;
       nameTd.appendChild(countBadge);
+    }
+
+    // Which foreign model the agent is calling through its CLI right now.
+    const foreignShown = foreignInFlight || (showActive && agent.lastForeignCli && agent.lastForeignCli.vendor ? agent.lastForeignCli : null);
+    if (showActive && foreignShown) {
+      const viaLine = document.createElement("div");
+      viaLine.className = "agent-foreign-cli";
+      viaLine.textContent = foreignCliLabel(foreignShown);
+      viaLine.title = "This agent is calling another LLM through its command-line tool.";
+      nameTd.appendChild(viaLine);
     }
 
     // Live spawn description (currentDescription, WorkerSpawned.currentDescription):
@@ -1541,6 +1574,9 @@
     const mcpTd = document.createElement("td");
     mcpTd.className = "col-mcp";
     mcpTd.title = "MCP — number of MCP tool calls this agent has made.";
+    if (agent.foreignCliCalls > 0) {
+      mcpTd.title += " Includes " + agent.foreignCliCalls + " call" + (agent.foreignCliCalls === 1 ? "" : "s") + " to other LLMs via their CLI.";
+    }
     mcpTd.textContent = String(agent.mcpCount ?? 0);
     row.appendChild(mcpTd);
 
@@ -1594,7 +1630,9 @@
       const mark = document.createElement("span");
       mark.className = "col-tokens-bridge-note";
       mark.textContent = " †";
-      mark.title = "Provider tokens not reported by Codex/Gemini — this shows only the Claude relay's tokens";
+      mark.title = agent.foreignCliCalls > 0 && !(lastRoutingPayload && Array.isArray(lastRoutingPayload.agents) && lastRoutingPayload.agents.some((x) => x && x.id === agent.id && x.backend && x.backend.transport === "mcp"))
+        ? "Tokens used by the other LLM's CLI are not reported — this shows only this agent's own model"
+        : "Provider tokens not reported by Codex/Gemini — this shows only the Claude relay's tokens";
       mark.setAttribute("aria-label", mark.title);
       tokensTd.appendChild(mark);
     }

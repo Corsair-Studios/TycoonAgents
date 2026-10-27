@@ -20,6 +20,8 @@ import {
   clearAgentRoute,
   describeAgentRoutes,
   describeRoutingVisibility,
+  isReviewerClassAgent,
+  enforceReviewerReadOnly,
   overrideAgentToClaudeTier,
 } from "../src/core/agentSettingsRoute";
 import { saveRoutingProfile } from "../src/core/routingHostOps";
@@ -504,4 +506,41 @@ test("clearAgentRoute / overrideAgentToClaudeTier thread the caller's effective 
       assert.equal(generated, harness === "opencode", `harness ${harness}`);
     });
   }
+});
+
+test("isReviewerClassAgent: id rules, tier: reviewer, and review/audit descriptions; working agents are not reviewer-class", () => {
+  for (const id of ["reviewer", "codex-reviewer", "gemini-reviewer", "uefn-auditor"]) assert.equal(isReviewerClassAgent(id), true, id);
+  assert.equal(isReviewerClassAgent("qa", { tier: "reviewer" }), true);
+  assert.equal(isReviewerClassAgent("qa", { description: "Reviews diffs for correctness and flags regressions." }), true);
+  assert.equal(isReviewerClassAgent("qa", { role: "Security auditor" }), true);
+  for (const id of ["coding-specialist", "testing-specialist", "search-retrieval", "verse-expert"]) assert.equal(isReviewerClassAgent(id, { tier: "worker", description: "Implements features and fixes bugs." }), false, id);
+});
+
+test("describeAgentRoutes surfaces reviewerClass from the agent file", () => {
+  const root = tmpRoot();
+  writeAgent(root, "worker.md", ["name: worker", "description: Implements features.", "tier: worker"]);
+  writeAgent(root, "checker.md", ["name: checker", "description: Checks things.", "tier: reviewer"]);
+  const routes = describeAgentRoutes(root);
+  assert.equal(routes["worker"].reviewerClass, false);
+  assert.equal(routes["checker"].reviewerClass, true);
+});
+
+test("enforceReviewerReadOnly: new reviewer write is downgraded, existing reviewer write is kept, working agent write is allowed", () => {
+  const root = tmpRoot();
+  writeAgent(root, "codex-reviewer.md", ["name: codex-reviewer", "description: Second opinion.", "tier: reviewer"]);
+  writeAgent(root, "old-reviewer.md", ["name: old-reviewer", "description: Reviews code.", "tier: reviewer"]);
+  writeAgent(root, "worker.md", ["name: worker", "description: Implements features.", "tier: worker"]);
+  const w = { vendor: "openai", transport: "mcp", mcpServer: "codex-write", model: "openai/gpt-6.1-sol" };
+  const profile = { version: 1, agents: { "codex-reviewer": { ...w }, "old-reviewer": { ...w }, worker: { ...w } } };
+  const previous = { version: 1, agents: { "old-reviewer": { ...w } } };
+  const out = enforceReviewerReadOnly(root, profile, previous);
+  const a = (out.profile as any).agents;
+  assert.equal(a["codex-reviewer"].mcpServer, "codex");
+  assert.equal(a["old-reviewer"].mcpServer, "codex-write");
+  assert.equal(a["worker"].mcpServer, "codex-write");
+  assert.equal(out.notices.length, 1);
+  assert.match(out.notices[0], /^codex-reviewer: Reviewers stay read-only/);
+  assert.equal((profile.agents["codex-reviewer"] as any).mcpServer, "codex-write", "input not mutated");
+  const none = enforceReviewerReadOnly(root, { version: 1, agents: { worker: { ...w } } }, null);
+  assert.deepEqual(none.notices, []);
 });

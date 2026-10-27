@@ -112,7 +112,7 @@ The fun part — a game-style scene that makes agent activity readable at a glan
 - **Build & defend** — agents build objects across your site and defend the base from incoming attacks.
 - **Achievements, badges & rebirths** — earn badges for milestones; rebirth for compounding bonuses (and the whole fleet dances for three seconds when you do).
 
-The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol, Luna). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; the standalone host always shows the full view.
+The Agents screen defaults to a single-provider view with per-agent model tier radios for the provider your harness runs on (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol, Luna, plus Terra as an explicit middle choice). Turn on **"I use more than one AI provider"** in Settings (`tycoonagents.agents.multiProvider`, per user) to show the full vendor and fallback controls; the standalone host always shows the full view.
 
 The Agents screen's **Keyword health** card flags routing problems in `agent-keywords.json` (dangling refs, multi-word segments that can never match, an agent listed after the Wildcard Agent) and offers a **Fix all** to normalize them. See [`docs/keyword-routing.md`](docs/keyword-routing.md) for how Task routing scores keywords.
 
@@ -207,7 +207,7 @@ TycoonAgents can also read activity from [Codex CLI](https://github.com/openai/c
 
 Any recent Codex CLI works: a runtime launcher discovers the Codex binary and picks the connection method automatically (`mcp-server` or an `app-server`-based adapter); set `TYCOON_CODEX_BACKEND` to `mcp-server` or `app-server` to override. See [`docs/codex-host.md`](docs/codex-host.md) for the launcher internals and discovery order.
 
-The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost); `gpt-6-astra` is the most capable tier and `gpt-6-luna` the cheapest. The project's Codex MCP server is registered automatically, with no approval prompt; start a new Claude chat to load it (`claude mcp list` shows it).
+The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost); `gpt-6-astra` is the most capable tier, `gpt-6.1-terra` a balanced model for straightforward work, and `gpt-6-luna` the cheapest. The project's Codex MCP server is registered automatically, with no approval prompt; start a new Claude chat to load it (`claude mcp list` shows it).
 
 Adding a Codex agent from the Agents screen installs the launcher-based Codex MCP entry (`codex-mcp-launcher.cjs`, never `codex mcp-server` directly). See [`docs/adding-a-non-anthropic-agent.md`](docs/adding-a-non-anthropic-agent.md) for wiring up a foreign-LLM agent from scratch.
 

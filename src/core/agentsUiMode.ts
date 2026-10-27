@@ -56,12 +56,13 @@ export interface SingleProviderTiers {
 
 /**
  * Single source of truth for the Codex models accepted under ChatGPT sign-in
- * (Astra, Sol, Luna: most to least capable, matching Claude opus/sonnet/haiku). Ids read from
- * `codex debug models` (2026-10-13). Import from "src/core/agentsUiMode".
+ * (Astra, Sol, Terra, Luna: most to least capable; Astra/Sol/Luna match Claude opus/sonnet/haiku, Terra is an explicit
+ * middle choice, never a tier default). Ids read from `codex debug models` (2026-10-27). Import from "src/core/agentsUiMode".
  */
 export const CODEX_ACCEPTED_MODELS: readonly SingleProviderTier[] = [
   { id: "astra", label: "Astra", model: "openai/gpt-6-astra", description: "Most capable; frontier work" },
   { id: "sol", label: "Sol", model: "openai/gpt-6.1-sol", description: "Near-Astra at lower cost" },
+  { id: "terra", label: "Terra", model: "openai/gpt-6.1-terra", description: "Balanced model for straightforward work" },
   { id: "luna", label: "Luna", model: "openai/gpt-6-luna", description: "Cheap, high-volume work" },
 ];
 

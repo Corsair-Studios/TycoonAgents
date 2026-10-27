@@ -1995,6 +1995,240 @@ function resolveAgainstStack(stack, instanceId, now) {
   return { entry: top, workerId: top.agentId };
 }
 
+// Foreign-LLM CLI classifier: inline copy of src/core/foreignCli.ts (kept in lockstep by
+// test/foreignCli.test.ts). Detects `codex exec`, `gemini -p`, `opencode run`, `ollama run` in a
+// Bash/PowerShell command so the call shows up as a foreign-LLM call. Prefers false negatives.
+const HELP_FLAGS = new Set(["--help", "-h", "--version", "-V", "-v", "help", "/?"]);
+const WRAPPERS = new Set(["env", "command", "time", "nohup", "sudo", "exec"]);
+const SHELLS = new Set(["bash", "sh", "zsh", "cmd", "powershell", "pwsh"]);
+const SHELL_CMD_FLAGS = new Set(["-c", "/c", "/k", "-command", "-c"]);
+const GEMINI_SUBCOMMANDS = new Set(["mcp", "extensions", "extension", "hooks", "skills", "config", "update", "login", "help"]);
+const GEMINI_VALUE_FLAGS = new Set([
+    "-m", "--model", "-o", "--output-format", "--approval-mode", "-e", "--extensions", "--include-directories",
+    "-r", "--resume", "--allowed-tools", "--allowed-mcp-server-names", "-i", "--prompt-interactive", "--checkpointing",
+]);
+/** Split a command line into argv-style segments on ; && || | & and newlines (outside quotes). */
+function splitSegments(command) {
+    const segments = [];
+    let cur = [];
+    let tok = "";
+    let has = false;
+    let quote = null;
+    const pushTok = () => { if (has)
+        cur.push(tok); tok = ""; has = false; };
+    const pushSeg = () => { pushTok(); if (cur.length > 0)
+        segments.push(cur); cur = []; };
+    const heredocs = [];
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (quote) {
+            if (ch === "\\" && quote === '"' && command[i + 1] === '"') {
+                tok += '"';
+                i++;
+                continue;
+            }
+            if (ch === quote) {
+                quote = null;
+                continue;
+            }
+            tok += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            has = true;
+            continue;
+        }
+        if (ch === " " || ch === "\t" || ch === "\r") {
+            pushTok();
+            continue;
+        }
+        if (ch === "\n") {
+            pushSeg();
+            // Skip the body of any heredoc started on the line that just ended.
+            for (const term of heredocs.splice(0)) {
+                let pos = i + 1;
+                while (pos < command.length) {
+                    let eol = command.indexOf("\n", pos);
+                    if (eol < 0)
+                        eol = command.length;
+                    const line = command.slice(pos, eol).trim();
+                    pos = eol + 1;
+                    if (line === term)
+                        break;
+                }
+                i = Math.min(pos, command.length) - 1;
+            }
+            continue;
+        }
+        if (ch === ";" || ch === "|" || ch === "&") {
+            pushSeg();
+            continue;
+        }
+        if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
+            let j = i + 2;
+            if (command[j] === "-")
+                j++;
+            while (command[j] === " " || command[j] === "\t")
+                j++;
+            let word = "";
+            const q = command[j];
+            if (q === '"' || q === "'") {
+                const close = command.indexOf(q, j + 1);
+                if (close > j) {
+                    word = command.slice(j + 1, close);
+                    j = close + 1;
+                }
+            }
+            else {
+                const m = /^[^\s;|&<>()]+/.exec(command.slice(j));
+                if (m) {
+                    word = m[0];
+                    j += word.length;
+                }
+            }
+            pushTok();
+            if (word !== "")
+                heredocs.push(word);
+            i = j - 1;
+            continue;
+        }
+        // PowerShell here-string: @' ... '@ or @" ... "@ (the opener ends its line).
+        if (ch === "@" && !has && (command[i + 1] === "'" || command[i + 1] === '"') && /^\r?\n/.test(command.slice(i + 2, i + 4))) {
+            const end = command.indexOf("\n" + command[i + 1] + "@", i + 2);
+            has = true;
+            i = end < 0 ? command.length : end + 2;
+            continue;
+        }
+        tok += ch;
+        has = true;
+    }
+    pushSeg();
+    return segments;
+}
+function exeName(token) {
+    const base = token.replace(/\\/g, "/").split("/").pop() ?? "";
+    return base.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
+}
+function optionValue(args, short, long) {
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (short.includes(a) || long.includes(a)) {
+            const v = args[i + 1];
+            return v !== undefined && v !== "" && !v.startsWith("-") ? v : null;
+        }
+        for (const l of long)
+            if (a.startsWith(l + "=") && a.length > l.length + 1)
+                return a.slice(l.length + 1);
+    }
+    return null;
+}
+/** `-c model="x"` / `--config model=x` overrides (Codex). */
+function configModel(args) {
+    for (let i = 0; i < args.length - 1; i++) {
+        if (args[i] === "-c" || args[i] === "--config") {
+            const m = /^model\s*=\s*"?([^"\s]+)"?$/.exec(args[i + 1]);
+            if (m)
+                return m[1];
+        }
+    }
+    return null;
+}
+function vendorFromProvider(provider) {
+    const p = provider.toLowerCase();
+    if (p === "openai" || p === "codex")
+        return "openai";
+    if (p === "google" || p === "gemini" || p === "google-vertex")
+        return "google";
+    if (p === "ollama" || p === "lmstudio" || p === "local")
+        return "local";
+    return p;
+}
+function classifyTokens(tokens, depth) {
+    let i = 0;
+    while (i < tokens.length) {
+        const t = tokens[i];
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || WRAPPERS.has(exeName(t))) {
+            i++;
+            continue;
+        }
+        break;
+    }
+    if (i >= tokens.length)
+        return null;
+    const exe = exeName(tokens[i]);
+    const args = tokens.slice(i + 1);
+    if (SHELLS.has(exe)) {
+        if (depth >= 2)
+            return null;
+        for (let k = 0; k < args.length - 1; k++) {
+            if (SHELL_CMD_FLAGS.has(args[k].toLowerCase()))
+                return classifyForeignCli(args.slice(k + 1).join(" "), depth + 1);
+        }
+        return null;
+    }
+    if (args.some((a) => HELP_FLAGS.has(a)))
+        return null;
+    if (exe === "codex") {
+        if (args[0] !== "exec" && args[0] !== "e")
+            return null;
+        const rest = args.slice(1);
+        const model = optionValue(rest, ["-m"], ["--model"]) ?? configModel(rest);
+        return { vendor: "openai", cli: "codex", model };
+    }
+    if (exe === "gemini") {
+        const model = optionValue(args, ["-m"], ["--model"]);
+        const hasPromptFlag = args.some((a) => a === "-p" || a === "--prompt" || a.startsWith("--prompt="));
+        let positional = false;
+        for (let k = 0; k < args.length && !positional; k++) {
+            const a = args[k];
+            if (GEMINI_VALUE_FLAGS.has(a)) {
+                k++;
+                continue;
+            }
+            if (a.startsWith("-"))
+                continue;
+            if (k === 0 && GEMINI_SUBCOMMANDS.has(a))
+                return null;
+            positional = true;
+        }
+        if (!hasPromptFlag && !positional)
+            return null;
+        return { vendor: "google", cli: "gemini", model };
+    }
+    if (exe === "opencode") {
+        if (args[0] !== "run")
+            return null;
+        const model = optionValue(args.slice(1), ["-m"], ["--model"]);
+        const slash = model ? model.indexOf("/") : -1;
+        const vendor = model && slash > 0 ? vendorFromProvider(model.slice(0, slash)) : "opencode";
+        if (vendor === "anthropic")
+            return null; // same vendor as the Claude Code harness
+        return { vendor, cli: "opencode", model };
+    }
+    if (exe === "ollama") {
+        if (args[0] !== "run")
+            return null;
+        const model = args.slice(1).find((a) => !a.startsWith("-")) ?? null;
+        return { vendor: "local", cli: "ollama", model };
+    }
+    return null;
+}
+/**
+ * Returns the first foreign-LLM CLI invocation found in a shell command, or
+ * null. `depth` is internal (nested `bash -c "..."` unwrapping).
+ */
+function classifyForeignCli(command, depth = 0) {
+    if (typeof command !== "string" || command === "" || command.length > 20000)
+        return null;
+    for (const seg of splitSegments(command)) {
+        const hit = classifyTokens(seg, depth);
+        if (hit)
+            return hit;
+    }
+    return null;
+}
+
 // Resolve which stack entry a non-spawn tool call (Read/Edit/Bash/mcp__*/etc.
 // fired from PreToolUse) belongs to, and bind Claude Code's per-call
 // `payload.agent_id` (a UUID identifying the specific running subagent
@@ -3122,6 +3356,18 @@ function main(raw) {
       if (toolName.indexOf("mcp__") === 0 && typeof payload.tool_use_id === "string" && payload.tool_use_id !== "") {
         record.toolUseId = payload.tool_use_id;
       }
+      // A Bash/PowerShell command that runs another vendor's LLM CLI (codex exec, gemini -p, ...) is
+      // logged like a provider call: it carries the CLI/vendor/model and a toolUseId so the matching
+      // next activity from the same worker ends it (core/state.ts). Anything else (including codex --version) writes the plain record.
+      try {
+        if ((toolName === "Bash" || toolName === "PowerShell") && toolInput && typeof toolInput.command === "string") {
+          const foreignCli = classifyForeignCli(toolInput.command);
+          if (foreignCli) {
+            record.foreignCli = foreignCli;
+            if (typeof payload.tool_use_id === "string" && payload.tool_use_id !== "") record.toolUseId = payload.tool_use_id;
+          }
+        }
+      } catch { /* detection is best-effort; never break the hook */ }
 
       // -------------------------------------------------------------------
       // Codex offload visibility (p6-t2): the Codex MCP server (media/mcp/

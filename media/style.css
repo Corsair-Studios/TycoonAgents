@@ -3818,6 +3818,18 @@ td.col-name.name--active {
   vertical-align: middle;
 }
 
+.agent-foreign-cli {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted, #9aa0a6);
+  font-weight: 400;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
 .agent-spawn-desc {
   display: block;
   margin-top: 2px;

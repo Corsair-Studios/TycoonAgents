@@ -23,7 +23,7 @@ predate newer model catalogs, so the newest CLI is the one that accepts current 
 ## Reviewer model and MCP approval (Experimental)
 
 The `codex-reviewer` agent defaults to `gpt-6.1-sol` (near-Astra at lower cost);
-`gpt-6-astra` is the most capable tier for deeper reviews, `gpt-6-luna` the cheapest, with reasoning efforts
+`gpt-6-astra` is the most capable tier for deeper reviews, `gpt-6.1-terra` a balanced model for straightforward work, `gpt-6-luna` the cheapest, with reasoning efforts
 `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` (default `low`). Accepted model slugs and
 their supported efforts are account- and time-dependent — ChatGPT-account Codex auth has rejected
 several plausible-looking slugs historically (see

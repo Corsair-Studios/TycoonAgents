@@ -36,6 +36,8 @@ export interface AgentRouteInfo {
   handWrittenBackend: boolean;
   /** `tycoon_relay` bridge server (e.g. "codex") when the agent file is a managed relay, else null. Display only. */
   relayServer: string | null;
+  /** True for reviewer-class agents (see isReviewerClassAgent): Codex write access is off and locked for them. */
+  reviewerClass: boolean;
   /** Codex harness only: the model this agent runs on when it has no explicit
    *  choice (display only, never written to routing.json). null otherwise. */
   harnessDefault: HarnessDefaultInfo | null;
@@ -107,6 +109,58 @@ function readRelayServer(root: string, agentId: string): string | null {
 }
 
 /**
+ * Reviewer-class agents judge code instead of changing it, so a Codex route for them stays read-only.
+ * Deliberately simple: frontmatter `tier: reviewer`, id `reviewer`, `*-reviewer` or `uefn-auditor`, or a
+ * description (first 120 chars) / `role` that names review or audit work. The webview mirrors the id rules
+ * (media/src/main/100-slot-editor-settings.js, isReviewerClassAgentInfo) and uses the host's flag for the rest.
+ */
+export function isReviewerClassAgent(id: string, frontmatter: Record<string, unknown> = {}): boolean {
+  const lid = String(id || "").toLowerCase();
+  if (lid === "reviewer" || lid === "uefn-auditor" || lid.endsWith("-reviewer")) return true;
+  const tier = frontmatter["tier"];
+  if (typeof tier === "string" && tier.trim().toLowerCase() === "reviewer") return true;
+  const text = [frontmatter["role"], frontmatter["description"]]
+    .map((v) => (typeof v === "string" ? v.slice(0, 120) : ""))
+    .join(" ");
+  return /\b(reviews?|reviewer|audits?|auditor)\b/i.test(text);
+}
+
+export const REVIEWER_READ_ONLY_NOTICE = "Reviewers stay read-only so they never change the code they judge.";
+
+/**
+ * Host-side backstop for the webview's locked box: a Save that newly selects `codex-write` for a reviewer-class
+ * agent is downgraded to read-only `codex`. A reviewer already saved on `codex-write` is left as is.
+ * Returns the (possibly copied) profile and one notice per downgraded agent. Never mutates the input.
+ */
+export function enforceReviewerReadOnly(root: string, profile: unknown, previous: unknown): { profile: unknown; notices: string[] } {
+  const agents = profile && typeof profile === "object" ? (profile as Record<string, unknown>)["agents"] : undefined;
+  if (!agents || typeof agents !== "object") return { profile, notices: [] };
+  const prevAgents = previous && typeof previous === "object" ? (previous as Record<string, unknown>)["agents"] : undefined;
+  const notices: string[] = [];
+  let nextAgents: Record<string, unknown> | null = null;
+  for (const [id, slot] of Object.entries(agents as Record<string, unknown>)) {
+    if (!slot || typeof slot !== "object" || (slot as Record<string, unknown>)["mcpServer"] !== "codex-write") continue;
+    const prevSlot = prevAgents && typeof prevAgents === "object" ? (prevAgents as Record<string, unknown>)[id] : undefined;
+    if (prevSlot && typeof prevSlot === "object" && (prevSlot as Record<string, unknown>)["mcpServer"] === "codex-write") continue;
+    if (!readReviewerClass(root, id)) continue;
+    nextAgents = nextAgents ?? { ...(agents as Record<string, unknown>) };
+    nextAgents[id] = { ...(slot as Record<string, unknown>), mcpServer: "codex" };
+    notices.push(`${id}: ${REVIEWER_READ_ONLY_NOTICE}`);
+  }
+  if (!nextAgents) return { profile, notices };
+  return { profile: { ...(profile as Record<string, unknown>), agents: nextAgents }, notices };
+}
+
+function readReviewerClass(root: string, agentId: string): boolean {
+  try {
+    const content = fs.readFileSync(path.join(root, ".claude", "agents", `${agentId}.md`), "utf8");
+    return isReviewerClassAgent(agentId, readAgentFrontmatter(content));
+  } catch {
+    return isReviewerClassAgent(agentId);
+  }
+}
+
+/**
  * Per-agent route fields for the Settings screen, keyed by agent id. Built
  * from buildRoutingView(root) so both hosts agree on precedence/provenance
  * with the Routing screen itself.
@@ -143,6 +197,7 @@ export function describeAgentRoutes(root: string, opts: { harness?: string } = {
       routeSource,
       handWrittenBackend: agent.handWrittenBackend,
       relayServer: readRelayServer(root, agent.id),
+      reviewerClass: readReviewerClass(root, agent.id),
       harnessDefault,
     };
   }

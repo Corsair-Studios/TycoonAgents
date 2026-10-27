@@ -1140,7 +1140,10 @@ function handleBrowserMessage(msg) {
         // Read the previous profile before the write so only slots changed by THIS Save register a server.
         let previous = null;
         try { previous = routingProfileModule().loadRoutingProfile(root).profile; } catch { previous = null; }
+        const guarded = agentSettingsRouteModule().enforceReviewerReadOnly(root, msg.profile, previous);
+        msg.profile = guarded.profile;
         const result = saveRoutingProfile({ root, profile: msg.profile, scriptsDir: REPO_ROOT, effectiveHarness });
+        if (guarded.notices.length > 0) result.relayNotices = [...(result.relayNotices || []), ...guarded.notices];
         broadcast('message', { type: 'routingSaved', ...result });
         broadcast('message', { type: 'routing', payload: buildRoutingPayload(root) });
         // Save is the user's consent to a foreign vendor: register its bridge server if missing,
@@ -3456,6 +3459,7 @@ function buildStandaloneSettingsPayload() {
           routeSource: route?.routeSource ?? 'frontmatter',
           handWrittenBackend: route?.handWrittenBackend ?? false,
           relayServer: route?.relayServer ?? null,
+          reviewerClass: route?.reviewerClass ?? false,
           harnessDefault: route?.harnessDefault ?? null,
         };
       });

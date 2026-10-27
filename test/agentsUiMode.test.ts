@@ -69,6 +69,7 @@ test('singleProviderTiers: codex returns the openai vendor with exact sol/astra 
   assert.deepEqual(result.tiers, [
     { id: 'astra', label: 'Astra', model: 'openai/gpt-6-astra', description: 'Most capable; frontier work' },
     { id: 'sol', label: 'Sol', model: 'openai/gpt-6.1-sol', description: 'Near-Astra at lower cost' },
+    { id: 'terra', label: 'Terra', model: 'openai/gpt-6.1-terra', description: 'Balanced model for straightforward work' },
     { id: 'luna', label: 'Luna', model: 'openai/gpt-6-luna', description: 'Cheap, high-volume work' },
   ]);
 });
@@ -85,8 +86,8 @@ test('singleProviderTiers: harness matching is case-insensitive', () => {
   assert.equal(singleProviderTiers('CLAUDE-CODE').vendor, 'anthropic');
 });
 
-test('CODEX_ACCEPTED_MODELS is the codex tier source: Astra, Sol and Luna (most to least capable; ids from codex debug models)', () => {
-  assert.deepEqual(CODEX_ACCEPTED_MODELS.map((t) => t.model), ['openai/gpt-6-astra', 'openai/gpt-6.1-sol', 'openai/gpt-6-luna']);
+test('CODEX_ACCEPTED_MODELS is the codex tier source: Astra, Sol, Terra and Luna (most to least capable; ids from codex debug models)', () => {
+  assert.deepEqual(CODEX_ACCEPTED_MODELS.map((t) => t.model), ['openai/gpt-6-astra', 'openai/gpt-6.1-sol', 'openai/gpt-6.1-terra', 'openai/gpt-6-luna']);
   assert.ok(CODEX_ACCEPTED_MODELS.every((t) => !!t.description), 'every tier carries a one-line description');
   assert.deepEqual(singleProviderTiers('codex').tiers, CODEX_ACCEPTED_MODELS);
 });

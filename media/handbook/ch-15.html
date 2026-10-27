@@ -233,10 +233,15 @@
     agent into a relay to the provider you chose: its file forwards the task,
     with your original role instructions kept intact, and returns the
     provider's result. Start a new chat for it to take effect. Codex is
-    registered read-only, so it proposes the exact changes and the agent
-    applies them. To let Codex edit files itself, tick <strong>Let Codex edit
-    files in this project (workspace-write sandbox)</strong> on that agent's
-    card: Codex then changes files directly without asking. A provider set only
+    registered read-only by default, so it proposes the exact changes and the
+    agent applies them. When you switch a working agent to Codex, <strong>Let
+    Codex edit files in this project (workspace-write sandbox)</strong> is
+    ticked on that agent's card: Codex then changes files directly without
+    asking. Untick it to keep Codex read-only. Reviewer-class agents (a
+    <code>reviewer</code> or <code>*-reviewer</code> id, <code>uefn-auditor</code>,
+    <code>tier: reviewer</code>, or a description about review or audit) start
+    unticked with the box locked, so reviewers never change the code they
+    judge. Agents you already saved keep their current setting. A provider set only
     in <strong>Default for all agents</strong> does not turn agents into relays.
     Setting the agent back to Anthropic, or unticking <strong>Use another
     provider for this agent</strong> and saving, restores the agent exactly as

@@ -342,6 +342,17 @@
   }
 
   /**
+   * Reviewer-class agents judge code, so Codex write access defaults off and stays locked for them.
+   * The host sets agentInfo.reviewerClass (frontmatter tier/role/description, src/core/agentSettingsRoute.ts);
+   * the id rules (reviewer, *-reviewer, uefn-auditor) are mirrored here so the box is right without a host flag.
+   */
+  function isReviewerClassAgentInfo(agentInfo) {
+    if (!agentInfo) return false;
+    var id = String(agentInfo.id || "").toLowerCase();
+    return !!agentInfo.reviewerClass || id === "reviewer" || id === "uefn-auditor" || /-reviewer$/.test(id);
+  }
+
+  /**
    * Claude Code vendor pick: set the vendor's bridge, its default catalog model and billing. Foreign vendors
    * never keep the native route; anthropic restores native with an Anthropic alias.
    */
@@ -841,6 +852,11 @@
       slot.vendor = vendorSel.value;
       var modelBeforeVendorPick = slot.model;
       if (claudeAgentBridge && applyClaudeVendorBridge(slot, vendorSel.value, presets, (agentInfo && agentInfo.claudeTier) || claudeTierOf(modelBeforeVendorPick))) {
+        // Switching a working agent to Codex starts with write access on; reviewer-class agents stay read-only.
+        if (String(vendorSel.value).toLowerCase() === "openai" && isTopLevelAgentSlot && slot.mcpServer === "codex" &&
+          !(agentInfo && agentInfo.handWrittenBackend) && !isReviewerClassAgentInfo(agentInfo)) {
+          slot.mcpServer = "codex-write";
+        }
         // Claude Code: bridge, default catalog model and billing follow the vendor (anthropic restores native).
         if (String(vendorSel.value).toLowerCase() === "anthropic" && isTopLevelAgentSlot) {
           routingExpandedAgents[agentInfo.id] = false;
@@ -1236,7 +1252,12 @@
         var writeBox = document.createElement("input");
         writeBox.type = "checkbox";
         writeBox.className = "routing-codex-write-checkbox";
+        // Reviewer-class agents cannot gain write access; an already-saved write route is shown as is (not changed silently).
         writeBox.checked = slot.mcpServer === "codex-write";
+        if (isReviewerClassAgentInfo(agentInfo) && !writeBox.checked) {
+          writeBox.disabled = true;
+          writeLabel.title = "Reviewers stay read-only so they never change the code they judge.";
+        }
         writeBox.addEventListener("change", function () {
           slot.transport = "mcp";
           slot.mcpServer = writeBox.checked ? "codex-write" : "codex";
@@ -1249,7 +1270,7 @@
         frag.appendChild(writeLabel);
         var writeNote = document.createElement("div");
         writeNote.className = "routing-env-note routing-codex-write-note";
-        writeNote.textContent = "Codex will then change files directly without asking. Left unticked, Codex proposes changes and this agent applies them. Start a new Claude chat for this to take effect.";
+        writeNote.textContent = "Codex changes files directly without asking. Unticked, Codex proposes changes and this agent applies them. Start a new Claude chat for this to take effect.";
         frag.appendChild(writeNote);
       }
     }
@@ -2809,7 +2830,7 @@
           resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
           resolvedModel: a.resolvedModel || a.model,
         }));
-    var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier });
+    var slotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier, reviewerClass: !!a.reviewerClass });
         editorWrap.appendChild(slotFieldsEl);
         editorWrap.appendChild(buildFallbackEditor(slot, presets, renderRoutingModal, a.id, "agent:" + a.id));
         if (slotFieldsEl._refreshSubscriptionNotice) {
@@ -2918,7 +2939,7 @@
       resolvedVendor: a.vendor || (routingAgent.backend && routingAgent.backend.vendor),
       resolvedModel: a.resolvedModel || a.model,
     }));
-    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier });
+    const fullSlotFieldsEl = buildSlotEditorFields(slot, presets, renderRoutingModal, "agent:" + a.id, { id: a.id, name: a.name || a.id, handWrittenBackend: !!a.handWrittenBackend, claudeTier: a.claudeTier, reviewerClass: !!a.reviewerClass });
     slotTd.appendChild(fullSlotFieldsEl);
     routingRow.appendChild(slotTd);
 

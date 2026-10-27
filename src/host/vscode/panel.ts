@@ -108,7 +108,7 @@ import { runVendorKeyTest, runCustomEndpointTest, cancelAllVendorKeyTests, type 
 import { setGeminiBackend } from "../../core/hostBridgeSettings";
 import { buildRoutingView, saveRoutingProfile, clearRoutingProfile, probeEnv, setLocalEnvValue, clearLocalEnvValue, setClaudeSubscriptionOptIn, computeNeedsDefaultRoute, runCodexConfigGenerator } from "../../core/routingHostOps";
 import { resolveAgentsUiMode, singleProviderTiers } from "../../core/agentsUiMode";
-import { describeAgentRoutes, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
+import { describeAgentRoutes, enforceReviewerReadOnly, describeRoutingVisibility, overrideAgentToClaudeTier, clearAgentRoute, type RoutingVisibility, type ClaudeTier } from "../../core/agentSettingsRoute";
 import { REFERRAL_CODE_PATTERN } from "../../core/themeServiceClient";
 import { exportTeamSetup, applyTeamSetupHost, buildTeamReadinessHost, getTeamSetupDriftHost } from "./teamSetupHost";
 import { renderCodeRules, upsertCodeRulesSection } from "./codeRulesDoctrine";
@@ -8796,7 +8796,10 @@ export class TycoonPanel {
     // Read the previous profile before the write so only slots changed by THIS Save register a server.
     let previous: unknown = null;
     try { previous = root !== "" ? loadRoutingProfile(root).profile : null; } catch { previous = null; }
+    const guarded = enforceReviewerReadOnly(root, profile, previous);
+    profile = guarded.profile;
     const result = saveRoutingProfile({ root, profile, scriptsDir: this._extensionUri.fsPath, effectiveHarness });
+    if (guarded.notices.length > 0) result.relayNotices = [...(result.relayNotices ?? []), ...guarded.notices];
     void this._panel.webview.postMessage({ type: MSG.ROUTING_SAVED, ...result });
     for (const n of result.relayNotices ?? []) void vscode.window.showWarningMessage(`TycoonAgents: ${n}`);
     if (result.ok) this._healKeywordsThenDoctrine(true);
@@ -9021,6 +9024,7 @@ export class TycoonPanel {
         routeSource: route?.routeSource ?? "frontmatter",
         handWrittenBackend: route?.handWrittenBackend ?? false,
         relayServer: route?.relayServer ?? null,
+        reviewerClass: route?.reviewerClass ?? false,
         harnessDefault: route?.harnessDefault ?? null,
       };
     });

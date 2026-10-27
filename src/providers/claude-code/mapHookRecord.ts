@@ -11,6 +11,12 @@ import { DEFAULT_PROVIDER_ID } from "../../core/mappingRegistry";
 const SPAWN_TOOLS = new Set<string>(["Task", "Agent", "Skill"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+function isForeignCliRecord(v: unknown): v is { vendor: string; cli: string; model: string | null } {
+  const f = v as { vendor?: unknown; cli?: unknown; model?: unknown } | null | undefined;
+  return !!f && typeof f.vendor === "string" && f.vendor !== "" && typeof f.cli === "string" && f.cli !== "" &&
+    (f.model === null || typeof f.model === "string");
+}
+
 export function toolToActivityKind(tool: string): ActivityKind {
   if (tool.startsWith("mcp__")) return "wire";
   switch (tool) {
@@ -230,6 +236,7 @@ function mapHookRecordUntagged(record: HookRecord, workerId: string): Normalized
           kind: toolToActivityKind(record.tool),
           detail: record.tool,
           ...(record.toolUseId !== undefined ? { toolUseId: record.toolUseId } : {}),
+          ...(isForeignCliRecord(record.foreignCli) ? { foreignCli: record.foreignCli } : {}),
           ...(record.model !== undefined ? { model: record.model } : {}),
           ...(record.vendor !== undefined ? { vendor: record.vendor } : {}),
           ...(record.costModelClass !== undefined ? { costModelClass: record.costModelClass } : {}),
