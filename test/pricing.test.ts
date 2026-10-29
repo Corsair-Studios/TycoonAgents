@@ -117,6 +117,12 @@ test("'openai/gpt-5.4-mini' resolves to a non-zero PRICE_TABLE row", () => {
   // the subscription-class test below for that path.
 });
 
+test("'google/gemini-4-argon' resolves to its own row at the post-intro 3:1 blend", () => {
+  const key = mod.resolvePriceKey("google/gemini-4-argon");
+  assert.equal(key, "google/gemini-4-argon");
+  assert.equal(mod.PRICE_TABLE[key].perMtok, 8);
+});
+
 test("'openai/gpt-5.4-mini-2026' resolves via longest-prefix match to 'openai/gpt-5.4-mini', not the shorter 'openai/gpt-5' key", () => {
   const key = mod.resolvePriceKey("openai/gpt-5.4-mini-2026");
   assert.equal(key, "openai/gpt-5.4-mini");

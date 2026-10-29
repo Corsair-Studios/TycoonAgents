@@ -19087,6 +19087,9 @@ function themeAnimPreviewDraw(player) {
     "openai/gpt-6-astra": { perMtok: 20, weight: 30 }, // $10 in / $50 out -> (30+50)/4 (Opus-tier)
     "openai/gpt-6.1-terra": { perMtok: 2, weight: 1.5 }, // $1 in / $5 out -> (3+5)/4 (between Sol and Luna)
     "openai/gpt-6-luna": { perMtok: 0.2, weight: 0.08 }, // $0.10 in / $0.50 out -> (0.3+0.5)/4 (Haiku-tier)
+    // Gemini 4 Argon standard rate after the introductory period (intro $2/$10 ends 2026-11-30),
+    // https://ai.google.dev/gemini-api/docs/pricing (confirmed ~2026-10): $4 in / $20 out -> (12+20)/4.
+    "google/gemini-4-argon": { perMtok: 8, weight: 12 },
     "google/gemini-2.5-pro": { perMtok: 6, weight: 8 },
     "google/gemini-2.5-flash": { perMtok: 1, weight: 0.6 },
     "moonshot/kimi-k2": { perMtok: 2, weight: 1.5 },
@@ -19892,7 +19895,7 @@ function themeAnimPreviewDraw(player) {
    * Short display name for a model id, used by the Metrics MODEL pill: the
    * family only, never the company or a billing label. Claude: Opus, Sonnet,
    * Haiku, Fable, Mythos. OpenAI/Codex tiers: Astra, Sol, Terra, Luna.
-   * Google: "Gemini Pro" / "Gemini Flash". Moonshot: "Kimi K2". Anything else
+   * Google: "Argon" / "Carbon" (Gemini 4 tiers), else "Gemini Pro" / "Gemini Flash". Moonshot: "Kimi K2". Anything else
    * keeps a truncated bare model id; empty or unknown input gives "—".
    * Self-contained on purpose (the test extracts and runs it in isolation).
    * @param {string|null|undefined} modelId
@@ -19913,6 +19916,8 @@ function themeAnimPreviewDraw(player) {
       if (new RegExp("(^|[^a-z])" + key + "([^a-z]|$)").test(lower)) return name;
     }
     if (lower.includes("gemini")) {
+      if (/(^|[^a-z])argon([^a-z]|$)/.test(lower)) return "Argon";
+      if (/(^|[^a-z])carbon([^a-z]|$)/.test(lower)) return "Carbon";
       if (lower.includes("flash")) return "Gemini Flash";
       if (lower.includes("pro")) return "Gemini Pro";
       return "Gemini";

@@ -1958,7 +1958,17 @@ function readAndPruneActiveStack(activeAgentFile, activityFile, now) {
 //
 // Returns { entry, workerId } where entry is the matched stack object (or
 // null) and workerId is entry.agentId or "orchestrator".
-function resolveAgainstStack(stack, instanceId, now) {
+function normalizeAgentType(agentType) {
+  if (typeof agentType !== "string") return "";
+  const n = agentType.trim().toLowerCase().replace(/\s+/g, "-");
+  return n === "explore" ? "search-retrieval" : n;
+}
+
+// agentType (payload.agent_type, optional) is the caller's OWN identity. When given it
+// outranks the stack-order guesses in cases 3 and 4: first sightings bind to the unbound
+// entry with that agentId, and the legacy fallback prefers the topmost entry with it.
+function resolveAgainstStack(stack, instanceId, now, agentType) {
+  const wantType = normalizeAgentType(agentType);
   if (stack.length === 0) return { entry: null, workerId: "orchestrator" };
 
   if (instanceId) {
@@ -1973,7 +1983,10 @@ function resolveAgainstStack(stack, instanceId, now) {
     // Case 2/3: not bound yet. Collect unbound entries.
     const unbound = stack.filter((e) => !e.instanceId);
     let target = null;
-    if (unbound.length === 1) {
+    const typed = wantType ? unbound.filter((e) => e.agentId === wantType) : [];
+    if (typed.length > 0) {
+      target = typed[typed.length - 1];
+    } else if (unbound.length === 1) {
       target = unbound[0];
     } else if (unbound.length > 1) {
       // Ambiguous first sighting: fall back to stack-top among the unbound
@@ -1990,7 +2003,12 @@ function resolveAgainstStack(stack, instanceId, now) {
     // through to legacy stack-top.
   }
 
-  const top = stack[stack.length - 1];
+  let top = stack[stack.length - 1];
+  if (wantType) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].agentId === wantType) { top = stack[i]; break; }
+    }
+  }
   top.lastSeen = now;
   return { entry: top, workerId: top.agentId };
 }
@@ -2261,7 +2279,7 @@ function classifyForeignCli(command, depth = 0) {
 // Returns { entry, workerId } — entry is the matched stack object (or null,
 // only meaningful within this call since it isn't guaranteed persisted) and
 // workerId is entry.agentId or "orchestrator".
-function resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now) {
+function resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now, agentType) {
   const lockPath = activeAgentFile + ".lock";
   if (!acquireLock(lockPath, 5000)) {
     // Could not get the lock in time: resolve from a best-effort unpruned
@@ -2269,13 +2287,13 @@ function resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now) {
     // block attribution on lock contention.
     const data = readJsonSafe(activeAgentFile);
     const stack = Array.isArray(data && data.stack) ? data.stack : [];
-    return resolveAgainstStack(stack, instanceId, now);
+    return resolveAgainstStack(stack, instanceId, now, agentType);
   }
   try {
     const data = readJsonSafe(activeAgentFile);
     const rawStack = Array.isArray(data && data.stack) ? data.stack : [];
     const { kept, evicted } = pruneStackCore(rawStack, now);
-    const result = resolveAgainstStack(kept, instanceId, now);
+    const result = resolveAgainstStack(kept, instanceId, now, agentType);
     // Write back whenever the stack changed shape (eviction) OR content
     // (instanceId/lastSeen mutated by resolveAgainstStack) — both happen
     // under this SAME lock acquisition, satisfying the single-lock
@@ -2485,10 +2503,12 @@ function relayFailOpenOnce(tycoonDir, why) {
   } catch { /* never block on logging */ }
 }
 
-function relayAgentOf(payload, workerId) {
-  let agent = workerId && workerId !== "orchestrator" ? workerId : "";
-  if (!agent && typeof payload.agent_type === "string") agent = payload.agent_type.toLowerCase().replace(/\s+/g, "-");
-  return agent;
+function relayAgentOf(agentsDir, payload, workerId) {
+  const typed = normalizeAgentType(payload.agent_type);
+  // The typed name wins only when its agent file exists: that is the file Claude Code loaded.
+  if (typed && /^[A-Za-z0-9._-]{1,64}$/.test(typed) && fs.existsSync(path.join(agentsDir, typed + ".md"))) return typed;
+  if (workerId && workerId !== "orchestrator") return workerId;
+  return typed;
 }
 
 /**
@@ -2498,7 +2518,7 @@ function relayAgentOf(payload, workerId) {
 function enforceRelayPreToolUse(tycoonDir, agentsDir, payload, workerId, instanceId, toolName, now) {
   try {
     if (!instanceId) return "";
-    const agent = relayAgentOf(payload, workerId);
+    const agent = relayAgentOf(agentsDir, payload, workerId);
     if (!agent) return "";
     const server = readRelayServer(agentsDir, agent);
     if (!server) return "";
@@ -2543,8 +2563,7 @@ function recordRelayProviderResult(tycoonDir, agentsDir, activeAgentFile, activi
   try {
     const instanceId = typeof payload.agent_id === "string" ? payload.agent_id : "";
     if (!instanceId || toolName.indexOf("mcp__") !== 0) return;
-    let agent = relayAgentOf(payload, "");
-    if (!agent) agent = relayAgentOf(payload, resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now).workerId);
+    const agent = relayAgentOf(agentsDir, payload, resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, now, payload.agent_type).workerId);
     if (!agent) return;
     const server = readRelayServer(agentsDir, agent);
     if (!server || !isRelayProviderCall(server, toolName)) return;
@@ -2560,7 +2579,7 @@ function finishRelayRun(tycoonDir, agentsDir, activityFile, payload, workerId, n
   try {
     const instanceId = typeof payload.agent_id === "string" ? payload.agent_id : "";
     if (!instanceId) return;
-    const agent = relayAgentOf(payload, workerId);
+    const agent = relayAgentOf(agentsDir, payload, workerId);
     const server = agent ? readRelayServer(agentsDir, agent) : "";
     if (!server) return;
     const base = relayRunBase(tycoonDir, payload.session_id, instanceId);
@@ -3316,7 +3335,7 @@ function main(raw) {
       // which is what previously misattributed every call made by an
       // earlier-spawned sibling once a later sibling was pushed on top.
       const instanceId = typeof payload.agent_id === "string" && payload.agent_id !== "" ? payload.agent_id : "";
-      const resolved = resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, at);
+      const resolved = resolveNonSpawnAgent(activeAgentFile, activityFile, instanceId, at, payload.agent_type);
       const workerId = resolved.workerId;
 
       // Relay enforcement: a denied edit is not recorded as activity.
@@ -3525,7 +3544,7 @@ function main(raw) {
     if (toolName && toolName.indexOf("mcp__") === 0) {
       try {
         const postInstance = typeof payload.agent_id === "string" && payload.agent_id !== "" ? payload.agent_id : "";
-        const postWorker = resolveNonSpawnAgent(activeAgentFile, activityFile, postInstance, at).workerId;
+        const postWorker = resolveNonSpawnAgent(activeAgentFile, activityFile, postInstance, at, payload.agent_type).workerId;
         /** @type {Record<string, unknown>} */
         const postRecord = { event: "PostToolUse", tool: toolName, workerId: postWorker, at };
         if (typeof payload.tool_use_id === "string" && payload.tool_use_id !== "") postRecord.toolUseId = payload.tool_use_id;

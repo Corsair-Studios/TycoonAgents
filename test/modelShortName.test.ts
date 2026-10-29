@@ -82,3 +82,12 @@ test("modelShortName: Claude names only map for Claude ids", () => {
   assert.notEqual(short("my-haiku-model"), "Haiku");
   assert.equal(short("opus[1m]"), "Opus");
 });
+
+test("modelShortName: Gemini 4 tier names", () => {
+  assert.equal(short("gemini-4-argon"), "Argon");
+  assert.equal(short("google/gemini-4-argon"), "Argon");
+  assert.equal(short("gemini-4-carbon"), "Carbon");
+  assert.equal(short("gemini-2.5-pro"), "Gemini Pro");
+  assert.notEqual(short("my-argon-model"), "Argon");
+  assert.notEqual(short("carbon-7b"), "Carbon");
+});
