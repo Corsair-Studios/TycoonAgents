@@ -76,13 +76,14 @@
   <p>
     Metrics lists every agent that has run in this workspace with a row
     per agent: tasks completed, tokens used, and the model it ran on. Each
-    row also carries a <strong>"vs. orch."</strong> bar whose fill shows tasks
-    completed relative to the busiest agent. Its label is a cost ratio
-    (&ldquo;Nx cheaper&rdquo;, &ldquo;Nx pricier&rdquo;, or &ldquo;same
-    cost&rdquo;) for a metered agent on the orchestrator's own vendor, and
-    a billing label (Sub, Local, or API) for subscription, local, or
-    other-vendor agents, without ever showing a dollar figure; while an
-    agent is active the label reads &ldquo;active&rdquo;. These comparisons use Anthropic API token
+    row also carries a <strong>"Model"</strong> pill on a bar whose fill shows tasks
+    completed relative to the busiest agent. The pill names the model family the
+    agent runs on (Opus, Sonnet, Haiku, Terra, Gemini Pro and so on); hover it for
+    the full model id, the billing type (Subscription, API or Local) and, for a
+    metered agent on the orchestrator's own vendor, a price estimate such as
+    &ldquo;About 3&times; cheaper per token than the orchestrator's model&rdquo;.
+    While an agent calls another LLM through its command-line tool, the pill
+    shows that model and the tooltip names the tool. No dollar figure is ever shown. These comparisons use Anthropic API token
     rates and are informational only &mdash; Claude subscriptions (Max/Pro)
     bill by plan, not per token. The Tokens column counts input, output, and
     cache writes, and shows cache reads separately (&ldquo;+ N cached&rdquo;)
@@ -92,8 +93,8 @@
   </p>
 
   <figure style="margin:1.75rem 0;text-align:center">
-    <img src="metrics_tab.webp" alt="Metrics tab — per-agent table with vs. orch. bars" width="560" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
-    <figcaption style="font-size:0.85rem;margin-top:0.5rem">Metrics tab — per-agent table with vs. orch. bars.</figcaption>
+    <img src="metrics_tab.webp" alt="Metrics tab — per-agent table with Model bars" width="560" style="max-width:100%;height:auto;border:1px solid #cfcabd;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
+    <figcaption style="font-size:0.85rem;margin-top:0.5rem">Metrics tab — per-agent table with Model bars.</figcaption>
   </figure>
 
   <div class="section-head">

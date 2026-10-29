@@ -158,7 +158,10 @@
   // from here so the header stays in sync without touching panel.ts.
   (function relabelMetricsStatusColumnHeader() {
     const th = document.querySelector("#metrics-table thead th:nth-child(2)");
-    if (th) th.textContent = "vs. orch.";
+    if (th) {
+      th.textContent = "Model";
+      th.title = "The model each agent runs on. Hover a pill for the full model id, billing type and, where it applies, a price estimate against the orchestrator's model. The bar behind it shows tasks completed, relative to the agent with the most.";
+    }
   })();
 
   /** Whether the user's project has the optional Project Plan feature turned on (from PLAN_STATE.enabled). Default false so nothing new shows unless the host confirms it's on. */

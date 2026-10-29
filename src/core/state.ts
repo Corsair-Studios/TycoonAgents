@@ -1007,8 +1007,11 @@ function applyEventCore(state: MetricsWorldState, event: NormalizedEvent): Metri
           directSearches: isForbiddenSearch ? m.directSearches + 1 : m.directSearches,
           directReads: isRead ? m.directReads + 1 : m.directReads,
           directEdits: (event.kind === "build" || event.kind === "haul") ? m.directEdits + 1 : m.directEdits,
-          vendor: event.vendor ?? m.vendor,
-          costModelClass: event.costModelClass ?? m.costModelClass,
+          // The orchestrator is the session's own model: a vendor on one of its tool calls
+          // describes the callee (or a misattributed worker's call), so it never becomes the
+          // orchestrator's vendor.
+          vendor: m.id === ORCHESTRATOR_ID ? m.vendor : event.vendor ?? m.vendor,
+          costModelClass: m.id === ORCHESTRATOR_ID ? m.costModelClass : event.costModelClass ?? m.costModelClass,
           // Start timer if not already running.
           workStartAt: m.workStartAt ?? event.at,
           lastActivityAt: event.at,

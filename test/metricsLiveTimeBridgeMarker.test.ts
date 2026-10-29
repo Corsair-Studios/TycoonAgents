@@ -409,14 +409,17 @@ test("foreign CLI call: row lights light blue while the call is in flight, shows
   })]);
   const row = workerRow(doc);
   assert.ok(row.querySelector(".agent-accent-foreign"), "name accent while in flight");
-  assert.match(row.querySelector(".agent-foreign-cli").textContent, /^via Codex CLI · gpt-6\.1-terra$/);
+  assert.equal(row.querySelector(".status-bar-label").textContent, "Terra");
+  assert.ok(row.querySelector(".status-bar-track").title.split("\n").includes("via Codex CLI · gpt-6.1-terra"));
+  assert.equal(row.querySelector(".agent-foreign-cli"), null, "the via line lives in the model tooltip, not under the name");
   assert.match(row.querySelector(".col-mcp").title, /Includes 2 calls to other LLMs via their CLI/);
   assert.ok(row.querySelector(".col-tokens-bridge-note"), "tokens dagger");
 
-  // Call finished: accent and via-line go away, count and dagger stay.
+  // Call finished: accent and the in-flight model go away, count and dagger stay.
   dispatchMetrics(dispatch, [ORCH, worker({ status: "active", workStartAt: T0, lastActivityAt: T0, mcpCount: 2, foreignCliCalls: 2, lastForeignCli: FOREIGN })]);
   const after = workerRow(doc);
   assert.equal(after.querySelector(".agent-accent-foreign"), null);
+  assert.equal(after.querySelector(".status-bar-label").textContent, "Terra", "an active run keeps showing the model of its last foreign call; only the blue accent is in-flight only");
   assert.ok(after.querySelector(".col-tokens-bridge-note"));
 });
 

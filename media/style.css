@@ -4670,10 +4670,18 @@ tr.metrics-row--child td.col-name {
 }
 
 /* Status progress bar */
-td.col-status {
-  width: 70px;
-  min-width: 70px;
-  max-width: 70px;
+/* 70px track + the 10px cell padding each side, so the pill and meter sit fully inside the cell. */
+#metrics-table td.col-status,
+#metrics-table thead th:nth-child(2) {
+  box-sizing: border-box;
+  width: 90px;
+  min-width: 90px;
+  max-width: 90px;
+}
+
+#metrics-table tbody td.col-tasks {
+  padding-left: 10px;
+  min-width: 3ch;
 }
 
 .status-bar-track {
@@ -4716,9 +4724,13 @@ td.col-status {
 .status-bar-label {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
+  box-sizing: border-box;
+  padding: 0 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 16px;
+  text-align: center;
   z-index: 1;
   pointer-events: none;
   color: var(--text);

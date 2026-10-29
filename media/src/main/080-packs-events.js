@@ -487,6 +487,18 @@
   }
 
   /**
+   * Billing class used to price the orchestrator row. On the Claude Code harness the
+   * orchestrator is the Claude baseline, so a class stamped onto its row by activity
+   * (a misattributed foreign/MCP call) is ignored; other harnesses keep the row's class.
+   * @param {{costModelClass?:string}} orch
+   * @returns {string|undefined}
+   */
+  function orchBillingClass(orch) {
+    const harness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    return harness === "claude-code" ? undefined : orch.costModelClass;
+  }
+
+  /**
    * Resolve the orchestrator's blended $/Mtok price from a metrics array.
    * Returns `null` — never a fabricated fallback price — when no
    * orchestrator entry is found or its model is unpriced; the metrics panel
@@ -520,7 +532,7 @@
     if (breakdown && typeof breakdown === "object") {
       for (const [model, tokens] of Object.entries(breakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model, orch.costModelClass);
+        const price = modelPricePerMtok(model, orchBillingClass(orch));
         if (price == null) continue;
         pricedTokens += tokens;
         weightedSum += tokens * price;
@@ -529,7 +541,7 @@
     if (cacheBreakdown && typeof cacheBreakdown === "object") {
       for (const [model, tokens] of Object.entries(cacheBreakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model, orch.costModelClass);
+        const price = modelPricePerMtok(model, orchBillingClass(orch));
         if (price == null) continue;
         // Cache reads bill at ~0.1x the model's input rate.
         pricedTokens += tokens;
@@ -542,7 +554,7 @@
     // returning null outright, since orch.model may still be a priced,
     // more-recent signal.
 
-    const price = modelPricePerMtok(orch.model, orch.costModelClass);
+    const price = modelPricePerMtok(orch.model, orchBillingClass(orch));
     return price != null ? price : null;
   }
 
@@ -586,7 +598,7 @@
     if (breakdown && typeof breakdown === "object") {
       for (const [model, tokens] of Object.entries(breakdown)) {
         if (!(tokens > 0)) continue;
-        const price = modelPricePerMtok(model, orch.costModelClass);
+        const price = modelPricePerMtok(model, orchBillingClass(orch));
         if (price == null) continue;
         pricedTokens += tokens;
         weightedSum += tokens * price;
@@ -594,7 +606,7 @@
     }
     if (pricedTokens > 0) return weightedSum / pricedTokens;
 
-    const price = modelPricePerMtok(orch.model, orch.costModelClass);
+    const price = modelPricePerMtok(orch.model, orchBillingClass(orch));
     return price != null ? price : null;
   }
 
@@ -659,6 +671,33 @@
   }
 
   /**
+   * Billing type words for the model tooltip.
+   * @param {string} cls costModelClass
+   * @returns {string}
+   */
+  function billingTypeWords(cls) {
+    if (cls === "subscription") return "Subscription";
+    if (cls === "local") return "Local";
+    if (cls === "metered") return "API (pay per use)";
+    return "";
+  }
+
+  /**
+   * The muted same-vendor price estimate for the model tooltip, or null when
+   * no valid metered-vs-metered comparison exists. Reuses vsOrchLabel's ratio.
+   * @returns {string|null}
+   */
+  function vsOrchEstimateText(agentModel, agentRate, orchestratorPrice, cls, foreign) {
+    if (foreign || cls === "subscription" || cls === "local") return null;
+    const t = vsOrchLabel(agentModel, agentRate, orchestratorPrice, cls, false);
+    const tail = " per token than the orchestrator's model at published list prices. Estimate only; prices change.";
+    if (/× cheaper$/.test(t)) return "About " + t + tail;
+    if (/× pricier$/.test(t)) return "About " + t + tail;
+    if (t === "same cost") return "About the same cost per token as the orchestrator's model at published list prices. Estimate only; prices change.";
+    return null;
+  }
+
+  /**
    * Backend-first identity for an agent: the routed backend's vendor and
    * billing class (from the Settings payload's route-derived fields, keyed by
    * agent id) win over the metrics row's run model/vendor, because a wrapper
@@ -681,8 +720,13 @@
     const sa = id && lastSettings && Array.isArray(lastSettings.agents)
       ? lastSettings.agents.find((x) => x && x.id === id)
       : null;
-    const vendor = resolveAgentVendor((sa && sa.vendor) || (agent && agent.vendor), (sa && sa.vendor) ? "" : (agent && agent.model));
-    let cls = (sa && sa.costModelClass) || (agent && agent.costModelClass) || undefined;
+    // Configuration (Settings payload) is the source of truth; the metrics row's own
+    // vendor/costModelClass are activity-stamped and only used when the agent has no
+    // settings entry yet, so a stale stamp can never relabel a configured agent.
+    const vendor = sa
+      ? resolveAgentVendor(sa.vendor, sa.vendor ? "" : (sa.resolvedModel || (agent && agent.model)))
+      : resolveAgentVendor(agent && agent.vendor, agent && agent.model);
+    let cls = sa ? (sa.costModelClass || undefined) : ((agent && agent.costModelClass) || undefined);
     if (vendor === "google" && sa && sa.vendor) {
       const g = geminiBackendState();
       cls = g.value === "gemini" ? "metered" : "subscription";
@@ -807,8 +851,22 @@
     if (harnessDefaultFor(agent)) return true;
     const av = backendIdentity(agent).vendor;
     if (!av) return false;
-    const ov = resolveAgentVendor(orchestrator && orchestrator.vendor, orchestrator && orchestrator.model) || "anthropic";
-    return av !== ov;
+    return av !== orchestratorVendorId(orchestrator);
+  }
+
+  /**
+   * The orchestrator's vendor is the harness's own vendor (Claude Code ->
+   * anthropic), never inferred from the orchestrator row's
+   * vendor field: that field can carry a vendor stamped by a misattributed
+   * foreign/MCP call, which would make every Claude agent look foreign.
+   * Other harnesses fall back to the row's model; unknown means Claude.
+   * @param {{vendor?:string, model?:string}|null|undefined} orchestrator
+   * @returns {string}
+   */
+  function orchestratorVendorId(orchestrator) {
+    const harness = (lastSettings && lastSettings.harness && lastSettings.harness.effective) || "claude-code";
+    if (harness === "claude-code") return "anthropic";
+    return resolveAgentVendor(orchestrator && orchestrator.vendor, orchestrator && orchestrator.model) || "anthropic";
   }
 
   /**
@@ -884,6 +942,44 @@
     if (s.includes("haiku")) return "Haiku";
     if (s.includes("fable")) return "Fable";
     return null;
+  }
+
+  /**
+   * Short display name for a model id, used by the Metrics MODEL pill: the
+   * family only, never the company or a billing label. Claude: Opus, Sonnet,
+   * Haiku, Fable, Mythos. OpenAI/Codex tiers: Astra, Sol, Terra, Luna.
+   * Google: "Gemini Pro" / "Gemini Flash". Moonshot: "Kimi K2". Anything else
+   * keeps a truncated bare model id; empty or unknown input gives "—".
+   * Self-contained on purpose (the test extracts and runs it in isolation).
+   * @param {string|null|undefined} modelId
+   * @returns {string}
+   */
+  function modelShortName(modelId) {
+    let s = String(modelId == null ? "" : modelId).trim();
+    if (!s) return "—";
+    s = s.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+    const lower = s.toLowerCase();
+    const claude = [["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"], ["fable", "Fable"], ["mythos", "Mythos"]];
+    // Claude family names only for Claude ids: claude-*, anthropic/*, or a bare alias.
+    if (/^(claude[-_./]|anthropic\/)/.test(lower) || /^(opus|sonnet|haiku|fable|mythos)(\b|[-_.\d]|$)/.test(lower)) {
+      for (const [key, name] of claude) if (lower.includes(key)) return name;
+    }
+    const tier = [["astra", "Astra"], ["terra", "Terra"], ["luna", "Luna"], ["sol", "Sol"]];
+    for (const [key, name] of tier) {
+      if (new RegExp("(^|[^a-z])" + key + "([^a-z]|$)").test(lower)) return name;
+    }
+    if (lower.includes("gemini")) {
+      if (lower.includes("flash")) return "Gemini Flash";
+      if (lower.includes("pro")) return "Gemini Pro";
+      return "Gemini";
+    }
+    if (lower.includes("kimi")) {
+      const k = /k(\d+)/.exec(lower);
+      return k ? "Kimi K" + k[1] : "Kimi";
+    }
+    const bare = s.replace(/^.*\//, "").trim();
+    if (!bare) return "—";
+    return bare.length > 12 ? bare.slice(0, 11) + "…" : bare;
   }
 
   /**
@@ -1364,6 +1460,29 @@
   }
 
   /**
+   * The model an agent is CONFIGURED to run on, from the Settings/routing payloads
+   * (never from activity-stamped metrics fields): Codex harness default, else the
+   * routed backend model for a non-Claude agent, else the agent file's model.
+   * Falls back to the metrics row's roster-stamped model before settings load.
+   * @param {{id?:string, model?:string}} agent
+   * @returns {string}
+   */
+  function configuredModelId(agent) {
+    const hd = harnessDefaultFor(agent);
+    if (hd) return hd.model;
+    const id = agent && agent.id;
+    const sa = id && lastSettings && Array.isArray(lastSettings.agents)
+      ? lastSettings.agents.find((x) => x && x.id === id)
+      : null;
+    const bm = backendModelFor(agent);
+    const resolved = sa && typeof sa.resolvedModel === "string" ? sa.resolvedModel.trim() : "";
+    if (sa && sa.vendor && String(sa.vendor).toLowerCase() !== "anthropic") {
+      return (bm || resolved || (agent && agent.model) || "").replace(/^[^/]+\//, "");
+    }
+    return resolved || (agent && agent.model) || bm || "";
+  }
+
+  /**
    * Render one metrics row. `opts` is kept (rather than dropping the param)
    * so callers stay uniform; the lead/worker nesting opts it used to accept
    * (chevron/indent/teamTag/leadId, Team Lead Mode Phase 3) were retired
@@ -1389,9 +1508,20 @@
     // A foreign-LLM CLI call in flight (Bash running codex exec etc.) lights the row like an MCP
     // bridge call does; fallback still wins inside agentAccent.
     const foreignInFlight = foreignCliInFlight(agent);
+    // The orchestrator is the baseline: on the Claude Code harness it never takes the foreign
+    // accent (a stamped row vendor or a misattributed call must not recolor it). Other agents
+    // take the routed backend vendor from Settings before the metrics row's own (possibly
+    // activity-stamped) vendor.
+    const accentSettingsAgent = agent.id && lastSettings && Array.isArray(lastSettings.agents)
+      ? lastSettings.agents.find((x) => x && x.id === agent.id)
+      : null;
+    const routedVendor = accentSettingsAgent && typeof accentSettingsAgent.vendor === "string" ? accentSettingsAgent.vendor : "";
+    const orchestratorBaseline = agent.id === "orchestrator" && rowHarness === "claude-code";
     const rowAccentKind = agentAccent({
-      vendor: foreignInFlight ? foreignInFlight.vendor : agent.vendor,
-      costModelClass: agent.costModelClass,
+      // With a Settings entry its (possibly empty = harness-native) vendor/class are the only
+      // source; the row's own stamped values are used only before settings carry the agent.
+      vendor: orchestratorBaseline ? "" : (foreignInFlight ? foreignInFlight.vendor : (accentSettingsAgent ? routedVendor : agent.vendor)),
+      costModelClass: accentSettingsAgent ? accentSettingsAgent.costModelClass : agent.costModelClass,
       fallbackOf: agent.fallbackOf,
       harness: rowHarness,
     });
@@ -1432,13 +1562,6 @@
 
     // Which foreign model the agent is calling through its CLI right now.
     const foreignShown = foreignInFlight || (showActive && agent.lastForeignCli && agent.lastForeignCli.vendor ? agent.lastForeignCli : null);
-    if (showActive && foreignShown) {
-      const viaLine = document.createElement("div");
-      viaLine.className = "agent-foreign-cli";
-      viaLine.textContent = foreignCliLabel(foreignShown);
-      viaLine.title = "This agent is calling another LLM through its command-line tool.";
-      nameTd.appendChild(viaLine);
-    }
 
     // Live spawn description (currentDescription, WorkerSpawned.currentDescription):
     // this spawn's own task brief, shown as a muted secondary line only while
@@ -1525,7 +1648,7 @@
     const fillPct = showActive ? Math.max(rawPct, 15) : rawPct;
     const statusTd = document.createElement("td");
     statusTd.className = "col-status";
-    statusTd.title = "Bar = tasks completed by this agent, relative to the agent with the most. Badge = how much cheaper this agent's model is per token than the orchestrator's (metered models only) — flat-rate subscription and local models have no comparable per-token rate, so they show their billing class instead of a ratio.";
+    statusTd.title = "Bar = tasks completed by this agent, relative to the agent with the most. Pill = the model this agent runs on; hover it for the full model id, billing type and details.";
     const track = document.createElement("div");
     track.className = "status-bar-track";
     const fill = document.createElement("div");
@@ -1538,19 +1661,45 @@
     fill.style.width = `${fillPct}%`;
     const label = document.createElement("span");
     label.className = "status-bar-label";
-    let vsOrchText;
+    // MODEL pill: the model family from the agent's own configuration. Only a foreign call in
+    // flight (or the active run's last foreign call) swaps in the model that call reported.
+    const tipLines = [];
+    let pillModelId;
+    let pillClass;
+    let estimateLine = null;
     if (agent.id === "orchestrator") {
-      vsOrchText = "baseline";
+      const obs = agent.observedModel;
+      pillModelId = (obs && isWellFormedClaudeModelId(obs)) ? obs : (agent.rosterModel || agent.model || obs || "");
+      pillClass = agent.costModelClass || "";
     } else {
       const bi = backendIdentity(agent);
       const foreignRow = isForeignToOrchestrator(agent, opts.orchestrator);
-      const rowClass = foreignRow ? bi.costModelClass : agent.costModelClass;
-      const agentRate = modelPricePerMtok(agent.model, rowClass);
-      const orchestratorPrice = opts.orchestratorPrice;
-      vsOrchText = vsOrchLabel(agent.model, agentRate, orchestratorPrice, rowClass, foreignRow);
-      statusTd.title = vsOrchTitle(foreignRow, foreignRow ? (rowClass || "unknown") : costModelClass(agent.model, agent.costModelClass));
+      const configuredModel = configuredModelId(agent);
+      const rowClass = foreignRow ? bi.costModelClass : (accentSettingsAgent ? accentSettingsAgent.costModelClass : agent.costModelClass);
+      if (foreignShown && foreignShown.model) {
+        pillModelId = foreignShown.model;
+        pillClass = costModelClass(foreignShown.model);
+      } else {
+        pillModelId = configuredModel;
+        pillClass = costModelClass(configuredModel, rowClass);
+        const agentRate = modelPricePerMtok(configuredModel, rowClass);
+        estimateLine = vsOrchEstimateText(configuredModel, agentRate, opts.orchestratorPrice, pillClass, foreignRow);
+      }
     }
-    label.textContent = showActive ? "active" : vsOrchText;
+    label.textContent = modelShortName(pillModelId);
+    tipLines.push(pillModelId ? String(pillModelId) : "Model unknown");
+    const billing = billingTypeWords(pillClass);
+    if (billing) tipLines.push(billing);
+    if (foreignShown) {
+      tipLines.push(foreignCliLabel(foreignShown));
+    } else if (agent.lastForeignCli && agent.lastForeignCli.model) {
+      tipLines.push("Uses " + modelShortName(agent.lastForeignCli.model) + " " + foreignCliLabel({ cli: agent.lastForeignCli.cli }) + " (" + agent.lastForeignCli.model + ")");
+    } else if (accentSettingsAgent && accentSettingsAgent.relayServer) {
+      const relayName = RELAY_SERVER_LABELS[String(accentSettingsAgent.relayServer).toLowerCase()] || String(accentSettingsAgent.relayServer);
+      tipLines.push("via " + relayName);
+    }
+    if (estimateLine) tipLines.push(estimateLine);
+    track.title = tipLines.join("\n");
     track.appendChild(fill);
     track.appendChild(label);
     statusTd.appendChild(track);

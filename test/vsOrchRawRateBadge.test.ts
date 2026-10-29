@@ -276,6 +276,16 @@ function routingPayloadFixture() {
 }
 
 /** Opens the Agents modal (formerly Routing; #menu-routing kept, label now "Agents"), feeds it a routing payload, then pushes the given settings payload — required before any `.agent-stats`/vs-orch chip query. */
+/** Like pushSettings, but the routing payload's coding-specialist backend carries the given vendor/model (a foreign-routed agent). */
+function pushSettingsRoutedTo(doc: any, dispatch: (d: any) => void, payload: any, backend: { vendor: string; model: string; costModelClass?: string }) {
+  const menuRoutingBtn = doc.getElementById("menu-routing");
+  if (menuRoutingBtn) menuRoutingBtn.click();
+  const rp: any = routingPayloadFixture();
+  rp.agents[0].backend = { ...rp.agents[0].backend, ...backend };
+  dispatch({ type: "routing", payload: rp });
+  dispatch({ type: "settings", payload });
+}
+
 function pushSettings(doc: any, dispatch: (d: any) => void, payload: any) {
   const menuRoutingBtn = doc.getElementById("menu-routing");
   if (menuRoutingBtn) menuRoutingBtn.click();
@@ -298,25 +308,38 @@ function dispatchMetrics(dispatch: (d: any) => void, agentMetrics: any[]) {
 }
 
 /**
- * Reads the metrics table row's "vs. orch." status-bar label text for the
- * row whose rendered text contains `displayName` (e.g. "Orchestrator",
- * "Coding Specialist"). Verified directly against the booted DOM: each
- * `#metrics-tbody tr`'s full textContent contains its display name
- * immediately followed by the `.status-bar-label` text (no other
- * separator), so a case-insensitive substring match on the row's
- * textContent unambiguously identifies the row for the two-agent rosters
- * used in this file.
+ * The Metrics MODEL pill shows only the model family; the billing type and the
+ * same-vendor price comparison live in the pill's tooltip (`.status-bar-track`
+ * title). `rowPillText` reads the pill, `rowTooltip` the tooltip, and
+ * `rowBadgeText` condenses the tooltip back into the comparison/billing verdict
+ * these regression pins were written against: the "N× cheaper" / "N× pricier"
+ * / "same cost" estimate when present, else the billing type ("Sub", "API",
+ * "Local"), else "—". The row is found by display name in its textContent.
  */
-function rowBadgeText(doc: any, displayName: string): string | null {
+function findMetricsRow(doc: any, displayName: string): any {
   const rows = [...doc.querySelectorAll("#metrics-tbody tr")];
-  for (const row of rows) {
-    const label = row.querySelector(".status-bar-label");
-    if (!label) continue;
-    if (row.textContent && row.textContent.toLowerCase().includes(displayName.toLowerCase())) {
-      return label.textContent;
-    }
-  }
-  return null;
+  return rows.find((row: any) => row.querySelector(".status-bar-label") && row.textContent && row.textContent.toLowerCase().includes(displayName.toLowerCase())) || null;
+}
+function rowPillText(doc: any, displayName: string): string | null {
+  const row = findMetricsRow(doc, displayName);
+  return row ? row.querySelector(".status-bar-label").textContent : null;
+}
+function rowTooltip(doc: any, displayName: string): string | null {
+  const row = findMetricsRow(doc, displayName);
+  return row ? row.querySelector(".status-bar-track").title : null;
+}
+function tooltipVerdict(tip: string): string {
+  const ratio = /About (\S+× (?:cheaper|pricier)) per token/.exec(tip);
+  if (ratio) return ratio[1];
+  if (/About the same cost per token/.test(tip)) return "same cost";
+  if (/^Subscription$/m.test(tip)) return "Sub";
+  if (/^API \(pay per use\)$/m.test(tip)) return "API";
+  if (/^Local$/m.test(tip)) return "Local";
+  return "—";
+}
+function rowBadgeText(doc: any, displayName: string): string | null {
+  const tip = rowTooltip(doc, displayName);
+  return tip == null ? null : tooltipVerdict(tip);
 }
 
 /**
@@ -332,12 +355,21 @@ function chipVsOrchText(doc: any, displayName: string): string | null {
   const rows = [...doc.querySelectorAll(".agent-stats")];
   for (const stats of rows) {
     const chips = [...stats.querySelectorAll(".stat-chip")];
-    const vsChip = chips.find((c: any) => /^vs\. orch\./.test(c.textContent || ""));
+    const vsChip = chips.find((c: any) => /^Model /.test(c.textContent || ""));
     if (!vsChip) continue;
     const container = stats.parentElement || stats;
     if (container.textContent && container.textContent.toLowerCase().includes(displayName.toLowerCase())) {
-      return vsChip.textContent.replace(/^vs\. orch\.\s*/, "");
+      // The chip shows the model family; the verdict these pins were written for lives in its tooltip.
+      return tooltipVerdict(String(vsChip.title || ""));
     }
+  }
+  return null;
+}
+function chipPillText(doc: any, displayName: string): string | null {
+  for (const stats of [...doc.querySelectorAll(".agent-stats")]) {
+    const vsChip = [...stats.querySelectorAll(".stat-chip")].find((c: any) => /^Model /.test(c.textContent || "")) as any;
+    const container = stats.parentElement || stats;
+    if (vsChip && container.textContent.toLowerCase().includes(displayName.toLowerCase())) return vsChip.textContent.replace(/^Model\s*/, "");
   }
   return null;
 }
@@ -470,7 +502,7 @@ test("metrics row badge: Fable worker under Opus orchestrator renders '2x pricie
 // (d) Orchestrator's own row: always "baseline", never a computed ratio.
 // ---------------------------------------------------------------------------
 
-test("metrics row badge: orchestrator's own row always renders 'baseline', regardless of cache-read volume", () => {
+test("metrics row pill: orchestrator's own row shows its model (Opus) and no price comparison, regardless of cache-read volume", () => {
   for (const cache of CACHE_READ_VOLUMES) {
     const { doc, dispatch, errors } = bootMainJs();
     dispatchMetrics(dispatch, [
@@ -479,8 +511,8 @@ test("metrics row badge: orchestrator's own row always renders 'baseline', regar
     ]);
     pushSettings(doc, dispatch, agentsPayload());
 
-    const text = rowBadgeText(doc, "Orchestrator");
-    assert.equal(text, "baseline", `cache=${cache}: orchestrator's own row must always read 'baseline', got '${text}'`);
+    assert.equal(rowPillText(doc, "Orchestrator"), "Opus", `cache=${cache}: orchestrator pill shows the harness model`);
+    assert.doesNotMatch(String(rowTooltip(doc, "Orchestrator")), /cheaper|pricier|same cost/, `cache=${cache}: orchestrator has no self-comparison`);
     assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
   }
 });
@@ -516,9 +548,9 @@ test("metrics row badge: NEGATIVE ANCHOR -- unpriced orchestrator model renders 
   ]);
   pushSettings(doc, dispatch, agentsPayload());
 
-  const text = rowBadgeText(doc, "Coding Specialist");
-  assert.equal(text, "—", `expected '—' when the orchestrator model is unpriced, got '${text}'`);
-  assert.doesNotMatch(String(text), /cheaper|pricier|nan|infinity/i, "unpriced orchestrator must never render a fabricated ratio word");
+  const tip = String(rowTooltip(doc, "Coding Specialist"));
+  assert.equal(rowPillText(doc, "Coding Specialist"), "Sonnet", "pill still names the model");
+  assert.doesNotMatch(tip, /cheaper|pricier|same cost|nan|infinity/i, `unpriced orchestrator must never render a fabricated ratio, got: ${tip}`);
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -611,7 +643,7 @@ test("settings 'vs. orch.' chip: Sonnet worker under Opus orchestrator renders '
   }
 });
 
-test("settings 'vs. orch.' chip: orchestrator's own card always renders 'baseline'", () => {
+test("settings 'vs. orch.' chip: orchestrator's own card shows its model (Opus) and no comparison", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "orchestrator", name: "Orchestrator", status: "idle", model: "opus", tokens: 2000, cacheReadTokens: 2_073_200_000, activeMs: 1000, taskCount: 1 },
@@ -619,8 +651,8 @@ test("settings 'vs. orch.' chip: orchestrator's own card always renders 'baselin
   ]);
   pushSettings(doc, dispatch, agentsPayload());
 
-  const text = chipVsOrchText(doc, "Orchestrator");
-  assert.equal(text, "baseline", `expected 'baseline' for the orchestrator's own chip, got '${text}'`);
+  assert.equal(chipPillText(doc, "Orchestrator"), "Opus");
+  assert.doesNotMatch(String(chipVsOrchText(doc, "Orchestrator")), /cheaper|pricier|same cost/);
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
@@ -818,10 +850,15 @@ const ORCH = { id: "orchestrator", name: "Orchestrator", status: "idle", model: 
 function foreignRow(extra: any) {
   return { id: "coding-specialist", name: "Coding Specialist", status: "idle", tokens: 0, cacheReadTokens: 0, activeMs: 0, taskCount: 0, ...extra };
 }
+/** Configuration (vendor, billing class) travels in the Settings payload; the row only carries the model. */
 function badgeFor(extra: any): string | null {
   const { doc, dispatch } = bootMainJs();
-  dispatchMetrics(dispatch, [ORCH, foreignRow(extra)]);
-  pushSettings(doc, dispatch, agentsPayload());
+  const { vendor, costModelClass, ...rowFields } = extra;
+  dispatchMetrics(dispatch, [ORCH, foreignRow(rowFields)]);
+  const payload: any = agentsPayload();
+  payload.agents[1] = { ...payload.agents[1], vendor, costModelClass };
+  if (vendor && vendor !== "anthropic") pushSettingsRoutedTo(doc, dispatch, payload, { vendor, model: extra.model });
+  else pushSettings(doc, dispatch, payload);
   return rowBadgeText(doc, "Coding Specialist");
 }
 
@@ -854,13 +891,46 @@ test("CROSS-VENDOR: foreign vendor with unknown billing reads '—'", () => {
   assert.equal(badgeFor({ model: "acme/mystery-1", vendor: "acme" }), "—");
 });
 
-test("CROSS-VENDOR: foreign badge tooltip carries the token-counting disclaimer", () => {
+test("CROSS-VENDOR: foreign pill shows the model family; tooltip has the full id and billing type, no ratio", () => {
   const { doc, dispatch } = bootMainJs();
-  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "kimi-k2", vendor: "moonshot", costModelClass: "metered" })]);
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "kimi-k2", name: "Coding Specialist" })]);
+  const payload: any = agentsPayload();
+  payload.agents[1] = { ...payload.agents[1], vendor: "moonshot", costModelClass: "metered" };
+  pushSettingsRoutedTo(doc, dispatch, payload, { vendor: "moonshot", model: "kimi-k2" });
+  assert.equal(rowPillText(doc, "Coding Specialist"), "Kimi K2");
+  const tip = String(rowTooltip(doc, "Coding Specialist"));
+  assert.deepEqual(tip.split("\n"), ["kimi-k2", "API (pay per use)"]);
+});
+
+test("MODEL PILL: Claude agents show the family only (no company, no Sub/API/cheaper text)", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "sonnet" })]);
   pushSettings(doc, dispatch, agentsPayload());
-  const labels = Array.from(doc.querySelectorAll("#metrics-tbody .status-bar-label")) as any[];
-  const titled = labels.map((l) => l.closest("td").title).find((t: string) => /Pay per use \(API key\)/.test(t));
-  assert.ok(titled && titled.includes("Different vendors count tokens differently, so costs aren't directly comparable to Claude."), String(titled));
+  assert.equal(rowPillText(doc, "Coding Specialist"), "Sonnet");
+  assert.equal(rowPillText(doc, "Orchestrator"), "Opus");
+  const tip = String(rowTooltip(doc, "Coding Specialist"));
+  assert.deepEqual(tip.split("\n"), ["sonnet", "API (pay per use)", "About " + fmtR(tableRate("anthropic/opus") / tableRate("anthropic/sonnet")) + "× cheaper per token than the orchestrator's model at published list prices. Estimate only; prices change."]);
+});
+
+test("MODEL PILL: a stale vendor/billing stamp on the metrics row cannot relabel a configured agent", () => {
+  const { doc, dispatch } = bootMainJs();
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "sonnet", vendor: "openai", costModelClass: "subscription" })]);
+  pushSettings(doc, dispatch, agentsPayload());
+  assert.equal(rowPillText(doc, "Coding Specialist"), "Sonnet");
+  assert.match(String(rowTooltip(doc, "Coding Specialist")), /API \(pay per use\)/);
+  assert.match(String(rowTooltip(doc, "Coding Specialist")), /× cheaper/);
+});
+
+test("MODEL PILL: Codex tiers map to Astra, Sol, Terra, Luna on foreign rows", () => {
+  for (const [model, want] of [["gpt-6.1-sol", "Sol"], ["gpt-6-astra", "Astra"], ["gpt-6.1-terra", "Terra"], ["gpt-5.6-luna", "Luna"]]) {
+    const { doc, dispatch } = bootMainJs();
+    dispatchMetrics(dispatch, [ORCH, foreignRow({ model })]);
+    const payload: any = agentsPayload();
+    payload.agents[1] = { ...payload.agents[1], vendor: "openai", costModelClass: "subscription" };
+    pushSettingsRoutedTo(doc, dispatch, payload, { vendor: "openai", model });
+    assert.equal(rowPillText(doc, "Coding Specialist"), want, model);
+    assert.match(String(rowTooltip(doc, "Coding Specialist")), new RegExp("^" + model.replace(/\./g, "\\.") + "\nSubscription$"));
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -900,7 +970,7 @@ test("DELEGATION HEADLINE: no foreign agents -> no 'other vendors' line", () => 
 // ---------------------------------------------------------------------------
 function badgeWithBackend(settingsAgent: any, geminiBackend?: string): string | null {
   const { doc, dispatch } = bootMainJs();
-  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "haiku", costModelClass: "metered" })]);
+  dispatchMetrics(dispatch, [ORCH, foreignRow({ model: "haiku" })]);
   const menu = doc.getElementById("menu-routing");
   if (menu) menu.click();
   const rp: any = routingPayloadFixture();

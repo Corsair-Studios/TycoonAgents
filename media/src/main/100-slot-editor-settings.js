@@ -2073,25 +2073,30 @@
       c.textContent = `${label} ${value}`;
       return c;
     };
-    let chipVsOrchText;
-    let chipForeign = false;
-    let chipCls = "unknown";
+    let chipModelId;
+    let chipPillClass = "";
+    let chipEstimate = null;
     if (a.isOrchestrator) {
-      chipVsOrchText = "baseline";
+      chipModelId = (m && (m.rosterModel || m.model)) || a.model || "";
     } else {
       const chipModel = m ? (m.model || a.model) : a.model;
       const chipCostModelClass = (m && m.costModelClass) || a.costModelClass || null;
       const chipAgentRate = modelPricePerMtok(chipModel, chipCostModelClass);
       const chipOrchestratorPrice = resolveOrchestratorModelRate(lastMetrics);
       const chipOrch = (lastMetrics || []).find((x) => x && x.id === "orchestrator");
-      chipForeign = isForeignToOrchestrator({ id: a.id, vendor: a.vendor || (m && m.vendor), model: chipModel }, chipOrch);
-      const chipBi = backendIdentity({ id: a.id, vendor: a.vendor || (m && m.vendor), model: chipModel, costModelClass: chipCostModelClass });
+      const chipAgent = { id: a.id, vendor: a.vendor || (m && m.vendor), model: chipModel, costModelClass: chipCostModelClass };
+      const chipForeign = isForeignToOrchestrator(chipAgent, chipOrch);
+      const chipBi = backendIdentity(chipAgent);
       const chipClassEff = chipForeign ? chipBi.costModelClass : chipCostModelClass;
-      chipVsOrchText = vsOrchLabel(chipModel, chipAgentRate, chipOrchestratorPrice, chipClassEff, chipForeign);
-      chipCls = chipForeign ? (chipClassEff || "unknown") : costModelClass(chipModel, chipCostModelClass);
+      chipModelId = configuredModelId(chipAgent) || chipModel;
+      chipPillClass = costModelClass(chipModelId, chipForeign ? chipClassEff : chipCostModelClass);
+      chipEstimate = vsOrchEstimateText(chipModel, chipAgentRate, chipOrchestratorPrice, chipPillClass, chipForeign);
     }
-    const vsOrchChip = chip("vs. orch.", chipVsOrchText);
-    vsOrchChip.title = vsOrchTitle(chipForeign, chipCls);
+    const vsOrchChip = chip("Model", modelShortName(chipModelId));
+    const chipTip = [chipModelId ? String(chipModelId) : "Model unknown"];
+    if (billingTypeWords(chipPillClass)) chipTip.push(billingTypeWords(chipPillClass));
+    if (chipEstimate) chipTip.push(chipEstimate);
+    vsOrchChip.title = chipTip.join("\n");
     stats.appendChild(vsOrchChip);
     stats.appendChild(chip("tasks", String((m && m.taskCount) || 0)));
     stats.appendChild(chip("MCP", String((m && m.mcpCount) || 0)));

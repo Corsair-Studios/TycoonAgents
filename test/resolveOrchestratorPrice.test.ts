@@ -386,15 +386,16 @@ test("settings 'vs. orch.' stat chip: NEGATIVE ANCHOR -- no orchestrator metrics
   const rows = [...doc.querySelectorAll(".agent-stats")];
   assert.ok(rows.length > 0, "at least one agent stats row should render");
   const chipTexts = rows.map((r: any) => r.textContent || "");
-  const hasDash = chipTexts.some((t: string) => /vs\. orch\.\s*—/.test(t));
-  assert.ok(hasDash, `expected a "vs. orch. —" chip somewhere, got: ${JSON.stringify(chipTexts)}`);
+  const modelChips = [...doc.querySelectorAll(".agent-stats .stat-chip")].filter((c: any) => /^Model /.test(c.textContent || ""));
+  assert.ok(modelChips.some((c: any) => c.textContent === "Model Sonnet"), `expected a "Model Sonnet" chip, got: ${JSON.stringify(chipTexts)}`);
+  for (const c of modelChips) assert.doesNotMatch((c as any).title, /cheaper|pricier|same cost/, "no ratio without an orchestrator price");
   for (const t of chipTexts) {
     assert.doesNotMatch(t, /nan|infinity/i, `stat chip text must never contain NaN/Infinity, got "${t}"`);
   }
   assert.equal(errors.length, 0, `no boot/render errors: ${errors.map(String).join("; ")}`);
 });
 
-test("metrics table row: NEGATIVE ANCHOR -- no orchestrator metrics entry -> 'vs. orch.' status-bar label renders '—', never NaN/Infinity", () => {
+test("metrics table row: NEGATIVE ANCHOR -- no orchestrator metrics entry -> the model pill still names the model and the tooltip makes no ratio claim, never NaN/Infinity", () => {
   const { doc, dispatch, errors } = bootMainJs();
   dispatchMetrics(dispatch, [
     { id: "coding-specialist", name: "Coding Specialist", status: "idle", model: "sonnet", tokens: 100000, activeMs: 5000, taskCount: 4 },
@@ -404,7 +405,9 @@ test("metrics table row: NEGATIVE ANCHOR -- no orchestrator metrics entry -> 'vs
   const labels = [...doc.querySelectorAll("#metrics-tbody .status-bar-label")];
   assert.ok(labels.length > 0, "at least one metrics row status-bar label should render");
   const texts = labels.map((l: any) => l.textContent || "");
-  assert.ok(texts.some((t: string) => t === "—"), `expected a "—" label somewhere, got: ${JSON.stringify(texts)}`);
+  assert.deepEqual(texts, ["Sonnet"]);
+  const tips = [...doc.querySelectorAll("#metrics-tbody .status-bar-track")].map((l: any) => l.title || "");
+  for (const t of tips) assert.doesNotMatch(t, /cheaper|pricier|same cost|nan|infinity/i, `tooltip must not claim a ratio without an orchestrator price, got "${t}"`);
   for (const t of texts) {
     assert.doesNotMatch(t, /nan|infinity/i, `status-bar label must never contain NaN/Infinity, got "${t}"`);
   }
